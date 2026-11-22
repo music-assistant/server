@@ -46,18 +46,25 @@ def _controller(
     return queues
 
 
-def _player(player_id: str = "p1") -> Any:
-    """Build a player stand-in with the state fields the queue snapshot is built from."""
-    return SimpleNamespace(
-        player_id=player_id, state=SimpleNamespace(name="Player A", available=True)
+def _player(queues: Any, player_id: str = "p1") -> Any:
+    """
+    Build a live player stand-in with the state fields the queue snapshot is built from.
+
+    :param queues: The queue-controller stand-in, whose players controller gets the player.
+    :param player_id: The id of the player.
+    """
+    player = SimpleNamespace(player_id=player_id, name="Player A", available=True)
+    queues.mass.players.get_player = MagicMock(
+        side_effect=lambda queried_id: player if queried_id == player_id else None
     )
+    return player
 
 
 async def test_new_queue_follows_the_global_defaults() -> None:
     """A queue created for a newly registered player follows the global autoplay/crossfade defaults."""
     queues = _controller(global_autoplay=True, global_crossfade=False)
 
-    await PlayerQueuesController.on_player_register(queues, _player())
+    await PlayerQueuesController.on_player_register(queues, _player(queues))
 
     queue = queues._queue_data["p1"].queue
     assert queue.autoplay_enabled is True
@@ -68,7 +75,7 @@ async def test_new_queue_follows_a_flipped_global_default() -> None:
     """A new queue reflects whatever the global defaults are currently set to."""
     queues = _controller(global_autoplay=False, global_crossfade=True)
 
-    await PlayerQueuesController.on_player_register(queues, _player())
+    await PlayerQueuesController.on_player_register(queues, _player(queues))
 
     queue = queues._queue_data["p1"].queue
     assert queue.autoplay_enabled is False
@@ -89,7 +96,7 @@ async def test_restored_queue_without_override_follows_the_global_default() -> N
     )
     queues = _controller(stored.to_cache(), global_autoplay=True)
 
-    await PlayerQueuesController.on_player_register(queues, _player())
+    await PlayerQueuesController.on_player_register(queues, _player(queues))
 
     # the stale wire value (False) is overwritten by the current global default (True)
     assert queues._queue_data["p1"].queue.autoplay_enabled is True
@@ -109,7 +116,7 @@ async def test_restored_queue_with_pinned_override_keeps_it() -> None:
     )
     queues = _controller(stored.to_cache(), global_autoplay=True)
 
-    await PlayerQueuesController.on_player_register(queues, _player())
+    await PlayerQueuesController.on_player_register(queues, _player(queues))
 
     # the pinned override (False) sticks even though the global default is now True
     assert queues._queue_data["p1"].queue.autoplay_enabled is False

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientConnectorCertificateError, ClientConnectorSSLError, ClientResponseError
 from libopensonic import AsyncConnection as SonicConnection
 from libopensonic import Extensions as OpenSubsonicExtensions
 from libopensonic.errors import (
@@ -22,6 +22,7 @@ from music_assistant_models.errors import (
     ActionUnavailable,
     LoginFailed,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderPermissionDenied,
     UnsupportedFeaturedException,
 )
@@ -43,6 +44,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from yarl import URL
 
 from music_assistant.constants import (
     CONF_PASSWORD,
@@ -52,6 +54,7 @@ from music_assistant.constants import (
     UNKNOWN_ARTIST,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.playlists import move_playlist_block
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 
@@ -70,7 +73,7 @@ from .parsers import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Sequence
 
     from libopensonic.media import AlbumID3 as SonicAlbum
     from libopensonic.media import ArtistWithAlbumsID3 as SonicArtist
@@ -114,6 +117,7 @@ class OpenSonicProvider(MusicProvider):
     _pagination_size: int = 200
     _id_lyrics: bool = False
     _direct_podcast_episode: bool = False
+    _sonic_similarity: bool = False
     _raw_file: bool = True
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -131,12 +135,6 @@ class OpenSonicProvider(MusicProvider):
                 type=ConfigEntryType.BOOLEAN,
                 required=True,
                 default_value=True,
-            ),
-            ConfigEntry(
-                key=CONF_ENABLE_LEGACY_AUTH,
-                type=ConfigEntryType.BOOLEAN,
-                required=True,
-                default_value=False,
             ),
             ConfigEntry(
                 key=CONF_RECO_FAVES,
@@ -180,7 +178,11 @@ class OpenSonicProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
         port = self.get_setup_value(CONF_PORT)
-        port = int(str(port)) if port is not None else 443
+        if port is not None:
+            port = int(str(port))
+        else:
+            # the scheme's default port (80/443), 443 when the url carries no scheme
+            port = URL(str(self.get_setup_value(CONF_BASE_URL))).port or 443
         path = self.get_setup_value(CONF_PATH)
 
         if path is None:
@@ -204,7 +206,7 @@ class OpenSonicProvider(MusicProvider):
                 str(self.get_setup_value(CONF_BASE_URL)),
                 username=str(username),
                 password=str(password),
-                legacy_auth=bool(self.config.get_value(CONF_ENABLE_LEGACY_AUTH)),
+                legacy_auth=bool(self.get_setup_value(CONF_ENABLE_LEGACY_AUTH)),
                 port=port,
                 server_path=str(path),
                 use_get=True,
@@ -219,20 +221,7 @@ class OpenSonicProvider(MusicProvider):
                 translation_args=[self.get_setup_value(CONF_BASE_URL)],
             )
 
-        try:
-            success = await self.conn.ping()
-            if not success:
-                raise CredentialError  # noqa: TRY301 - converted to LoginFailed below
-        except (AuthError, CredentialError) as e:
-            msg = (
-                f"Failed to connect to {self.get_setup_value(CONF_BASE_URL)}, check your settings."
-            )
-            raise LoginFailed(
-                msg,
-                translation_key="connect_failed",
-                translation_owner=self.translation_owner,
-                translation_args=[self.get_setup_value(CONF_BASE_URL)],
-            ) from e
+        await self._verify_connection()
 
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
@@ -241,6 +230,8 @@ class OpenSonicProvider(MusicProvider):
                     self._id_lyrics = True
                 elif entry.name == OpenSubsonicExtensions.GET_PODCAST_EPISODE:
                     self._direct_podcast_episode = True
+                elif entry.name == OpenSubsonicExtensions.SONIC_SIMILARITY:
+                    self._sonic_similarity = True
         except OSError:
             self.logger.info("Failed to query server for OpenSubsonic extensions")
 
@@ -358,7 +349,12 @@ class OpenSonicProvider(MusicProvider):
         return folder.items
 
     async def resolve_image(self, path: str) -> bytes | Any:
-        """Return the image."""
+        """
+        Return cover artwork, or None if the server does not have it.
+
+        :param path: The cover art ID on the server.
+        :raises MusicAssistantError: If the server rejects the cover art request.
+        """
         self.logger.debug("Requesting cover art for '%s'", path)
 
         try:
@@ -367,6 +363,18 @@ class OpenSonicProvider(MusicProvider):
         except DataNotFoundError:
             self.logger.warning("Unable to locate a cover image for %s", path)
             return None
+        except SonicError as err:
+            msg = f"Open Subsonic could not retrieve cover art {path}"
+            raise MusicAssistantError(msg) from err
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path can be a cover art id of the Subsonic server.
+
+        :param path: The stored image path.
+        """
+        # a cover art id is opaque and only ever sent to the server, which decides if it exists
+        return bool(path)
 
     @use_cache(3600 * 3)  # cache for 3 hours
     async def search(
@@ -753,6 +761,21 @@ class OpenSonicProvider(MusicProvider):
     @use_cache(3600 * 3)  # cache for 3 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get tracks similar to selected track."""
+        if self._sonic_similarity:
+            try:
+                matches = await self.conn.get_sonic_similar_tracks(
+                    song_id=prov_track_id, count=limit
+                )
+            except (SonicError, ClientResponseError, TimeoutError) as e:
+                # A server can advertise the extension while its analysis backend is
+                # unavailable, so fall back to the metadata based getSimilarSongs.
+                self.logger.debug(
+                    "Sonic similarity lookup failed for %s, falling back: %s", prov_track_id, e
+                )
+            else:
+                if matches:
+                    sonic_songs = [m.entry for m in matches if m.entry.id != prov_track_id]
+                    return await self._parse_similar_songs(sonic_songs)
         try:
             songs: list[SonicItem] = await self.conn.get_similar_songs(
                 iid=prov_track_id, count=limit
@@ -763,12 +786,7 @@ class OpenSonicProvider(MusicProvider):
             # exception means we didn't find anything similar.
             self.logger.info(e)
             return []
-        tracks = []
-        for entry in songs:
-            self._set_loudness(entry)
-            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
-        return tracks
+        return await self._parse_similar_songs(songs)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new empty playlist on the server."""
@@ -814,6 +832,37 @@ class OpenSonicProvider(MusicProvider):
             )
         except SonicError as ex:
             msg = f"Failed to remove songs from {prov_playlist_id}, check your permissions."
+            raise ProviderPermissionDenied(msg) from ex
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one track of the playlist to another position (both 1-based)."""
+        await self.move_playlist_tracks(prov_playlist_id, [from_position], to_position)
+
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move tracks of the playlist as one block to another position (all 1-based).
+
+        Note that the configured user must own the playlist to edit this way.
+        """
+        # the Subsonic API has no move, so the whole order is written back in one call that
+        # replaces the songs of the playlist
+        try:
+            sonic_playlist: SonicPlaylist = await self.conn.get_playlist(prov_playlist_id)
+        except (ParameterError, DataNotFoundError) as e:
+            msg = f"Playlist {prov_playlist_id} not found"
+            raise MediaNotFoundError(msg) from e
+        song_ids = [song.id for song in sonic_playlist.entry or []]
+        if to_position is None:
+            to_position = len(song_ids) - len(positions) + 1
+        song_ids = move_playlist_block(song_ids, positions, to_position)
+        try:
+            await self.conn.create_playlist(playlist_id=prov_playlist_id, song_ids=song_ids)
+        except SonicError as ex:
+            msg = f"Failed to reorder songs in {prov_playlist_id}, check your permissions."
             raise ProviderPermissionDenied(msg) from ex
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -962,7 +1011,7 @@ class OpenSonicProvider(MusicProvider):
                 return (
                     False,
                     mark.position,
-                    datetime.fromisoformat(mark.created) if mark.created else None,
+                    datetime.fromisoformat(mark.changed) if mark.changed else None,
                 )
         # If we get here, there is no bookmark
         return (False, 0, None)
@@ -1116,3 +1165,48 @@ class OpenSonicProvider(MusicProvider):
         for sonic_album in albums:
             recent.items.append(parse_album(self.logger, self.instance_id, sonic_album))
         return recent
+
+    async def _verify_connection(self) -> None:
+        """Ping the server, raising LoginFailed with a translated reason when that fails."""
+        base_url = self.get_setup_value(CONF_BASE_URL)
+        try:
+            success = await self.conn.ping()
+            if not success:
+                raise CredentialError  # noqa: TRY301 - converted to LoginFailed below
+        except (AuthError, CredentialError) as e:
+            msg = f"Failed to connect to {base_url}, check your settings."
+            translation_key = "connect_failed"
+            cause: Exception = e
+        except ClientConnectorCertificateError as e:
+            msg = f"The certificate of {base_url} is not trusted."
+            translation_key = "certificate_not_trusted"
+            cause = e
+        except ClientConnectorSSLError as e:
+            # also raised when an https url points at a server that only speaks plain http
+            msg = (
+                f"Could not open a secure connection to {base_url}. "
+                "If the server only serves plain http, use an http:// address."
+            )
+            translation_key = "secure_connection_failed"
+            cause = e
+        else:
+            return
+        raise LoginFailed(
+            msg,
+            translation_key=translation_key,
+            translation_owner=self.translation_owner,
+            translation_args=[base_url],
+        ) from cause
+
+    async def _parse_similar_songs(self, songs: list[SonicItem]) -> list[Track]:
+        """
+        Parse a list of Subsonic songs into Tracks, including loudness and lyrics.
+
+        :param songs: The Subsonic songs to parse.
+        """
+        tracks = []
+        for entry in songs:
+            self._set_loudness(entry)
+            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
+            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+        return tracks

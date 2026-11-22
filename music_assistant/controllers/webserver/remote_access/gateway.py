@@ -32,7 +32,7 @@ from aiolibdatachannel import (
     install_python_logger,
 )
 
-from music_assistant.constants import MASS_LOGGER_NAME, SENDSPIN_SERVER_PORT, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.live_announcements import LIVE_ANNOUNCEMENT_ROUTE
 
 if TYPE_CHECKING:
@@ -51,6 +51,10 @@ DATA_CHANNEL_CHUNK_SIZE = 64 * 1024
 # Room a chunk frame's JSON envelope takes around its base64 payload: 60 bytes of fixed keys
 # plus the group, sequence and count numbers.
 DATA_CHANNEL_CHUNK_OVERHEAD = 128
+
+# aiohttp's default limit on the local WebSocket. It rejects a message of exactly this size,
+# so the cap is exclusive.
+DATA_CHANNEL_INBOUND_MAX_BYTES = 4 * 1024 * 1024
 
 # Preferred body chunk size on the dedicated http proxy channel. Raw binary needs no escaping,
 # so this sits close to libdatachannel's 256 KiB cap; the channel's negotiated limit still wins.
@@ -84,8 +88,6 @@ HTTP_PROXY_DROPPED_HEADERS: Final = frozenset(
     }
 )
 
-DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
-
 # Labels of the data channels the gateway routes, next to the client's own API channel
 CHANNEL_SENDSPIN = "sendspin"
 CHANNEL_LIVE_ANNOUNCEMENT = "live_announcement"
@@ -109,6 +111,20 @@ class _ServedChannel:
 
 
 @dataclass
+class _InboundChunkGroup:
+    """A client message still being reassembled from its chunk frames."""
+
+    group_id: int
+    count: int
+    data: bytearray = field(default_factory=bytearray)
+    next_seq: int = 0
+
+
+class _ChunkProtocolError(Exception):
+    """A client chunk frame broke the framing rules, so the session must end."""
+
+
+@dataclass
 class WebRTCSession:
     """Represents an active WebRTC session with a remote client."""
 
@@ -120,6 +136,8 @@ class WebRTCSession:
     # Channels served by label (sendspin, live announcements, http proxy)
     channels: dict[str, _ServedChannel] = field(default_factory=dict)
     sendspin_player_id: str | None = None  # Extracted from first sendspin auth message
+    # Client message being reassembled from __chunk__ frames (one at a time, in order)
+    chunk_group: _InboundChunkGroup | None = None
 
 
 # Serves one incoming data channel for a session until that channel goes away.
@@ -159,7 +177,7 @@ class WebRTCGateway:
         key_pem: str,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
-        sendspin_url: str = DEFAULT_SENDSPIN_URL,
+        sendspin_url_callback: Callable[[], str | None] | None = None,
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
         set_sendspin_player_callback: Callable[[str, str], None] | None = None,
@@ -173,7 +191,8 @@ class WebRTCGateway:
         :param key_pem: Private key (PEM) matching the DTLS certificate.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Same-host WebSocket URL of the Music Assistant API to bridge to.
-        :param sendspin_url: Internal Sendspin WebSocket URL to bridge to.
+        :param sendspin_url_callback: Callback returning the internal Sendspin WebSocket URL
+            to bridge to, or None while no Sendspin server runs.
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
         :param set_sendspin_player_callback: Callback to set sendspin player for a session.
@@ -181,7 +200,7 @@ class WebRTCGateway:
         self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
-        self.sendspin_url = sendspin_url
+        self._sendspin_url_callback = sendspin_url_callback
         self._remote_id = remote_id
         self._cert_pem = cert_pem
         self._key_pem = key_pem
@@ -193,10 +212,7 @@ class WebRTCGateway:
         # local WebSocket; the live announcement route sits on the same webserver as the
         # ma-api WebSocket. The http proxy is served in-process instead of bridged.
         self._channel_handlers: dict[str, _ChannelHandler] = {
-            CHANNEL_SENDSPIN: partial(
-                self._bridge_websocket,
-                target=_BridgeTarget(self.sendspin_url, self._try_extract_sendspin_client_id),
-            ),
+            CHANNEL_SENDSPIN: self._bridge_sendspin,
             CHANNEL_LIVE_ANNOUNCEMENT: partial(
                 self._bridge_websocket,
                 target=_BridgeTarget(_ws_url_for_path(self.local_ws_url, LIVE_ANNOUNCEMENT_ROUTE)),
@@ -866,11 +882,12 @@ class WebRTCGateway:
     async def _ma_api_to_local(self, session: WebRTCSession, channel: DataChannel) -> None:
         """Forward messages from the ma-api data channel to the local WebSocket."""
         try:
-            async for message in channel:
-                if isinstance(message, str):
+            async for received in channel:
+                message = received
+                if isinstance(received, str):
                     # Check if this is an HTTP proxy request
                     try:
-                        msg_data = json.loads(message)
+                        msg_data = json.loads(received)
                         if (
                             isinstance(msg_data, dict)
                             and msg_data.get("type") == "http-proxy-request"
@@ -883,7 +900,12 @@ class WebRTCGateway:
                             )
                             continue
                     except json.JSONDecodeError, ValueError:
-                        pass
+                        msg_data = None
+                    if isinstance(msg_data, dict) and msg_data.get("type") == "__chunk__":
+                        assembled = self._reassemble_chunk(session, msg_data)
+                        if assembled is None:
+                            continue
+                        message = assembled
 
                 if session.local_ws and not session.local_ws.closed:
                     if isinstance(message, bytes):
@@ -892,10 +914,67 @@ class WebRTCGateway:
                         await session.local_ws.send_str(message)
         except ConnectionClosedError:
             self.logger.debug("ma-api channel closed for session %s", session.session_id)
+        except _ChunkProtocolError as err:
+            self.logger.warning("Closing session %s: %s", session.session_id, err)
         except asyncio.CancelledError:
             raise
         except Exception:
             self.logger.exception("Error forwarding to local WebSocket")
+
+    def _reassemble_chunk(self, session: WebRTCSession, frame: dict[str, Any]) -> str | None:
+        """
+        Collect one client chunk frame and return the full message once its group completes.
+
+        :param session: The session the frame arrived on.
+        :param frame: The decoded `__chunk__` frame.
+        :return: The reassembled text, or None while the message is incomplete.
+        :raises _ChunkProtocolError: If the frame breaks the framing rules.
+        """
+        group = session.chunk_group
+        session.chunk_group = None
+        group_id = frame.get("id")
+        seq = frame.get("seq")
+        count = frame.get("count")
+        b64 = frame.get("b64")
+        if (
+            not isinstance(group_id, int)
+            or not isinstance(seq, int)
+            or not isinstance(count, int)
+            or not isinstance(b64, str)
+        ):
+            raise _ChunkProtocolError("malformed chunk frame")
+        if count < 1:
+            raise _ChunkProtocolError("chunk count below 1")
+        if seq == 0:
+            if group is not None:
+                raise _ChunkProtocolError("chunk group opened while another is open")
+            group = _InboundChunkGroup(group_id, count)
+        elif group is None:
+            raise _ChunkProtocolError("chunk frame without an open group")
+        elif (group_id, count, seq) != (group.group_id, group.count, group.next_seq):
+            raise _ChunkProtocolError("chunk frame out of sequence")
+        try:
+            piece = base64.b64decode(b64, validate=True)
+        except ValueError as err:
+            raise _ChunkProtocolError("chunk payload is not valid base64") from err
+        if len(group.data) + len(piece) >= DATA_CHANNEL_INBOUND_MAX_BYTES:
+            raise _ChunkProtocolError("chunked message exceeds the size limit")
+        group.data += piece
+        group.next_seq += 1
+        if group.next_seq < group.count:
+            session.chunk_group = group
+            return None
+        try:
+            text = group.data.decode()
+        except UnicodeDecodeError as err:
+            raise _ChunkProtocolError("chunked message is not valid UTF-8") from err
+        self.logger.debug(
+            "Reassembled %d byte client message from %d frames on session %s",
+            len(group.data),
+            group.count,
+            session.session_id,
+        )
+        return text
 
     async def _ma_api_from_local(self, session: WebRTCSession, channel: DataChannel) -> None:
         """Forward messages from the local WebSocket to the ma-api data channel."""
@@ -915,6 +994,22 @@ class WebRTCGateway:
         # the local WS closed: the ma-api session is unusable, so tear it down instead of
         # leaving the client an open channel that silently drops messages
         self._schedule_close(session.session_id)
+
+    async def _bridge_sendspin(
+        self, session: WebRTCSession, served: _ServedChannel, channel: DataChannel
+    ) -> None:
+        """Bridge a Sendspin data channel to the Sendspin server."""
+        sendspin_url = self._sendspin_url_callback() if self._sendspin_url_callback else None
+        if sendspin_url is None:
+            self.logger.warning("No Sendspin server to connect session %s to", session.session_id)
+            await self._close_channel(session, served)
+            return
+        await self._bridge_websocket(
+            session,
+            served,
+            channel,
+            target=_BridgeTarget(sendspin_url, self._try_extract_sendspin_client_id),
+        )
 
     async def _bridge_websocket(
         self,

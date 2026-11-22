@@ -8,11 +8,12 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.errors import ActionUnavailable
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.alexa import AlexaPlayer
-from tests.common import MockProvider, create_mock_config
+from tests.common import MockProvider
 
 PLAYER_ID = "Kitchen Echo"
 OLD_SKILL = '{"status": "ok", "version": 3}'
@@ -26,7 +27,9 @@ def _answer(*, screen_open: bool) -> str:
 def alexa() -> Iterator[tuple[AlexaPlayer, MagicMock, AsyncMock]]:
     """Return a real AlexaPlayer, its Alexa API mock and a mock for the skill's API."""
     provider = cast("Any", MockProvider("alexa", instance_id="alexa--1"))
-    provider.mass.config.get_base_player_config.return_value = create_mock_config(PLAYER_ID)
+    provider.mass.config.get_base_protocol_config.return_value = PlayerConfig(
+        values={}, provider="alexa--1", player_id=PLAYER_ID, default_name=PLAYER_ID
+    )
     provider.mass.streams.resolve_stream_url = AsyncMock(return_value="http://ma/flow/1.mp3")
     provider.config = MagicMock()
     provider.config.get_value.return_value = "en-US"
@@ -186,3 +189,20 @@ async def test_non_json_answer_counts_as_old_skill(
     await player.pause()
     assert _endpoints(skill_api) == ["/ma/push-url"]
     assert alexa_api.run_custom.await_count == 2
+
+
+async def test_metadata_upload_shows_the_media_of_its_player(
+    alexa: tuple[AlexaPlayer, MagicMock, AsyncMock],
+) -> None:
+    """The skill is told what the player plays, as the player reports it."""
+    player, _alexa_api, skill_api = alexa
+    player._last_stream_url = "http://ma/flow/1.mp3"
+    player._attr_current_media = PlayerMedia(uri="x", title="Reported")
+    attached = MagicMock()
+    attached.current_media = PlayerMedia(uri="y", title="Shown", artist="Artist A")
+    player._player = attached
+
+    player.on_player_media_updated()
+    await cast("MagicMock", player.mass.create_task).call_args.args[0]
+
+    assert _last_payload(skill_api)["title"] == "Shown"

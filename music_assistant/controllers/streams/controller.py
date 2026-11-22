@@ -13,9 +13,10 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
+from functools import wraps
 from ipaddress import ip_address
 from math import ceil
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from aiofiles.os import wrap
@@ -37,7 +38,10 @@ from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
     MediaNotFoundError,
+    PlayerUnavailableError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import AudioFormat
@@ -51,12 +55,12 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
-    CONF_HTTP_PROFILE,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CODEC,
     CONF_PLAYER_QUEUES,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PUBLISH_IP,
+    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -68,7 +72,6 @@ from music_assistant.constants import (
     DLNA_CONTENT_FEATURES,
     DLNA_CONTENT_FEATURES_REALTIME,
     ICY_HEADERS,
-    SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
     WILDCARD_BIND_IPS,
 )
@@ -95,7 +98,10 @@ from music_assistant.controllers.streams.constants import (
     CONF_UPGRADE_BELOW_QUALITY,
     DEFAULT_PORT,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
-    FLOW_STREAM_LEAD_OUT_SECONDS,
+    FLOW_STREAM_MAX_LEAD_OUT_SECONDS,
+    ICY_WRITE_SIZE,
+    LOST_STREAM_GRACE,
+    LOST_STREAM_POLL_SETTLE,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
     PacingProfile,
@@ -137,12 +143,12 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
-from music_assistant.models.plugin import PluginProvider
-from music_assistant.providers.universal_group.constants import UGP_PREFIX
-from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Coroutine
+
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.player_queue import PlayerQueue
@@ -153,10 +159,13 @@ if TYPE_CHECKING:
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 
 isfile = wrap(os.path.isfile)
+
+# request-scoped key under which a per-item stream request records the queue item it resolved to
+_REQUEST_QUEUE_ITEM_ID = "queue_item_id"
 
 
 def _volume_normalization_preference_options() -> list[ConfigValueOption]:
@@ -168,7 +177,7 @@ def _volume_normalization_preference_options() -> list[ConfigValueOption]:
     ]
 
 
-def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -> dict[str, str]:
+def _audio_source_headers(source_name: str, output_format_str: str) -> dict[str, str]:
     """
     Return the response headers for a live audio source stream.
 
@@ -176,12 +185,12 @@ def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -
     flags. ``icy-name`` is sanitized of every control character, not just
     newlines, because aiohttp rejects the rest as a header injection attempt.
 
-    :param session: The session whose source is being streamed.
+    :param source_name: Name of the source as shown on the player it plays on.
     :param output_format_str: Output format to derive the content type from.
     """
     return {
         **DEFAULT_STREAM_HEADERS,
-        "icy-name": sanitize_http_header_value(session.source.name),
+        "icy-name": sanitize_http_header_value(source_name),
         "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
         "Content-Type": get_mime_type(output_format_str),
     }
@@ -227,6 +236,24 @@ def _get_publish_addresses(
     return list(publish_candidates)
 
 
+def _log_not_found(
+    handler: Callable[[StreamsController, web.Request], Coroutine[Any, Any, web.StreamResponse]],
+) -> Callable[[StreamsController, web.Request], Coroutine[Any, Any, web.StreamResponse]]:
+    """Log at debug level why the decorated stream handler answers a request with a 404."""
+
+    @wraps(handler)
+    async def _handle(self: StreamsController, request: web.Request) -> web.StreamResponse:
+        try:
+            return await handler(self, request)
+        except web.HTTPNotFound as err:
+            self.logger.debug(
+                "Refusing %s request to %s: %s", request.method, request.path, err.reason
+            )
+            raise
+
+    return _handle
+
+
 class AbortFlowStream(Exception):
     """Raised to end a flow response whose session rotated during its setup."""
 
@@ -245,6 +272,73 @@ class StreamServerInfo(DataClassDictMixin):
     """The address players are handed to fetch audio from, as it is in use right now."""
 
     base_url: str
+
+
+class AudioSourceStream:
+    """A live source selected for one raw PCM consumer, with its stream details resolved."""
+
+    def __init__(
+        self,
+        streams: StreamsController,
+        session: AudioSourceSession,
+        provider: AudioSourceMixin,
+        streamdetails: StreamDetails,
+        playback_session_id: str,
+        stream_session_id: str,
+    ) -> None:
+        """Initialize instance."""
+        self.streamdetails = streamdetails
+        self._streams = streams
+        self._session = session
+        self._provider = provider
+        self._playback_session_id = playback_session_id
+        self._stream_session_id = stream_session_id
+        self._serving = False
+        self._closed = False
+
+    def stream(self, pcm_format: AudioFormat) -> AsyncGenerator[bytes]:
+        """
+        Stream the source as raw PCM, releasing it when the stream ends.
+
+        :param pcm_format: The PCM format the consumer wants.
+        """
+        return self._streams._count_as_output_stream(self._iter_pcm(pcm_format))
+
+    async def aclose(self) -> None:
+        """Release the source, and take it off its player when it never streamed."""
+        if self._closed:
+            return
+        self._closed = True
+        await self._streams._close_audio_source(
+            self._session,
+            self._provider,
+            self._playback_session_id,
+            self._stream_session_id,
+            served=self._serving,
+        )
+
+    async def _iter_pcm(self, pcm_format: AudioFormat) -> AsyncGenerator[bytes]:
+        session = self._session
+        players = self._streams.mass.players
+        self._serving = True
+        try:
+            async for chunk in self._streams.audio.get_audio_source_stream(
+                streamdetails=self.streamdetails,
+                pcm_format=pcm_format,
+                raise_on_error=False,
+                display_name=players.get_audio_source_name(session.source, session.player_id),
+                source_session=session,
+                stream_session_id=self._stream_session_id,
+            ):
+                if (
+                    players.get_audio_source_session(session.player_id) is not session
+                    or session.playback_session_id != self._playback_session_id
+                    or session.stream_session_id != self._stream_session_id
+                ):
+                    break
+                yield chunk
+        finally:
+            await self.aclose()
 
 
 class StreamsController(CoreController):
@@ -285,6 +379,9 @@ class StreamsController(CoreController):
         # Per queue, the session and the items whose GET requests ended in it since the
         # player last asked for another item, which that next request checks
         self._ended_item_streams: dict[str, tuple[str, set[str]]] = {}
+        # Per player, the path of the flow stream it got last and the bytes sent of it, which a
+        # player that lost the connection asks to continue after
+        self._flow_bytes_sent: dict[str, tuple[str, int]] = {}
         # Number of queue streams (single item or flow) actively serving a player right now,
         # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -480,6 +577,30 @@ class StreamsController(CoreController):
         """
         return queue_id in self._boundary_mix_owners
 
+    def flow_stream_blends_items(self, queue: PlayerQueue, start_queue_item: QueueItem) -> bool:
+        """
+        Return whether the flow stream of a queue blends the audio of its items.
+
+        :param queue: The queue that plays.
+        :param start_queue_item: The item the flow stream starts with.
+        """
+        crossfade_mode = (
+            self.get_crossfade_mode(queue)
+            if start_queue_item.media_type == MediaType.TRACK
+            else CrossfadeMode.DISABLED
+        )
+        # a declared tail overlap is mixed like a crossfade, and a queue a plugin holds
+        # in flow mode or has the boundaries mixed of is about to carry such items
+        return (
+            crossfade_mode != CrossfadeMode.DISABLED
+            or self.flow_mode_required(queue.queue_id)
+            or self.boundary_mix_required(queue.queue_id)
+            or (
+                start_queue_item.streamdetails is not None
+                and start_queue_item.streamdetails.tail_overlap is not None
+            )
+        )
+
     def mixes_item_boundaries(self, queue_id: str) -> bool:
         """
         Return whether the server mixes the boundary between two items for the queue's player.
@@ -511,35 +632,35 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.STRING,
                 default_value=DEFAULT_VOLUME_NORMALIZATION_MODE,
                 options=_volume_normalization_preference_options(),
-                category="playback",
+                category="volume_normalization",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_TRACKS,
                 type=ConfigEntryType.STRING,
                 default_value=DEFAULT_VOLUME_NORMALIZATION_MODE,
                 options=_volume_normalization_preference_options(),
-                category="playback",
+                category="volume_normalization",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
                 type=ConfigEntryType.FLOAT,
                 range=(-20, 10),
                 default_value=-6,
-                category="playback",
+                category="volume_normalization",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
                 type=ConfigEntryType.FLOAT,
                 range=(-20, 10),
                 default_value=-6,
-                category="playback",
+                category="volume_normalization",
             ),
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
             ConfigEntry(
                 key=CONF_ALLOW_CROSSFADE_SAME_ALBUM,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                category="playback",
+                category="crossfade",
             ),
             ConfigEntry(
                 key=CONF_STREAM_SOURCE_MODE,
@@ -619,7 +740,7 @@ class StreamsController(CoreController):
             # config parsing already swapped the invalid stored value for auto; reset the
             # stored value too, so the setting reads back as auto and this warns only once
             self.logger.warning(
-                "Published IP address %r in the streams settings is not an IP address, "
+                "Published IP address %r in the network settings is not an IP address, "
                 "resetting it to auto",
                 raw_publish_ip,
             )
@@ -645,13 +766,13 @@ class StreamsController(CoreController):
                 ),
                 (
                     "*",
-                    "/source/{session_id}/{source_player_id}/{player_id}.{fmt}",
-                    self.serve_audio_source_stream,
+                    "/single/{session_id}/{queue_id}/pos/{queue_index:\\d+}/{player_id}.{fmt}",
+                    self.serve_queue_item_stream,
                 ),
                 (
                     "*",
-                    "/command/{session_id}/{queue_id}/{command}.mp3",
-                    self.serve_command_request,
+                    "/source/{session_id}/{source_player_id}/{player_id}.{fmt}",
+                    self.serve_audio_source_stream,
                 ),
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
                 (
@@ -676,7 +797,7 @@ class StreamsController(CoreController):
             "This is the IP address that is communicated to players.\n"
             "If this is incorrect, audio will not play!\n"
             "See the documentation for how to configure the publish IP for the Streamserver\n"
-            "in Settings --> System --> Streams\n"
+            "in Settings --> System --> Network\n"
             "################################################################################\n",
             self.publish_ip,
             self.publish_port,
@@ -703,17 +824,22 @@ class StreamsController(CoreController):
         if changed_keys & {f"values/{CONF_SMART_FADES_LOG_LEVEL}", f"values/{CONF_LOG_LEVEL}"}:
             self._setup_derived_loggers(config)
 
-    async def resolve_stream_url(self, player_id: str, media: PlayerMedia) -> str:
+    async def resolve_stream_url(
+        self, player_id: str, media: PlayerMedia, queue_index: int | None = None
+    ) -> str:
         """
         Resolve the stream URL for the given PlayerMedia.
 
         :param player_id: The (protocol) player ID requesting the stream.
         :param media: The PlayerMedia object for which to resolve the stream URL.
+        :param queue_index: Address the queue item by this queue position instead of its id,
+            for a player that plays out of a cached copy of the queue: the URL then plays
+            whatever the queue holds at that position when the player fetches it.
         :return: The resolved stream URL as a string.
         """
         if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
             return media.uri
-        protocol_player = self.mass.players.get_player(player_id)
+        protocol_player = self.mass.players.get_output_protocol(player_id)
         conf_output_codec = cast(
             "str",
             protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
@@ -758,7 +884,7 @@ class StreamsController(CoreController):
             and queue is not None
             and queue.crossfade_enabled
             and protocol_player
-            and not protocol_player.supports_gapless
+            and not protocol_player.supports_feature(PlayerFeature.GAPLESS_PLAYBACK)
         )
         # the audio overlay is mixed into the queue's continuous (flow) stream;
         # per-item requests would restart the overlay at every track boundary
@@ -775,6 +901,11 @@ class StreamsController(CoreController):
             )
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
+        if queue_index is not None and not flow_mode:
+            return (
+                f"{self.base_url}/single/{session_id}/{queue_id}/pos/{queue_index}"
+                f"/{player_id}.{fmt}"
+            )
         base_path = "flow" if flow_mode else "single"
         return (
             f"{self.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
@@ -796,6 +927,38 @@ class StreamsController(CoreController):
             if (transport := request.transport) is not None:
                 transport.abort()
 
+    def requested_item_ids(self, queue_id: str, session_id: str) -> set[str]:
+        """
+        Return the ids of the queue items that players have an open GET request for.
+
+        A requested item can still be waiting for its first audio.
+
+        :param queue_id: The queue whose stream requests to look at.
+        :param session_id: The playback session the requests must belong to.
+        """
+        return self._requested_item_ids(queue_id, session_id)
+
+    def restart_lost_stream(self, stream_url: str) -> bool:
+        """
+        Restart the queue of a stream a player gave up on, at the position that plays now.
+
+        For a player that reports a playback error on a stream it was playing. Only the flow
+        stream of the queue's current session restarts, within the queue's restart limit.
+
+        :param stream_url: The URL of the stream the player gave up on.
+        :return: Whether the queue restarts.
+        """
+        flow_url_prefix = f"{self.base_url}/flow/"
+        if not stream_url.startswith(flow_url_prefix):
+            return False
+        # <session_id>/<queue_id>/<queue_item_id>/<player_id>.<fmt>
+        url_parts = stream_url.removeprefix(flow_url_prefix).split("/")
+        if len(url_parts) != 4:
+            return False
+        session_id, queue_id = url_parts[:2]
+        return self.mass.player_queues.restart_lost_flow_stream(queue_id, session_id)
+
+    @_log_not_found
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: C901, PLR0912, PLR0915
         """Stream single queueitem audio to a player."""
         self._log_request(request)
@@ -809,23 +972,24 @@ class StreamsController(CoreController):
         pq_data = self.mass.player_queues.queue_data(queue.queue_id)
         if pq_data.session_id is None or session_id != pq_data.session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
-        if not (player := self.mass.players.get_player(player_id)):
+        if not (player := self.mass.players.get_output_protocol(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
-        queue_item_id = request.match_info["queue_item_id"]
-        queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
-        if not queue_item:
-            raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
-        # the player may be asking for a track out of a stale cached copy of the queue
-        # (its refresh signal can get lost): refusing it makes the player re-read the
-        # queue, where serving it would silently play a track the user moved away
-        # both checks measure from what the player asked for before this request: once
-        # recorded below, this request no longer vouches for itself
-        requested_after = pq_data.last_requested_item_id
-        self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
-        if request.method == "GET":
-            # recorded before any audio goes out: a player that gives up waiting on a slow
-            # item asks for the one after it, which must not be refused as stale
-            pq_data.last_requested_item_id = queue_item_id
+        if (queue_index := request.match_info.get("queue_index")) is not None:
+            # the player plays out of a cached copy of the queue and addresses its items by
+            # position, so it gets whatever the queue holds there now, not what it cached there
+            queue_item = self.mass.player_queues.get_item(queue_id, int(queue_index))
+            if not queue_item:
+                raise web.HTTPNotFound(reason=f"No queue item at position {queue_index}")
+            if request.method == "GET":
+                player.on_queue_position_served(int(queue_index), queue_item.queue_item_id)
+        else:
+            queue_item_id = request.match_info["queue_item_id"]
+            queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
+            if not queue_item:
+                raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
+        queue_item_id = queue_item.queue_item_id
+        # the sweeps over open requests read the item from here, however the URL named it
+        request[_REQUEST_QUEUE_ITEM_ID] = queue_item_id
 
         is_audio_source = (
             queue_item.media_item is not None
@@ -839,13 +1003,13 @@ class StreamsController(CoreController):
         # renderer probing with HEAD before GET should not trigger any of
         # that. The actual GET request goes through the full hook chain.
         if request.method != "GET" and is_audio_source:
-            # Validate the providing plugin still exists before advertising the
+            # Validate the AudioSource provider still exists before advertising the
             # source. Many DLNA renderers cache HEAD responses; returning 200
-            # for a URI whose plugin has been unloaded would lie to the
+            # for a URI whose provider has been unloaded would lie to the
             # renderer and the follow-up GET would fail unrecoverably.
             assert queue_item.media_item is not None
             if not isinstance(
-                self.mass.get_provider(queue_item.media_item.provider), PluginProvider
+                self.mass.get_provider(queue_item.media_item.provider), AudioSourceMixin
             ):
                 raise web.HTTPNotFound(
                     reason=f"AudioSource provider {queue_item.media_item.provider} unavailable"
@@ -881,7 +1045,7 @@ class StreamsController(CoreController):
         # teardown (e.g. a same-queue reconnect's first request completing
         # AFTER its replacement has already started streaming) from the
         # currently active session's real teardown.
-        audio_source_provider: PluginProvider | None = None
+        audio_source_provider: AudioSourceMixin | None = None
         audio_source_id: str | None = None
         stream_session_id = uuid4().hex
         # registered before any await below: a session rotation mid-setup must be
@@ -889,6 +1053,15 @@ class StreamsController(CoreController):
         # open (gating some players' cutover) until the player times it out
         stream_entry = (session_id, request)
         self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
+        # the player decided to play this item, so its queue keeps the item's audio from
+        # here on, also when a queue change during the setup below makes another item next
+        end_item_claim = (
+            self.audio.claim_item(
+                queue_item, session_id, f"request of {player.display_name} for {queue_item.name}"
+            )
+            if request.method == "GET"
+            else None
+        )
         try:
             if pq_data.session_id != session_id:
                 # rotated between the validation above and the registration: the
@@ -903,7 +1076,7 @@ class StreamsController(CoreController):
                 is_audio_source
                 and queue_item.media_item is not None
                 and (prov := self.mass.get_provider(queue_item.media_item.provider))
-                and isinstance(prov, PluginProvider)
+                and isinstance(prov, AudioSourceMixin)
             ):
                 audio_source_id = queue_item.media_item.item_id
                 # Wire the provider into the finally block BEFORE awaiting the
@@ -939,15 +1112,23 @@ class StreamsController(CoreController):
                     queue_item.streamdetails = await self.audio.get_stream_details(
                         queue_item=queue_item
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - provider code, any failure is answered as not found
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )
-                    # a source capacity miss is transient, the item itself is fine.
+                    # a source capacity miss or a provider asking us to back off is
+                    # transient, the item itself is fine.
                     # neither is a HEAD probe a playback attempt: renderers probe
                     # speculatively (Sonos at every track boundary), so one transient
                     # error there must not condemn an item the following GET can play
-                    if request.method == "GET" and not isinstance(e, ProviderStreamLimitError):
+                    if request.method == "GET" and not isinstance(
+                        e,
+                        (
+                            ProviderStreamLimitError,
+                            ResourceTemporarilyUnavailable,
+                            RetriesExhausted,
+                        ),
+                    ):
                         queue_item.available = False
                     raise web.HTTPNotFound(
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
@@ -968,19 +1149,19 @@ class StreamsController(CoreController):
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
                 crossfade_mode != CrossfadeMode.DISABLED
-                and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
+                and PlayerFeature.GAPLESS_PLAYBACK not in player.supported_features
             ):
                 if crossfade_mode == CrossfadeMode.VOICE_OVER:
                     self.logger.debug(
                         "Ignoring the tail overlap of %s: player %s does not play gapless",
                         queue_item.name,
-                        player.state.name,
+                        player.display_name,
                     )
                 else:
                     self.logger.warning(
                         "Crossfade disabled: Player %s does not support gapless playback, "
                         "consider enabling flow mode to enable crossfade on this player.",
-                        player.state.name,
+                        player.display_name,
                     )
                 crossfade_mode = CrossfadeMode.DISABLED
             # the item before may have mixed (or be mixing) a fade into this one,
@@ -1024,11 +1205,13 @@ class StreamsController(CoreController):
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
-            http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
-            if http_profile == "forced_content_length" and not queue_item.duration:
+            fixed_content_length = player.get_config_value(
+                CONF_REQUIRES_FIXED_CONTENT_LENGTH, False
+            )
+            if fixed_content_length and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
-            elif http_profile == "forced_content_length" and queue_item.duration:
+            elif fixed_content_length and queue_item.duration:
                 # estimate content length based on effective duration
                 # account for seek position (e.g., crossfade from previous track)
                 seek_pos = queue_item.streamdetails.seek_position if queue_item.streamdetails else 0
@@ -1037,12 +1220,6 @@ class StreamsController(CoreController):
                 resp.content_length = await get_content_length(
                     self.mass, queue_item.uri, output_format, effective_duration
                 )
-            elif http_profile == "chunked":
-                resp.enable_chunked_encoding()
-
-            # re-check right before audio is handed out: a queue edit landing during
-            # the awaited setup above must not hand the player a stale track after all
-            self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
 
             await resp.prepare(request)
 
@@ -1097,10 +1274,10 @@ class StreamsController(CoreController):
             # filter params such as channels mixing, DSP, resampling and, only if
             # needed, encoding to lossy formats
             output_plan = self.audio.get_player_output_plan(
-                player_id=player.player_id,
+                protocol_id=player.protocol_id,
                 input_format=pcm_format,
                 output_format=output_format,
-                shared_player_ids=player.state.group_members,
+                shared_player_ids=player.group_members,
                 queue_id=queue_id,
                 session_id=session_id,
                 queue_item_id=queue_item.queue_item_id,
@@ -1125,10 +1302,10 @@ class StreamsController(CoreController):
                 pacing: PacingProfile
                 if queue_item.media_type == MediaType.AUDIO_SOURCE:
                     pacing = PacingProfile.LOW_LATENCY
-                elif queue_item.streamdetails.is_realtime:
-                    pacing = PacingProfile.NEAR_REALTIME
+                elif not queue_item.streamdetails.is_realtime and player.needs_gapless_burst:
+                    pacing = PacingProfile.GAPLESS_BURST
                 else:
-                    pacing = PacingProfile.DEFAULT
+                    pacing = PacingProfile.REALTIME
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
@@ -1138,6 +1315,7 @@ class StreamsController(CoreController):
                 )
             first_chunk_received = False
             bytes_sent = 0
+            stream_completed = False
             stream_failure: AudioError | None = None
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
@@ -1179,7 +1357,7 @@ class StreamsController(CoreController):
                                 )
                             elif (
                                 first_chunk_received
-                                and not player.stop_called
+                                and not (player.player and player.player.stop_called)
                                 and queue_item.streamdetails.duration  # ignore for radio streams
                             ):
                                 # Player disconnected (unexpected) after receiving at least
@@ -1196,6 +1374,8 @@ class StreamsController(CoreController):
                                     resp.content_length,
                                 )
                             break
+                    else:
+                        stream_completed = True
             except AudioError as err:
                 # the response is already being written: raising answers one that is
                 # long gone, which aiohttp logs as two unhandled tracebacks. Whose
@@ -1204,6 +1384,15 @@ class StreamsController(CoreController):
                 stream_failure = err
             finally:
                 self._active_output_streams -= 1
+            if (
+                first_chunk_received
+                and not stream_completed
+                and queue_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
+            ):
+                # a radio or live item never ends by itself
+                self._watch_lost_stream(
+                    request, pq_data, session_id, player, queue_item.queue_item_id
+                )
             if stream_failure is not None or queue_item.streamdetails.stream_error:
                 # every stage in between replaces the message with one of its own, so
                 # the reason worth reporting is the one at the bottom of the chain
@@ -1219,13 +1408,17 @@ class StreamsController(CoreController):
                 # so the player waits out a stream that already ended (as the flow route)
                 resp.force_close()
             elif (
-                bytes_sent > 0
+                stream_completed
+                and bytes_sent > 0
                 and queue_item.streamdetails
                 and queue_item.streamdetails.seconds_streamed
                 and queue_item.duration
             ):
                 # cache the actual encoded bytes-per-second for this URI + output format
-                # so future content_length estimates are near-exact
+                # so future content_length estimates are near-exact. Only a stream that ran
+                # to its end measures that: one the player left early counts the bytes it
+                # got against the audio already read ahead of them, which announces the
+                # next play too short and cuts it off.
                 self.mass.create_task(
                     store_content_length_in_cache(
                         self.mass,
@@ -1237,6 +1430,8 @@ class StreamsController(CoreController):
                 )
             return resp
         finally:
+            if end_item_claim is not None:
+                end_item_claim()
             # read while this request is still registered: only what the player asked for
             # after it tells whether the player moved on from this track
             newer_item_ids = self._requested_item_ids(queue_id, session_id, after=stream_entry)
@@ -1301,7 +1496,7 @@ class StreamsController(CoreController):
         # on_source_selected fires (stopping the previous player, redirecting a
         # disallowed switch), so answer it without touching the plugin.
         if request.method != "GET":
-            return await self._serve_audio_source_head(request, session)
+            return await self._serve_audio_source_head(request, session, player)
 
         stream_session_id = uuid4().hex
         # wire the provider in before awaiting the hook: a plugin that claims the
@@ -1331,7 +1526,7 @@ class StreamsController(CoreController):
                 self.logger.info(
                     "AudioSource %s aborted stream for player %s: %s",
                     session.source_id,
-                    player.player_id,
+                    player.protocol_id,
                     err,
                 )
                 raise web.HTTPNotFound(reason=str(err)) from err
@@ -1356,6 +1551,7 @@ class StreamsController(CoreController):
                 session=session,
                 streamdetails=streamdetails,
                 provider=prov,
+                stream_session_id=stream_session_id,
             )
             serving = True
             self._active_output_streams += 1
@@ -1410,7 +1606,7 @@ class StreamsController(CoreController):
         queue_data = self.mass.player_queues.queue_data(queue_id)
         if queue_data.session_id is None or session_id != queue_data.session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
-        if not (player := self.mass.players.get_player(player_id)):
+        if not (player := self.mass.players.get_output_protocol(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         if self.mass.player_queues.flow_stream_finished(queue_id):
             # the session already streamed everything it had; a player that opens it again
@@ -1419,31 +1615,38 @@ class StreamsController(CoreController):
                 "Denying flow stream request from %s: its session already streamed to the end",
                 player.display_name,
             )
+            if request.headers.get("Range") and (range_start := request.http_range.start):
+                # a Cast receiver resumes a stream that closed short of its declared length;
+                # a 404 makes it drop its buffer, a 416 lets it play out and finish
+                raise web.HTTPRequestRangeNotSatisfiable(
+                    headers={"Content-Range": f"bytes */{range_start}"}
+                )
             raise web.HTTPNotFound(reason=f"Flow stream already finished: {session_id}")
+        if (
+            request.method == "GET"
+            and request.headers.get("Range")
+            and (range_start := request.http_range.start)
+            and (flow_sent := self._flow_bytes_sent.get(player_id))
+            and flow_sent[0] == request.path
+            and range_start <= flow_sent[1]
+            and self.mass.player_queues.restart_lost_flow_stream(queue_id, session_id)
+        ):
+            # the player lost its connection and asks to continue after the bytes it holds,
+            # which a new stream can not do: the queue restarts it where it plays now
+            raise web.HTTPRequestRangeNotSatisfiable(
+                headers={"Content-Range": f"bytes */{range_start}"}
+            )
         start_queue_item_id = request.match_info["queue_item_id"]
         start_queue_item = self._get_flow_start_item(queue, start_queue_item_id)
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
         # select the PCM format for the flow stream, anchored on the first track
-        crossfade_mode = (
-            self.get_crossfade_mode(queue)
-            if start_queue_item.media_type == MediaType.TRACK
-            else CrossfadeMode.DISABLED
-        )
         mix_overlay = overlay_mixed_in(queue, start_queue_item, flow_mode=True)
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
-            # a declared tail overlap is mixed like a crossfade, and a queue a plugin holds
-            # in flow mode or has the boundaries mixed of is about to carry such items
-            crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED
-            or self.flow_mode_required(queue_id)
-            or self.boundary_mix_required(queue_id)
-            or (
-                start_queue_item.streamdetails is not None
-                and start_queue_item.streamdetails.tail_overlap is not None
-            ),
+            crossfade_enabled=self.flow_stream_blends_items(queue, start_queue_item),
             overlay_active=mix_overlay,
         )
 
@@ -1461,13 +1664,14 @@ class StreamsController(CoreController):
             ),
         )
         # work out ICY metadata support
-        icy_preference = self.mass.config.get_raw_player_config_value(
+        icy_preference = self.mass.config.get_protocol_value(
             player_id,
             CONF_ENTRY_ENABLE_ICY_METADATA.key,
             CONF_ENTRY_ENABLE_ICY_METADATA.default_value,
         )
         enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
         icy_meta_interval = 256000 if icy_preference == "full" else 16384
+        icy_bytes_until_meta = icy_meta_interval
 
         # prepare request, add some DLNA/UPNP compatible headers.
         # icy-name (in DEFAULT_STREAM_HEADERS) is always present so players have a
@@ -1484,12 +1688,10 @@ class StreamsController(CoreController):
             headers["icy-metaint"] = str(icy_meta_interval)
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
-        if http_profile == "forced_content_length":
+        fixed_content_length = player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False)
+        if fixed_content_length:
             # just set an insane high content length to make sure the player keeps playing
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
-        elif http_profile == "chunked":
-            resp.enable_chunked_encoding()
 
         await resp.prepare(request)
 
@@ -1505,10 +1707,10 @@ class StreamsController(CoreController):
             session_id=session_id,
         )
         output_plan = self.audio.get_player_output_plan(
-            player.player_id,
+            player.protocol_id,
             flow_pcm_format,
             output_format,
-            shared_player_ids=player.state.group_members,
+            shared_player_ids=player.group_members,
             queue_id=queue_id,
             session_id=session_id,
         )
@@ -1542,11 +1744,21 @@ class StreamsController(CoreController):
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
             # one continuous stream, so the player gains nothing from running far ahead
-            extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
+            extra_input_args=output_pacing_args(),
             # without ICY framing, pass on whatever ffmpeg has encoded: an exact 1s read
-            # holds back FLAC on quiet passages until the player gives up waiting
-            chunk_size=icy_meta_interval if enable_icy else None,
+            # holds back FLAC on quiet passages until the player gives up waiting.
+            # with ICY framing the write loop counts bytes towards the metadata interval
+            chunk_size=ICY_WRITE_SIZE if enable_icy else None,
         )
+        bytes_sent = 0
+
+        async def write(data: bytes) -> None:
+            nonlocal bytes_sent
+            # counted before the write, so a player never holds more than recorded
+            bytes_sent += len(data)
+            self._flow_bytes_sent[player_id] = (request.path, bytes_sent)
+            await resp.write(data)
+
         client_disconnected = False
         # same registry as the single-item route: a forced-flow player (overlay)
         # seeks through the same session rotation and its stale response must be
@@ -1566,41 +1778,39 @@ class StreamsController(CoreController):
             async with aclosing(audio_bytes):
                 async for chunk in audio_bytes:
                     try:
-                        await resp.write(chunk)
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
-                        # race condition
+                        if not enable_icy:
+                            await write(chunk)
+                            continue
+                        pending = chunk
+                        while pending:
+                            head, pending = (
+                                pending[:icy_bytes_until_meta],
+                                pending[icy_bytes_until_meta:],
+                            )
+                            await write(head)
+                            icy_bytes_until_meta -= len(head)
+                            if icy_bytes_until_meta == 0:
+                                await write(
+                                    _icy_metadata_block(
+                                        self.audio_analysis, queue, full=icy_preference == "full"
+                                    )
+                                )
+                                icy_bytes_until_meta = icy_meta_interval
+                    except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
+                        # a superseded response is aborted under us and this is
+                        # its normal end
                         client_disconnected = True
-                        break
-
-                    if not enable_icy:
-                        continue
-
-                    # if icy metadata is enabled, send the icy metadata after the chunk
-                    if (
-                        # use current item here and not buffered item, otherwise
-                        # the icy metadata will be too much ahead
-                        (current_item := queue.current_item)
-                        and current_item.streamdetails
-                        and current_item.streamdetails.stream_title
-                    ):
-                        title = current_item.streamdetails.stream_title
-                    elif queue and current_item and current_item.name:
-                        title = current_item.name
-                    else:
-                        title = "Music Assistant"
-                    metadata = f"StreamTitle='{title}';".encode()
-                    if icy_preference == "full" and current_item and current_item.image:
-                        metadata += f"StreamURL='{current_item.image.path}'".encode()
-                    while len(metadata) % 16 != 0:
-                        metadata += b"\x00"
-                    length = len(metadata)
-                    length_b = chr(int(length / 16)).encode()
-                    try:
-                        await resp.write(length_b + metadata)
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
-                        # same as the chunk write above: a superseded response is
-                        # aborted under us and this is its normal end
-                        client_disconnected = True
+                        if queue_data.session_id == session_id and not (
+                            player.player and player.player.stop_called
+                        ):
+                            self.logger.info(
+                                "Player %s disconnected from the flow stream of %s - "
+                                "error: %s, sent %d bytes",
+                                player.display_name,
+                                queue.display_name,
+                                err.__class__.__name__,
+                                bytes_sent,
+                            )
                         break
         except AbortFlowStream:
             await audio_bytes.aclose()
@@ -1612,32 +1822,12 @@ class StreamsController(CoreController):
                 if not entries:
                     del self._open_item_streams[queue_id]
 
-        if not client_disconnected and http_profile == "forced_content_length":
-            await self._finish_flow_stream(resp, queue_id, session_id)
+        if not self.mass.player_queues.flow_stream_finished(queue_id):
+            self._watch_lost_stream(request, queue_data, session_id, player)
+        if not client_disconnected and fixed_content_length:
+            await self._finish_flow_stream(request, resp, queue_id, session_id, player)
 
         return resp
-
-    async def serve_command_request(self, request: web.Request) -> web.FileResponse:
-        """Handle special 'command' request for a player."""
-        self._log_request(request)
-        queue_id = request.match_info["queue_id"]
-        session_id = request.match_info["session_id"]
-        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
-        if queue_data is None or queue_data.session_id != session_id:
-            raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
-        command = request.match_info["command"]
-        if queue_data.last_served_item_id is None:
-            # the session rotates when a new item starts loading, so a command fetched before
-            # any of its audio went out follows the superseded stream and would skip a track
-            self.logger.debug(
-                "Ignoring %s command for queue %s: session %s has not streamed yet",
-                command,
-                queue_id,
-                session_id,
-            )
-        elif command == "next":
-            self.mass.create_task(self.mass.player_queues.next(queue_id))
-        return web.FileResponse(SILENCE_FILE, headers={"icy-name": "Music Assistant"})
 
     async def serve_announcement_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream announcement audio to a player."""
@@ -1645,7 +1835,7 @@ class StreamsController(CoreController):
         # what a stream request asks of a provider is playback
         set_request_priority(RequestPriority.HIGH)
         player_id = request.match_info["player_id"]
-        if not (player := self.mass.players.get_player(player_id)):
+        if not (player := self.mass.players.get_output_protocol(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         if not (announce_data := self.announcement_renderer.get_for_player(player_id)):
             raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
@@ -1654,7 +1844,9 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        http_profile = self._get_announcement_http_profile(player_id, announce_data)
+        fixed_content_length = self._announcement_requires_fixed_content_length(
+            player_id, announce_data
+        )
 
         # return early if this is not a GET request:
         # players often probe the url with a HEAD request before fetching it and
@@ -1663,12 +1855,10 @@ class StreamsController(CoreController):
         if request.method != "GET":
             resp = web.StreamResponse(status=200, reason="OK", headers=DEFAULT_STREAM_HEADERS)
             resp.content_type = get_mime_type(audio_format.output_format_str)
-            if http_profile == "chunked":
-                resp.enable_chunked_encoding()
             await resp.prepare(request)
             return resp
 
-        if http_profile == "forced_content_length":
+        if fixed_content_length:
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
             data = bytearray()
@@ -1687,9 +1877,6 @@ class StreamsController(CoreController):
 
         resp = web.StreamResponse(status=200, reason="OK", headers=DEFAULT_STREAM_HEADERS)
         resp.content_type = get_mime_type(audio_format.output_format_str)
-        if http_profile == "chunked":
-            resp.enable_chunked_encoding()
-
         await resp.prepare(request)
 
         # all checks passed, start streaming!
@@ -1718,24 +1905,6 @@ class StreamsController(CoreController):
 
         return resp
 
-    def get_command_url(self, player_or_queue_id: str, command: str) -> str | None:
-        """
-        Get the url for the special command stream, or None if the queue is not playing.
-
-        :param player_or_queue_id: Queue (or player) to send the command to.
-        :param command: Command the url triggers when fetched.
-        """
-        # resolve to the active queue: a protocol player (e.g. the cast child of a
-        # universal player) does not own the active queue, its parent player does
-        if active_queue := self.mass.player_queues.get_active_queue(player_or_queue_id):
-            queue_id = active_queue.queue_id
-        else:
-            queue_id = player_or_queue_id
-        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
-        if queue_data is None or (session_id := queue_data.session_id) is None:
-            return None
-        return f"{self.base_url}/command/{session_id}/{queue_id}/{command}.mp3"
-
     def get_announcement_url(
         self,
         player_id: str,
@@ -1758,6 +1927,7 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         player_id: str | None = None,
         force_flow_mode: bool = False,
+        flow_restart: Callable[[StreamDetails], Awaitable[bool]] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a stream of the given media as raw PCM audio.
@@ -1771,6 +1941,8 @@ class StreamsController(CoreController):
             if flow mode should be used based on the player's capabilities.
         :param force_flow_mode: Force flow mode regardless of player capabilities.
             Used for multi-client streaming scenarios that require continuous streams.
+        :param flow_restart: For a consumer that picks the rate of its flow stream itself,
+            see ``get_queue_flow_stream``.
         """
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -1779,41 +1951,24 @@ class StreamsController(CoreController):
             return self.get_announcement_stream(cast("AnnounceData", media.custom_data), pcm_format)
         if (
             media.source_id
-            and media.source_id.startswith(UGP_PREFIX)
-            and media.uri
-            and "/ugp/" in media.uri
+            and (source_player := self.mass.players.get_player(media.source_id))
+            and (source_protocol := source_player.own_protocol) is not None
+            and (shared_stream := source_protocol.get_shared_stream(media, pcm_format))
         ):
-            # special case: member player accessing UGP stream
-            # Check URI to distinguish from the UGP accessing its own stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get_player(media.source_id))
-            ugp_stream = ugp_player.stream
-            assert ugp_stream is not None  # for type checker
-            if ugp_stream.base_pcm_format == pcm_format:
-                # no conversion needed
-                return ugp_stream.subscribe_raw()
-            return ugp_stream.get_stream(output_format=pcm_format)
-        if (
-            media.media_type == MediaType.AUDIO_SOURCE
-            and not media.queue_item_id
-            and media.source_id
-            and (session := self.mass.players.get_audio_source_session(media.source_id))
-        ):
-            # a live source playing on a player rather than an item in a queue
-            if media.queue_session_id != session.playback_session_id:
-                # a stale request from a superseded session must not attach to the one
-                # playing now; the http route rejects the same mismatch with a 404
-                raise AudioError(
-                    f"Unknown (or invalid) audio source session: {media.queue_session_id}"
-                )
-            return self._count_as_output_stream(
-                self._get_audio_source_session_stream(
-                    session, pcm_format, player_id or media.source_id
-                )
+            # special case: a member of a group that renders one stream for all its
+            # members fetches that stream, which the protocol of the group tells apart
+            # from the group fetching the stream of its own queue
+            return shared_stream
+        if session := self._get_live_audio_source_session(media):
+            return self._get_audio_source_session_stream(
+                session, pcm_format, player_id or session.player_id
             )
         if media.source_id and media.queue_item_id:
             # Queue stream request - determine flow_mode based on player capabilities
             # or force it if explicitly requested (e.g., for multi-client streaming)
-            protocol_player = self.mass.players.get_player(player_id) if player_id else None
+            protocol_player = (
+                self.mass.players.get_output_protocol(player_id) if player_id else None
+            )
             queue_id = media.source_id
             queue = self.mass.player_queues.get(queue_id)
             queue_session_id = media.queue_session_id
@@ -1824,7 +1979,7 @@ class StreamsController(CoreController):
                 and queue is not None
                 and queue.crossfade_enabled
                 and protocol_player
-                and not protocol_player.supports_gapless
+                and not protocol_player.supports_feature(PlayerFeature.GAPLESS_PLAYBACK)
             )
             # the audio overlay is mixed into the queue's continuous (flow) stream;
             # per-item requests would restart the overlay at every track boundary
@@ -1858,6 +2013,7 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     session_id=queue_session_id,
                     protocol_player=protocol_player,
+                    flow_restart=flow_restart,
                 )
                 if mix_overlay:
                     flow_stream = self.audio.get_overlay_mixed_stream(
@@ -1921,6 +2077,22 @@ class StreamsController(CoreController):
             input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
             output_format=pcm_format,
         )
+
+    async def open_audio_source_stream(
+        self, media: PlayerMedia, consumer_player_id: str
+    ) -> AudioSourceStream | None:
+        """
+        Select the live source ``media`` plays, so a raw PCM consumer can pick its format.
+
+        The caller streams the result, or releases it with ``aclose`` when it does not.
+
+        :param media: The media about to be played.
+        :param consumer_player_id: The id of the output protocol that will consume the stream.
+        :return: None when ``media`` is not a live source playing on a player.
+        """
+        if not (session := self._get_live_audio_source_session(media)):
+            return None
+        return await self._open_audio_source_stream(session, consumer_player_id)
 
     async def get_preview_stream(
         self,
@@ -2016,9 +2188,9 @@ class StreamsController(CoreController):
 
     def _resolve_audio_source_request(
         self, request: web.Request
-    ) -> tuple[AudioSourceSession, Player, PluginProvider]:
+    ) -> tuple[AudioSourceSession, PlayerProtocol, AudioSourceMixin]:
         """
-        Resolve a source stream request to its session, consuming player and plugin.
+        Resolve a source stream request to its session, consuming player and provider.
 
         :param request: The stream request to resolve.
         :raises web.HTTPNotFound: When any of the three is gone, or the url names a
@@ -2032,10 +2204,10 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"No audio source playing on {source_player_id}")
         if session_id != session.playback_session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
-        if not (player := self.mass.players.get_player(player_id)):
+        if not (player := self.mass.players.get_output_protocol(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         prov = self.mass.get_provider(session.provider_instance_id)
-        if not isinstance(prov, PluginProvider):
+        if not isinstance(prov, AudioSourceMixin):
             raise web.HTTPNotFound(
                 reason=f"AudioSource provider {session.provider_instance_id} unavailable"
             )
@@ -2084,21 +2256,23 @@ class StreamsController(CoreController):
             )
 
     async def _serve_audio_source_head(
-        self, request: web.Request, session: AudioSourceSession
+        self, request: web.Request, session: AudioSourceSession, player: PlayerProtocol
     ) -> web.StreamResponse:
         """
-        Answer a HEAD probe for a live audio source without touching the plugin.
+        Answer a HEAD probe for a live audio source without touching its provider.
 
         :param request: The probe to answer.
         :param session: The session whose source is being probed.
+        :param player: The player probing the stream.
         """
         head_fmt = request.match_info["fmt"]
         if ContentType.try_parse(head_fmt).is_pcm():
             # most DLNA renderers pick a decoder from the HEAD content type and
             # cannot handle raw PCM
             head_fmt = ContentType.WAV.value
+        source_name = self._audio_source_name(session, player)
         resp = web.StreamResponse(
-            status=200, reason="OK", headers=_audio_source_headers(session, head_fmt)
+            status=200, reason="OK", headers=_audio_source_headers(source_name, head_fmt)
         )
         await resp.prepare(request)
         return resp
@@ -2106,10 +2280,11 @@ class StreamsController(CoreController):
     async def _prepare_audio_source_stream(
         self,
         request: web.Request,
-        player: Player,
+        player: PlayerProtocol,
         session: AudioSourceSession,
         streamdetails: StreamDetails,
-        provider: PluginProvider,
+        provider: AudioSourceMixin,
+        stream_session_id: str,
     ) -> tuple[web.StreamResponse, AsyncGenerator[bytes]]:
         """
         Open the response for a live audio source and build the audio behind it.
@@ -2118,7 +2293,8 @@ class StreamsController(CoreController):
         :param player: The player consuming this stream.
         :param session: The session whose source is being streamed.
         :param streamdetails: The stream details resolved for that source.
-        :param provider: Plugin delivering the live source.
+        :param provider: Provider delivering the live source.
+        :param stream_session_id: Token of the stream request that claimed the session.
         :return: The prepared response and the encoded audio to write to it.
         """
         pcm_format = await self.audio.select_pcm_format(
@@ -2134,31 +2310,31 @@ class StreamsController(CoreController):
             content_bit_depth=pcm_format.bit_depth,
             media_type=MediaType.AUDIO_SOURCE,
         )
+        source_name = self._audio_source_name(session, player)
         resp = web.StreamResponse(
             status=200,
             reason="OK",
-            headers=_audio_source_headers(session, output_format.output_format_str),
+            headers=_audio_source_headers(source_name, output_format.output_format_str),
         )
         resp.content_type = get_mime_type(output_format.output_format_str)
-        http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
-        if http_profile == "forced_content_length":
+        if player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False):
             # a live source has no length, so advertise one it will never reach
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
-        elif http_profile == "chunked":
-            resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         audio_input = self.audio.get_audio_source_stream(
             streamdetails=streamdetails,
             pcm_format=pcm_format,
             raise_on_error=False,
-            display_name=session.source.name,
+            display_name=source_name,
+            source_session=session,
+            stream_session_id=stream_session_id,
         )
         filter_params = self.audio.get_player_output_plan(
-            player_id=player.player_id,
+            protocol_id=player.protocol_id,
             input_format=pcm_format,
             output_format=output_format,
-            shared_player_ids=player.state.group_members,
+            shared_player_ids=player.group_members,
             queue_id=session.player_id,
             session_id=session.playback_session_id,
         ).filter_params
@@ -2183,6 +2359,16 @@ class StreamsController(CoreController):
             extra_input_args=output_pacing_args(PacingProfile.LOW_LATENCY),
         )
 
+    def _audio_source_name(self, session: AudioSourceSession, player: PlayerProtocol) -> str:
+        """
+        Return the name of the source of a session as shown on the player fetching its stream.
+
+        :param session: The session whose source is streamed.
+        :param player: The protocol fetching the stream.
+        """
+        shown_on = player.player.player_id if player.player else session.player_id
+        return self.mass.players.get_audio_source_name(session.source, shown_on)
+
     async def _get_audio_source_session_stream(
         self,
         session: AudioSourceSession,
@@ -2192,24 +2378,32 @@ class StreamsController(CoreController):
         """
         Stream a live source to a consumer that takes raw PCM rather than the http url.
 
-        AirPlay, Snapcast, squeezelite's multi-client path, universal groups and the
-        MSX bridge all consume PCM directly, so they never reach the http route and
-        need the plugin lifecycle fired here instead — those hooks are what claim and
-        release the source and kick acquisition side effects into life.
+        AirPlay, Snapcast, universal groups and the MSX bridge all consume PCM directly,
+        so they never reach the http route and need the plugin lifecycle fired here
+        instead — those hooks are what claim and release the source and kick acquisition
+        side effects into life.
 
         :param session: The live source session playing on its owner.
         :param pcm_format: The PCM format the consumer wants.
         :param consumer_player_id: The player consuming this stream, which is not
             necessarily the one that owns the source.
         """
+        source_stream = await self._open_audio_source_stream(session, consumer_player_id)
+        async with aclosing(source_stream.stream(pcm_format)) as chunks:
+            async for chunk in chunks:
+                yield chunk
+
+    async def _open_audio_source_stream(
+        self, session: AudioSourceSession, consumer_player_id: str
+    ) -> AudioSourceStream:
         prov = self.mass.get_provider(session.provider_instance_id)
-        if not isinstance(prov, PluginProvider):
+        if not isinstance(prov, AudioSourceMixin):
             raise AudioError(
                 f"AudioSource provider {session.provider_instance_id} is not available"
             )
         playback_session_id = session.playback_session_id
         stream_session_id = uuid4().hex
-        serving = False
+        opened = False
         try:
             try:
                 await prov.on_source_selected(
@@ -2232,35 +2426,54 @@ class StreamsController(CoreController):
                     )
                 session.attach_streamdetails(streamdetails)
             self._update_audio_source_processing_context(session, prov)
-            serving = True
-            async for chunk in self.audio.get_audio_source_stream(
-                streamdetails=streamdetails,
-                pcm_format=pcm_format,
-                raise_on_error=False,
-                display_name=session.source.name,
-            ):
-                if (
-                    self.mass.players.get_audio_source_session(session.player_id) is not session
-                    or session.playback_session_id != playback_session_id
-                    or session.stream_session_id != stream_session_id
-                ):
-                    break
-                yield chunk
+            opened = True
         finally:
-            try:
-                await prov.on_source_unselected(
-                    session.source_id, session.player_id, stream_session_id
+            if not opened:
+                await self._close_audio_source(
+                    session, prov, playback_session_id, stream_session_id, served=False
                 )
-            except Exception:
-                self.logger.warning(
-                    "on_source_unselected raised for provider %s source %s player %s",
-                    prov.instance_id,
-                    session.source_id,
-                    session.player_id,
-                    exc_info=True,
-                )
-            if not serving:
-                await self._release_unstarted_audio_source(session, playback_session_id)
+        return AudioSourceStream(
+            self, session, prov, streamdetails, playback_session_id, stream_session_id
+        )
+
+    async def _close_audio_source(
+        self,
+        session: AudioSourceSession,
+        provider: AudioSourceMixin,
+        playback_session_id: str,
+        stream_session_id: str,
+        *,
+        served: bool,
+    ) -> None:
+        try:
+            await provider.on_source_unselected(
+                session.source_id, session.player_id, stream_session_id
+            )
+        except Exception:
+            self.logger.warning(
+                "on_source_unselected raised for provider %s source %s player %s",
+                provider.instance_id,
+                session.source_id,
+                session.player_id,
+                exc_info=True,
+            )
+        if not served:
+            await self._release_unstarted_audio_source(session, playback_session_id)
+
+    def _get_live_audio_source_session(self, media: PlayerMedia) -> AudioSourceSession | None:
+        """Return the session of the live source ``media`` plays on a player, if it is one."""
+        if (
+            media.media_type != MediaType.AUDIO_SOURCE
+            or media.queue_item_id
+            or not media.source_id
+            or not (session := self.mass.players.get_audio_source_session(media.source_id))
+        ):
+            return None
+        if media.queue_session_id != session.playback_session_id:
+            # a stale request from a superseded session must not attach to the one
+            # playing now; the http route rejects the same mismatch with a 404
+            raise AudioError(f"Unknown (or invalid) audio source session: {media.queue_session_id}")
+        return session
 
     async def _wrap_with_audio_source_lifecycle(
         self,
@@ -2280,13 +2493,13 @@ class StreamsController(CoreController):
 
         :param inner: The underlying audio stream generator.
         :param queue_item: The AudioSource queue item being streamed.
-        :param player_id: The protocol player consuming this stream.
+        :param player_id: The id the stream is requested under.
         """
         media_item = queue_item.media_item
         assert media_item is not None  # caller checked media_type == AUDIO_SOURCE
         prov = self.mass.get_provider(media_item.provider)
         queue_id = queue_item.queue_id
-        if not isinstance(prov, PluginProvider):
+        if not isinstance(prov, AudioSourceMixin):
             async for chunk in inner:
                 yield chunk
             return
@@ -2428,13 +2641,13 @@ class StreamsController(CoreController):
     def _update_audio_source_processing_context(
         self,
         session: AudioSourceSession,
-        provider: PluginProvider,
+        provider: AudioSourceMixin,
     ) -> None:
         """
         Publish source-owned processing for a live AudioSource.
 
         :param session: Active source session to publish.
-        :param provider: Plugin delivering the live source.
+        :param provider: Provider delivering the live source.
         """
         if session.streamdetails is None:
             return
@@ -2445,22 +2658,24 @@ class StreamsController(CoreController):
             volume_normalization_enabled=provider.delivers_normalized_audio(session.streamdetails),
         )
 
-    def _get_announcement_http_profile(self, player_id: str, announce_data: AnnounceData) -> str:
+    def _announcement_requires_fixed_content_length(
+        self, player_id: str, announce_data: AnnounceData
+    ) -> bool:
         """
-        Resolve the http profile for serving an announcement stream.
+        Return whether an announcement stream must be served with a fixed content length.
 
-        Announcement urls are registered under the visible player's id, but the
-        stream may be fetched by a linked protocol player; the profile must come
-        from the player that actually performs the fetch.
+        Announcement urls are registered under the id of the player, but the stream
+        may be fetched by one of its protocols; the setting is the one of the protocol
+        that performs the fetch.
         """
         announce_player = None
         if announce_player_id := announce_data.get("announce_player_id"):
-            announce_player = self.mass.players.get_player(announce_player_id)
+            announce_player = self.mass.players.get_protocol(announce_player_id)
+        if announce_player is None and (player := self.mass.players.get_player(player_id)):
+            announce_player = player.resolve_output_protocol()
         if announce_player is None:
-            announce_player = self.mass.players.get_player(player_id)
-        if announce_player is None:
-            return "default"
-        return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
+            return False
+        return announce_player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False)
 
     def _get_flow_start_item(self, queue: PlayerQueue, queue_item_id: str) -> QueueItem | None:
         """
@@ -2477,59 +2692,147 @@ class StreamsController(CoreController):
         return self.mass.player_queues.get_item(queue.queue_id, queue_item_id)
 
     async def _finish_flow_stream(
-        self, resp: web.StreamResponse, queue_id: str, session_id: str
+        self,
+        request: web.Request,
+        resp: web.StreamResponse,
+        queue_id: str,
+        session_id: str,
+        protocol: PlayerProtocol,
     ) -> None:
         """
         Close a fully served flow stream, giving the player time to drain when it ends the queue.
 
+        :param request: The flow stream request.
         :param resp: The flow stream response, already fully written.
         :param queue_id: Id of the queue the flow stream belongs to.
         :param session_id: Stream session this response was opened for.
+        :param protocol: The output protocol that requested the flow stream.
         """
         if self.mass.player_queues.flow_queue_exhausted(queue_id, session_id):
-            # the player is still holding a few seconds of audio it has not rendered yet
-            # and drops that as soon as the stream ends, so let it play out first.
+            # the player is still holding audio it has not rendered yet and drops that as
+            # soon as the stream ends, so let it play out first.
             # a flow that ends to be restarted right away gets no such grace: there the
             # player should go idle as soon as possible so the next stream can start.
             self.logger.debug(
                 "Flow stream for queue %s reached the end of the queue - holding the "
-                "connection open for %ss so the player can play out its buffer",
+                "connection open (at most %ss) until the player played out its buffer",
                 queue_id,
-                FLOW_STREAM_LEAD_OUT_SECONDS,
+                FLOW_STREAM_MAX_LEAD_OUT_SECONDS,
             )
-            await asyncio.sleep(FLOW_STREAM_LEAD_OUT_SECONDS)
+            for _ in range(FLOW_STREAM_MAX_LEAD_OUT_SECONDS):
+                if request.transport is None or self.mass.player_queues.flow_stream_played_out(
+                    queue_id, session_id, protocol
+                ):
+                    break
+                await asyncio.sleep(1)
         # aiohttp derives keep-alive from the request, so the 'Connection: close' we
         # advertise is relayed to the player but never applied to the response itself.
         # Without this the player is left waiting on a stream that already ended.
         resp.force_close()
 
-    def _raise_if_stale_item_request(
+    def _watch_lost_stream(
         self,
-        player: Player,
-        queue_id: str,
-        queue_item: QueueItem,
-        requested_after: str | None,
+        request: web.Request,
+        queue_data: PlayerQueueData,
+        session_id: str,
+        protocol: PlayerProtocol,
+        queue_item_id: str | None = None,
     ) -> None:
         """
-        Refuse (404) the request if the item fell out of the queue's playhead window.
+        Restart the queue of a stream its player closed, unless the player asks for it again.
 
-        :param player: The player that requested the item.
-        :param queue_id: The queue the item belongs to.
-        :param queue_item: The requested queue item.
-        :param requested_after: The queue item id the player asked for before this one.
+        For a stream that does not end by itself. The queue restarts where it plays now when
+        the player has no stream of the session open again after LOST_STREAM_GRACE seconds.
+        A player that is still connected or was stopped, or a session the queue moved past,
+        restarts nothing.
+
+        :param request: The stream request whose response ended.
+        :param queue_data: The server-side record of the queue the stream belongs to.
+        :param session_id: Stream session the response was opened for.
+        :param protocol: The output protocol that requested the stream.
+        :param queue_item_id: The item of a single item stream, which only restarts while it
+            is still the current item of the queue; None for a flow stream.
         """
-        if not player.strict_queue_item_requests:
-            return
-        if self.mass.player_queues.is_current_window_item(
-            queue_id, queue_item.queue_item_id, requested_after
+        if (
+            request.transport is not None
+            or queue_data.session_id != session_id
+            or (protocol.player and protocol.player.stop_called)
         ):
             return
+        queue = queue_data.queue
+        player_id = request.match_info["player_id"]
         self.logger.debug(
-            "Denying stream request from %s for %s: the queue has moved on",
-            player.display_name,
-            queue_item.name,
+            "Player %s closed its stream of %s: restarting playback unless it asks for the "
+            "stream again within %s seconds",
+            protocol.display_name,
+            queue.display_name,
+            LOST_STREAM_GRACE,
         )
-        raise web.HTTPNotFound(reason=f"Queue item is not up next: {queue_item.queue_item_id}")
+        self.mass.call_later(
+            LOST_STREAM_GRACE,
+            self._restart_lost_stream_unless_reopened,
+            queue.queue_id,
+            session_id,
+            player_id,
+            queue_item_id,
+            task_id=f"lost_stream_{queue.queue_id}_{player_id}",
+        )
+
+    async def _restart_lost_stream_unless_reopened(
+        self, queue_id: str, session_id: str, player_id: str, queue_item_id: str | None = None
+    ) -> None:
+        """
+        Restart a queue whose player lost its stream, unless the player has one open again.
+
+        :param queue_id: The queue the lost stream belongs to.
+        :param session_id: Stream session of the lost stream.
+        :param player_id: The id the player requested the lost stream under.
+        :param queue_item_id: The item of a lost single item stream; None for a flow stream.
+        """
+        if self._stream_reopened(queue_id, session_id, player_id):
+            return
+        protocol = self.mass.players.get_output_protocol(player_id)
+        if protocol is not None and protocol.needs_poll:
+            # a player without state events may have been stopped at the device since its
+            # last poll
+            try:
+                await protocol.poll()
+            except PlayerUnavailableError:
+                self.logger.debug(
+                    "Not restarting the lost stream of %s: it is unavailable",
+                    protocol.display_name,
+                )
+                return
+            except Exception as err:
+                self.logger.warning(
+                    "Not restarting the lost stream of %s: polling it failed: %s",
+                    protocol.display_name,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
+                return
+            await asyncio.sleep(LOST_STREAM_POLL_SETTLE)
+            if self._stream_reopened(queue_id, session_id, player_id):
+                return
+        self.mass.player_queues.restart_lost_flow_stream(
+            queue_id, session_id, only_while_playing=True, queue_item_id=queue_item_id
+        )
+
+    def _stream_reopened(self, queue_id: str, session_id: str, player_id: str) -> bool:
+        """
+        Return whether a player has a stream of a session open again.
+
+        :param queue_id: The queue the stream belongs to.
+        :param session_id: Stream session of the stream.
+        :param player_id: The id the player requested the stream under.
+        """
+        return any(
+            entry_session_id == session_id
+            and request.method == "GET"
+            and request.match_info.get("player_id") == player_id
+            and request.transport is not None
+            for entry_session_id, request in self._open_item_streams.get(queue_id) or []
+        )
 
     def _requested_item_ids(
         self,
@@ -2550,7 +2853,7 @@ class StreamsController(CoreController):
         # a request whose player closed the connection no longer counts, even while its
         # handler has yet to notice that on its next write
         return {
-            request.match_info["queue_item_id"]
+            _request_queue_item_id(request)
             for entry_session_id, request in entries
             if entry_session_id == session_id
             and request.method == "GET"
@@ -2590,7 +2893,7 @@ class StreamsController(CoreController):
         # a player that hung up before its first audio left a request that has not ended
         # yet, while its source may already hold the slot
         candidate_ids.update(
-            request.match_info["queue_item_id"]
+            _request_queue_item_id(request)
             for entry_session_id, request in self._open_item_streams.get(queue_id) or []
             if entry_session_id == session_id
             and request.method == "GET"
@@ -2704,7 +3007,7 @@ class StreamsController(CoreController):
         """Answer the CORS preflight a browser may send ahead of a probe."""
         return web.Response(status=204, headers=_INFO_CORS_HEADERS)
 
-    def _needs_flow_mode(self, queue_id: str, protocol_player: Player | None) -> bool:
+    def _needs_flow_mode(self, queue_id: str, protocol_player: PlayerProtocol | None) -> bool:
         """
         Return whether a plugin's requirements put the queue in flow mode on this player.
 
@@ -2717,7 +3020,7 @@ class StreamsController(CoreController):
         return (
             self.boundary_mix_required(queue_id)
             and protocol_player is not None
-            and not protocol_player.supports_gapless
+            and not protocol_player.supports_feature(PlayerFeature.GAPLESS_PLAYBACK)
         )
 
     @staticmethod
@@ -2742,6 +3045,42 @@ class StreamsController(CoreController):
             del owners[queue_id]
 
 
+def _icy_metadata_block(
+    audio_analysis: AudioAnalysisController, queue: PlayerQueue, *, full: bool
+) -> bytes:
+    """
+    Return the length-prefixed ICY metadata block for the queue's current item.
+
+    :param audio_analysis: The controller that tells the metadata shown for a stream.
+    :param queue: The queue.
+    :param full: Whether to add the image of the item.
+    """
+    # use current item here and not buffered item, otherwise
+    # the icy metadata will be too much ahead
+    current_item = queue.current_item
+    stream_metadata = (
+        audio_analysis.shown_stream_metadata(current_item.streamdetails)
+        if current_item and current_item.streamdetails
+        else None
+    )
+    if stream_metadata and stream_metadata.title:
+        title = (
+            f"{stream_metadata.artist} - {stream_metadata.title}"
+            if stream_metadata.artist
+            else stream_metadata.title
+        )
+    elif current_item and current_item.name:
+        title = current_item.name
+    else:
+        title = "Music Assistant"
+    metadata = f"StreamTitle='{title}';".encode()
+    if full and current_item and current_item.image:
+        metadata += f"StreamURL='{current_item.image.path}'".encode()
+    while len(metadata) % 16 != 0:
+        metadata += b"\x00"
+    return chr(len(metadata) // 16).encode() + metadata
+
+
 def _same_ip_family(ip: str, other_ip: str) -> bool:
     """Return whether two addresses belong to the same IP family."""
     return (":" in ip) == (":" in other_ip)
@@ -2760,6 +3099,13 @@ def _is_valid_publish_ip(value: ConfigValueType) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _request_queue_item_id(request: web.Request) -> str:
+    """Return the queue item a registered stream request plays, however its URL named it."""
+    # a request addressed by queue position resolved its item on the way in; the id and
+    # flow routes name it in the URL
+    return request.get(_REQUEST_QUEUE_ITEM_ID) or request.match_info["queue_item_id"]
 
 
 def _root_cause(err: BaseException) -> BaseException:

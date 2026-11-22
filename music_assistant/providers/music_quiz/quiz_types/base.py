@@ -359,6 +359,13 @@ class QuizType(ABC):
                 provider_instance_id_or_domain=media_item.provider,
                 limit=None,
             )
+            if not tracks:
+                # most music providers have no artist tracks listing
+                tracks = await self.mass.music.artists.top_tracks(
+                    item_id=media_item.item_id,
+                    provider_instance_id_or_domain=media_item.provider,
+                    limit=None,
+                )
         else:
             tracks = []
             offset = 0
@@ -544,6 +551,25 @@ class QuizType(ABC):
         if not artist_name or not track.name:
             return None
         return await musicbrainz.get_release_year_by_track_name(artist_name, track.name)
+
+
+def get_track_artist_answers(track: Track) -> list[str]:
+    """
+    Return deterministic accepted artist names available on the track.
+
+    :param track: Track whose artist names should be accepted.
+    """
+    answers: list[str] = []
+    seen_answers: set[str] = set()
+    for answer in (
+        track.artist_str,
+        *(artist.name for artist in track.artists),
+        *(artist.sort_name for artist in track.artists),
+    ):
+        if answer and (normalized_answer := answer.casefold()) not in seen_answers:
+            answers.append(answer)
+            seen_answers.add(normalized_answer)
+    return answers
 
 
 def get_track_release_year(track: Track) -> int | None:

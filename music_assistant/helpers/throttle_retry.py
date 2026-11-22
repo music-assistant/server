@@ -4,6 +4,7 @@ import asyncio
 import functools
 import itertools
 import logging
+import math
 import random
 import time
 from bisect import insort
@@ -18,6 +19,7 @@ from types import TracebackType
 from typing import Any, Concatenate, Protocol
 
 from music_assistant_models.errors import (
+    MusicAssistantError,
     RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
@@ -27,6 +29,11 @@ from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.throttle_retry")
+
+# the keys of the rate limit messages, see rate_limit_translation
+_RATE_LIMIT_TRANSLATION_KEYS = frozenset(
+    {RateLimited.translation_key, "rate_limited_minutes", "rate_limited_hours"}
+)
 
 
 class RequestPriority(IntEnum):
@@ -134,6 +141,35 @@ def parse_retry_after(value: str | None) -> int:
         return 0
 
 
+def is_rate_limit_error(error: BaseException) -> bool:
+    """
+    Return whether a failed call was rate limited by the server.
+
+    :param error: The error the call failed with.
+    """
+    # a rate limit the retry helper gave up on arrives as RetriesExhausted, which carries
+    # the limit over as its translation key alone
+    return isinstance(error, RateLimited) or (
+        isinstance(error, MusicAssistantError)
+        and error.translation_key in _RATE_LIMIT_TRANSLATION_KEYS
+    )
+
+
+def rate_limit_translation(wait: float) -> tuple[str, list[int]]:
+    """
+    Return the translation key and arguments of a rate limit message that names the wait.
+
+    A wait of a minute or less gets the generic message, which does not name it.
+
+    :param wait: Seconds until the rate limit is lifted.
+    """
+    if wait <= 60:
+        return "rate_limited", []
+    if wait < 7200:
+        return "rate_limited_minutes", [math.ceil(wait / 60)]
+    return "rate_limited_hours", [round(wait / 3600)]
+
+
 class Throttler:
     """
     Rate limiter that grants at most rate_limit slots within any period.
@@ -223,18 +259,23 @@ class ThrottlerManager:
         retry_attempts: int = 5,
         initial_backoff: int = 5,
         low_priority_retry_attempts: int | None = None,
+        foreground_waits_out_cooldown: bool = True,
     ):
         """
         Initialize the AsyncThrottledContextManager.
 
         :param low_priority_retry_attempts: Attempts a low priority call gets, None for
             retry_attempts.
+        :param foreground_waits_out_cooldown: Whether a call that is not background work
+            waits out a short cooldown. False when such a call can be served elsewhere
+            meanwhile: it then fails on any cooldown instead of waiting.
         """
         self.retry_attempts = retry_attempts
         self.low_priority_retry_attempts = (
             retry_attempts if low_priority_retry_attempts is None else low_priority_retry_attempts
         )
         self.initial_backoff = initial_backoff
+        self._foreground_waits_out_cooldown = foreground_waits_out_cooldown
         self.throttler = Throttler(rate_limit, period)
         self._cooldown_until: float = 0.0
 
@@ -254,7 +295,8 @@ class ThrottlerManager:
         """
         priority = current_priority()
         if priority is RequestPriority.HIGH:
-            # playback neither sits out nor fails on a cooldown
+            # playback does not sit out a short cooldown, but sends nothing into a long one
+            self._raise_on_cooldown(priority)
             yield await self.throttler.acquire(priority)
             return
         delay = 0.0
@@ -262,9 +304,7 @@ class ThrottlerManager:
         while True:
             # each deadline is waited out once, however often it is extended meanwhile
             while (target := self._cooldown_until) > honored:
-                if (remaining := self.cooldown_remaining) > MAX_WAIT_TIME:
-                    msg = f"Rate limited for another {remaining:.0f} seconds"
-                    raise RateLimited(msg, backoff_time=round(remaining))
+                self._raise_on_cooldown(priority)
                 delay += await self._wait_until(target)
                 honored = target
             delay += await self.throttler.acquire(priority)
@@ -291,6 +331,21 @@ class ThrottlerManager:
         """
         self.throttler.rate_limit = rate_limit
         self.throttler.period = period
+
+    def _raise_on_cooldown(self, priority: RequestPriority) -> None:
+        """
+        Raise RateLimited when the cooldown holds for longer than a call of this priority waits.
+
+        :param priority: Priority of the call at the gate.
+        """
+        longest_wait = (
+            MAX_WAIT_TIME
+            if priority is RequestPriority.LOW or self._foreground_waits_out_cooldown
+            else 0
+        )
+        if (remaining := self.cooldown_remaining) > longest_wait:
+            msg = f"Rate limited for another {remaining:.0f} seconds"
+            raise RateLimited(msg, backoff_time=round(remaining))
 
     async def _wait_until(self, deadline: float) -> float:
         """Sleep until the given monotonic deadline, return the time waited."""
@@ -327,6 +382,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
         )
         exp_backoff = throttler.initial_backoff
         honored_until = 0.0
+        last_error: ResourceTemporarilyUnavailable | None = None
         for attempt in range(attempts):
             # every attempt goes through the gate: a cooldown another caller armed while
             # we were backing off must hold this retry too, and a retry is a request like
@@ -340,6 +396,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                     try:
                         return await func(self, *args, **kwargs)
                     except ResourceTemporarilyUnavailable as e:
+                        last_error = e
                         self.logger.info("Attempt %s/%s failed: %s", attempt + 1, attempts, e)
                         server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
                         if server_wait > MAX_WAIT_TIME:
@@ -382,6 +439,14 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                 self.logger.debug("%s skipped during a rate limit cooldown: %s", func.__name__, e)
                 raise _give_up(e, e.backoff_time) from e
         msg = f"Retries exhausted, failed after {attempts} attempts"
+        if isinstance(last_error, RateLimited):
+            # still rate limited on the last attempt, so the user gets the rate limit message
+            raise RetriesExhausted(
+                msg,
+                translation_key=last_error.translation_key,
+                translation_args=last_error.translation_args,
+                translation_owner=last_error.translation_owner,
+            )
         raise RetriesExhausted(msg)
 
     return wrapper
@@ -392,12 +457,20 @@ def _give_up(err: ResourceTemporarilyUnavailable, wait: float) -> RetriesExhaust
     Return the error of a call that does not sit out the wait asked of it.
 
     :param err: The error that asked for the wait, its localization is carried over.
+        A generic rate limit message gets the variant that names the wait.
     :param wait: The wait that was asked for, in seconds.
     """
+    translation_key, translation_args = err.translation_key, err.translation_args
+    if (
+        translation_key == RateLimited.translation_key
+        and not translation_args
+        and err.translation_owner is None
+    ):
+        translation_key, translation_args = rate_limit_translation(wait)
     return RetriesExhausted(
         f"Not retrying, asked to wait {wait:.0f} seconds",
-        translation_key=err.translation_key,
-        translation_args=err.translation_args,
+        translation_key=translation_key,
+        translation_args=translation_args,
         translation_owner=err.translation_owner,
     )
 

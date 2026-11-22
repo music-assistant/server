@@ -57,7 +57,7 @@ NORMALIZED_ITEMS_CTE = f"""
             MAX(name) AS name,
             MAX(image) AS image
         FROM {{table}}
-        WHERE userid = :user_id
+        WHERE userid IN :user_ids
             AND media_type = :media_type
             AND timestamp >= :cutoff_timestamp
         GROUP BY provider, item_id, media_type
@@ -94,14 +94,14 @@ NORMALIZED_ITEMS_CTE = f"""
 PLAY_EVENTS_QUERY = f"""
     SELECT timestamp, 1 AS value
     FROM {DB_TABLE_PLAY_HISTORY}
-    WHERE userid = :user_id
+    WHERE userid IN :user_ids
         AND timestamp >= :cutoff_timestamp
         AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
 """
 LISTENING_EVENTS_QUERY = f"""
     SELECT timestamp, seconds AS value
     FROM {DB_TABLE_LISTENING_SESSIONS}
-    WHERE userid = :user_id
+    WHERE userid IN :user_ids
         AND timestamp >= :cutoff_timestamp
         AND (:media_type IS NULL OR media_type = :media_type)
 """
@@ -109,7 +109,7 @@ TRACK_HISTORY_CTE = f"""
     played_pairs AS (
         SELECT provider, item_id, media_type, COUNT(*) AS play_count
         FROM {DB_TABLE_PLAY_HISTORY}
-        WHERE userid = :user_id
+        WHERE userid IN :user_ids
             AND media_type = :media_type
             AND timestamp >= :cutoff_timestamp
         GROUP BY provider, item_id, media_type
@@ -157,7 +157,7 @@ TRACK_ARTISTS_CTE = f"""
         FROM {DB_TABLE_PLAY_HISTORY}
         WHERE artists IS NOT NULL
             AND media_type = '{MediaType.TRACK.value}'
-            AND userid = :user_id
+            AND userid IN :user_ids
             AND timestamp >= :cutoff_timestamp
         GROUP BY provider, item_id, media_type, artists
     ), normalized_artist_credits AS (

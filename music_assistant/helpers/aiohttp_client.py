@@ -19,7 +19,7 @@ from aiohttp_asyncmdnsresolver.api import AsyncDualMDNSResolver
 from aiohttp_socks import ProxyConnector
 from yarl import URL
 
-from music_assistant.constants import APPLICATION_NAME
+from music_assistant.constants import MASS_USER_AGENT
 
 from . import ssl as ssl_util
 from .json import json_dumps, json_loads
@@ -66,7 +66,7 @@ def create_clientsession(
     # If a package requires a different user agent, override it by passing a headers
     # dictionary to the request method.
     user_agent = (
-        f"{APPLICATION_NAME}/{mass.version} "
+        f"{MASS_USER_AGENT} "
         f"aiohttp/{aiohttp.__version__} Python/{sys.version_info[0]}.{sys.version_info[1]}"
     )
     clientsession._default_headers = MappingProxyType(  # type: ignore[assignment]

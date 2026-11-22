@@ -32,12 +32,12 @@ def mock_mass() -> MagicMock:
     mass.players.get_active_queue = MagicMock(
         return_value=MagicMock(queue_id="q1", shuffle_enabled=False)
     )
-    mass.players.iter_players = MagicMock(return_value=[])
+    mass.players.iter_protocols = MagicMock(return_value=[])
     mass.player_queues = MagicMock()
     mass.player_queues.set_shuffle = AsyncMock()
     mass.call_later = MagicMock()
     mass.cancel_timer = MagicMock()
-    mass.config.get_raw_player_config_value = MagicMock(return_value=False)
+    mass.config.get_protocol_value = MagicMock(return_value=False)
     return mass
 
 
@@ -72,6 +72,9 @@ def airplay_provider(
     provider = AirPlayProvider(mock_mass, manifest_mock, config_mock)
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.get_transport_command_target.return_value = None
+    provider._speakers = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     return provider
 
 
@@ -79,7 +82,7 @@ def make_player(  # noqa: PLR0913
     mass: MagicMock,
     *,
     active_remote: str = "123",
-    player_id: str = "ap123",
+    protocol_id: str = "ap123",
     playing: bool = True,
     manufacturer: str = "Test",
     synced_to: str | None = None,
@@ -90,17 +93,17 @@ def make_player(  # noqa: PLR0913
     has_stream: bool = True,
 ) -> MagicMock:
     """
-    Make the mock mass return a single mock AirPlay player, and return it.
+    Make the mock mass return a single mock AirPlay protocol, and return it.
 
     Each call replaces the mass player list, so calling it twice does not yield two
     players.
 
     :param mass: The mock_mass fixture the provider looks players up through.
     :param active_remote: Active-Remote id the player's stream answers to.
-    :param player_id: Player id used in dispatched commands.
+    :param protocol_id: Id of the AirPlay protocol; dispatched commands address its player.
     :param playing: Whether the player reports PLAYING (else IDLE).
     :param manufacturer: Device manufacturer ("Apple" triggers ignore-volume).
-    :param synced_to: Parent player id when synced, else None.
+    :param synced_to: Protocol id of the sync leader when synced, else None.
     :param transitioning: Value of player._transitioning.
     :param stream_connected: Whether the stream reports connected.
     :param prevent_playback: Initial stream.prevent_playback flag.
@@ -108,15 +111,18 @@ def make_player(  # noqa: PLR0913
     :param has_stream: Whether the player has a stream at all.
     """
     player = MagicMock()
-    player.player_id = player_id
+    player.protocol_id = protocol_id
+    player.owner = player
+    player.renders_audio = True
+    player.session_endpoints = [player]
     player.name = "Test Player"
-    player.protocol_parent_id = None
+    # the player the protocol is attached to
+    player.player.player_id = f"pl_{protocol_id}"
+    player.player.active_group = None
     player.synced_to = synced_to
     player._transitioning = transitioning
     state = PlaybackState.PLAYING if playing else PlaybackState.IDLE
     player.playback_state = state
-    player.state.playback_state = state
-    player.state.active_group = None
     player.device_info.manufacturer = manufacturer
     player.ignore_volume_reports = manufacturer.lower() == "apple"
     player.volume_muted = False
@@ -125,6 +131,7 @@ def make_player(  # noqa: PLR0913
         stream = MagicMock()
         stream.active_remote_id = active_remote
         stream.running = True
+        stream.start_pending = False
         stream.connected = stream_connected
         stream.prevent_playback = prevent_playback
         stream.session = MagicMock() if has_session else None
@@ -133,5 +140,5 @@ def make_player(  # noqa: PLR0913
         player.stream = stream
     else:
         player.stream = None
-    mass.players.iter_players.return_value = [player]
+    mass.players.iter_protocols.return_value = [player]
     return player

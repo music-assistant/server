@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
@@ -17,6 +18,7 @@ from yarl import URL
 
 from music_assistant.controllers.webserver import controller as controller_module
 from music_assistant.controllers.webserver.controller import WebserverController
+from music_assistant.controllers.webserver.helpers import auth_middleware, auth_providers
 from music_assistant.helpers.redirect_validation import build_code_redirect_url
 
 if TYPE_CHECKING:
@@ -479,3 +481,151 @@ async def test_setup_stays_refused_across_a_restart(mass_minimal: MusicAssistant
         serve_static.assert_not_awaited()
     finally:
         await restarted.auth.close()
+
+
+def _close_setup_window(webserver: WebserverController) -> None:
+    """
+    Move the server past the time the first-time setup stays open after it starts.
+
+    :param webserver: The controller whose setup window ends.
+    """
+    webserver._setup_deadline = time.monotonic() - 1
+
+
+async def _sign_in_through_ingress(webserver: WebserverController, role: str) -> None:
+    """
+    Sign a Home Assistant account in through Ingress, which creates its user on first use.
+
+    :param webserver: The controller the account signs in to.
+    :param role: The role Home Assistant reports for the account.
+    """
+    headers = {"X-Remote-User-ID": "ha-user-1", "X-Remote-User-Name": "paulus"}
+    with (
+        patch.object(
+            auth_middleware,
+            "get_ha_user_details",
+            AsyncMock(return_value=("paulus", "Paulus", None)),
+        ),
+        patch.object(auth_providers, "get_ha_user_role", AsyncMock(return_value=role)),
+    ):
+        user = await auth_middleware.resolve_ingress_user(webserver.mass, headers)
+    assert user is not None
+    assert user.role == role
+
+
+async def test_setup_creates_the_admin_just_before_the_window_closes(
+    webserver: WebserverController,
+) -> None:
+    """The setup takes the first admin up to the end of its window."""
+    webserver._setup_deadline = time.monotonic() + 5
+
+    response = await _post_setup(webserver, ACCOUNT)
+
+    assert response.status == 200
+    assert webserver.auth.has_users
+
+
+async def test_setup_is_refused_once_its_window_has_closed(
+    webserver: WebserverController,
+) -> None:
+    """After the window no account or token is made, until the server starts again."""
+    _close_setup_window(webserver)
+
+    response = await _post_setup(webserver, ACCOUNT)
+
+    assert response.status == 403
+    answer = json.loads(response.text or "")
+    assert answer["success"] is False
+    assert "Restart Music Assistant" in answer["error"]
+    assert not webserver.auth.has_users
+    assert await webserver.auth.list_users() == []
+    assert await webserver.auth.database.get_rows("auth_tokens") == []
+
+
+async def test_the_setup_page_says_it_timed_out_once_its_window_has_closed(
+    webserver: WebserverController,
+) -> None:
+    """The setup page tells the user to restart instead of serving the app."""
+    _close_setup_window(webserver)
+
+    with patch.object(webserver._server, "serve_static", _served_app()) as serve_static:
+        response = await webserver._handle_setup_page(_request(webserver.mass, "GET", "/setup"))
+
+    assert response.status == 403
+    assert "Restart Music Assistant to try again" in _text(response)
+    serve_static.assert_not_awaited()
+
+
+async def test_a_restart_opens_the_setup_window_again(mass_minimal: MusicAssistant) -> None:
+    """The window is counted from each start, so a restart gives the user another go."""
+    first_start = await _start_webserver(mass_minimal)
+    try:
+        _close_setup_window(first_start)
+        assert (await _post_setup(first_start, ACCOUNT)).status == 403
+    finally:
+        await first_start.auth.close()
+
+    restarted = await _start_webserver(mass_minimal)
+    try:
+        assert (await _post_setup(restarted, ACCOUNT)).status == 200
+    finally:
+        await restarted.auth.close()
+
+
+@pytest.mark.parametrize("window_open", [True, False], ids=["window_open", "window_closed"])
+async def test_ingress_creates_the_first_admin_whatever_the_setup_window(
+    webserver: WebserverController, window_open: bool
+) -> None:
+    """
+    A Home Assistant admin signing in through Ingress becomes the first admin at any time.
+
+    :param window_open: Whether the public setup window is still open.
+    """
+    if not window_open:
+        _close_setup_window(webserver)
+
+    await _sign_in_through_ingress(webserver, UserRole.ADMIN)
+
+    assert webserver.auth.has_users
+
+
+async def test_setup_is_closed_once_ingress_has_created_the_admin(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """
+    The admin made through Ingress closes the public setup, also after a restart.
+
+    The setup window is still open here, so only the existing admin keeps setup closed.
+    """
+    webserver = await _start_webserver(mass_minimal)
+    try:
+        await _sign_in_through_ingress(webserver, UserRole.ADMIN)
+        await _assert_setup_closed(webserver)
+    finally:
+        await webserver.auth.close()
+
+    restarted = await _start_webserver(mass_minimal)
+    try:
+        assert restarted.auth.has_users
+        await _assert_setup_closed(restarted)
+    finally:
+        await restarted.auth.close()
+
+
+async def _assert_setup_closed(webserver: WebserverController) -> None:
+    """
+    Assert the public setup makes no account and its page is closed.
+
+    :param webserver: The controller to check.
+    """
+    response = await _post_setup(webserver, {**ACCOUNT, "username": "intruder"})
+    assert response.status == 409
+    assert await webserver.auth.get_user_by_username("intruder") is None
+    with patch.object(webserver._server, "serve_static", _served_app()) as serve_static:
+        page = await webserver._handle_setup_page(_request(webserver.mass, "GET", "/setup"))
+    assert page.status == 403
+    assert "already been completed" in _text(page)
+    serve_static.assert_not_awaited()
+    with patch.object(webserver._server, "serve_static", _served_app()):
+        index = await webserver._handle_index(_request(webserver.mass, "GET", "/"))
+    assert index.status == 200

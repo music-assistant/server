@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.media_items import ItemMapping, PodcastEpisode
 
+from music_assistant.providers.deezer.media import DeezerMediaManager
 from music_assistant.providers.deezer.provider import DeezerProvider
 from music_assistant.providers.deezer.streaming import DeezerStreamingManager
 
@@ -95,3 +98,40 @@ async def test_only_podcast_episodes_are_looked_up(
 
     assert result == (False, 0, None)
     gql.get_podcast_episode_bookmarks.assert_not_called()
+
+
+async def test_listed_episodes_carry_the_bookmark_time(
+    provider: DeezerProvider, gql: AsyncMock
+) -> None:
+    """Listed episodes carry the bookmark time, and one without a bookmark none."""
+    gql.get_podcast_episode_bookmarks.return_value = _bookmarks(_bookmark("100", "2025-07-10"))
+    media_manager = DeezerMediaManager(provider)
+    # the episode list is cached, so an episode can still hold an earlier bookmark time
+    media_manager._fetch_podcast_episodes = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            _episode("100"),
+            _episode("200", resume_position_timestamp=datetime(2025, 1, 1, tzinfo=UTC)),
+        ]
+    )
+
+    episodes = [ep async for ep in media_manager.get_podcast_episodes("podcast_1")]
+
+    assert [
+        (ep.item_id, ep.resume_position_ms, ep.resume_position_timestamp) for ep in episodes
+    ] == [("100", 30000, datetime(2025, 7, 10, tzinfo=UTC)), ("200", 0, None)]
+
+
+def _episode(item_id: str, **resume: Any) -> PodcastEpisode:
+    return PodcastEpisode(
+        item_id=item_id,
+        provider="deezer--test123",
+        name=f"Episode {item_id}",
+        provider_mappings=set(),
+        podcast=ItemMapping(
+            item_id="podcast_1",
+            provider="deezer--test123",
+            name="Podcast",
+            media_type=MediaType.PODCAST,
+        ),
+        **resume,
+    )

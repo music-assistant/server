@@ -17,6 +17,7 @@ from music_assistant.helpers.provider_access import (
     own_music_sources,
     playback_instance_for,
     playback_sources,
+    resolve_playback_user_or_stand_in,
     source_access,
     source_owner,
     visible_music_sources,
@@ -46,8 +47,8 @@ def _mass(providers: list[MagicMock] | None = None) -> MagicMock:
     mass.get_provider.side_effect = lambda instance_id, **_kwargs: next(
         (prov for prov in loaded if prov.instance_id == instance_id), None
     )
-    mass.get_provider_instances.side_effect = lambda domain, **_kwargs: [
-        prov for prov in loaded if prov.domain == domain
+    mass.get_provider_instances.side_effect = lambda domain, return_unavailable=False, **_: [
+        prov for prov in loaded if prov.domain == domain and (return_unavailable or prov.available)
     ]
     set_music_source_access(mass, {})
     return mass
@@ -166,11 +167,13 @@ def test_hidden_music_sources_lists_the_sources_a_user_may_not_see() -> None:
         {
             "builtin": None,
             "spotify--aaaa": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--cccc": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.PRIVATE),
             "tidal--bbbb": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.PRIVATE),
         },
     )
+    # a service's domain is hidden too once the user may see none of its accounts
     assert hidden_music_sources(mass, _user(MEMBER)) == {"spotify--aaaa"}
-    assert hidden_music_sources(mass, _user(OWNER)) == {"tidal--bbbb"}
+    assert hidden_music_sources(mass, _user(OWNER)) == {"spotify--cccc", "tidal--bbbb", "tidal"}
 
 
 def test_visible_playback_sources_for_anonymous_playback() -> None:
@@ -399,17 +402,22 @@ def test_visible_provider_checks_the_account_that_serves() -> None:
     )
 
     assert visible_provider(mass, "spotify--mine", _user(OWNER)) is mine
-    assert visible_provider(mass, "spotify--mine", _user(MEMBER)) is None
+    # a hidden account gives way to the user's own account of the service, if there is one
+    assert visible_provider(mass, "spotify--mine", _user(MEMBER)) is theirs
+    assert visible_provider(mass, "spotify--mine", _user(GUEST)) is None
+    assert visible_provider(mass, "spotify--mine", _user(MEMBER), strict=True) is None
     assert visible_provider(mass, "unknown", _user(OWNER)) is None
     # a plugin is not a music source and no user at all means no narrowing
     assert visible_provider(mass, "hass", _user(MEMBER)) is plugin
     assert visible_provider(mass, "spotify--theirs", None) is theirs
 
     # an unavailable account resolves to another account of the service: that one is checked
+    mine.available = False
     mass.get_provider.side_effect = None
     mass.get_provider.return_value = theirs
-    assert visible_provider(mass, "spotify--mine", _user(OWNER)) is None
     assert visible_provider(mass, "spotify--mine", _user(MEMBER)) is theirs
+    assert visible_provider(mass, "spotify--mine", _user(OWNER)) is None
+    assert visible_provider(mass, "spotify--mine", _user(GUEST)) is None
 
 
 def test_derived_provider_filter_is_empty_when_nothing_is_hidden() -> None:
@@ -502,3 +510,68 @@ async def test_playback_sources_skips_a_disabled_own_source() -> None:
 
     assert allowed is None
     assert preferred == []
+
+
+def _sources_of_every_sharing_mode() -> dict[str, ProviderAccess | None]:
+    """Return one streaming account per sharing mode, plus a source of the whole home."""
+    return {
+        "builtin": None,
+        **{
+            f"{sharing.value}--aaaa": ProviderAccess(
+                owner=OWNER, sharing=sharing, shared_users=[MEMBER]
+            )
+            for sharing in ProviderSharing
+        },
+    }
+
+
+async def test_playback_user_of_a_queue_with_a_user_is_that_user() -> None:
+    """Media for a queue that plays for a user is fetched as that user."""
+    mass = _mass()
+    owner = _user(OWNER)
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=MagicMock(userid=OWNER))
+    mass.webserver.auth.get_user = AsyncMock(return_value=owner)
+
+    assert await resolve_playback_user_or_stand_in(mass, "queue-1") is owner
+
+
+async def test_stand_in_for_anonymous_playback_may_use_what_anonymous_playback_may() -> None:
+    """The stand-in sees, for every sharing mode, exactly the sources of anonymous playback."""
+    sources = _sources_of_every_sharing_mode()
+    mass = _mass([_provider(instance_id, is_streaming=True) for instance_id in sources])
+    set_music_source_access(mass, sources)
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=MagicMock(userid=None))
+
+    stand_in = await resolve_playback_user_or_stand_in(mass, "queue-1")
+
+    anonymous = visible_playback_sources(mass, None)
+    assert anonymous == ["builtin", f"{ProviderSharing.EVERYONE.value}--aaaa"]
+    assert visible_music_sources(mass, stand_in) == anonymous
+    assert visible_playback_sources(mass, stand_in) == anonymous
+    assert hidden_music_sources(mass, stand_in) == hidden_music_sources(mass, None)
+    for access in sources.values():
+        assert access_allows(access, stand_in) is access_allows(access, None)
+    # it owns nothing, so no source is preferred or narrowed for it either
+    assert own_music_sources(mass, stand_in) == []
+    assert await playback_sources(mass, "queue-1") == (anonymous, [])
+
+
+async def test_stand_in_for_anonymous_playback_is_unrestricted_where_anonymous_playback_is() -> (
+    None
+):
+    """Without a source that is held back, neither anonymous playback nor its stand-in is."""
+    mass = _mass()
+    set_music_source_access(
+        mass,
+        {
+            "builtin": None,
+            "spotify--aaaa": ProviderAccess(owner=OWNER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=None)
+
+    stand_in = await resolve_playback_user_or_stand_in(mass, "queue-1")
+
+    assert visible_playback_sources(mass, None) is None
+    assert visible_music_sources(mass, stand_in) is None
+    assert visible_playback_sources(mass, stand_in) is None

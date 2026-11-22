@@ -1,14 +1,16 @@
 """Test we can parse Jellyfin models into Music Assistant models."""
 
+import json
 import logging
 import pathlib
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
 import aiohttp
 import pytest
 from aiojellyfin import Artist, Connection
+from aiojellyfin import Track as JellyTrack
 from aiojellyfin.session import SessionConfiguration
 from mashumaro.codecs.json import JSONDecoder
 from music_assistant_models.enums import ContentType
@@ -25,6 +27,8 @@ from music_assistant.providers.jellyfin.parsers import (
     audio_format,
     parse_album,
     parse_artist,
+    parse_loudness,
+    parse_lyrics,
     parse_track,
 )
 
@@ -93,6 +97,40 @@ async def test_parse_tracks(
     # sort external Ids to ensure they are always in the same order for snapshot testing
     parsed["external_ids"]
     assert snapshot == parsed
+
+
+async def test_parse_loudness_from_fixture() -> None:
+    """Test track loudness is derived from the fixture's ReplayGain track gain."""
+    # plain json keeps the float gain that aiojellyfin's decoder would truncate
+    fixture = FIXTURES_DIR / "tracks" / "do_i_wanna_know.json"
+    async with aiofiles.open(fixture, encoding="utf-8") as fp:
+        raw_data = json.loads(await fp.read())
+    result = parse_loudness(cast("JellyTrack", raw_data))
+    assert result is not None
+    assert result[0] == pytest.approx(-9.6)
+    assert result[1] is None
+
+
+@pytest.mark.parametrize(
+    ("track", "expected"),
+    [
+        ({"NormalizationGain": -8.4}, (-9.6, None)),
+        ({"NormalizationGain": -8.4, "AlbumNormalizationGain": -10.0}, (-9.6, -8.0)),
+        ({"NormalizationGain": -11}, (-7.0, None)),
+    ],
+)
+def test_parse_loudness(track: dict[str, Any], expected: tuple[float, float | None]) -> None:
+    """Test ReplayGain gains are converted to loudness relative to -18 LUFS."""
+    result = parse_loudness(cast("JellyTrack", track))
+    assert result is not None
+    assert result[0] == pytest.approx(expected[0])
+    assert result[1] == (pytest.approx(expected[1]) if expected[1] is not None else None)
+
+
+@pytest.mark.parametrize("track", [{"AlbumNormalizationGain": -10.0}, {"NormalizationGain": None}])
+def test_parse_loudness_without_gain(track: dict[str, Any]) -> None:
+    """Test no loudness is returned when Jellyfin has no track gain."""
+    assert parse_loudness(cast("JellyTrack", track)) is None
 
 
 async def test_parse_track_does_not_leak_access_token(connection: Connection) -> None:
@@ -172,3 +210,61 @@ def test_audio_format_wav_container_not_treated_as_raw_pcm() -> None:
     assert result.sample_rate == 48000
     assert result.bit_depth == 24
     assert result.channels == 2
+
+
+@pytest.mark.parametrize(
+    ("codec", "expected_content_type", "expected_codec_type"),
+    [
+        ("wmalossless", ContentType.WMA, ContentType.WMALOSSLESS),
+        ("wmapro", ContentType.WMA, ContentType.WMAPRO),
+        ("wmav2", ContentType.WMA, ContentType.WMAV2),
+        ("mp3", ContentType.UNKNOWN, ContentType.MP3),
+    ],
+)
+def test_audio_format_asf_container(
+    codec: str, expected_content_type: ContentType, expected_codec_type: ContentType
+) -> None:
+    """Jellyfin's asf container is reported as WMA only when it carries a WMA codec."""
+    track: dict[str, Any] = {
+        ITEM_KEY_MEDIA_SOURCES: [{ITEM_KEY_CONTAINER: "asf"}],
+        ITEM_KEY_MEDIA_STREAMS: [
+            {
+                ITEM_KEY_MEDIA_STREAM_TYPE: "Audio",
+                ITEM_KEY_MEDIA_CODEC: codec,
+                ITEM_KEY_MEDIA_CHANNELS: 2,
+                "SampleRate": 44100,
+                "BitDepth": 16,
+            },
+        ],
+    }
+    result = audio_format(track)  # type: ignore[arg-type]
+
+    assert result.content_type == expected_content_type
+    assert result.codec_type == expected_codec_type
+
+
+def test_parse_lyrics_synced() -> None:
+    """Synced Jellyfin lyrics produce plain text and LRC."""
+    raw = {
+        "Metadata": {},
+        "Lyrics": [
+            {"Text": "First line", "Start": 12_340_000},
+            {"Text": "Second line", "Start": 654_500_000},
+        ],
+    }
+    plain, lrc = parse_lyrics(raw)
+    assert plain == "First line\nSecond line"
+    assert lrc == "[00:01.23]First line\n[01:05.45]Second line"
+
+
+def test_parse_lyrics_unsynced() -> None:
+    """Unsynced Jellyfin lyrics (no Start) produce plain text only."""
+    plain, lrc = parse_lyrics({"Lyrics": [{"Text": "One"}, {"Text": "Two"}]})
+    assert plain == "One\nTwo"
+    assert lrc is None
+
+
+def test_parse_lyrics_empty() -> None:
+    """A response without cues yields no lyrics."""
+    assert parse_lyrics({}) == (None, None)
+    assert parse_lyrics({"Lyrics": []}) == (None, None)

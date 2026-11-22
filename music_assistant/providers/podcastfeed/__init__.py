@@ -197,10 +197,6 @@ class PodcastMusicprovider(MusicProvider):
                     path=stream_url,
                     can_seek=True,
                     allow_seek=True,
-                    extra_input_args=[
-                        "-user_agent",
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    ],
                 )
         raise MediaNotFoundError("Stream not found")
 
@@ -219,7 +215,7 @@ class PodcastMusicprovider(MusicProvider):
 
                 return await response.read()
 
-        except ClientError, Exception:
+        except ClientError, TimeoutError:
             # Try podcast cover fallback
             podcast_cover = self.parsed_podcast.get("cover_url")
             if podcast_cover and isinstance(podcast_cover, str) and podcast_cover != path:

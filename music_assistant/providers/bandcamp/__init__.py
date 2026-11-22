@@ -362,7 +362,6 @@ class BandcampProvider(MusicProvider):
                 name="Wishlist",
                 translation_key="wishlist",
                 icon="mdi-heart",
-                is_playable=True,
             ),
         ]
 
@@ -846,7 +845,7 @@ class BandcampProvider(MusicProvider):
         tralbum_id, is_album = (album_id, True) if album_id else (track_id, False)
         try:
             lyrics_map = await self._get_tralbum_lyrics(tralbum_id, is_album)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - lyrics never fail the track lookup
             self.logger.debug("Failed to fetch lyrics for %s: %s", prov_track_id, error)
             return
         if text := lyrics_map.get(str(track_id)):
@@ -1050,7 +1049,7 @@ class BandcampProvider(MusicProvider):
         if path_parts and path_parts[0] in (BROWSE_FANS, BROWSE_FOLLOWERS):
             return await self._browse_person(path_parts, base)
 
-        # The feed/wishlist recommendation folders resolve to their tracks here when played;
+        # The feed recommendation folder resolves to its tracks here when played;
         # the folder's explicit path is dropped on deserialization, so play arrives as the
         # bare item_id slug (e.g. ".../feed") rather than ".../recommendations/feed".
         if path_parts == [BROWSE_FEED]:

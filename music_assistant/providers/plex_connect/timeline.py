@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.enums import PlaybackState, RepeatMode
 
 from .parsing import plex_key_for_item
@@ -30,17 +30,14 @@ class TimelineMixin:
         play_queue_version: int
         play_queue_item_ids: dict[int, int]
         _ma_player_id: str | None
-        headers: dict[str, str]
-        plex_server: Any
 
     def _resolve_plex_state(self, player: Any, queue: Any) -> str:
         """
         Resolve the Plex playback state string from MA player/queue state.
 
         The queue is the source of truth for playback: for synced or grouped
-        players (and players using a protocol output) the child player's own
-        ``playback_state`` stays idle while the active queue (on the sync
-        leader / group / protocol parent) is actually playing. Relying on
+        players the child player's own ``playback_state`` stays idle while the
+        active queue (on the sync leader / group) is actually playing. Relying on
         ``player.playback_state`` therefore reports "paused" for those players
         even though MA is playing.
 
@@ -51,9 +48,9 @@ class TimelineMixin:
         if queue is not None:
             state = queue.state
         elif player is not None:
-            # player.state.playback_state is MA's resolved/final state, which already
-            # follows the active output protocol player and sync leader.
-            state = player.state.playback_state
+            # player.playback_state is MA's resolved/final state, which already
+            # follows the active output protocol and sync leader.
+            state = player.playback_state
         else:
             return "stopped"
 
@@ -159,7 +156,7 @@ class TimelineMixin:
 
         # group_volume is MA's effective, group-aware volume: for groups/syncgroups it
         # averages the (powered) members, otherwise it returns the player's own resolved
-        # volume (following any attached volume control / protocol player).
+        # volume (following its volume control, which can be one of its output protocols).
         volume = int(player.group_volume or 0) if player else 0
 
         shuffle = 0
@@ -229,73 +226,30 @@ class TimelineMixin:
             ) as resp:
                 if resp.status < 400:
                     subscription["last_update"] = time.time()
-        except Exception as e:
-            LOGGER.debug(f"Failed to send timeline to {client_id}: {e}")
+        except (ClientError, TimeoutError) as e:
+            LOGGER.debug("Failed to send timeline to %s: %s", client_id, e)
 
-    async def _send_timeline_to_server(self) -> None:
-        """Send timeline update to Plex server for activity tracking."""
-        if not self._ma_player_id:
-            return
+    def _play_queue_params(self) -> dict[str, str]:
+        """
+        Return the timeline params that place the current track of the queue in its play queue.
 
-        try:
-            player = self.provider.mass.players.get_player(self._ma_player_id)
-            queue = self.provider.mass.players.get_active_queue(player) if player else None
-
-            if (
-                not player
-                or not queue
-                or not queue.current_item
-                or not queue.current_item.media_item
-            ):
-                return
-
-            track = queue.current_item.media_item
-
-            plex_key = plex_key_for_item(track, self.provider.instance_id)
-            if not plex_key:
-                return
-
-            rating_key = plex_key.split("/")[-1]
-
-            plex_state = self._resolve_plex_state(player, queue)
-
-            position_ms = round(queue.corrected_elapsed_time * 1000)
-            duration_ms = round(track.duration * 1000) if track.duration else 0
-
-            container_key = ""
-            play_queue_item_id = ""
-            # playQueueItemIDs are server-global, so a guessed one points at an unrelated item
-            if (
-                self.play_queue_id
-                and queue.current_index is not None
-                and (known_item_id := self.play_queue_item_ids.get(queue.current_index))
-            ):
-                container_key = f"/playQueues/{self.play_queue_id}"
-                play_queue_item_id = str(known_item_id)
-
-            params: dict[str, str] = {
-                "ratingKey": rating_key,
-                "key": plex_key,
-                "state": plex_state,
-                "time": str(position_ms),
-                "duration": str(duration_ms),
+        The Plex provider adds these to the playback it reports to the Plex server.
+        """
+        queue = (
+            self.provider.mass.player_queues.get(self._ma_player_id) if self._ma_player_id else None
+        )
+        # playQueueItemIDs are server-global, so a guessed one points at an unrelated item
+        if (
+            self.play_queue_id
+            and queue
+            and queue.current_index is not None
+            and (play_queue_item_id := self.play_queue_item_ids.get(queue.current_index))
+        ):
+            return {
+                "containerKey": f"/playQueues/{self.play_queue_id}",
+                "playQueueItemID": str(play_queue_item_id),
             }
-
-            if container_key:
-                params["containerKey"] = container_key
-            if play_queue_item_id:
-                params["playQueueItemID"] = play_queue_item_id
-
-            plex_server = self.plex_server
-            headers = self.headers
-
-            def send_timeline() -> None:
-                plex_server.query("/:/timeline", params=params, headers=headers)
-
-            await asyncio.to_thread(send_timeline)
-
-        except Exception as e:
-            LOGGER.debug(f"Failed to send timeline to Plex server: {e}")
+        return {}
 
     async def _broadcast_timeline(self) -> None:
         """Send timeline to all subscribed controllers."""
@@ -307,7 +261,7 @@ class TimelineMixin:
                 if current_time - last_update > 90:
                     stale_clients.append(client_id)
             except ValueError, TypeError:
-                LOGGER.debug(f"Invalid last_update for client {client_id}, treating as stale")
+                LOGGER.debug("Invalid last_update for client %s, treating as stale", client_id)
                 stale_clients.append(client_id)
 
         for client_id in stale_clients:

@@ -70,6 +70,7 @@ def _controller(item: QueueItem, fetch_error: Exception) -> PlayerQueuesControll
     mass.music.get_item_by_uri = AsyncMock(side_effect=fetch_error)
     mass.streams.audio.get_stream_details = AsyncMock(return_value=MagicMock(duration=None))
     controller.mass = mass
+    mass.player_queues = controller
     return controller
 
 

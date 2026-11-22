@@ -74,6 +74,7 @@ def _controller(item: QueueItem, seen: list[RequestPriority]) -> PlayerQueuesCon
     mass.music.get_item_by_uri = AsyncMock(return_value=item.media_item)
     mass.streams.audio.get_stream_details = AsyncMock(side_effect=_get_stream_details)
     controller.mass = mass
+    mass.player_queues = controller
     return controller
 
 

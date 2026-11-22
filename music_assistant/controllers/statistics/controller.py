@@ -26,7 +26,7 @@ class StatisticsController(RankingsMixin, HistoryMixin, TimeSeriesMixin):
         self.manifest.description = (
             "Music Assistant's core controller for playlog statistics and listening analytics."
         )
-        self.manifest.icon = "poll"
+        self.manifest.icon = "chart-line"
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of statistics module."""

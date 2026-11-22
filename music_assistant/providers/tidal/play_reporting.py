@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 EVENT_BATCH_URL = "https://desktop.tidal.com/api/event-batch"
 APP_VERSION = "2026.08.18"
+# mimics the TIDAL desktop app that this play reporting endpoint belongs to (#5835)
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
     "TIDAL/2.39.5 Chrome/140.0.7339.249 Electron/38.5.0 Safari/537.36"

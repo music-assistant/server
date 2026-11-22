@@ -24,7 +24,11 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+from music_assistant.models.music_provider import (
+    MusicProvider,
+    ProviderStreamHeldError,
+    ProviderStreamLimitError,
+)
 from tests.common import set_music_source_access
 
 BUSY_INSTANCE = "spotify--busy"
@@ -120,6 +124,7 @@ def _mass(
     mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
     mass.player_queues.has_paused_stream_slot_holder.return_value = False
+    mass.player_queues.refuse_held_stream_slot.return_value = None
     if access is not None:
         mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
         mass.webserver.auth.get_user = AsyncMock(
@@ -268,6 +273,71 @@ async def test_a_matchless_search_falls_back_to_the_blocking_wait(
     assert get_buffer.await_args_list[1].kwargs["streamdetails"].provider == BUSY_INSTANCE
     # only a library track has an id to remember the miss on
     mass.cache.set.assert_not_awaited()
+
+
+def _refuse_held(_instance: str, _queue_id: str) -> None:
+    """Stand in for the queues controller refusing the busy source's held slot."""
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.name = "Spotify"
+    provider.instance_id = BUSY_INSTANCE
+    holder = MagicMock(queue_id="living_room")
+    holder.display_name = "Living Room"
+    raise ProviderStreamHeldError(provider, holder)
+
+
+async def test_a_cross_provider_match_still_rescues_a_held_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A realtime holder on the known source does not stop the match search from rescuing."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE, quality=ContentType.FLAC))
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        MATCH_INSTANCE: _music_provider(MATCH_INSTANCE),
+    }
+    mass = _mass(providers)
+    mass.player_queues.refuse_held_stream_slot.side_effect = _refuse_held
+    mass.music.tracks.match_provider = AsyncMock(
+        return_value=[_mapping(MATCH_INSTANCE, item_id=MATCHED_ITEM_ID)]
+    )
+    audio = StreamsAudio(mass)
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails.provider == MATCH_INSTANCE
+
+
+async def test_a_matchless_search_ends_in_a_refusal_when_a_realtime_holder_has_the_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The match search still runs first; only the blocking wait is replaced by the refusal."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE, quality=ContentType.FLAC))
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        MATCH_INSTANCE: _music_provider(MATCH_INSTANCE),
+    }
+    # match_provider finds nothing (the _mass default)
+    mass = _mass(providers)
+    mass.player_queues.refuse_held_stream_slot.side_effect = _refuse_held
+    audio = StreamsAudio(mass)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE)])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    with pytest.raises(ProviderStreamHeldError) as exc_info:
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    mass.music.tracks.match_provider.assert_awaited_once()
+    waits = [call.kwargs["source_wait_timeout"] for call in get_buffer.await_args_list]
+    assert waits == [0]
+    assert exc_info.value.data is not None
+    assert exc_info.value.data["player_name"] == "Living Room"
 
 
 async def test_a_matchless_search_still_raises_when_the_slot_never_frees(

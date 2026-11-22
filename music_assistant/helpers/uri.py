@@ -1,14 +1,19 @@
 """Helpers for creating/parsing URI's."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 import re
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from urllib.parse import parse_qs, urlsplit
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
 from music_assistant_models.helpers import create_uri as create_uri_org
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import ProviderMapping
 
 base62_length22_id_pattern = re.compile(r"^[a-zA-Z0-9]{22}$")
 
@@ -22,10 +27,11 @@ _CANONICAL_URL_TYPES: Final[frozenset[MediaType]] = frozenset(
 # providers whose artist, album and track ids are plain numbers
 _NUMERIC_ID_PROVIDERS: Final[frozenset[str]] = frozenset({"tidal", "deezer", "apple_music"})
 
-# share URL hosts of the form open.<provider>.com, by provider domain
+# share URL hosts whose path is /<type>/<id>, by provider domain
 _OPEN_HOSTS: Final[dict[str, str]] = {
     "open.spotify.com": "spotify",
     "open.qobuz.com": "qobuz",
+    "play.qobuz.com": "qobuz",
 }
 
 _APPLE_TYPE_MAP: Final[dict[str, MediaType]] = {
@@ -75,6 +81,8 @@ def valid_id(provider: str, media_type: MediaType, item_id: str) -> bool:
         return valid_base62_length22(item_id)
     if provider in _NUMERIC_ID_PROVIDERS and media_type in _CANONICAL_URL_TYPES:
         return item_id.isdigit()
+    if provider == "ytmusic" and media_type == MediaType.ALBUM:
+        return item_id.startswith("MPRE")
     return True
 
 
@@ -176,6 +184,19 @@ def canonical_provider_url(
     return None
 
 
+def canonical_mapping_url(mapping: ProviderMapping, media_type: MediaType) -> str | None:
+    """
+    Return the public URL of a provider mapping in the form MusicBrainz links to it.
+
+    :param mapping: The provider mapping of the item.
+    :param media_type: Media type of the item.
+    :return: The URL, or None when the provider has no canonical URL for this kind of item.
+    """
+    # a storefront-scoped share URL carries the storefront MusicBrainz stores it under
+    storefront = apple_storefront_from_url(mapping.url) if mapping.url else None
+    return canonical_provider_url(mapping.provider_domain, media_type, mapping.item_id, storefront)
+
+
 def apple_storefront_from_url(url: str) -> str | None:
     """
     Return the storefront (country code) an Apple Music URL is scoped to.
@@ -229,6 +250,7 @@ def _parse_share_url(uri: str) -> tuple[MediaType, str, str] | None:
         # https://open.spotify.com/playlist/5lH9NjOeJvctAO92ZrKQNB?si=04a63c8234ac413e
         # https://open.spotify.com/intl-de/track/4cOdK2wGLETKBW3PvgPWqT
         # https://open.qobuz.com/album/0634904032432
+        # https://play.qobuz.com/artist/1044
         if path and path[0].startswith("intl-"):
             path = path[1:]
         return (MediaType(path[0]), domain, path[1])
@@ -260,12 +282,15 @@ def _parse_ytmusic_url(path: list[str], query: dict[str, list[str]]) -> tuple[Me
     """Parse the path and query of a YouTube Music share URL."""
     # https://music.youtube.com/channel/{channel_id}
     # https://music.youtube.com/watch?v={video_id}
-    # a release share URL (playlist?list=OLAK5uy_...) names no album browse id, so it
-    # is unsupported like any other unknown path
     if path[0] == "channel":
         return (MediaType.ARTIST, "ytmusic", path[1])
     if path[0] == "watch" and (video_id := query.get("v", [""])[0]):
         return (MediaType.TRACK, "ytmusic", video_id)
+    if path[0] == "browse" and path[1].startswith("MPRE"):
+        return (MediaType.ALBUM, "ytmusic", path[1])
+    if path[0] == "playlist" and (playlist_id := query.get("list", [""])[0]):
+        media_type = MediaType.ALBUM if playlist_id.startswith("OLAK5uy_") else MediaType.PLAYLIST
+        return (media_type, "ytmusic", playlist_id)
     raise KeyError(path[0])
 
 

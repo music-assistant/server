@@ -22,6 +22,7 @@ from music_assistant_models.errors import InsufficientPermissions, MediaNotFound
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    AudioSource,
     Genre,
     Playlist,
     ProviderMapping,
@@ -185,6 +186,7 @@ async def test_browse_root_honors_admin_music_sources(mock_get_user: Mock) -> No
     mass.get_providers_supporting_feature.side_effect = lambda feature: (
         [music_a, music_b] if feature == ProviderFeature.BROWSE else []
     )
+    mass.players.get_audio_source_providers.return_value = []
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
@@ -507,6 +509,28 @@ def test_check_item_playable_keeps_plugin_items_reachable() -> None:
     controller.check_item_playable_for_user(item, _user(USER_B))
 
 
+def test_check_item_playable_keeps_audio_sources_of_a_player_provider_reachable() -> None:
+    """Only music sources carry an access record, so a player provider's sources stay playable."""
+    player_provider = _make_prov("sendspin", ProviderType.PLAYER, {ProviderFeature.AUDIO_SOURCE})
+    controller = _controller_with_sources(
+        {PROV_A: _private(USER_A), PROV_B: _private(USER_B)}, providers=[player_provider]
+    )
+    source = AudioSource(
+        item_id="line_in",
+        provider="sendspin",
+        name="Line-in",
+        provider_mappings={
+            ProviderMapping(
+                item_id="line_in", provider_domain="sendspin", provider_instance="sendspin"
+            )
+        },
+    )
+
+    controller.check_item_playable_for_user(source, _user(USER_A))
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(_library_track(PROV_B), _user(USER_A))
+
+
 def test_check_item_playable_for_anonymous_playback() -> None:
     """Anonymous playback only reaches sources shared with everyone."""
     controller = _controller_with_sources(
@@ -631,19 +655,19 @@ async def test_a_play_report_never_reaches_another_members_account() -> None:
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
 async def test_refresh_item_skips_a_mapping_served_by_a_hidden_account(mock_get_user: Mock) -> None:
-    """A mapping now served by another member's private account is left alone, search stands in."""
+    """A mapping now served only by another member's private account is left alone, search stands in."""
     mock_get_user.return_value = _user(USER_A)
-    mine = _music_source_prov("spotify--mine")
     theirs = _music_source_prov("spotify--theirs")
     controller = _controller_with_sources(
-        {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine, theirs]
+        {"tidal--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [theirs]
     )
     controller.mass.metadata = AsyncMock()
+    controller.mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()  # type: ignore[method-assign]
     substitute = Track(
         item_id="sub",
-        provider="spotify--mine",
+        provider="tidal--mine",
         name="Track",
-        provider_mappings={_mapping("spotify--mine")},
+        provider_mappings={_mapping("tidal--mine")},
     )
     ctrl = AsyncMock()
     ctrl.get_provider_item = AsyncMock(return_value=substitute)
@@ -662,7 +686,43 @@ async def test_refresh_item_skips_a_mapping_served_by_a_hidden_account(mock_get_
     ):
         await controller.refresh_item(_library_track("spotify--gone"))
 
-    ctrl.get_provider_item.assert_awaited_once_with("sub", "spotify--mine", force_refresh=True)
+    ctrl.get_provider_item.assert_awaited_once_with("sub", "tidal--mine", force_refresh=True)
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_refresh_item_fetches_from_the_users_own_account_of_the_service(
+    mock_get_user: Mock,
+) -> None:
+    """A mapping whose lookup lands on a hidden account is fetched from the user's own one."""
+    mock_get_user.return_value = _user(USER_A)
+    mine = _music_source_prov("spotify--mine")
+    theirs = _music_source_prov("spotify--theirs")
+    controller = _controller_with_sources(
+        {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine, theirs]
+    )
+    controller.mass.metadata = AsyncMock()
+    controller.mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()  # type: ignore[method-assign]
+    library_track = _library_track("spotify--gone")
+    mapping = next(iter(library_track.provider_mappings))
+    fresh = Track(
+        item_id=mapping.item_id,
+        provider="spotify--mine",
+        name="Track",
+        provider_mappings={_mapping("spotify--mine")},
+    )
+    ctrl = AsyncMock()
+    ctrl.get_provider_item = AsyncMock(return_value=fresh)
+    ctrl.update_item_in_library = AsyncMock(return_value=fresh)
+
+    with (
+        patch.object(controller.mass, "get_provider", return_value=theirs),
+        patch.object(controller, "get_controller", return_value=ctrl),
+        patch.object(controller, "search", new_callable=AsyncMock) as search,
+    ):
+        await controller.refresh_item(library_track)
+
+    search.assert_not_awaited()
+    assert all(call.args[1] == "spotify--mine" for call in ctrl.get_provider_item.await_args_list)
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
@@ -676,6 +736,7 @@ async def test_refresh_item_fetches_from_the_account_serving_the_mapping(
         {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine]
     )
     controller.mass.metadata = AsyncMock()
+    controller.mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()  # type: ignore[method-assign]
     library_track = _library_track("spotify--gone")
     mapping = next(iter(library_track.provider_mappings))
     fresh = Track(
@@ -868,18 +929,18 @@ async def test_library_count_unchanged_without_user(counted_mass: MusicAssistant
     """Without an authenticated user the counts stay the true library totals."""
     for media_type in ("tracks", "albums", "artists"):
         controller = getattr(counted_mass.music, media_type)
-        total_rows = await counted_mass.music.database.get_count(controller.db_table)
         with patch(GET_CURRENT_USER, return_value=None):
-            assert await controller.library_count() == total_rows
+            library_items = await controller.library_items(limit=500)
+            assert await controller.library_count() == len(library_items)
 
 
 async def test_library_count_unchanged_for_unrestricted_user(
     counted_mass: MusicAssistant,
 ) -> None:
     """A user that may see every music source sees the true library totals."""
-    total_rows = await counted_mass.music.database.get_count("tracks")
     with patch(GET_CURRENT_USER, return_value=_user(USER_ALL)):
-        assert await counted_mass.music.tracks.library_count() == total_rows
+        library_items = await counted_mass.music.tracks.library_items(limit=500)
+        assert await counted_mass.music.tracks.library_count() == len(library_items)
 
 
 async def test_album_artists_only_ignores_albums_on_hidden_sources(

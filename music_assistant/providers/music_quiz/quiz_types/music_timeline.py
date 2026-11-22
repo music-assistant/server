@@ -43,6 +43,7 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
     PLAYBACK_REPLACEMENT_RESERVE,
     RELEASE_YEAR_LOOKUP_BUDGET_SECONDS,
     QuizType,
+    get_track_artist_answers,
     get_track_release_year,
 )
 from music_assistant.providers.music_quiz.suggestions import (
@@ -343,7 +344,7 @@ class MusicTimelineQuizType(QuizType):
         entry = await self._create_entry(track, existing_ids=existing_ids)
         return TimelineCandidate(
             entry=entry,
-            artist_answers=self._artist_answers(track),
+            artist_answers=get_track_artist_answers(track),
             title_answers=[track.name],
         )
 
@@ -631,7 +632,9 @@ class MusicTimelineQuizType(QuizType):
     ) -> str:
         """Build a strict grounded prompt for one multiple-choice bonus."""
         correct_answers = (
-            self._artist_answers(track) if bonus_type == TimelineBonusType.ARTIST else [track.name]
+            get_track_artist_answers(track)
+            if bonus_type == TimelineBonusType.ARTIST
+            else [track.name]
         )
         grounded_data = json_dumps(
             {
@@ -725,7 +728,9 @@ class MusicTimelineQuizType(QuizType):
     ) -> list[SuggestionCandidate]:
         """Return unique candidates distinct from every accepted correct answer."""
         correct_answers = (
-            self._artist_answers(track) if bonus_type == TimelineBonusType.ARTIST else [track.name]
+            get_track_artist_answers(track)
+            if bonus_type == TimelineBonusType.ARTIST
+            else [track.name]
         )
         seen_labels = {normalize_answer_label(answer) for answer in correct_answers}
         seen_uris = {track.uri} if track.uri else set()
@@ -870,21 +875,6 @@ class MusicTimelineQuizType(QuizType):
         return secrets.choice(
             self._recency_candidates(available_tracks, prefer_recent=prefer_recent)
         )
-
-    @staticmethod
-    def _artist_answers(track: Track) -> list[str]:
-        """Return deterministic accepted artist names available on the track."""
-        answers: list[str] = []
-        seen_answers: set[str] = set()
-        for answer in (
-            track.artist_str,
-            *(artist.name for artist in track.artists),
-            *(artist.sort_name for artist in track.artists),
-        ):
-            if answer and (normalized_answer := answer.casefold()) not in seen_answers:
-                answers.append(answer)
-                seen_answers.add(normalized_answer)
-        return answers
 
     @staticmethod
     def _bonus_candidate(track: Track, bonus_type: TimelineBonusType) -> SuggestionCandidate:

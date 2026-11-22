@@ -33,6 +33,8 @@ ITEM_KEY_GENRES = "Genres"
 
 USER_DATA_KEY_IS_FAVORITE = "IsFavorite"
 USER_DATA_KEY_LAST_PLAYED_DATE = "LastPlayedDate"
+USER_DATA_KEY_PLAYBACK_POSITION_TICKS = "PlaybackPositionTicks"
+USER_DATA_KEY_PLAYED = "Played"
 
 AUDIO_STREAM_CODEC = "Codec"
 AUDIO_STREAM_SAMPLE_RATE = "SampleRate"
@@ -75,4 +77,29 @@ ARTIST_FIELDS = [
     "ImageTags",
     "DateCreated",
     "Genres",
+]
+
+AUDIOBOOK_FIELDS = [
+    "Name",
+    "Artists",
+    "ArtistItems",
+    "AlbumArtists",
+    "Overview",
+    "ImageTags",
+    "PrimaryImageItemId",
+    "PrimaryImageTag",
+    "DateCreated",
+    "ProductionYear",
+    "Genres",
+    "RunTimeTicks",
+]
+
+# Fields of the individual audio files that make up (a multi-file) audiobook.
+AUDIOBOOK_PART_FIELDS = [
+    "Name",
+    "RunTimeTicks",
+    "MediaStreams",
+    "Container",
+    "IndexNumber",
+    "ParentIndexNumber",
 ]

@@ -2,7 +2,7 @@
 Setup flow for the Spotify Connect plugin.
 
 The flow is a single explicit backend choice: Spotify Soloist (Spotify's
-official headless client, guarded by a ToS warning/consent step and a personal
+official headless client, guarded by a download consent step and a personal
 API key) or the community go-librespot daemon. The players this plugin exposes
 Spotify Connect devices for are regular provider options, not setup input.
 Reconfigure preselects the stored backend and re-runs the branch steps;
@@ -26,7 +26,7 @@ from . import (
     CONF_BACKEND,
     CONF_SOLOIST_CONSENT,
 )
-from .soloist import UnsupportedPlatformError, verify_platform_supported
+from .soloist import UnsupportedPlatformError, find_reusable_api_key, verify_platform_supported
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -116,12 +116,19 @@ async def _choose_backend(
 
 async def _run_soloist_steps(session: SetupSession, collected: dict[str, Any]) -> bool:
     """
-    Run the soloist branch: the ToS warning/consent step, then the API key step.
+    Run the soloist branch: the download consent step, then the API key step.
+
+    Both steps are skipped when this setup has no key yet and another Soloist setup on
+    the server has one to take over.
 
     :param session: The setup session driving the flow.
     :param collected: The values collected so far; updated in place.
     :return: True when the branch completed, False when consent was refused.
     """
+    if not collected.get(CONF_API_KEY) and (api_key := find_reusable_api_key(session)):
+        collected[CONF_API_KEY] = api_key
+        collected[CONF_SOLOIST_CONSENT] = True
+        return True
     if not await _ask_consent(session, bool(collected.get(CONF_SOLOIST_CONSENT))):
         return False
     collected[CONF_SOLOIST_CONSENT] = True

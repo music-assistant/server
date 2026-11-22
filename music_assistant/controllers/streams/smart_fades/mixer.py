@@ -135,7 +135,7 @@ class SmartFadesMixer:
             except asyncio.CancelledError:
                 # teardown: the consumer is gone, so don't hand it a completion marker
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the error is handed to the consumer and raised there
                 pump_error.append(err)
             await queue.put(_MIX_DONE)
 
@@ -190,7 +190,7 @@ class SmartFadesMixer:
                 ),
             )
             trailing_silence_bytes = max(0, len(fade_out_data) - retained_bytes)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # a failed measurement degrades to the old late-boundary bookkeeping
             # instead of killing the stream
             self.logger.warning("Measuring trailing silence failed: %s", err)
@@ -257,7 +257,7 @@ class SmartFadesMixer:
         except SmartFadeNotApplicable as e:
             self.logger.debug("Smart crossfade not applicable: %s - using standard crossfade", e)
             return None, fade_out_analysis
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - falls back to a standard crossfade
             self.logger.warning(
                 "Smart crossfade build failed: %s, falling back to standard crossfade", e
             )

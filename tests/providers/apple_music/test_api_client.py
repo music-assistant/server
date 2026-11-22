@@ -61,8 +61,8 @@ def _make_client() -> tuple[AppleMusicAPIClient, MagicMock]:
     """Return an API client together with its mock provider (for session stubbing)."""
     provider = MagicMock()
     provider.logger = MagicMock()
-    provider._music_app_token = "app-token"
-    provider._music_user_token = "user-token"
+    provider.music_app_token = "app-token"
+    provider.music_user_token = "user-token"
     return AppleMusicAPIClient(provider), provider
 
 

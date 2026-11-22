@@ -48,7 +48,7 @@ def _controller(userid: str | None, served: bool) -> PlayerQueuesController:
             queue=queue,
             items=[book],
             userid=userid,
-            served_item_ids={"book_1"} if served else set(),
+            served_item_ids={"book_1": None} if served else {},
         )
     }
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
@@ -60,15 +60,14 @@ def _controller(userid: str | None, served: bool) -> PlayerQueuesController:
 def _player_reports(ctrl: PlayerQueuesController, state: PlaybackState, elapsed: float) -> None:
     player = SimpleNamespace(
         player_id=QUEUE_ID,
-        active_output_protocol=None,
-        current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id="book_1", uri=None),
-        state=SimpleNamespace(
-            name="Queue",
-            available=True,
-            playback_state=state,
-            corrected_elapsed_time=elapsed,
-            group_members=[],
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id="book_1", uri=None)
         ),
+        name="Queue",
+        available=True,
+        playback_state=state,
+        corrected_elapsed_time=elapsed,
+        group_members=[],
     )
     ctrl._update_queue_from_player(player)  # type: ignore[arg-type]
 

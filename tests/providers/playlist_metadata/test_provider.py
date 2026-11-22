@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ImageType
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import MediaItemImage, Playlist, ProviderMapping, Track
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 from music_assistant_models.unique_list import UniqueList
+from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.providers.playlist_metadata import PlaylistMetadataProvider
@@ -283,11 +286,41 @@ async def test_get_playlist_metadata_handles_exception(
 
     # Mock _render to raise an exception
     with patch.object(provider, "_render", new_callable=AsyncMock) as mock_render:
-        mock_render.side_effect = RuntimeError("Rendering failed")
+        mock_render.side_effect = UnidentifiedImageError("Invalid cover image")
 
         result = await provider.get_playlist_metadata(playlist)
 
         assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [FileNotFoundError, MusicAssistantError])
+async def test_album_grid_uses_remaining_cover_when_one_fails(
+    tmp_path: Path, error_type: type[Exception]
+) -> None:
+    """A missing image or provider error does not prevent rendering the other cover."""
+    provider = _make_provider(tmp_path)
+    with BytesIO() as source:
+        Image.new("RGB", (16, 16), "white").save(source, "PNG")
+        cover = source.getvalue()
+    images = [
+        MediaItemImage(type=ImageType.THUMB, path=path, provider="library")
+        for path in ("missing.jpg", "available.png")
+    ]
+
+    async def fetch_image(_mass: Any, path: str, _provider: str) -> bytes:
+        if path == "missing.jpg":
+            raise error_type(path)
+        return cover
+
+    with patch(
+        "music_assistant.providers.playlist_metadata.get_image_data", side_effect=fetch_image
+    ) as fetch:
+        result = await provider._render("album_grid", images)
+
+    assert fetch.await_count == 2
+    with Image.open(BytesIO(result)) as rendered:
+        assert rendered.getpixel((0, 0)) == (255, 255, 255)
 
 
 @pytest.mark.asyncio
@@ -466,6 +499,70 @@ async def test_is_our_image_recognizes_own_images(
         remotely_accessible=False,
     )
     assert provider._is_our_image(filesystem_cover) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relative_to_images_dir", [False, True])
+async def test_cleanup_old_playlist_images_keeps_files_outside_images_dir(
+    tmp_path: Any,
+    relative_to_images_dir: bool,
+) -> None:
+    """An image claiming our provider id must never delete a file outside our images dir."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    outside_file = tmp_path / "not_our_file.txt"
+    outside_file.write_bytes(b"keep me")
+    image_path = (
+        os.path.join(provider._images_dir, "..", outside_file.name)
+        if relative_to_images_dir
+        else str(outside_file)
+    )
+    playlist = _make_playlist()
+    playlist.metadata.images = UniqueList(
+        [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=image_path,
+                provider="playlist_metadata",
+                remotely_accessible=False,
+            )
+        ]
+    )
+
+    await provider._cleanup_old_playlist_images(playlist, {ImageType.THUMB})
+
+    assert outside_file.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store_absolute_path", [True, False])
+async def test_cleanup_old_playlist_images_removes_own_files(
+    tmp_path: Any,
+    store_absolute_path: bool,
+) -> None:
+    """Images we generated are deleted whether their path was stored absolute or as a name."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    own_file = Path(provider._images_dir) / "test_playlist_1_1234567890_thumb.jpg"
+    own_file.write_bytes(b"old_image_data")
+    playlist = _make_playlist()
+    playlist.metadata.images = UniqueList(
+        [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=str(own_file) if store_absolute_path else own_file.name,
+                provider="playlist_metadata",
+                remotely_accessible=False,
+            )
+        ]
+    )
+
+    await provider._cleanup_old_playlist_images(playlist, {ImageType.THUMB})
+
+    assert not own_file.exists()
+    assert not playlist.metadata.images
 
 
 @pytest.mark.asyncio

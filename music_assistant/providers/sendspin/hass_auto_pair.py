@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from functools import partial
 from typing import TYPE_CHECKING, cast
 
-from aiosendspin.models.types import PairMethod
-from aiosendspin.noise.driver import HandshakeAbortedError
-from aiosendspin.noise.pairing import PairingError
-from aiosendspin.noise.trust_store import PskCategory
-
-from music_assistant.providers.sendspin.helpers import SecurityActionError, effective_pair_methods
+from music_assistant.providers.sendspin.token_auto_pair import TokenAutoPairer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -20,7 +14,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
 
-class HassAutoPairer:
+class HassAutoPairer(TokenAutoPairer):
     """
     Pair unpaired encrypted clients without user interaction, through Home Assistant.
 
@@ -29,18 +23,15 @@ class HassAutoPairer:
     that token, whichever of the two happens last.
     """
 
+    source_label = "the token from Home Assistant"
+
     def __init__(self, provider: SendspinProvider) -> None:
         """Initialize for a Sendspin provider, without following Home Assistant yet."""
-        self.provider = provider
-        self.logger = provider.logger
+        super().__init__(provider)
         self._announced: set[str] = set()
         self._unsubscribe: Callable[[], None] | None = None
-        self._tasks: dict[str, asyncio.Task[None]] = {}
-        # clients triggered again while their attempt was running: tried once more after it
-        self._pending: set[str] = set()
         # bumped by unsubscribe(), so a subscription answered after a teardown is dropped
         self._generation = 0
-        self._closed = False
 
     def subscribe(self) -> None:
         """Start following the client ids Home Assistant announces, if it is available."""
@@ -61,11 +52,8 @@ class HassAutoPairer:
 
     def close(self) -> None:
         """Stop following Home Assistant for good and stop running attempts, as the provider unloads."""
-        self._closed = True
         self.unsubscribe()
-        for task in self._tasks.values():
-            task.cancel()
-        self._tasks.clear()
+        super().close()
 
     def on_client_connected(self, client_id: str) -> None:
         """Pair a client that just connected, if Home Assistant announced it."""
@@ -99,68 +87,12 @@ class HassAutoPairer:
         for client_id in new_client_ids:
             self._request_attempt(client_id)
 
-    def _request_attempt(self, client_id: str) -> None:
-        """Run a pairing attempt in the background, at most one per client at a time."""
-        if client_id in self._tasks:
-            # the running attempt may be about to fail on the state this trigger changed
-            self._pending.add(client_id)
-            return
-        task = self.provider.mass.create_task(self._run_attempt(client_id))
-        if not task.done():
-            self._tasks[client_id] = task
+    async def _get_token(self, client_id: str) -> str | None:
+        """Return the token Home Assistant reads from the client's device."""
+        if (hass := self._hass) is None:
+            return None
+        return await hass.get_sendspin_pairing_token(client_id)
 
-    async def _run_attempt(self, client_id: str) -> None:
-        """Run one attempt and, if the client was triggered again meanwhile, one more."""
-        try:
-            await self._attempt(client_id)
-        finally:
-            self._tasks.pop(client_id, None)
-        if client_id in self._pending:
-            self._pending.discard(client_id)
-            if client_id in self._announced:
-                self._request_attempt(client_id)
-
-    async def _attempt(self, client_id: str) -> None:
-        """Pair the client with the token Home Assistant reads from its device."""
-        if not await self._needs_pairing(client_id) or (hass := self._hass) is None:
-            return
-        token = await hass.get_sendspin_pairing_token(client_id)
-        if token is None or not await self._needs_pairing(client_id):
-            return
-        try:
-            await self.provider.pair_with_token(client_id, token)
-        except (
-            SecurityActionError,
-            PairingError,
-            HandshakeAbortedError,
-            TimeoutError,
-            OSError,
-        ) as err:
-            self.logger.warning(
-                "Pairing %s with the token from Home Assistant failed: %s", client_id, err
-            )
-        else:
-            self.logger.info("Paired %s with the token from Home Assistant", client_id)
-
-    async def _needs_pairing(self, client_id: str) -> bool:
-        """Whether the client is connected, encrypted, unpaired and offers the token method."""
-        server_api = self.provider.server_api
-        sendspin_client = server_api.get_client(client_id)
-        if sendspin_client is None or sendspin_client.connection is None:
-            return False
-        security = sendspin_client.connection_security
-        if security is None:
-            # legacy unencrypted connection: nothing to pair
-            return False
-        if (
-            security.psk_category is PskCategory.LONG_TERM
-            and await server_api.pairing_store.record_by_client_id(client_id) is not None
-        ):
-            return False
-        session = self.provider.get_pin_session(client_id)
-        if session is not None and session.attempt_running:
-            # leave a pairing the user started by hand alone
-            return False
-        return PairMethod.PAIRING_PSK in effective_pair_methods(
-            sendspin_client.info_or_none, self.provider.pairing_config_snapshot(client_id)
-        )
+    def _wants_retry(self, client_id: str) -> bool:
+        """Retry only clients Home Assistant still announces."""
+        return client_id in self._announced

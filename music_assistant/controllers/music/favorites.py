@@ -13,6 +13,7 @@ items themselves happens in the listing queries of the media controllers.
 
 from __future__ import annotations
 
+import builtins
 import time
 from typing import TYPE_CHECKING
 
@@ -175,6 +176,36 @@ class FavoritesStore:
             if row["provider_instance"] and row["provider_item_id"]:
                 provider_keys.add((media_type, row["provider_instance"], row["provider_item_id"]))
         return item_ids, provider_keys
+
+    async def disliked_genre_ids(self, user_id: str) -> builtins.set[int]:
+        """
+        Return the library ids of the genres the given user disliked.
+
+        :param user_id: The user whose disliked genres are returned.
+        """
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_FAVORITES} "
+            "WHERE user_id = :user_id AND media_type = :genre AND favorite = 0",
+            {"user_id": user_id, "genre": MediaType.GENRE.value},
+            limit=0,
+        )
+        return {int(row["item_id"]) for row in rows}
+
+    async def in_disliked_genres(
+        self, user_id: str, tracks: Sequence[Track]
+    ) -> builtins.set[tuple[str, str]]:
+        """
+        Return which of the given tracks are in a genre the given user disliked.
+
+        Which genres a track is in follows the genre controller's tracks_in_genres.
+
+        :param user_id: The user whose disliked genres apply.
+        :param tracks: The candidate tracks.
+        :return: The (provider, item id) of every candidate in a disliked genre.
+        """
+        return await self.mass.music.genres.tracks_in_genres(
+            await self.disliked_genre_ids(user_id), tracks
+        )
 
     async def move_item(self, media_type: MediaType, source_id: int, target_id: int) -> None:
         """
@@ -369,7 +400,7 @@ async def without_disliked_tracks(
     mass: MusicAssistant, user_id: str | None, tracks: list[Track]
 ) -> list[Track]:
     """
-    Return the given tracks without the ones the user disliked, directly or by album or artist.
+    Return the given tracks without the ones the user disliked, by track, album, artist or genre.
 
     Only for playback Music Assistant picks itself; what a user asks for by name is never
     filtered.
@@ -380,7 +411,11 @@ async def without_disliked_tracks(
     """
     if not user_id or not tracks:
         return tracks
-    return filter_disliked(tracks, await mass.music.favorites.disliked_track_keys(user_id))
+    store = mass.music.favorites
+    tracks = filter_disliked(tracks, await store.disliked_track_keys(user_id))
+    if not (in_disliked_genre := await store.in_disliked_genres(user_id, tracks)):
+        return tracks
+    return [track for track in tracks if (track.provider, track.item_id) not in in_disliked_genre]
 
 
 def filter_disliked(tracks: list[Track], keys: DislikedTrackKeys) -> list[Track]:

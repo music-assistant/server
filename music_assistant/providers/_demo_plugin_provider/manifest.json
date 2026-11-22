@@ -4,6 +4,38 @@
   "name": "Demo Plugin Provider",
   "description": "Test/Example Plugin Provider for Music Assistant.",
   "codeowners": ["@yourgithubusername"],
+  "provides": ["audio_source", "scrobble"],
   "requirements": [],
-  "documentation": "https://music-assistant.io/plugin-support/demo/"
+  "documentation": "https://music-assistant.io/plugin-support/demo/",
+  "menu_actions": [
+    {
+      "id": "show_item",
+      "label": "Ask the demo plugin about this",
+      "media_types": ["track", "album", "artist", "playlist"],
+      "scope": "library.read",
+      "icon": "mdi-information-outline"
+    }
+  ],
+  "mcp_tools": [
+    {
+      "id": "list_sources",
+      "description": "List the audio sources of the demo plugin and whether a player is using each one.",
+      "scope": "library.read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "include_format": {
+            "type": "boolean",
+            "description": "Also give the audio format of each source.",
+            "default": false
+          }
+        }
+      }
+    }
+  ],
+  "page": {
+    "label": "Demo plugin page",
+    "scope": "library.read",
+    "icon": "mdi-puzzle-outline"
+  }
 }

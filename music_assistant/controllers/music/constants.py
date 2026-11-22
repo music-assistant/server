@@ -8,11 +8,15 @@ from music_assistant_models.enums import SortDirection, SortField
 
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
+# the playlog stores whole seconds, so closer resume positions count as unchanged
+RESUME_POSITION_TOLERANCE_SECONDS: Final[int] = 2
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
+# setup_data key: the account a provider instance is bound to
+CONF_BOUND_ACCOUNT_ID: Final[str] = "bound_account_id"
 
-DB_SCHEMA_VERSION: Final[int] = 71
+DB_SCHEMA_VERSION: Final[int] = 74
 # headroom kept free on top of what moving the audio analysis out of library.db writes
 DB_FREE_SPACE_MARGIN: Final[int] = 100 * 1024 * 1024
 
@@ -24,6 +28,14 @@ DYNAMIC_RADIO_DYNAMIC_TARGET: Final[int] = 50
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 # the listings assembled from the providers (the tracks of an album, ...), kept as a whole
 CACHE_CATEGORY_LISTINGS: Final[int] = 11
+# which item on a music service an external id (a MusicBrainz id, ISRC or barcode) was found as
+CACHE_CATEGORY_EXTERNAL_IDS: Final[int] = 12
+# how long that item is handed out without looking the external id up again
+EXTERNAL_ID_CACHE_EXPIRATION: Final[int] = 7 * 24 * 3600
+# the form in which an item known only by an external id was listed, before it is looked up
+CACHE_CATEGORY_LISTED_EXTERNAL_ITEMS: Final[int] = 13
+# how long that form is kept for a client that names the item by its uri alone
+LISTED_EXTERNAL_ITEM_CACHE_EXPIRATION: Final[int] = 30 * 24 * 3600
 # how long an assembled listing is served without asking the providers again
 LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 # a browse folder can show what is live right now, so it is kept just long enough to page
@@ -31,6 +43,11 @@ LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 BROWSE_CACHE_EXPIRATION: Final[int] = 2 * 60
 # how many similar artists or tracks the providers are asked for, the size of such a listing
 SIMILAR_ITEMS_LIMIT: Final[int] = 25
+# how many results a provider search for a match returns: a match is among the best hits,
+# and a deeper search costs a provider that pages its search (such as Spotify) more requests
+MATCH_SEARCH_LIMIT: Final[int] = 10
+# how many of an artist's tracks, and of its albums, are searched for to match the artist
+MATCH_REFERENCE_LIMIT: Final[int] = 10
 
 # max time to wait for a single provider's search results before
 # contributing empty results for it, so one slow provider can never block
@@ -56,6 +73,16 @@ RECOMMENDATIONS_ITEMS_TIMEOUT: Final[int] = 30
 # contractually fast (no live backend calls) so a short timeout suffices
 RECOMMENDATIONS_ROWS_TIMEOUT: Final[int] = 5
 
+# browse scheme under which every recommendation row can be opened in full
+RECOMMENDATIONS_BROWSE_SCHEME: Final[str] = "discover"
+
+# browse scheme of the folder that holds the live sources
+LIVE_SOURCES_BROWSE_SCHEME: Final[str] = "live_sources"
+
+# max items a library recommendation row returns when browsed in full,
+# instead of the handful its Discover row shows
+RECOMMENDATIONS_BROWSE_LIMIT: Final[int] = 500
+
 # how long after a provider is loaded its library sync runs for the first time,
 # leaving the rest of the startup work room to settle first
 INITIAL_SYNC_DELAY: Final[int] = 10
@@ -64,6 +91,7 @@ DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
 PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correction"
 MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
 TRACK_RECONCILIATION_TASK_ID: Final[str] = "music_track_reconciliation"
+UNAVAILABLE_MAPPING_CHECK_TASK_ID: Final[str] = "music_unavailable_mapping_check"
 
 # number of duplicate track candidate pairs examined per reconciliation run
 TRACK_RECONCILIATION_BATCH_SIZE: Final[int] = 100

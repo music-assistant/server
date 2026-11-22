@@ -117,6 +117,8 @@ Supporting modules in `helpers/`:
 - `AudioBuffer.read_chunk_for_analysis()` - Read one chunk for a passive analysis reader without mutating the buffer; raises when the chunk has been evicted (reader fell behind)
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
 - `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
+- `AudioBuffer.users` - The parties that wait for the buffer's audio or read it
+- `AudioBuffer.release_if_unneeded()` - Give up the audio and the source of a buffer that nobody reads and that left its queue's scope
 
 ### Buffer Lifecycle
 
@@ -127,13 +129,35 @@ Supporting modules in `helpers/`:
 4. Player requests stream -> get_queue_item_stream() calls buffer.get_stream()
 5. prepare_next_audio_buffer() pre-fills the item after the streamed one: 60s before the end of
    its stream, or for a realtime source once its audio has fully arrived
-6. _cleanup_stale_queue_buffers() clears old buffers to free memory
+6. The queue's release_unneeded_audio() gives up every buffer that left its scope and that
+   nothing reads
 ```
 
 A player that moves on to another track by itself, after a skip on the speaker or a track it gave up
 on, leaves the old track's buffer filling. On a provider with a stream limit that buffer holds the
 slot the new track needs, so the single-item route cancels it once the player asks for another track
 and no open request still streams the old one.
+
+A buffer keeps track of its users. `get_buffer()` lists whoever only waits for the first audio,
+`get_raw_stream()` every open read stream, and `get_queue_item_stream()` holds one `BufferUser` from
+the moment it takes the buffer until it ends, so the wait for a source slot and the time before its
+first read count as well. A stream also claims the queue item it decided to play, which holds the
+item's buffer before the stream has it and when someone else creates it: the item stream for its
+whole life, the flow stream from the moment it selects a track. The route that serves a single item
+to a speaker claims it as well (`claim_item()`), from the moment it accepts the request until the
+request ends: the item is held while the response is set up. A claim counts for the playback
+session its stream is part of, and no longer once the queue the item is on plays in another session
+or in none. The source of a buffer that still fills holds a stream slot of its provider, which lists
+those buffers in `stream_slot_holders`. The slot is taken in the name of the buffer's queue, and a
+source that delivers at playback pace can leave it reserved for that queue when it gives it back
+(the player queues README says when). `release_if_unneeded()` gives up the audio and the source of
+a buffer that no stream reads or holds to read and that left its queue's scope (the player queues
+README says when that is), whether its source still fills or has delivered everything. It makes the
+buffer invalid on the spot, so nobody takes it while its source unwinds, and a caller that only
+waited for its first audio gets no buffer. It runs when a user of a buffer leaves, when a claim
+ends, when the scope of its queue can have changed, and for every holder of a provider's slots when
+a track needs one and none is free; when none of them gives way, a debug line names the holders,
+their users and the streams that claim their items.
 
 ### Error Handling
 
@@ -175,7 +199,7 @@ Every candidate carries a short reason ("pinned", "own account", "hi-res 96/24",
 ```
 Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
     -> AudioBuffer (raw PCM storage, analysis providers read it here)
-    -> buffer.get_stream() -> Optional: FFmpeg (volume normalization, speed, fade-in)
+    -> buffer.get_stream() -> Optional: FFmpeg (volume normalization, limiter after a positive gain, speed, fade-in)
     -> Optional: Smart Fades (crossfade mixing between tracks)
     -> FFmpeg (encode to output format with player-specific DSP)
     -> HTTP Response / Direct PCM stream
@@ -188,7 +212,18 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 
 ## Audio Analysis
 
-When a buffer starts from the beginning of an item (not for audio sources or sound effects), `audio_buffer.py` hands it to `AudioAnalysisController.start_analysis()`. Every audio analysis provider can accept the session and reads the same retained PCM at low priority, so a track is analysed while it plays without a second fetch. Results are stored in `audio_analysis.db`.
+When a buffer starts from the beginning of an item (not for audio sources or sound effects), `audio_buffer.py` hands it to `AudioAnalysisController.start_analysis()`. Every audio analysis provider that is offered the session can accept it and reads the same retained PCM at low priority, so a track is analysed while it plays without a second fetch. Results are stored in `audio_analysis.db`.
+
+A provider declares the media types it is offered in `media_types` (tracks only by default). `_start_analysis_on_providers()` offers a session, live or background, only to the providers that declared its media type.
+
+A live source (`MediaType.AUDIO_SOURCE`) has no buffer. `get_audio_source_stream()` hands its audio to `AudioAnalysisController.start_source_analysis()`, which offers it only to providers that declared `AUDIO_SOURCE`, and only when the source allows it (`AudioSource.allow_audio_analysis`, set by the plugin for a live input such as a line-in, unless the user disabled it in the settings of that input; off for what a streaming service delivers to a receiver). With no such provider nothing is started and the stream copies no audio. The session runs in realtime while the stream does and the source its session holds allows it (a plugin whose setting changes hands the session the rebuilt source with `PlayerController.refresh_source()`): audio is fed in one-second blocks without ever waiting, dropped beyond `LIVE_SOURCE_BACKLOG_SECONDS` while a provider falls behind, and a failure of the analysis switches it off for the rest of the stream instead of failing the stream. One worker owns the session from the providers' start to the end of the stream, and releases all of it at whatever stage it ends. Nothing of it is stored: no result, no failure, no place in the background scan.
+
+A radio station has one session, shared by every buffer that plays it: a later buffer of the station joins it, the reader goes on with another buffer when the one it reads ends, and skips ahead when it falls behind the played audio.
+
+A provider can report what plays in a live source or on a radio station with `AudioAnalysisProvider.report_stream_metadata()`, which `AudioAnalysisController.show_stream_metadata()` hands to the session. It returns whether the report is accepted; on False the provider stops recognising for that session. Reported metadata is display only and never stored. A recogniser returns quickly from `process_pcm_chunk` and recognises in a throttled task of its own (one sample every 30 to 60 seconds).
+
+- **Live source**: it is shown on the source's session (`PlayerController.show_analysis_metadata()`) while the owning plugin has reported nothing itself (`AudioSourceSession.stream_metadata_reported`), and only for the stream the analysis follows. It is withdrawn when the session ends or the reporting provider leaves it.
+- **Radio station**: it is kept on the station's session, never in `StreamDetails`, so the station's own metadata keeps its provenance. A report becomes due once the listener reaches the audio it came from (the reader's lead over the playback position of the buffer it reads) and is then shown on every queue whose buffer is joined. `AudioAnalysisController.shown_stream_metadata()` gives what a stream shows: the station's own metadata, or else the recognised one. The player's current media, its artwork and the ICY title Music Assistant relays all read it. Once the station sends metadata of its own, that wins for the rest of the session and reports are refused. The recognised title is withdrawn when the session ends, the reporting provider leaves it, or the station sends its own metadata.
 
 ### Loudness Measurement
 - Produced by the `loudness_analysis` provider (`providers/loudness_analysis/`): FFmpeg `ebur128` over up to 10 minutes of PCM

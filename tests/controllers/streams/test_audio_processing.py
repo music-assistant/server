@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+import cmath
+import math
+from collections.abc import AsyncGenerator, Sequence
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, cast
@@ -32,14 +34,28 @@ from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
     MediaType,
+    PlayerType,
+    ProtocolRole,
+    SpeakerChannel,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import QueueEmpty
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    QueueEmpty,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import (
+    CONF_CROSSOVER_FREQUENCY,
+    CONF_HIGH_PASS_MAIN_SPEAKERS,
+    CONF_SUBWOOFER_LEVEL,
+    CONF_SUBWOOFER_OWN_CROSSOVER,
+)
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import (
     AudioOutputPlan,
@@ -49,6 +65,16 @@ from music_assistant.controllers.streams.audio_processing import (
 )
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.helpers.dsp import ComplexFilter
+from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
+
+
+def _bare_buffer(**attributes: Any) -> SimpleNamespace:
+    """
+    Build a bare stand-in for the buffer of an item that a flow stream plays.
+
+    :param attributes: What the test reads from or sets on the buffer.
+    """
+    return SimpleNamespace(release_if_unneeded=lambda: None, **attributes)
 
 
 def _format(
@@ -277,6 +303,36 @@ def test_float_headroom_alone_does_not_break_the_bit_perfect_claim() -> None:
 
     chain = cast("AudioProcessingChain", streamdetails.audio_processing)
     assert chain.outputs[0].fidelity.bit_perfect is True
+
+
+@pytest.mark.parametrize("alters_audio", [False, True])
+def test_an_output_with_a_hidden_transform_is_not_bit_perfect(alters_audio: bool) -> None:
+    """An output whose plan alters the samples with a transform it does not list is not bit perfect."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    streamdetails.audio_format = _format(ContentType.FLAC, 44100, 24)
+    headroom = _format(ContentType.PCM_F32LE, 44100, 32)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=headroom,
+        pcm_format=headroom,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = headroom
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 44100, 24)
+    lossless_plan.alters_audio = alters_audio
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.outputs[0].fidelity.bit_perfect is not alters_audio
 
 
 def test_shared_output_destinations_are_registered_atomically() -> None:
@@ -882,7 +938,7 @@ def test_hidden_and_intermediate_processing_prevents_bit_perfect_claim() -> None
 def test_player_output_plan_matches_ffmpeg_filters() -> None:
     """Typed output details describe the FFmpeg filters returned to callers."""
     mass = MagicMock()
-    mass.players.get_player.return_value = None
+    mass.players.get_output_protocol.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(
         enabled=True,
         input_gain=-1.0,
@@ -890,7 +946,7 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
         output_gain=-0.5,
         preset_id="night",
     )
-    mass.config.get_raw_player_config_value.return_value = "left"
+    mass.config.get_protocol_value.return_value = "left"
     audio = StreamsAudio(cast("Any", mass))
     input_format = _format(ContentType.PCM_F32LE, 96000, 32)
     output_format = _format(ContentType.FLAC, 48000, 16, channels=1)
@@ -929,9 +985,9 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
 def test_player_output_plan_downmixes_to_mono() -> None:
     """The mono output mode folds both source channels into a single channel."""
     mass = MagicMock()
-    mass.players.get_player.return_value = None
+    mass.players.get_output_protocol.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.return_value = "mono"
+    mass.config.get_protocol_value.return_value = "mono"
     audio = StreamsAudio(cast("Any", mass))
     input_format = _format(ContentType.PCM_F32LE, 48000, 32)
     output_format = _format(ContentType.FLAC, 48000, 16, channels=1)
@@ -952,9 +1008,9 @@ def test_player_output_plan_downmixes_to_mono() -> None:
 def test_player_output_plan_feeds_every_output_channel() -> None:
     """A stereo output carries the downmix on both channels instead of being upmixed."""
     mass = MagicMock()
-    mass.players.get_player.return_value = None
+    mass.players.get_output_protocol.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.return_value = "mono"
+    mass.config.get_protocol_value.return_value = "mono"
     audio = StreamsAudio(cast("Any", mass))
     audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -971,12 +1027,295 @@ def test_player_output_plan_feeds_every_output_channel() -> None:
     assert plan.output_details.source_channel == AudioChannel.ALL
 
 
+@pytest.mark.parametrize(
+    ("channel", "pan"),
+    [
+        (SpeakerChannel.FRONT_LEFT, "pan=stereo|c0=FL|c1=FL"),
+        (SpeakerChannel.FRONT_RIGHT, "pan=stereo|c0=FR|c1=FR"),
+    ],
+)
+def test_player_output_plan_plays_the_channel_of_a_speaker(
+    channel: SpeakerChannel, pan: str
+) -> None:
+    """
+    A speaker of a multi-channel player plays its own channel, after the DSP of that player.
+
+    The configured output channels do not apply, and the player as a whole plays every
+    channel.
+    """
+    mass = MagicMock()
+    mass.players.get_output_protocol.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=True, input_gain=-2.0)
+    mass.config.get_protocol_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan("set-1", audio_format, audio_format, channel=channel)
+
+    assert plan.filter_params == ["volume=-2.0dB", pan]
+    assert plan.dsp_config_id == "set-1"
+    assert plan.output_details.source_channel is None
+    assert not plan.alters_audio
+
+
+MONO_SUM = "pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"
+LOW_PASS_80 = "low-pass 80 Hz Q 0.707"
+HIGH_PASS_80 = "high-pass 80 Hz Q 0.707"
+
+
+def _set_mass(values: dict[str, Any], *, input_gain: float = 0.0) -> MagicMock:
+    """
+    Return a mocked server whose multi-channel player stores these settings.
+
+    :param values: The stored values of the protocol of the player, by key.
+    :param input_gain: The input gain of the DSP of the player, which is off without one.
+    """
+    mass = MagicMock()
+    mass.players.get_output_protocol.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(
+        enabled=bool(input_gain), input_gain=input_gain
+    )
+    mass.config.get_protocol_value.side_effect = lambda _id, key, default=None: values.get(
+        key, default
+    )
+    return mass
+
+
+def _biquad(param: str | ComplexFilter) -> dict[str, float] | None:
+    """Return the coefficients of a biquad filter, None for another filter."""
+    if not isinstance(param, str) or not param.startswith("biquad="):
+        return None
+    pairs = (part.split("=") for part in param.removeprefix("biquad=").split(":"))
+    return {name: float(value) for name, value in pairs}
+
+
+def _describe(params: Sequence[str | ComplexFilter], sample_rate: int) -> list[str | ComplexFilter]:
+    """
+    Return the filters, with each biquad told by its kind, corner frequency and Q.
+
+    :param params: The filter params of an output plan.
+    :param sample_rate: The sample rate the filters run at.
+    """
+    described: list[str | ComplexFilter] = []
+    for param in params:
+        if (c := _biquad(param)) is None:
+            described.append(param)
+            continue
+        w_0 = math.acos(-c["a1"] / 2)
+        q = math.sin(w_0) / (2 * (c["a0"] - 1))
+        kind = "high-pass" if c["b1"] < 0 else "low-pass"
+        described.append(f"{kind} {w_0 * sample_rate / (2 * math.pi):.0f} Hz Q {q:.3f}")
+    return described
+
+
+def _response(params: Sequence[str | ComplexFilter], sample_rate: int, frequency: float) -> complex:
+    """Return the complex response of the biquads among the filters at a frequency."""
+    z_1 = cmath.exp(-2j * math.pi * frequency / sample_rate)
+    response = complex(1)
+    for param in params:
+        if (c := _biquad(param)) is not None:
+            response *= (c["b0"] + c["b1"] * z_1 + c["b2"] * z_1**2) / (
+                c["a0"] + c["a1"] * z_1 + c["a2"] * z_1**2
+            )
+    return response
+
+
+def _db(value: complex) -> float:
+    """Return the level of a response in dB."""
+    return 20 * math.log10(abs(value))
+
+
+@pytest.mark.parametrize(
+    ("channel", "with_subwoofer", "values", "filters"),
+    [
+        pytest.param(
+            SpeakerChannel.LFE, True, {}, [MONO_SUM, LOW_PASS_80, LOW_PASS_80], id="subwoofer"
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_SUBWOOFER_LEVEL: -3},
+            [MONO_SUM, LOW_PASS_80, LOW_PASS_80, "volume=-3dB"],
+            id="subwoofer at its own level",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_SUBWOOFER_LEVEL: 6},
+            [MONO_SUM, LOW_PASS_80, LOW_PASS_80],
+            id="subwoofer at a stored level above 0 dB",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_CROSSOVER_FREQUENCY: 120},
+            [MONO_SUM, "low-pass 120 Hz Q 0.707", "low-pass 120 Hz Q 0.707"],
+            id="subwoofer at another crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_SUBWOOFER_OWN_CROSSOVER: True, CONF_SUBWOOFER_LEVEL: -4},
+            [MONO_SUM, "volume=-4dB"],
+            id="subwoofer with its own crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False},
+            [MONO_SUM, LOW_PASS_80],
+            id="subwoofer next to main speakers at full range",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {},
+            ["pan=stereo|c0=FL|c1=FL", HIGH_PASS_80, HIGH_PASS_80],
+            id="main speaker",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {CONF_SUBWOOFER_OWN_CROSSOVER: True, CONF_CROSSOVER_FREQUENCY: 150},
+            ["pan=stereo|c0=FL|c1=FL", "high-pass 150 Hz Q 0.707", "high-pass 150 Hz Q 0.707"],
+            id="main speaker next to a subwoofer with its own crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False},
+            ["pan=stereo|c0=FL|c1=FL"],
+            id="main speaker at full range",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False, CONF_SUBWOOFER_OWN_CROSSOVER: True},
+            ["pan=stereo|c0=FL|c1=FL"],
+            id="main speaker at full range next to a subwoofer with its own crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            False,
+            {},
+            ["pan=stereo|c0=FL|c1=FL"],
+            id="main speaker while the subwoofer is away",
+        ),
+        pytest.param(
+            None,
+            True,
+            {},
+            [HIGH_PASS_80, HIGH_PASS_80],
+            id="main speaker that plays every channel",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_CENTER,
+            True,
+            {},
+            [MONO_SUM, HIGH_PASS_80, HIGH_PASS_80],
+            id="center speaker",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_CENTER,
+            False,
+            {},
+            [MONO_SUM],
+            id="center speaker while the subwoofer is away",
+        ),
+    ],
+)
+def test_player_output_plan_splits_the_bass_between_a_subwoofer_and_the_main_speakers(
+    channel: SpeakerChannel | None,
+    with_subwoofer: bool,
+    values: dict[str, Any],
+    filters: list[str],
+) -> None:
+    """
+    The subwoofer of a multi-channel player plays the bass, and its main speakers the rest.
+
+    The DSP of the player runs first. The subwoofer gets the mono sum, low-passed at the
+    crossover unless it has a crossover of its own, at its own level. A main speaker is
+    high-passed at the crossover while the subwoofer plays, unless the user lets it play the
+    full range. The crossover is no filter the user set, so it is not reported as one, but it
+    alters the audio of the player: every speaker reports that, also one it leaves as it is.
+    The mono sum is reported as one.
+    """
+    audio = StreamsAudio(cast("Any", _set_mass(values, input_gain=-2.0)))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=channel, with_subwoofer=with_subwoofer
+    )
+
+    assert _describe(plan.filter_params, 48000) == ["volume=-2.0dB", *filters]
+    assert plan.output_details.dsp.filters == []
+    assert plan.output_details.source_channel == (AudioChannel.ALL if MONO_SUM in filters else None)
+    splits_bass = (channel == SpeakerChannel.LFE or with_subwoofer) and (
+        values.get(CONF_HIGH_PASS_MAIN_SPEAKERS, True)
+        or not values.get(CONF_SUBWOOFER_OWN_CROSSOVER, False)
+        or values.get(CONF_SUBWOOFER_LEVEL, 0) < 0
+    )
+    assert plan.alters_audio == splits_bass
+
+
+@pytest.mark.parametrize("sample_rate", [44100, 48000, 96000, 192000])
+def test_the_crossover_of_a_subwoofer_and_its_main_speakers_sums_flat(sample_rate: int) -> None:
+    """
+    The low-pass of the subwoofer and the high-pass of the main speakers add up to a flat level.
+
+    Each is 6 dB down at the crossover; an octave away from it, on its own side, each is more
+    than 24 dB down.
+    """
+    audio = StreamsAudio(cast("Any", _set_mass({})))
+    audio_format = _format(ContentType.PCM_F32LE, sample_rate, 32)
+
+    subwoofer = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=SpeakerChannel.LFE, with_subwoofer=True
+    ).filter_params
+    main = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=SpeakerChannel.FRONT_LEFT, with_subwoofer=True
+    ).filter_params
+
+    for frequency in (20, 30, 40, 60, 80, 100, 120, 160, 200, 300, 440, 1000):
+        summed = _response(subwoofer, sample_rate, frequency) + _response(
+            main, sample_rate, frequency
+        )
+        assert _db(summed) == pytest.approx(0.0, abs=0.01), frequency
+    assert _db(_response(subwoofer, sample_rate, 80)) == pytest.approx(-6.02, abs=0.05)
+    assert _db(_response(main, sample_rate, 80)) == pytest.approx(-6.02, abs=0.05)
+    assert _db(_response(subwoofer, sample_rate, 160)) < -24
+    assert _db(_response(main, sample_rate, 40)) < -24
+    assert _db(_response(subwoofer, sample_rate, 440)) < -55
+    assert _db(_response(subwoofer, sample_rate, 20)) == pytest.approx(0.0, abs=0.05)
+    assert _db(_response(main, sample_rate, 1000)) == pytest.approx(0.0, abs=0.05)
+
+
+def test_a_subwoofer_next_to_main_speakers_at_full_range_leaves_no_dip_at_the_crossover() -> None:
+    """
+    With main speakers that play the full range, the subwoofer adds bass without a dip.
+
+    Its gentler low-pass is 3 dB down at the crossover, and is still well down an octave
+    above it.
+    """
+    audio = StreamsAudio(cast("Any", _set_mass({CONF_HIGH_PASS_MAIN_SPEAKERS: False})))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    subwoofer = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=SpeakerChannel.LFE, with_subwoofer=True
+    ).filter_params
+
+    assert _db(_response(subwoofer, 48000, 80)) == pytest.approx(-3.01, abs=0.05)
+    assert _db(_response(subwoofer, 48000, 440)) < -29
+    assert _db(1 + _response(subwoofer, 48000, 80)) == pytest.approx(1.76, abs=0.05)
+    assert min(_db(1 + _response(subwoofer, 48000, f)) for f in range(20, 1001, 5)) > -2
+
+
 def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:
     """A single channel source has no channels to select, so it is left untouched."""
     mass = MagicMock()
-    mass.players.get_player.return_value = None
+    mass.players.get_output_protocol.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.return_value = "mono"
+    mass.config.get_protocol_value.return_value = "mono"
     audio = StreamsAudio(cast("Any", mass))
     audio_format = _format(ContentType.PCM_F32LE, 48000, 32, channels=1)
 
@@ -996,9 +1335,9 @@ def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:
 def test_player_output_plan_pans_for_the_handoff_format() -> None:
     """The pan follows the format FFmpeg emits, not a later provider side encode."""
     mass = MagicMock()
-    mass.players.get_player.return_value = None
+    mass.players.get_output_protocol.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.return_value = "mono"
+    mass.config.get_protocol_value.return_value = "mono"
     audio = StreamsAudio(cast("Any", mass))
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -1035,12 +1374,12 @@ def test_mono_downmix_prevents_bit_perfect_claim() -> None:
 def test_player_output_plan_excludes_neutral_filters() -> None:
     """A filter that emits no FFmpeg params is left out of the reported chain."""
     mass = MagicMock()
-    mass.players.get_player.return_value = None
+    mass.players.get_output_protocol.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(
         enabled=True,
         filters=[ToneControlFilter(enabled=True)],
     )
-    mass.config.get_raw_player_config_value.return_value = "stereo"
+    mass.config.get_protocol_value.return_value = "stereo"
     audio = StreamsAudio(cast("Any", mass))
     audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -1062,14 +1401,14 @@ def test_player_output_plan_excludes_neutral_filters() -> None:
 def _convolution_plan(known_ir_ids: list[str]) -> AudioOutputPlan:
     """Build an output plan for a player convolving with impulse response "abc123"."""
     mass = MagicMock()
-    mass.players.get_player.return_value = None
+    mass.players.get_output_protocol.return_value = None
     mass.storage_path = "/storage"
     mass.config.get_player_dsp_config.return_value = DSPConfig(
         enabled=True,
         filters=[ConvolutionFilter(enabled=True, ir_id="abc123")],
     )
     mass.config.get_dsp_irs.return_value = [{"ir_id": ir_id} for ir_id in known_ir_ids]
-    mass.config.get_raw_player_config_value.return_value = "stereo"
+    mass.config.get_protocol_value.return_value = "stereo"
     audio = StreamsAudio(cast("Any", mass))
     audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
     return audio.get_player_output_plan(
@@ -1100,16 +1439,17 @@ def test_player_output_plan_keeps_convolution_with_known_ir() -> None:
 
 
 def test_player_output_plan_prefers_rendering_player_channels() -> None:
-    """Output channels stored on the rendering player win over the parent's value."""
-    mass = MagicMock()
-    player = MagicMock(player_id="child-1", protocol_parent_id="parent-1")
-    player.state.active_group = None
-    player.state.synced_to = None
-    mass.players.get_player.return_value = player
-    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default: (
-        "left" if player_id == "child-1" else default
+    """Output channels stored on the rendering protocol win over its player's own value."""
+    mass = mock_player_mass()
+    player, _native = attach_mock(
+        MockProvider("native", mass=mass), "native-1", player_id="parent-1"
     )
+    attach_mock(MockProvider("audio", mass=mass), "child-1", role=ProtocolRole.AUDIO, player=player)
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_protocol_value.side_effect = lambda protocol_id, _key, default: {
+        "child-1": "left",
+        "native-1": "right",
+    }.get(protocol_id, default)
     audio = StreamsAudio(cast("Any", mass))
     audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -1124,33 +1464,38 @@ def test_player_output_plan_prefers_rendering_player_channels() -> None:
 
     assert plan.output_details.source_channel == AudioChannel.FL
     assert "pan=stereo|c0=FL|c1=FL" in plan.filter_params
-    # processing attribution still points at the visible parent player
+    # processing attribution still points at the player the protocol renders for
     assert mass.streams.audio_processing.update_output.call_args.args[0] == "parent-1"
 
 
 @pytest.mark.asyncio
 async def test_output_format_prefers_rendering_player_channels() -> None:
-    """The output format channel count follows the rendering player's own stored value."""
-    mass = MagicMock()
-    player = MagicMock(player_id="child-1", protocol_parent_id="parent-1")
-    player.get_supported_sample_rates.return_value = [(48000, 24)]
-    mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default: (
-        "left" if player_id == "child-1" else default
+    """The output format channel count follows the rendering protocol's own stored value."""
+    mass = mock_player_mass()
+    player, _native = attach_mock(
+        MockProvider("native", mass=mass), "native-1", player_id="parent-1"
     )
+    _player, protocol = attach_mock(
+        MockProvider("audio", mass=mass), "child-1", role=ProtocolRole.AUDIO, player=player
+    )
+    protocol._attr_supported_sample_rates = [(48000, 24)]
+    mass.config.get_protocol_value.side_effect = lambda protocol_id, _key, default: {
+        "child-1": "left",
+        "native-1": "stereo",
+    }.get(protocol_id, default)
     audio = StreamsAudio(cast("Any", mass))
 
-    fmt = await audio.get_output_format("flac", player, 48000, 24, MediaType.TRACK)
+    fmt = await audio.get_output_format("flac", protocol, 48000, 24, MediaType.TRACK)
 
     assert fmt.channels == 1
 
 
-def _hires_capable_audio() -> tuple[StreamsAudio, MagicMock]:
-    """Return a StreamsAudio and a player that can take 96 kHz / 24 bit."""
-    mass = MagicMock()
-    player = MagicMock(player_id="player-1", protocol_parent_id=None)
-    player.get_supported_sample_rates.return_value = [(96000, 24)]
-    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default: default
-    return StreamsAudio(cast("Any", mass)), player
+def _hires_capable_audio() -> tuple[StreamsAudio, MockProtocol]:
+    """Return a StreamsAudio and the protocol of a player that can take 96 kHz / 24 bit."""
+    mass = mock_player_mass()
+    _player, protocol = attach_mock(MockProvider("test", mass=mass), "protocol-1")
+    protocol._attr_supported_sample_rates = [(96000, 24)]
+    return StreamsAudio(cast("Any", mass)), protocol
 
 
 @pytest.mark.parametrize(
@@ -1273,6 +1618,31 @@ async def test_flow_stream_handler_continues_a_repeat_request_at_the_current_ite
     controller.mass.player_queues.get_item.assert_called_once_with("queue-1", expected_item_id)
 
 
+@pytest.mark.parametrize(
+    ("error", "available"),
+    [
+        (RetriesExhausted("Not retrying, asked to wait 3600 seconds"), True),
+        (MediaNotFoundError("gone"), False),
+    ],
+    ids=["provider_backs_off", "item_not_found"],
+)
+@pytest.mark.asyncio
+async def test_item_stream_handler_keeps_an_item_whose_provider_backs_off(
+    monkeypatch: pytest.MonkeyPatch, error: MusicAssistantError, available: bool
+) -> None:
+    """A provider asking to back off fails the request but leaves the item available."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.streamdetails = None
+    queue_item.available = True
+    controller.audio.get_stream_details = AsyncMock(side_effect=error)
+
+    with pytest.raises(web.HTTPNotFound):
+        await controller.serve_queue_item_stream(request)
+
+    assert queue_item.available is available
+
+
 @pytest.mark.asyncio
 async def test_flow_stream_handler_refuses_a_session_that_streamed_to_its_end(
     monkeypatch: pytest.MonkeyPatch,
@@ -1285,6 +1655,28 @@ async def test_flow_stream_handler_refuses_a_session_that_streamed_to_its_end(
         await controller.serve_queue_flow_stream(request)
 
     controller.mass.player_queues.flow_stream_finished.assert_called_once_with("queue-1")
+    controller.audio.select_flow_pcm_format.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flow_stream_handler_ends_a_range_continuation_of_a_finished_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A player resuming a finished flow stream with a Range request is told the stream ends there.
+
+    Cast receivers reconnect with a Range request when the stream closes short of its
+    declared length; a 404 makes them drop their buffer, a 416 lets them play it out.
+    """
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.flow_stream_finished.return_value = True
+    request.headers = {"Range": "bytes=2401175-"}
+    request.http_range = slice(2401175, None)
+
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as exc_info:
+        await controller.serve_queue_flow_stream(request)
+
+    assert exc_info.value.headers["Content-Range"] == "bytes */2401175"
     controller.audio.select_flow_pcm_format.assert_not_awaited()
 
 
@@ -1315,19 +1707,17 @@ def test_flow_get_stream_continues_a_repeat_call_at_the_current_item(
     controller.mass.player_queues.get_item.assert_called_once_with("queue-1", "item-2")
 
 
-def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Protocol output details use the user-facing parent configuration."""
-    mass = MagicMock()
-    player = MagicMock(player_id="protocol-1", protocol_parent_id="player-1")
-    player.state.active_group = None
-    player.state.synced_to = None
-    shared_player = MagicMock(player_id="protocol-2", protocol_parent_id="player-2")
-    mass.players.get_player.side_effect = lambda player_id: {
-        "protocol-1": player,
-        "protocol-2": shared_player,
-    }.get(player_id)
+def test_protocol_output_uses_player_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Output details of an audio protocol use the configuration of its player."""
+    mass = mock_player_mass()
+    native = MockProvider("native", mass=mass)
+    audio_provider = MockProvider("audio", mass=mass)
+    player, _native = attach_mock(native, "native-1", player_id="player-1")
+    attach_mock(audio_provider, "protocol-1", role=ProtocolRole.AUDIO, player=player)
+    shared_player, _native_2 = attach_mock(native, "native-2", player_id="player-2")
+    attach_mock(audio_provider, "protocol-2", role=ProtocolRole.AUDIO, player=shared_player)
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default: (
+    mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default: (
         False if isinstance(default, bool) else "right"
     )
     audio = StreamsAudio(cast("Any", mass))
@@ -1351,10 +1741,10 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
     assert plan.output_details.dsp.preset_id == "parent-preset"
     assert plan.dsp_config_id == "player-1"
     assert plan.output_details.source_channel == AudioChannel.FR
-    # the output channels are looked up on the rendering player first (no value
-    # stored there in this scenario), then resolved from the user-facing parent
-    assert {call.args[0] for call in mass.config.get_raw_player_config_value.call_args_list} == {
-        "player-1",
+    # the output channels are looked up on the rendering protocol first (no value
+    # stored there in this scenario), then resolved from the own protocol of its player
+    assert {call.args[0] for call in mass.config.get_protocol_value.call_args_list} == {
+        "native-1",
         "protocol-1",
     }
     mass.streams.audio_processing.update_output.assert_called_once_with(
@@ -1369,23 +1759,24 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
 
 def test_single_member_group_uses_child_dsp_preset() -> None:
     """A single-member player group reports the child's effective preset."""
-    mass = MagicMock()
-    player = MagicMock(player_id="group-1", protocol_parent_id=None)
-    player.provider.domain = "player_group"
-    player.state.active_group = None
-    player.state.synced_to = None
-    player.state.group_members = ["child-1"]
-    player.state.supported_features = set()
-    child = MagicMock(player_id="child-1")
-    mass.players.get_player.side_effect = lambda player_id: (
-        player if player_id == "group-1" else child
+    mass = mock_player_mass()
+    _group, group_protocol = attach_mock(
+        MockProvider("player_group", mass=mass),
+        "group-protocol-1",
+        role=ProtocolRole.VIRTUAL,
+        player_id="group-1",
+        player_type=PlayerType.GROUP,
     )
+    attach_mock(MockProvider("test", mass=mass), "child-protocol-1", player_id="child-1")
+    # a group names its members by player id
+    group_protocol._attr_group_members = ["child-1"]
+    group_protocol._attr_supported_features = set()
     mass.config.get_player_dsp_config.side_effect = lambda player_id: (
         DSPConfig(enabled=True, preset_id="child-preset")
         if player_id == "child-1"
         else DSPConfig(enabled=False)
     )
-    mass.config.get_raw_player_config_value.return_value = "stereo"
+    mass.config.get_protocol_value.return_value = "stereo"
     audio = StreamsAudio(cast("Any", mass))
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -1398,19 +1789,17 @@ def test_single_member_group_uses_child_dsp_preset() -> None:
 
 def test_unsupported_group_preserves_configured_preset() -> None:
     """Runtime DSP suppression retains the selected preset identity."""
-    mass = MagicMock()
-    player = MagicMock(player_id="leader-1", protocol_parent_id=None)
-    player.provider.domain = "test"
-    player.state.active_group = None
-    player.state.synced_to = None
-    player.state.group_members = ["child-1"]
-    player.state.supported_features = set()
-    mass.players.get_player.return_value = player
+    mass = mock_player_mass()
+    provider = MockProvider("test", mass=mass)
+    _leader, leader_protocol = attach_mock(provider, "leader-protocol-1", player_id="leader-1")
+    attach_mock(provider, "child-protocol-1", player_id="child-1")
+    leader_protocol._attr_group_members = ["leader-protocol-1", "child-protocol-1"]
+    leader_protocol._attr_supported_features = set()
     mass.config.get_player_dsp_config.side_effect = lambda _player_id: DSPConfig(
         enabled=True,
         preset_id="group-preset",
     )
-    mass.config.get_raw_player_config_value.return_value = "stereo"
+    mass.config.get_protocol_value.return_value = "stereo"
     audio = StreamsAudio(cast("Any", mass))
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -1712,7 +2101,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         seek_position=0,
         seconds_streamed=0,
         duration=120,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_bare_buffer(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         is_realtime=False,
     )
     first_item = SimpleNamespace(
@@ -1729,7 +2118,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
     skipped_ready.set()
     skipped_streamdetails = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=SimpleNamespace(
+        buffer=_bare_buffer(
             has_error=False,
             is_valid=lambda *_args: True,
             duration_available=16,
@@ -1771,10 +2160,10 @@ async def test_flow_zero_audio_skip_restores_seek_position(
     mass.config.get_raw_core_config_value.return_value = 8
     mass.streams.audio_processing.update_item_context = MagicMock()
     mass.player_queues.queue_buffer_completed = MagicMock()
-    player = MagicMock()
-    player.config.get_value.return_value = "fixed_48000"
-    player.get_supported_sample_rates.return_value = []
-    mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    protocol.config.get_value.return_value = "fixed_48000"
+    protocol.get_supported_sample_rates.return_value = []
+    mass.players.get_output_protocol.return_value = protocol
     audio = StreamsAudio(cast("Any", mass))
     audio.setup()
     build = AsyncMock(
@@ -1835,7 +2224,7 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
     pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
     streamdetails = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=SimpleNamespace(cancelled=source_cancelled and not detached),
+        buffer=_bare_buffer(cancelled=source_cancelled and not detached),
         fade_in=False,
         stream_error=False,
         tail_overlap=None,
@@ -1870,10 +2259,10 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
     mass.config.get_raw_core_config_value.return_value = 8
     mass.streams.audio_processing.update_item_context = MagicMock()
     mass.player_queues.queue_buffer_completed = MagicMock()
-    player = MagicMock()
-    player.config.get_value.return_value = "fixed_48000"
-    player.get_supported_sample_rates.return_value = []
-    mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    protocol.config.get_value.return_value = "fixed_48000"
+    protocol.get_supported_sample_rates.return_value = []
+    mass.players.get_output_protocol.return_value = protocol
     audio = StreamsAudio(cast("Any", mass))
     audio.setup()
 
@@ -2160,22 +2549,22 @@ def _native_stream_handler_context(
         session_id="session-1",
         flow_mode_stream_log=[],
         last_served_item_id=None,
-        last_requested_item_id=None,
     )
     mass.player_queues.get.return_value = queue
     mass.player_queues.queue_data.return_value = queue_data
     mass.player_queues.flow_stream_finished.return_value = False
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
-    mass.config.get_raw_player_config_value.return_value = "disabled"
+    mass.config.get_protocol_value.return_value = "disabled"
 
-    group_members = ["player-1", "player-2"]
-    player = MagicMock(player_id="player-1", protocol_parent_id=None)
-    player.state.group_members = group_members
-    player.state.supported_features = set()
-    player.state.name = "Player"
-    player.get_config_value.return_value = "default"
-    mass.players.get_player.return_value = player
+    group_members = ["protocol-1", "protocol-2"]
+    protocol = MagicMock(protocol_id="protocol-1", display_name="Player")
+    protocol.group_members = group_members
+    protocol.supported_features = set()
+    protocol.get_config_value.return_value = False
+    mass.players.get_output_protocol.return_value = protocol
+    # the queue's player is no group that shares one stream with its members
+    mass.players.get_player.return_value.own_protocol.get_shared_stream.return_value = None
 
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
     output_format = _format(ContentType.FLAC, 48000, 24)
@@ -2188,6 +2577,7 @@ def _native_stream_handler_context(
     controller = cast("Any", object.__new__(StreamsController))
     controller._open_item_streams = {}
     controller._ended_item_streams = {}
+    controller._flow_bytes_sent = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()
@@ -2210,7 +2600,7 @@ def _native_stream_handler_context(
         "queue_id": "queue-1",
         "session_id": "session-1",
         "queue_item_id": "item-1",
-        "player_id": "player-1",
+        "player_id": "protocol-1",
         "fmt": "flac",
     }
     return controller, request, group_members

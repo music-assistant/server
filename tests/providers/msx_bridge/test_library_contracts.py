@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -33,15 +33,13 @@ async def test_playlist_routes_walk_real_controller_pages(
 ) -> None:
     """Every route retains the last item across multiple provider pages."""
     tracks = [make_track(str(index), f"Track {index}") for index in range(501)]
-    controller = PlaylistController(Mock())
+    controller = PlaylistController(MagicMock())
     mass_mock.music.playlists = controller
+    provider = Mock()
+    provider.get_playlist_tracks = AsyncMock(side_effect=[tracks[:500], tracks[500:], []])
     with (
         patch.object(controller, "_playlist_source", return_value=("playlist-1", "source", None)),
-        patch.object(
-            controller,
-            "_get_provider_playlist_tracks",
-            side_effect=[tracks[:500], tracks[500:], []],
-        ) as fetch_page,
+        patch.object(controller, "_playlist_provider", return_value=provider),
         patch.object(controller, "_add_audio_metadata"),
     ):
         response = await http_client.get(route)
@@ -49,7 +47,8 @@ async def test_playlist_routes_walk_real_controller_pages(
         data = await response.json()
 
     assert len(data["items"]) == 501
-    assert [call.kwargs["page"] for call in fetch_page.await_args_list] == [0, 1, 2]
+    pages = [call.kwargs["page"] for call in provider.get_playlist_tracks.await_args_list]
+    assert pages == [0, 1, 2]
 
 
 @pytest.mark.parametrize(

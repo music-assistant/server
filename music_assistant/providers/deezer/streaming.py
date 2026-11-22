@@ -8,28 +8,57 @@ radio/podcast stream details, and listen logging callbacks.
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
+from asyncio import IncompleteReadError
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import datetime
 from math import ceil
 from typing import TYPE_CHECKING, NoReturn
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientError, ClientTimeout
 from Crypto.Cipher import Blowfish
+from deezer_python_gql import GraphQLClientError
+from deezer_python_gql.generated.enums import MediaTypeInput
+from deezer_python_gql.generated.input_types import (
+    PushQueueContextInput,
+    PushQueueMediaInput,
+    PushQueueStateClientDetailsInput,
+    PushQueueStateInput,
+)
+from deezer_python_gql.generated.push_queue_state import (
+    PushQueueStatePushQueueStatePushQueueStateOutput,
+)
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError, RetriesExhausted
 from music_assistant_models.media_items import AudioFormat, MediaItemType
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.helpers.datetime import utc, utc_timestamp
 
-from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
-from .gw_client import DeezerGWError
-from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
-from .parsers import parse_date
+from .constants import (
+    CONF_SYNC_QUEUE,
+    DECRYPT_KEY_ERROR,
+    DECRYPT_KEY_LENGTH,
+    LISTEN_CONTEXT_TYPES,
+    QUEUE_SYNC_CONFIGURATION,
+    QUEUE_SYNC_REPEAT_MODES,
+    QUEUE_SYNC_SIZE,
+)
+from .gw_client import DeezerGWAuthError, DeezerGWError
+from .helpers import (
+    fetch_all_audiobook_chapter_edges,
+    fetch_all_bookmarks,
+    parse_flac_streaminfo,
+)
+from .parsers import parse_audio_format, parse_bookmark_time
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import ItemMapping
+    from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
+
     from .provider import DeezerProvider
 
 
@@ -43,6 +72,9 @@ class DeezerStreamingManager:
         self.instance_id = provider.instance_id
         self.domain = provider.domain
         self.logger = provider.logger
+        # the Deezer queue state this account saved last, and the queue item it was saved for
+        self._queue_state_version: str | None = None
+        self._synced_queue_item: str | None = None
 
     # -- Resume position --
 
@@ -61,11 +93,7 @@ class DeezerStreamingManager:
         bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
         if item_id in bookmarks:
             is_played, position_ms, bookmarked_at = bookmarks[item_id]
-            timestamp = parse_date(bookmarked_at)
-            if timestamp is not None and timestamp.tzinfo is None:
-                # the core compares against an aware timestamp; Deezer's times are UTC
-                timestamp = timestamp.replace(tzinfo=UTC)
-            return (is_played, position_ms, timestamp)
+            return (is_played, position_ms, parse_bookmark_time(bookmarked_at))
         return (False, 0, None)
 
     # -- Playback callbacks --
@@ -80,11 +108,13 @@ class DeezerStreamingManager:
         is_playing: bool = False,
     ) -> None:
         """
-        Handle callback when a podcast episode has been played or is playing.
+        Handle callback when a podcast episode or track has been played or is playing.
 
-        Syncs playback progress back to Deezer's bookmark/play-state system.
-        Only handles podcast episodes — Deezer's Pipe API has no track listen logging.
+        Syncs podcast progress back to Deezer's bookmark/play-state system, and a playing
+        track's queue to the queue the Deezer apps continue (when enabled).
         """
+        if media_type == MediaType.TRACK and self.provider.config.get_value(CONF_SYNC_QUEUE):
+            await self._sync_queue_state(prov_item_id, position, is_playing)
         if media_type != MediaType.PODCAST_EPISODE:
             return
         if fully_played:
@@ -97,6 +127,14 @@ class DeezerStreamingManager:
             await self.provider.gql_client.bookmark_podcast_episode(
                 episode_id=prov_item_id, offset=position
             )
+
+    async def on_stream_started(self, streamdetails: StreamDetails) -> None:
+        """Handle callback when a track starts playing."""
+        if streamdetails.media_type != MediaType.TRACK or not isinstance(streamdetails.data, dict):
+            return
+        self._start_listen(streamdetails)
+        if context := await self._listen_context(streamdetails):
+            streamdetails.data["context"] = context
 
     # -- Stream details --
 
@@ -117,25 +155,86 @@ class DeezerStreamingManager:
         except DeezerGWError as err:
             _raise_stream_error(err, item_id, "Track")
         url = url_details["sources"][0]["url"]
+        track_id = str(song_data["SNG_ID"])
         size_key = f"FILESIZE_{url_details['format']}"
         size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
+        audio_format = parse_audio_format(url_details["format"])
+        if audio_format.content_type == ContentType.FLAC and (
+            streaminfo := await self._get_flac_streaminfo(url, track_id, size)
+        ):
+            audio_format.sample_rate, audio_format.bit_depth, audio_format.channels = streaminfo
+        # GAIN is the loudness of the track in LUFS, personal uploads have none
+        loudness = float(gain) if (gain := song_data.get("GAIN")) else None
+        if loudness is not None:
+            self.mass.create_task(
+                self.mass.streams.audio_analysis.set_track_loudness(
+                    item_id=item_id,
+                    provider_instance_id_or_domain=self.instance_id,
+                    loudness=loudness,
+                )
+            )
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.try_parse(url_details["format"].split("_")[0])
-            ),
+            audio_format=audio_format,
             stream_type=StreamType.CUSTOM,
             duration=int(song_data["DURATION"]),
             data={
                 "url": url,
                 "format": url_details["format"],
-                "track_id": str(song_data["SNG_ID"]),
+                "track_id": track_id,
             },
             size=size,
             can_seek=True,
             allow_seek=True,
+            loudness=loudness,
         )
+
+    async def _get_flac_streaminfo(
+        self, url: str, track_id: str, size: int
+    ) -> tuple[int, int, int] | None:
+        """
+        Read sample rate, bit depth and channels from the FLAC header of a track.
+
+        :param url: The stream URL of the track.
+        :param track_id: The Deezer track ID, used for the decryption key.
+        :param size: The file size reported by Deezer, so a replaced file is read again.
+        :returns: Tuple of (sample_rate, bit_depth, channels), or None on any failure.
+        """
+        cache_key = f"_get_flac_streaminfo.{track_id}"
+        if cached := await self.mass.cache.get(
+            cache_key, provider=self.instance_id, checksum=str(size)
+        ):
+            sample_rate, bit_depth, channels = cached
+            return sample_rate, bit_depth, channels
+        # Deezer's format names do not give the full format, so the first
+        # (encrypted) chunk of the file is fetched and decrypted to read STREAMINFO
+        try:
+            blowfish_key = self._get_blowfish_key(track_id)
+            async with self.mass.http_session.get(
+                url, headers={"Range": "bytes=0-2047"}, timeout=ClientTimeout(total=10)
+            ) as resp:
+                if resp.status not in (200, 206):
+                    self.logger.debug(
+                        "Could not probe FLAC format of track %s: HTTP %s", track_id, resp.status
+                    )
+                    return None
+                first_chunk = await resp.content.readexactly(2048)
+            header = self._decrypt_chunk(first_chunk, blowfish_key)
+        except (ClientError, TimeoutError, IncompleteReadError, AudioError) as err:
+            self.logger.debug("Could not probe FLAC format of track %s: %s", track_id, err)
+            return None
+        if (streaminfo := parse_flac_streaminfo(header)) is None:
+            self.logger.debug("No FLAC STREAMINFO found at the start of track %s", track_id)
+            return None
+        await self.mass.cache.set(
+            cache_key,
+            list(streaminfo),
+            expiration=86400 * 7,
+            provider=self.instance_id,
+            checksum=str(size),
+        )
+        return streaminfo
 
     async def _get_audiobook_stream_details(self, item_id: str) -> StreamDetails:
         """
@@ -170,9 +269,7 @@ class DeezerStreamingManager:
             item_id=item_id,
             provider=self.instance_id,
             media_type=MediaType.AUDIOBOOK,
-            audio_format=AudioFormat(
-                content_type=ContentType.try_parse(first_url_details["format"].split("_")[0])
-            ),
+            audio_format=parse_audio_format(first_url_details["format"]),
             stream_type=StreamType.CUSTOM,
             duration=total_duration,
             data={
@@ -305,6 +402,7 @@ class DeezerStreamingManager:
                         self.provider.gw_client.log_listen(last_track=prev_chapter)
                     )
                 current_chapter = chapter_details
+                self._start_listen(chapter_details)
                 seek = chapter_seek if i == start_chapter else 0
                 async for chunk in self._stream_encrypted_track(chapter_details, seek):
                     yield chunk
@@ -333,9 +431,6 @@ class DeezerStreamingManager:
             skip_chunks = 0
 
         buffer = bytearray()
-        streamdetails.data["start_ts"] = utc_timestamp()
-        streamdetails.data["stream_id"] = uuid.uuid1()
-        self.mass.create_task(self.provider.gw_client.log_listen(next_track=streamdetails.item_id))
         async with self.mass.http_session.get(
             streamdetails.data["url"], headers=headers, timeout=timeout
         ) as resp:
@@ -361,6 +456,175 @@ class DeezerStreamingManager:
         if not isinstance(streamdetails.data, dict) or "start_ts" not in streamdetails.data:
             return
         await self.provider.gw_client.log_listen(last_track=streamdetails)
+
+    def _start_listen(self, streamdetails: StreamDetails) -> None:
+        """Record when the given track or chapter started playing and report it to Deezer."""
+        # Deezer keeps one listen per stream_id, so every stream of this playback
+        # (seek, reconnect, crossfade) reports under the same one
+        streamdetails.data["start_ts"] = utc_timestamp()
+        streamdetails.data["stream_id"] = uuid.uuid1()
+        self.mass.create_task(self.provider.gw_client.log_listen(next_track=streamdetails.item_id))
+
+    async def _listen_context(self, streamdetails: StreamDetails) -> dict[str, str] | None:
+        """Return the Deezer context of the album, artist or playlist a track is played from."""
+        if not streamdetails.queue_id or not (
+            queue := self.mass.player_queues.get(streamdetails.queue_id)
+        ):
+            return None
+        # the next item can start reaching the player before the queue moves on to it
+        index = queue.current_index or 0
+        queue_item = next(
+            (
+                item
+                for item in (
+                    self.mass.player_queues.get_item(queue.queue_id, index),
+                    self.mass.player_queues.get_item(queue.queue_id, index + 1),
+                )
+                if item and item.streamdetails is streamdetails
+            ),
+            None,
+        )
+        if not queue_item or not queue_item.origin:
+            return None
+        if not (context := await self._deezer_context(queue_item.origin.container)):
+            return None
+        context_type, item_id = context
+        return {"t": context_type, "id": item_id, "c": item_id}
+
+    async def _deezer_context(self, container: ItemMapping | None) -> tuple[str, str] | None:
+        """Return the Deezer context type and id of the album, artist or playlist given."""
+        if not container:
+            return None
+        if (context_type := LISTEN_CONTEXT_TYPES.get(container.media_type)) is None:
+            return None
+        item_id: str | None = None
+        if container.provider == self.instance_id:
+            item_id = container.item_id
+        elif container.provider == "library":
+            controller = self.mass.music.get_controller(container.media_type)
+            try:
+                library_item = await controller.get_library_item(container.item_id)
+            except MediaNotFoundError:
+                return None
+            item_id = next(
+                (
+                    mapping.item_id
+                    for mapping in library_item.provider_mappings
+                    if mapping.provider_instance == self.instance_id
+                ),
+                None,
+            )
+        # Flow and the other virtual playlists have no Deezer page to name
+        if not item_id or not item_id.isdigit():
+            return None
+        return context_type, item_id
+
+    async def _sync_queue_state(self, prov_item_id: str, position: int, is_playing: bool) -> None:
+        """Save the queue playing this track as the queue the Deezer apps continue."""
+        queue = next(
+            (
+                queue
+                for queue in self.mass.player_queues.all()
+                if queue.current_item
+                and (streamdetails := queue.current_item.streamdetails)
+                and streamdetails.provider == self.instance_id
+                and streamdetails.item_id == prov_item_id
+            ),
+            None,
+        )
+        if queue is None or queue.current_item is None:
+            return
+        queue_item_id = queue.current_item.queue_item_id
+        # a playing track reports every 30 seconds, its queue is saved once
+        if is_playing and queue_item_id == self._synced_queue_item:
+            return
+        self._synced_queue_item = queue_item_id if is_playing else None
+        try:
+            await self._push_queue_state(queue, position)
+        except (GraphQLClientError, RetriesExhausted) as err:
+            self.logger.debug("Deezer did not take the queue state: %s", err)
+
+    async def _push_queue_state(self, queue: PlayerQueue, position: int) -> None:
+        """Push the queue from its current track on, the way a Deezer app saves its own."""
+        media: list[PushQueueMediaInput] = []
+        # one context per album, artist or playlist the tracks are played from
+        contexts: dict[str | None, PushQueueContextInput | None] = {}
+        for item in self.mass.player_queues.items(
+            queue.queue_id, QUEUE_SYNC_SIZE, queue.current_index or 0
+        ):
+            if (track_id := self._deezer_track_id(item)) is None:
+                continue
+            container = item.origin.container if item.origin else None
+            key = container.uri if container else None
+            if key not in contexts:
+                context = None
+                if deezer_context := await self._deezer_context(container):
+                    context_type, item_id = deezer_context
+                    content = json.dumps(
+                        {
+                            "ctxId": item_id,
+                            "ctxT": context_type,
+                            "ctxC": item_id,
+                            "lt": "music_on_demand",
+                            "pipeTrackType": "full",
+                            "version": 2,
+                        },
+                        separators=(",", ":"),
+                    )
+                    context = PushQueueContextInput(id=str(len(contexts)), content=content)
+                contexts[key] = context
+            context = contexts[key]
+            media.append(
+                PushQueueMediaInput(
+                    id=track_id,
+                    type=MediaTypeInput.TRACK,
+                    contextId=context.id if context else None,
+                    localQueueItemId=item.queue_item_id,
+                    unshuffledPosition=len(media),
+                )
+            )
+        if not media:
+            return
+        state = PushQueueStateInput(
+            clientDetails=PushQueueStateClientDetailsInput(
+                localQueueID=queue.queue_id,
+                locallyUpdatedAt=utc().isoformat(timespec="milliseconds"),
+            ),
+            mediaList=media,
+            position=0,
+            progressMS=position * 1000,
+            previousVersion=self._queue_state_version,
+            queueConfiguration=QUEUE_SYNC_CONFIGURATION,
+            repeatMode=QUEUE_SYNC_REPEAT_MODES[queue.repeat_mode],
+            contexts=[context for context in contexts.values() if context],
+        )
+        # a Deezer app may have saved its queue since, then push on top of its version
+        for _ in range(2):
+            result = await self.provider.gql_client.push_queue_state(input=state)
+            if isinstance(result, PushQueueStatePushQueueStatePushQueueStateOutput):
+                self._queue_state_version = result.version
+                return
+            if not result.conflict or not result.conflict.current:
+                return
+            state = state.model_copy(update={"previous_version": result.conflict.current.version})
+
+    def _deezer_track_id(self, item: QueueItem) -> str | None:
+        """Return the Deezer id of a queue item this account can play, if it has one."""
+        if (streamdetails := item.streamdetails) and streamdetails.provider == self.instance_id:
+            track_id: str | None = streamdetails.item_id
+        elif item.media_type == MediaType.TRACK and item.media_item:
+            track_id = next(
+                (
+                    mapping.item_id
+                    for mapping in item.media_item.provider_mappings
+                    if mapping.provider_instance == self.instance_id and mapping.available
+                ),
+                None,
+            )
+        else:
+            return None
+        # personal uploads (negative ids) are left out
+        return track_id if track_id and track_id.isdigit() else None
 
     # -- Decryption helpers --
 
@@ -399,6 +663,9 @@ def _raise_stream_error(err: DeezerGWError, item_id: str, label: str) -> NoRetur
     :param item_id: The provider-specific item ID, used in the error message.
     :param label: Human-readable item kind (e.g. "Track", "Audiobook").
     """
+    if isinstance(err, DeezerGWAuthError):
+        # the ARL stopped working, the provider unloads itself for a new one
+        raise err
     api_errors = err.args[1] if len(err.args) > 1 else []
     # Code 2002 means the item is genuinely unavailable (region/plan rights), so it
     # maps to MediaNotFoundError. Any other GW failure is treated as a transient

@@ -35,10 +35,13 @@ Only one release workflow runs at a time, and queued runs are never cancelled.
    token with Administration read access.
 3. If the version is not already published, run the full test workflow against
    `source_sha`.
-4. Build the source distribution, then provision the app secrets and build the wheel,
-   or recover the exact two verified assets from a matching draft. `verify-app-secrets`
-   then requires the secrets bundle in the wheel and its absence from the source
-   distribution; a draft that fails this check needs its assets deleted to be rebuilt.
+4. Record which providers are new in the release line (`new-providers`: those the newest
+   stable release of an earlier line lacks; the Marketplace suggests them, and a failure
+   only leaves that list empty). Build the source distribution, then provision the app
+   secrets and build the wheel, or recover the exact two verified assets from a matching
+   draft. `verify-app-secrets` then requires the secrets bundle in the wheel and its
+   absence from the source distribution; a draft that fails this check needs its assets
+   deleted to be rebuilt.
 5. Create an annotated exact tag with `github-actions[bot]`, then create or update only a
    draft whose version, tag, and target SHA match. Replace incomplete draft assets, then
    verify both asset names, sizes, upload state, and SHA-256 digests.
@@ -59,9 +62,8 @@ Only one release workflow runs at a time, and queued runs are never cancelled.
    - Nightly: `nightly`
    Each alias's current amd64 and arm64 image labels are checked independently. An alias
    that already points to a newer release is never moved backward.
-10. Deterministically update the matching Home Assistant add-on, and on nightly the
-    `music_assistant_dev` add-on as well, then dispatch the frontend version from
-    `source_sha` to `app.music-assistant.io`.
+10. Deterministically update the matching Home Assistant add-on, then dispatch the
+    frontend version from `source_sha` to `app.music-assistant.io`.
 
 The exact image tag is already the full version (`X.Y.Z`, `X.Y.ZbN`, `X.Y.ZrcN`, or
 `X.Y.Z.devN`). Rolling aliases are never pushed before the immutable release verifies.
@@ -90,6 +92,45 @@ which can lag behind dev, so both workflows fail early when started from any oth
 Do not create or publish a GitHub release manually. A draft created outside the workflow
 is accepted only when its exact tag name and target SHA match; conflicting tags,
 published mutable releases, and mismatched drafts fail closed.
+
+## Community catalog channels
+
+A server reads the community catalog index of its own channel from
+`https://catalog.music-assistant.io/v1/<channel>.json`: nightlies read `nightly`, betas and
+RCs read `beta`, and a stable release reads `X.Y`. The registry
+(`music-assistant/community-catalog`) builds an index for each channel in its
+`channels.json` and lists only provider versions that passed the checks in that channel's
+server image. Without the index of its channel, a stable release offers no catalog
+providers in the Marketplace, and a refresh reports that the catalog could not be reached.
+Each step below is a pull request on the registry; how to add a channel, change its image,
+or freeze it is in the registry's `MAINTAINING.md`, section **Channels**.
+
+For every new minor version `X.Y`:
+
+1. **First beta of `X.Y` published:** add the stable `X.Y` channel with the image
+   `ghcr.io/music-assistant/server:beta`. The registry's daily **Releases** workflow checks
+   the provider versions on the new channel; dispatch it to start right away. A pull
+   request on `dev` that moves a provider out of the server needs this channel once
+   `X.(Y-1).0` is out (`scripts/check_moved_providers.py`), so it waits until the channel
+   is added.
+2. **Before the stable release:** open `https://catalog.music-assistant.io/v1/X.Y.json`
+   (for example `v1/2.11.json`) and `v1/beta.json`; until now both channels run in the beta
+   image. Release `X.Y.0` only when `v1/X.Y.json` loads, its `channel` is `X.Y`, and
+   every provider with a `latest` version in `v1/beta.json` has one there too.
+3. **After the stable release:** once `ghcr.io/music-assistant/server:X.Y` exists, set the
+   image of the stable `X.Y` channel to it.
+4. **Stable release of the next minor version:** mark the stable `X.Y` channel `frozen`
+   (2.11 is frozen when 2.12.0 is out). Its versions are no longer checked, while blocks
+   and withdrawals still reach its index.
+
+## Marketplace suggestions
+
+Two rows of the Marketplace come from lists the team keeps by hand in
+`music_assistant/constants.py`: `CATALOG_POPULAR` ("Popular") and `CATALOG_PAIRINGS`
+("Goes well with what you have"). Before the first beta of every minor version, check that
+they still fit: what users set up most today, and what a new provider pairs well with. A
+change is a normal pull request on `dev`. The "New in X.Y" row needs no step: the release
+build writes it.
 
 ## Authentication
 
@@ -154,12 +195,14 @@ canonical entry using the GitHub publication date, and retains three distinct re
 The add-on repository's default branch is resolved through GitHub, and non-fast-forward
 updates retry a bounded pull/rebase/push sequence.
 
-A nightly release also sets the `music_assistant_dev` add-on to the same version, in the
-same commit. That add-on has no prebuilt image: the Supervisor builds it locally from
-`ghcr.io/music-assistant/server:nightly`, so moving its version is what offers installed
-add-ons the rebuild that picks up the new base image and the current wrapper files. It
-gets no changelog entry, because it runs whichever source branch the user configured
-rather than the published release.
+The `music_assistant_dev` add-on is not updated by a release. It has no prebuilt image:
+the Supervisor builds it locally from `ghcr.io/music-assistant/server:dev`, which the
+Development image workflow (`dev-image.yml`) builds on the new nightly after a release
+run. Once that workflow has pushed and verified `:dev`, it sets the add-on to the
+nightly's version, which offers installed add-ons the rebuild that picks up the new image
+and the current wrapper files. A release run that brings no new nightly leaves `:dev`
+and the add-on as they are. The add-on gets no changelog entry, because it runs whichever
+source branch the user configured rather than the published release.
 
 Frontend recovery reads the target repository's `channels.json` first. Equal or newer
 frontend state suppresses the dispatch; an older state receives a payload containing a

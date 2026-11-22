@@ -5,6 +5,11 @@ from music_assistant_models.player import PlayerSource
 # Player ID prefix to avoid colliding with DLNA (which uses the raw UDN)
 PLAYER_ID_PREFIX = "wiim_"
 
+# The slaves of each native set (a stereo pair made in the WiiM app), kept per leader so the
+# set is known after a restart while the pair is part of a larger group.
+CACHE_CATEGORY_NATIVE_SETS = 1
+NATIVE_SET_CACHE_EXPIRATION = 86400 * 3650
+
 # Backend markers so either player class can recognise a group member's backend without a
 # circular import, and so detect a cross-backend (mixed) group that must stay read-only.
 BACKEND_OFFICIAL = "official"
@@ -66,6 +71,7 @@ INPUT_MODE_SOURCES: dict[str, PlayerSource] = {
         id="line_in",
         name="Line In",
         passive=False,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
@@ -74,6 +80,7 @@ INPUT_MODE_SOURCES: dict[str, PlayerSource] = {
         id="optical",
         name="Optical In",
         passive=False,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
@@ -82,6 +89,7 @@ INPUT_MODE_SOURCES: dict[str, PlayerSource] = {
         id="hdmi",
         name="TV",
         passive=False,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
@@ -90,6 +98,7 @@ INPUT_MODE_SOURCES: dict[str, PlayerSource] = {
         id="phono_in",
         name="Phono In",
         passive=False,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
@@ -98,6 +107,7 @@ INPUT_MODE_SOURCES: dict[str, PlayerSource] = {
         id="aux_in",
         name="Aux In",
         passive=False,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,

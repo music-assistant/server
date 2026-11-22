@@ -66,10 +66,12 @@ def _helper() -> tuple[Autoplay, MagicMock]:
     return Autoplay(queues), queues
 
 
-def _queue(queues: MagicMock, *seeds: Track, queue_id: str = "q1") -> PlayerQueue:
+def _queue(
+    queues: MagicMock, *seeds: Track, queue_id: str = "q1", userid: str | None = None
+) -> PlayerQueue:
     """Build a queue stand-in with the given enqueued items, wired into the mock controller."""
     queue = SimpleNamespace(
-        queue_id=queue_id, display_name="Queue", enqueued_media_items=list(seeds)
+        queue_id=queue_id, display_name="Queue", enqueued_media_items=list(seeds), userid=userid
     )
     # enqueued items are server-side state; the helper reads them via queue_data()
     queues.queue_data = MagicMock(return_value=queue)
@@ -164,6 +166,38 @@ async def test_get_library_tracks_tops_up_past_unavailable_genre_matches() -> No
     assert all(track.available for track in result)
 
 
+async def test_get_library_tracks_leaves_out_the_users_disliked_genres() -> None:
+    """The mix leans on the seed genres the playback user did not dislike."""
+    helper, queues = _helper()
+    queues.mass.music.genres.get_genres_for_media_item = AsyncMock(
+        return_value=[SimpleNamespace(item_id="10"), SimpleNamespace(item_id="11")]
+    )
+    queues.mass.music.favorites.disliked_genre_ids = AsyncMock(return_value={10})
+    queues.mass.music.tracks.library_items = AsyncMock(return_value=[_track("g1")])
+
+    queue = _queue(queues, _track("seed"), userid="user-a")
+    await helper.get_library_tracks(queue, exclude=set())
+
+    queues.mass.music.favorites.disliked_genre_ids.assert_awaited_once_with("user-a")
+    assert queues.mass.music.tracks.library_items.await_args_list[0].kwargs["genre"] == [11]
+
+
+async def test_get_library_tracks_with_only_disliked_genres_uses_random_mix() -> None:
+    """With every seed genre disliked, only the whole-library random mix is queried."""
+    helper, queues = _helper()
+    queues.mass.music.genres.get_genres_for_media_item = AsyncMock(
+        return_value=[SimpleNamespace(item_id="10")]
+    )
+    queues.mass.music.favorites.disliked_genre_ids = AsyncMock(return_value={10})
+    queues.mass.music.tracks.library_items = AsyncMock(return_value=[_track("r1")])
+
+    queue = _queue(queues, _track("seed"), userid="user-a")
+    await helper.get_library_tracks(queue, exclude=set())
+
+    queues.mass.music.tracks.library_items.assert_awaited_once()
+    assert "genre" not in queues.mass.music.tracks.library_items.await_args.kwargs
+
+
 # --- get_playlist_tracks ---
 
 
@@ -232,6 +266,7 @@ def test_get_queue_config_entries_categories_and_dependencies() -> None:
     """Per-queue entries land in their categories, default to 'global' and offer a global option."""
     fake = MagicMock()
     fake.mass.music.providers = []
+    fake.mass.get_providers_supporting_feature.return_value = []
     fake.mass.streams.smart_fades_available = False
 
     entries = PlayerQueuesController.get_queue_config_entries(cast("PlayerQueuesController", fake))
@@ -243,7 +278,7 @@ def test_get_queue_config_entries_categories_and_dependencies() -> None:
     assert by_key["autoplay_playlist"].depends_on_value == AutoplayMode.PLAYLIST.value
     assert by_key["crossfade_mode"].category == "crossfade"
     assert by_key["crossfade_mode"].default_value == CONF_VALUE_GLOBAL
-    assert by_key["volume_normalization"].category == "audio"
+    assert by_key["volume_normalization"].category == "volume_normalization"
     assert by_key["volume_normalization"].default_value == CONF_VALUE_GLOBAL
     # crossfade duration and the recency windows are global-only, so they are not per-queue entries
     assert "crossfade_duration" not in by_key

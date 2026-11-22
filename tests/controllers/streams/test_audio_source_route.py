@@ -19,7 +19,11 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat, AudioSource
 
-from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
+from music_assistant.controllers.players.audio_sources import (
+    AudioSourceSession,
+    PlayerAudioSourcesMixin,
+)
+from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider
@@ -39,7 +43,7 @@ def _session(player_id: str = OWNER_ID) -> AudioSourceSession:
     )
 
 
-class _SessionStore(AudioSourceMixin):
+class _SessionStore(PlayerAudioSourcesMixin):
     """Real session bookkeeping for the mocked player controller."""
 
     def __init__(self) -> None:
@@ -48,7 +52,12 @@ class _SessionStore(AudioSourceMixin):
         self.logger = MagicMock()
         self.updated_players: list[str] = []
 
-    def trigger_player_update(self, player_id: str) -> None:
+    def trigger_player_update(
+        self,
+        player_id: str,
+        force_update: bool = False,
+        debounce_delay: float = PLAYER_UPDATE_DEBOUNCE,
+    ) -> None:
         """Record that a player update was signalled."""
         self.updated_players.append(player_id)
 
@@ -56,7 +65,12 @@ class _SessionStore(AudioSourceMixin):
 def _controller(
     session: AudioSourceSession | None,
 ) -> tuple[Any, MagicMock, MagicMock, _SessionStore]:
-    """Build a bare streams controller whose player controller holds ``session``."""
+    """
+    Build a bare streams controller whose player controller holds ``session``.
+
+    The consumer is the protocol that fetches the stream; the player the session plays on
+    is no group that shares one stream with its members.
+    """
     ctrl = StreamsController.__new__(StreamsController)
     ctrl.mass = MagicMock()
     ctrl.logger = MagicMock()
@@ -75,9 +89,13 @@ def _controller(
         store._source_sessions[session.player_id] = session
     ctrl.mass.players.get_audio_source_session = store.get_audio_source_session
     ctrl.mass.players.claim_audio_source_session = store.claim_audio_source_session
+    ctrl.mass.players.get_audio_source_name = store.get_audio_source_name
     player = MagicMock()
-    player.player_id = CONSUMER_ID
-    ctrl.mass.players.get_player = MagicMock(return_value=player)
+    player.protocol_id = CONSUMER_ID
+    ctrl.mass.players.get_output_protocol = MagicMock(return_value=player)
+    owner = MagicMock(player_id=OWNER_ID)
+    owner.own_protocol.get_shared_stream.return_value = None
+    ctrl.mass.players.get_player = MagicMock(return_value=owner)
     ctrl.mass.players.deselect_source = AsyncMock()
     ctrl.audio_processing = MagicMock()
     return ctrl, provider, player, store
@@ -138,7 +156,7 @@ def test_an_unknown_consuming_player_is_turned_away() -> None:
     """The url also names who is consuming, which has to exist."""
     session = _session()
     ctrl, _provider, _player, _store = _controller(session)
-    ctrl.mass.players.get_player = MagicMock(return_value=None)
+    ctrl.mass.players.get_output_protocol = MagicMock(return_value=None)
 
     with pytest.raises(web.HTTPNotFound):
         ctrl._resolve_audio_source_request(_request(session_id=session.playback_session_id))
@@ -161,6 +179,34 @@ async def test_a_head_probe_does_not_trigger_the_plugin() -> None:
 
     assert result == "head-response"
     provider.on_source_selected.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("fetching_player", "shown_on"),
+    [("living_room", "living_room"), (None, OWNER_ID)],
+    ids=["player_of_the_protocol", "protocol_of_no_player"],
+)
+async def test_the_stream_names_the_source_for_the_player_fetching_it(
+    monkeypatch: pytest.MonkeyPatch, fetching_player: str | None, shown_on: str
+) -> None:
+    """A member fetching the stream of its group gets the name that holds on that member."""
+    session = _session()
+    ctrl, _provider, player, _store = _controller(session)
+    player.player = MagicMock(player_id=fetching_player) if fetching_player else None
+    ctrl.mass.players.get_audio_source_name = MagicMock(
+        side_effect=lambda source, player_id=None: f"{source.name} on {player_id}"
+    )
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    stream_response = MagicMock(return_value=response)
+    monkeypatch.setattr(web, "StreamResponse", stream_response)
+
+    await ctrl._serve_audio_source_head(
+        SimpleNamespace(match_info={"fmt": "flac"}), session, player
+    )
+
+    headers = stream_response.call_args.kwargs["headers"]
+    assert headers["icy-name"] == f"Spotify Connect on {shown_on}"
 
 
 async def test_http_output_is_registered_to_the_source_session(
@@ -186,8 +232,8 @@ async def test_http_output_is_registered_to_the_source_session(
     ctrl.audio.get_output_format = AsyncMock(return_value=output_format)
     ctrl.audio.get_audio_source_stream.return_value = "audio-input"
     ctrl.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
-    player.state.group_members = ["member-1"]
-    player.get_config_value.return_value = "default"
+    player.group_members = ["member-1"]
+    player.get_config_value.return_value = False
     response = MagicMock()
     response.prepare = AsyncMock()
     monkeypatch.setattr(web, "StreamResponse", MagicMock(return_value=response))
@@ -203,14 +249,16 @@ async def test_http_output_is_registered_to_the_source_session(
         session,
         MagicMock(),
         provider,
+        "tok-1",
     )
 
     assert result == (response, "encoded-audio")
+    assert ctrl.audio.get_audio_source_stream.call_args.kwargs["stream_session_id"] == "tok-1"
     ctrl.audio.get_player_output_plan.assert_called_once_with(
-        player_id=player.player_id,
+        protocol_id=player.protocol_id,
         input_format=pcm_format,
         output_format=output_format,
-        shared_player_ids=player.state.group_members,
+        shared_player_ids=player.group_members,
         queue_id=session.player_id,
         session_id=session.playback_session_id,
     )
@@ -429,3 +477,30 @@ async def test_the_pcm_claim_evicts_the_other_player() -> None:
 
     with pytest.raises(StopAsyncIteration):
         await anext(stream)
+
+
+async def test_an_opened_source_that_never_streams_is_released_once() -> None:
+    """A consumer that opens a source for its stream details and then gives up releases it."""
+    session = _session()
+    session.streamdetails = MagicMock()
+    ctrl, provider, _player, _store = _controller(session)
+    media = PlayerMedia(
+        uri="x://audio_source/main",
+        media_type=MediaType.AUDIO_SOURCE,
+        source_id=OWNER_ID,
+        queue_session_id=session.playback_session_id,
+    )
+
+    source_stream = await ctrl.open_audio_source_stream(media, CONSUMER_ID)
+    assert source_stream is not None
+    assert source_stream.streamdetails is session.streamdetails
+    await source_stream.aclose()
+    await source_stream.aclose()
+
+    provider.on_source_unselected.assert_awaited_once()
+    ctrl.mass.players.deselect_source.assert_awaited_once_with(
+        OWNER_ID,
+        provider_instance_id=session.provider_instance_id,
+        source_id=session.source_id,
+        playback_session_id=session.playback_session_id,
+    )

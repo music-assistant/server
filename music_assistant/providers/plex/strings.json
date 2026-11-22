@@ -132,6 +132,7 @@
     }
   },
   "errors": {
+    "cannot_connect": "Could not connect to the Plex server. Check the address and port, and that SSL (HTTPS) matches the secure connections setting of your Plex server. With SSL (HTTPS) on and an IP address as the server address, also turn off Verify certificate.",
     "no_libraries": "No compatible libraries were found on this Plex server.",
     "server_access_denied": "The Plex account you signed in with has no verified access to this Plex server. Check that the server is shared with this account, then sign in again."
   },

@@ -39,13 +39,18 @@ ITEM_KEY_ARTIST_ITEMS: Final = "ArtistItems"
 ITEM_KEY_CAN_DOWNLOAD: Final = "CanDownload"
 ITEM_KEY_PARENT_INDEX_NUM: Final = "ParentIndexNumber"
 ITEM_KEY_RUNTIME_TICKS: Final = "RunTimeTicks"
+ITEM_KEY_TYPE: Final = "Type"
 ITEM_KEY_USER_DATA: Final = "UserData"
+ITEM_KEY_TRACK_NORMALIZATION_GAIN: Final = "NormalizationGain"
+ITEM_KEY_ALBUM_NORMALIZATION_GAIN: Final = "AlbumNormalizationGain"
 
 USER_DATA_KEY_IS_FAVORITE: Final = "IsFavorite"
 
 MEDIA_TYPE_AUDIO: Final = "Audio"
 
-SUPPORTED_CONTAINER_FORMATS: Final = "ogg,flac,mp3,aac,mpeg,alac,wav,aiff,wma,m4a,m4b,dsf,opus,wv"
+SUPPORTED_CONTAINER_FORMATS: Final = (
+    "ogg,flac,mp3,aac,mpeg,alac,wav,aiff,wma,asf,m4a,m4b,dsf,opus,wv"
+)
 
 ARTIST_FIELDS: Final = [
     ItemFields.Overview,

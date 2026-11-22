@@ -6,7 +6,7 @@ import asyncio
 import logging
 import sys
 from typing import TYPE_CHECKING, Any
-from unittest.mock import PropertyMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope, User, UserRole
@@ -18,7 +18,9 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from music_assistant_models.player_control import PlayerControl
 
+from music_assistant.constants import CONF_POWER_CONTROL, CONF_POWER_CONTROL_CUTS_POWER
 from music_assistant.controllers.diagnostics import DiagnosticsController
 from music_assistant.helpers.diagnostics import (
     LOG_RING_MAXLEN,
@@ -29,7 +31,7 @@ from music_assistant.helpers.diagnostics import (
     sanitize_text,
 )
 from music_assistant.helpers.json import json_dumps
-from tests.common import set_music_source_access
+from tests.common import MockProvider, attach_mock, mock_player_mass, set_music_source_access
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -258,7 +260,7 @@ async def test_get_report(mass: MusicAssistant) -> None:
     except RuntimeError:
         logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
-    assert report["schema_version"] == 7
+    assert report["schema_version"] == 9
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
     assert report["system"]["unsupported_install"] is True
@@ -284,6 +286,12 @@ async def test_get_report(mass: MusicAssistant) -> None:
     assert "by_status" in report["sections"]["core.tasks"]
     assert "db_size_mb" in report["sections"]["core.cache"]
     assert "mount_backends" in report["sections"]["core.storage"]
+    # a fresh server has no rate correction for its timeline clock, and no estimate yet
+    assert report["sections"]["core.timeline_clock"] == {
+        "active_rate_ppb": 0,
+        "stored_rate_ppb": None,
+        "estimated_rate_ppb": None,
+    }
     # log tail is opt-in
     assert "log_tail" not in report
     report_with_tail = await mass.diagnostics.get_report(include_log_tail=True)
@@ -360,6 +368,48 @@ async def test_library_census_ignores_requesting_user_music_sources(
     assert census["tracks"] == 1
     # nothing at all may shift when a filtered user is the one asking
     assert census == unfiltered_census
+
+
+def test_player_census_counts_the_players_clients_can_use() -> None:
+    """
+    Test that the census counts a player as available when clients can use it.
+
+    That includes a player that is switched off at a power control that cuts its power, and
+    leaves out one whose device answers but still has to be set up.
+    """
+    mass = mock_player_mass()
+    control = PlayerControl(
+        id="switch.plug", provider="hass", name="Plug", supports_power=True, power_state=False
+    )
+    # the plug cuts the power of the player, as its setting says
+    switched_off = {CONF_POWER_CONTROL: control.id, CONF_POWER_CONTROL_CUTS_POWER: True}
+    mass.config.get_player_value = MagicMock(
+        side_effect=lambda player_id, key, default=None: (
+            switched_off.get(key, default) if player_id == "pl_switched_off" else default
+        )
+    )
+    mass.players.get_player_control = MagicMock(
+        side_effect=lambda control_id: control if control_id == control.id else None
+    )
+    provider = MockProvider("airplay", mass=mass)
+    attached = {
+        name: attach_mock(provider, name)
+        for name in ("ready", "unpaired", "unpaired_too", "switched_off", "away")
+    }
+    attached["unpaired"][1]._attr_needs_setup = True
+    attached["unpaired_too"][1]._attr_needs_setup = True
+    attached["switched_off"][1]._attr_available = False
+    attached["away"][1]._attr_available = False
+    for player, _ in attached.values():
+        player.update_state(signal_event=False)
+    diagnostics = DiagnosticsController.__new__(DiagnosticsController)
+    diagnostics.mass = mass
+
+    census = diagnostics._census_players()
+
+    assert census["total"] == 5
+    # the one that is ready and the one that is switched off
+    assert census["available"] == 2
 
 
 async def test_get_report_command_admin_only(mass: MusicAssistant) -> None:

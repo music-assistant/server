@@ -6,10 +6,12 @@ import asyncio
 import contextlib
 import ipaddress
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
+    ChannelLayout,
     ConfigEntryType,
     ContentType,
     CrossfadeMode,
@@ -18,19 +20,21 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
 )
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerOptionValueType
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import (
-    AnnouncementFeature,
     DeviceInfo,
-    Player,
     PlayerMedia,
 )
+from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.models.setup_flow import AbortFlow
 
 from . import announce
@@ -38,6 +42,7 @@ from .constants import (
     AIRPLAY_DEFAULT_PORT,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
+    AIRPLAY_HIRES_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
@@ -48,6 +53,7 @@ from .constants import (
     CONF_ENABLE_HIRES,
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
+    CONF_HOMEPODS_ONLY,
     CONF_IGNORE_VOLUME,
     CONF_PAIR_NOW,
     CONF_PAIRING_PASSWORD,
@@ -71,37 +77,44 @@ from .constants import (
     StreamingProtocol,
 )
 from .helpers import (
+    SetKind,
     default_buffer_depth,
     default_hires_enabled,
     get_decoded_property,
+    get_sync_offset_ms,
     is_apple_device,
     is_macos_device,
     parse_airplay_features,
+    parse_set_membership,
     player_id_to_mac_address,
     supports_airplay2,
 )
 from .stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import PlayerConfig
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.models.player import Player
     from music_assistant.models.setup_flow import SetupSession
 
+    from .helpers import SetMembership
     from .pairing import AirPlayPairing
     from .provider import AirPlayProvider
+    from .speaker import AirPlaySpeaker
     from .stream import AirPlayStream
 
 # Docker bridge subnet, sometimes wrongly advertised via mDNS by containerized devices.
 _DOCKER_SUBNET = ipaddress.ip_network("172.16.0.0/12")
 
 
-class AirPlayPlayer(Player):
+class AirPlayPlayer(PlayerProtocol):
     """Base implementation shared by all AirPlay players."""
 
     def __init__(
         self,
         provider: AirPlayProvider,
-        player_id: str,
+        protocol_id: str,
         raop_discovery_info: AsyncServiceInfo | None,
         airplay_discovery_info: AsyncServiceInfo | None,
         address: str,
@@ -119,7 +132,7 @@ class AirPlayPlayer(Player):
         # zero until that lands (or when the device publishes no format tables).
         self.advertised_audio_formats = 0
         self._attr_enabled_by_default = not is_macos_device(manufacturer, model)
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.address = address
         self.stream: AirPlayStream | None = None
         # Serializes the two paths that can put a cliairplay process on this
@@ -134,11 +147,15 @@ class AirPlayPlayer(Player):
         self._volume_reports_ignored_until = 0.0
         self._lock = asyncio.Lock()
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
+        # the speakers of the set this device carries whose old players were reported
+        self._reported_speaker_ids: set[str] = set()
+        # set when the _airplay._tcp record said goodbye, until a fresh one arrives
+        self._airplay_record_gone = False
         self._rejoin_task: asyncio.Task[None] | None = None
         # Set (static) player attributes
         self._attr_name = display_name
         self._attr_available = True
-        mac_address = player_id_to_mac_address(player_id)
+        mac_address = player_id_to_mac_address(protocol_id)
         self._attr_device_info = DeviceInfo(
             model=model,
             manufacturer=manufacturer,
@@ -147,9 +164,30 @@ class AirPlayPlayer(Player):
         if is_valid_mac_address(mac_address):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
-        self._attr_device_info.add_identifier(IdentifierType.AIRPLAY_ID, player_id)
+        self._attr_device_info.add_identifier(IdentifierType.AIRPLAY_ID, protocol_id)
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
+
+    @property
+    def type(self) -> PlayerType:
+        """Return the type of the player: multi-channel for a set of more than one speaker."""
+        if self._carries_speaker_pair:
+            return PlayerType.MULTI_CHANNEL
+        return super().type
+
+    @property
+    def channel_layout(self) -> ChannelLayout | None:
+        """Return how the speakers of a set of more than one speaker are laid out."""
+        if self._carries_speaker_pair:
+            return ChannelLayout.STEREO
+        return super().channel_layout
+
+    @property
+    def name(self) -> str | None:
+        """Return the name of the player: the room for a set."""
+        if (membership := self.set_membership) and membership.position == 0 and membership.name:
+            return membership.name
+        return super().name
 
     @property
     def protocol(self) -> StreamingProtocol:
@@ -171,7 +209,7 @@ class AirPlayPlayer(Player):
         Automatic, an AirPlay 2 shairport-sync receiver on this host uses
         compatibility mode, as it cannot share the PTP ports with this server.
         """
-        value = str(self.config.get_value(CONF_STREAMING_MODE, STREAMING_MODE_AUTO))
+        value = str(self.settings.get_value(CONF_STREAMING_MODE, STREAMING_MODE_AUTO))
         offered = {option.value for option in self.streaming_mode_options}
         if value not in offered:
             value = STREAMING_MODE_AUTO
@@ -234,20 +272,24 @@ class AirPlayPlayer(Player):
     @property
     def hires_playback_enabled(self) -> bool:
         """Return if 24-bit hi-res playback is possible and enabled for this player."""
-        # 24-bit only works over the AirPlay 2 flow, so a device that streams RAOP
-        # (a legacy receiver, or the force-RAOP escape hatch) stays on the 16-bit
-        # base whatever it advertises.
-        return (
-            bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS)
-            and self.protocol == StreamingProtocol.AIRPLAY2
-            # the compat lane is 16-bit only, so hi-res stands down while the pin is active
-            and self.streaming_mode != STREAMING_MODE_AP2_COMPAT
-            and bool(self.config.get_value(CONF_ENABLE_HIRES, self._hires_default_enabled))
-        )
+        if self.carries_set:
+            # a set plays on its speakers, and a stereo pair also on the speaker that carries it
+            endpoints = self.endpoints
+            return bool(endpoints) and all(
+                endpoint._hires_enabled_here
+                if endpoint is self
+                else endpoint.hires_playback_enabled
+                for endpoint in endpoints
+            )
+        return self._hires_enabled_here
 
     @property
     def supported_sample_rates(self) -> list[tuple[int, int]]:
         """Return the (sample_rate, bit_depth) pairs this player natively supports."""
+        # Both 24-bit rates, also for a receiver that lists one: every member
+        # converts the shared session audio to its own stream format (see
+        # get_stream_pcm_format), and a narrower list could leave a group without
+        # a common rate.
         if self.hires_playback_enabled:
             return AIRPLAY_HIRES_SAMPLE_RATES
         return [(AIRPLAY_PCM_FORMAT.sample_rate, AIRPLAY_PCM_FORMAT.bit_depth)]
@@ -260,6 +302,9 @@ class AirPlayPlayer(Player):
         # fallback), so the password side is fully covered by the check above.
         if self.needs_password_setup:
             return True
+        if self.homepods_only:
+            # only the speakers of the set play, and they take no pairing
+            return False
         if self._requires_pin_pairing():
             # Credentials for either protocol keep the player usable: the binary
             # picks the best route for the credentials it has. Re-running the setup
@@ -287,6 +332,12 @@ class AirPlayPlayer(Player):
         # pw boolean. Enforcement can also exist WITHOUT any announcement (stale
         # TXT after the password was enabled); that case is caught at connect
         # time via password_invalid.
+        # the speakers of a set connect with the password stored on the set
+        if any(speaker.password_required for speaker in self.speakers):
+            return True
+        if self.homepods_only:
+            # the device of the set is left out of its sessions
+            return False
         if self._get_flags() & PASSWORD_BIT:
             return True
         if raop_info := self.raop_discovery_info:
@@ -297,9 +348,7 @@ class AirPlayPlayer(Player):
     def password_invalid(self) -> bool:
         """Return if the device rejected the stored password on its last connect."""
         return bool(
-            self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_PASSWORD_INVALID, False
-            )
+            self.mass.config.get_protocol_value(self.protocol_id, CONF_PASSWORD_INVALID, False)
         )
 
     @property
@@ -310,7 +359,7 @@ class AirPlayPlayer(Player):
         # password the device rejected must send the user back into that flow.
         if self.password_invalid:
             return True
-        return self.password_required and not self.config.get_value(CONF_PASSWORD)
+        return self.password_required and not self.settings.get_value(CONF_PASSWORD)
 
     def set_password_invalid(self, invalid: bool) -> None:
         """
@@ -322,7 +371,7 @@ class AirPlayPlayer(Player):
         if self.password_invalid == invalid:
             # keeps a successful connect from writing the config on every stream
             return
-        self.mass.config.set_raw_player_config_value(self.player_id, CONF_PASSWORD_INVALID, invalid)
+        self.mass.config.set_protocol_value(self.protocol_id, CONF_PASSWORD_INVALID, invalid)
         # needs_setup/setup_reason are part of the player's own state inputs, so a
         # plain update publishes the (dis)appeared setup action to the clients.
         self.update_state()
@@ -349,18 +398,41 @@ class AirPlayPlayer(Player):
         # the device to whatever else may be streaming to it.
         if not self.has_live_audio:
             features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
+        if self.carries_home_theater:
+            features.add(PlayerFeature.OPTIONS)
         return features
+
+    @property
+    def options(self) -> UniqueList[PlayerOption]:
+        """Return the options of the player: for a set, whether it plays on its speakers only."""
+        if not self.carries_home_theater:
+            return super().options
+        return UniqueList(
+            [
+                PlayerOption(
+                    key=CONF_HOMEPODS_ONLY,
+                    name="Play on HomePods only",
+                    type=PlayerOptionType.BOOLEAN,
+                    value=self.homepods_only,
+                    translation_owner=self.translation_owner,
+                )
+            ]
+        )
 
     @property
     def has_live_audio(self) -> bool:
         """Return True if the player is rendering audio an announcement can mix into."""
         if self.playback_state != PlaybackState.PLAYING:
             return False
-        if self.stream is None or self.stream.superseded:
-            # A stream handed to a teardown stays published until its process is
-            # off the receiver, and a clip mixed into it dies with it.
-            return False
-        return self.stream.running and self.stream.connected
+        for endpoint in self.endpoints:
+            stream = endpoint.stream
+            if stream is None or stream.superseded:
+                # A stream handed to a teardown stays published until its process is
+                # off the receiver, and a clip mixed into it dies with it.
+                continue
+            if stream.running and stream.connected:
+                return True
+        return False
 
     @property
     def announcement_features(self) -> set[AnnouncementFeature]:
@@ -374,13 +446,16 @@ class AirPlayPlayer(Player):
     @property
     def can_group_with(self) -> set[str]:
         """
-        Return player IDs this player can group with.
+        Return the protocol IDs of the AirPlay players this player can group with.
 
         RAOP and AP2 players can group with other RAOP and/or AP2 players.
         """
         prov = cast("AirPlayProvider", self.provider)
         return {
-            p.player_id for p in prov.get_players() if p.available and p.player_id != self.player_id
+            p.protocol_id
+            for p in prov.get_players()
+            # a protocol that still waits for its player is no group member yet
+            if p.available and p.player is not None and p.protocol_id != self.protocol_id
         }
 
     @property
@@ -395,9 +470,117 @@ class AirPlayPlayer(Player):
         # dropped from the session (write failures) or never make it in (a refused
         # late join) while still being listed as part of the group, and without a
         # session there is nobody to render with at all
-        if self.stream and self.stream.running and self.stream.session:
-            return [x.player_id for x in self.stream.session.sync_clients]
+        if session := self.session:
+            # a speaker of a set is in the session for its set
+            return list(
+                dict.fromkeys(owner.protocol_id for x in session.sync_clients if (owner := x.owner))
+            )
         return []
+
+    @property
+    def session(self) -> AirPlayStreamSession | None:
+        """Return the stream session that carries this player's playback, None without one."""
+        for endpoint in self.session_endpoints:
+            if endpoint.stream and endpoint.stream.running:
+                return endpoint.stream.session
+        return None
+
+    @property
+    def owner(self) -> AirPlayPlayer | None:
+        """Return the protocol this player plays for: itself, or the set it is a speaker of."""
+        return self
+
+    @property
+    def set_membership(self) -> SetMembership | None:
+        """Return the place of this device in a set of devices that plays as one player, if any."""
+        membership = parse_set_membership(self.airplay_discovery_info)
+        if membership is not None and membership.kind == SetKind.STEREO_PAIR:
+            # the records of a pair tell no roles: which HomePod carries it is decided once
+            position = cast("AirPlayProvider", self.provider).get_pair_position(
+                self.protocol_id, membership.set_id
+            )
+            return replace(membership, position=position)
+        return membership
+
+    @property
+    def carries_set(self) -> bool:
+        """Return whether this device carries a set of speakers that plays as one player."""
+        return (membership := self.set_membership) is not None and membership.position == 0
+
+    @property
+    def carries_home_theater(self) -> bool:
+        """Return whether this device is an Apple TV that carries a home theater set."""
+        return (
+            (membership := self.set_membership) is not None
+            and membership.position == 0
+            and membership.kind == SetKind.HOME_THEATER
+        )
+
+    @property
+    def speakers(self) -> list[AirPlaySpeaker]:
+        """Return the available speakers of the set this device carries, by position."""
+        if (membership := self.set_membership) is None or membership.position != 0:
+            return []
+        return cast("AirPlayProvider", self.provider).get_set_speakers(membership.set_id)
+
+    @property
+    def endpoints(self) -> list[AirPlayPlayer]:
+        """Return the players whose audio is heard when this player plays in a stream session."""
+        # a home theater set is heard on its speakers, whatever its Apple TV is fed
+        if self.carries_home_theater:
+            return list(self.speakers)
+        return [self, *self.speakers]
+
+    @property
+    def silent_member(self) -> AirPlayPlayer | None:
+        """
+        Return the device that joins the stream sessions of this player without being heard.
+
+        That is the Apple TV of a set, which shows what plays and takes the commands of its
+        remote, unless the set plays on its speakers only. None for every other player.
+        """
+        if self.carries_home_theater and not self.homepods_only:
+            return self
+        return None
+
+    @property
+    def session_endpoints(self) -> list[AirPlayPlayer]:
+        """Return every player that can carry a part of this player's playback in a session."""
+        return list(dict.fromkeys([*self.endpoints, self]))
+
+    @property
+    def renders_audio(self) -> bool:
+        """Return whether the audio this device is fed in a stream session is heard."""
+        # an Apple TV never passes a stream on to the speakers of its set
+        return not self.carries_home_theater
+
+    @property
+    def homepods_only(self) -> bool:
+        """Return whether a set plays on its speakers only, without a session to its Apple TV."""
+        return self.carries_home_theater and bool(
+            self.mass.config.get_protocol_value(self.protocol_id, CONF_HOMEPODS_ONLY, False)
+        )
+
+    @property
+    def settings(self) -> PlayerConfig:
+        """Return the config whose AirPlay settings apply to the streams of this player."""
+        return self.config
+
+    @property
+    def sync_offset_ms(self) -> int:
+        """Return how much later than the group this player is commanded to play, in ms."""
+        return get_sync_offset_ms(self.settings)
+
+    @property
+    def device_password(self) -> str | None:
+        """Return the password to connect to the device with, None without one."""
+        password = self.settings.get_value(CONF_PASSWORD)
+        return str(password) if password else None
+
+    @property
+    def output_plan_protocol_id(self) -> str:
+        """Return the id of the protocol whose output settings (such as DSP) apply to its audio."""
+        return self.protocol_id
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -426,17 +609,17 @@ class AirPlayPlayer(Player):
                 )
             )
 
-        # 24-bit toggle, shown only when the device advertises 24-bit support
-        # (per-device default: see default_hires_enabled). Hidden rather than
-        # omitted when it does not: the formats are probed async after
-        # registration, and an entry absent from the registration-time config
-        # parse would drop the user's stored value until the next config save.
+        # 24-bit toggle, on by default when the device lists 24-bit support (see
+        # _hires_default_enabled) and switchable by hand for a receiver that
+        # renders it without listing it. Hidden rather than omitted on a route
+        # that cannot carry 24-bit: an entry absent from the registration-time
+        # config parse would drop the user's stored value until the next save.
         base_entries.append(
             ConfigEntry(
                 key=CONF_ENABLE_HIRES,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=self._hires_default_enabled,
-                hidden=not self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS,
+                hidden=not self._hires_route or self.carries_set,
                 category="protocol_generic",
                 requires_reload=True,
             )
@@ -525,11 +708,18 @@ class AirPlayPlayer(Player):
         # drop any pending automatic re-join
         self.cancel_group_rejoin()
         async with self._lock:
-            if self.stream and self.stream.session:
-                # forward stop to the entire stream session
-                await self.stream.session.stop()
+            # forward stop to the entire stream session, also one a stopped stream was part of
+            if session := self.session or next(
+                (
+                    endpoint.stream.session
+                    for endpoint in self.session_endpoints
+                    if endpoint.stream and endpoint.stream.session
+                ),
+                None,
+            ):
+                await session.stop()
             elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(
-                self.player_id
+                self.protocol_id
             ):
                 # Sendspin bridge active: it tears the transport down straight
                 # away and takes the player out of the Sendspin session
@@ -543,7 +733,7 @@ class AirPlayPlayer(Player):
 
     async def play(self) -> None:
         """Handle PLAY (unpause) command on the player."""
-        session = self.stream.session if self.stream and self.stream.running else None
+        session = self.session
         if self.group_members or self.synced_to or (session and session.parked):
             # Grouped pause parks the whole session (standby); unpausing one
             # member cannot restart the group in sync, and a parked member is
@@ -552,9 +742,9 @@ class AirPlayPlayer(Player):
             # outlives the group, so a player left alone by an ungroup is keyed
             # on the park itself, not on its membership. Resume via the queue
             # instead: play_media flushes and re-anchors every parked member at
-            # one shared instant. The queue can belong to a linked native parent
-            # (for example Sonos), so resolve it instead of using the AirPlay ID.
-            active_queue = self.mass.players.get_active_queue(self)
+            # one shared instant. The queue belongs to the player, which can also
+            # carry a native protocol (for example Sonos).
+            active_queue = self.mass.players.get_active_queue(self.player) if self.player else None
             if active_queue is None:
                 raise PlayerCommandFailed(
                     f"Cannot resume AirPlay player {self.display_name} without an active queue"
@@ -571,18 +761,14 @@ class AirPlayPlayer(Player):
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
-        if self.group_members or self.synced_to:
+        # a set plays in a session of its speakers, which parks like a group
+        if self.group_members or self.synced_to or self.carries_set:
             # A broadcast pause cannot keep independent member processes
             # sample-aligned on resume. Instead the session is parked: every
             # member stalls but keeps its connection (and remote control), and
             # the queue's resume flushes and re-anchors over the live
             # connections — the same coordinated warm restart as seek/next.
-            if (
-                self.stream
-                and self.stream.running
-                and self.stream.session
-                and await self.stream.session.standby()
-            ):
+            if (session := self.session) and await session.standby():
                 return
             # Some member no longer has a live connection: full stop and let
             # the queue controller resume from the saved position.
@@ -604,10 +790,18 @@ class AirPlayPlayer(Player):
             if self.synced_to:
                 # this should not happen, but guard anyways
                 raise RuntimeError("Player is synced")
+            if not self.endpoints:
+                raise PlayerCommandFailed(
+                    f"None of the speakers of {self.display_name} can be reached"
+                )
             self._attr_current_media = media
 
-            sync_clients = self._get_sync_clients()
-            session_pcm_format = await self._get_session_pcm_format(sync_clients, media)
+            clients = self._get_sync_clients()
+            sync_clients = [endpoint for client in clients for endpoint in client.endpoints]
+            # a set renders on its speakers with its own output settings (such as DSP)
+            session_pcm_format = await self._get_session_pcm_format(
+                list(dict.fromkeys([*clients, *sync_clients])), media
+            )
 
             # Ignore stale DACP messages (like prevent-playback) from the old CLI
             # process while the stream is being (re)established. The finally clears
@@ -617,25 +811,22 @@ class AirPlayPlayer(Player):
             try:
                 # Warm path: a live, compatible session absorbs the new media via a
                 # flush-refill in place (seek/next never pays the reconnect cost).
-                if (
-                    self.stream
-                    and self.stream.running
-                    and self.stream.session
-                    and self.stream.session.can_replace(sync_clients, session_pcm_format)
+                if (session := self.session) and session.can_replace(
+                    sync_clients, session_pcm_format
                 ):
                     audio_source = self.mass.streams.get_stream(
-                        media, session_pcm_format, self.player_id
+                        media, session_pcm_format, self.protocol_id
                     )
-                    if await self.stream.session.replace(audio_source, media):
+                    if await session.replace(audio_source, media):
                         # A seek changes no media identity, so the identity-driven
                         # metadata callback stays silent and receivers would show
                         # a stale Now Playing position; nudge every member once
                         # the queue position has settled.
-                        for member in self.stream.session.sync_clients:
+                        for member in session.sync_clients:
                             self.mass.call_later(
                                 1,
                                 member.on_player_media_updated,
-                                task_id=f"player_media_updated_{member.player_id}",
+                                task_id=f"player_media_updated_{member.protocol_id}",
                             )
                         return
                     # warm replacement failed; fall through to a cold restart
@@ -644,12 +835,12 @@ class AirPlayPlayer(Player):
                 # publication is left in place: the new session's _start_client
                 # stops and replaces whatever is published under the spawn lock, so
                 # that teardown stays the only place a publication is dropped.
-                if self.stream and self.stream.running and self.stream.session:
-                    await self.stream.session.stop()
+                if session := self.session:
+                    await session.stop()
 
                 # select audio source
                 audio_source = self.mass.streams.get_stream(
-                    media, session_pcm_format, self.player_id
+                    media, session_pcm_format, self.protocol_id
                 )
 
                 # setup StreamSession for player (and its sync childs if any)
@@ -683,28 +874,60 @@ class AirPlayPlayer(Player):
         # Record before sending: the connect-time volume push reads this attribute,
         # so a send that suspends first would let that push send the stale level.
         self._attr_volume_level = volume_level
-        if self.stream and self.stream.running and self.volume_muted is not True:
-            await self.stream.send_cli_command(f"VOLUME={volume_level}")
+        if self.volume_muted is not True:
+            for endpoint in self.endpoints:
+                if endpoint.stream and endpoint.stream.running:
+                    await endpoint.stream.send_cli_command(f"VOLUME={volume_level}")
         self.update_state()
+        self._sync_bridge_volume()
         # store last state in playerconfig
-        self.mass.config.set_raw_player_config_value(
-            self.player_id, CONF_STORED_VOLUME, volume_level
-        )
+        self.mass.config.set_protocol_value(self.protocol_id, CONF_STORED_VOLUME, volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME_MUTE command on the player."""
         self._attr_volume_muted = muted
-        if self.stream and self.stream.running:
-            volume = 0 if muted else (self.volume_level or 0)
-            await self.stream.send_cli_command(f"VOLUME={volume}")
+        volume = 0 if muted else (self.volume_level or 0)
+        for endpoint in self.endpoints:
+            if endpoint.stream and endpoint.stream.running:
+                await endpoint.stream.send_cli_command(f"VOLUME={volume}")
         self.update_state()
+        self._sync_bridge_volume()
 
-    async def set_members(
+    async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
+        """
+        Handle SET_OPTION command on the player.
+
+        :param option_key: The key of the PlayerOption.
+        :param option_value: The new value of the PlayerOption.
+        """
+        if option_key != CONF_HOMEPODS_ONLY or not self.carries_home_theater:
+            raise PlayerCommandFailed(f"Option {option_key} can not be set on {self.display_name}")
+        self.mass.config.set_protocol_value(
+            self.protocol_id, CONF_HOMEPODS_ONLY, bool(option_value)
+        )
+        if session := self.session:
+            # the music goes on: only whether the device of the set takes part in it changes
+            if self.silent_member is None:
+                await session.remove_silent_member(
+                    self, rejoin=False, reason="set plays on its speakers only"
+                )
+            else:
+                session.add_silent_member(self)
+        cast("AirPlayProvider", self.provider).bridge_manager.update_endpoints(self.protocol_id)
+        # the player compares the reported option lists, which this option is not part of
+        self.update_state(force_update=True)
+
+    async def set_members(  # noqa: C901, PLR0912
         self,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Handle SET_MEMBERS command on the player."""
+        """
+        Handle SET_MEMBERS command on the player.
+
+        :param player_ids_to_add: Protocol ids of the AirPlay players to add.
+        :param player_ids_to_remove: Protocol ids of the AirPlay players to remove.
+        """
         async with self._lock:
             if self.synced_to:
                 # this should not happen, but guard anyways
@@ -713,26 +936,25 @@ class AirPlayPlayer(Player):
                 # nothing to do
                 return
 
-            stream_session = (
-                self.stream.session
-                if self.stream and self.stream.running and self.stream.session
-                else None
-            )
+            stream_session = self.session
             # handle removals first
             if player_ids_to_remove:
-                if self.player_id in player_ids_to_remove:
+                if self.protocol_id in player_ids_to_remove:
                     # Callers only ask for this leader alone or for the whole group at once.
                     # A partial self+subset removal would need the other requested members
                     # released here as well, instead of returning right after the leader.
                     remaining_members = [
                         member_id
                         for member_id in self._attr_group_members
-                        if member_id != self.player_id and member_id not in player_ids_to_remove
+                        if member_id != self.protocol_id and member_id not in player_ids_to_remove
                     ]
                     if stream_session and remaining_members:
                         # Members stay behind: remove only this leader client,
                         # the session continues for the remaining players
-                        await stream_session.remove_client(self, reason="leader removed from group")
+                        for endpoint in self.session_endpoints:
+                            await stream_session.remove_client(
+                                endpoint, reason="leader removed from group"
+                            )
                     elif stream_session:
                         # The whole group is being removed, tear the session down
                         await stream_session.stop()
@@ -741,35 +963,37 @@ class AirPlayPlayer(Player):
                     return
 
                 for child_player in self._get_sync_clients():
-                    if child_player.player_id in player_ids_to_remove:
+                    if child_player.protocol_id in player_ids_to_remove:
                         # update group_members first to prevent race conditions
                         # where a concurrent play_media could re-include this player
-                        if child_player.player_id in self._attr_group_members:
-                            self._attr_group_members.remove(child_player.player_id)
-                        if stream_session:
-                            await stream_session.remove_client(
-                                child_player, reason="child removed from group"
-                            )
-                        elif child_player.stream and child_player.stream.running:
-                            # leader's stream is no longer running but child still has
-                            # an active stream - stop it directly
-                            await child_player.stream.stop(force=True)
+                        if child_player.protocol_id in self._attr_group_members:
+                            self._attr_group_members.remove(child_player.protocol_id)
+                        for endpoint in child_player.session_endpoints:
+                            if stream_session:
+                                await stream_session.remove_client(
+                                    endpoint, reason="child removed from group"
+                                )
+                            elif endpoint.stream and endpoint.stream.running:
+                                # leader's stream is no longer running but child still has
+                                # an active stream - stop it directly
+                                await endpoint.stream.stop(force=True)
 
                 # If group leader is left alone after removals, clear the group_members list
                 if (
                     self._attr_group_members
                     and len(self._attr_group_members) == 1
-                    and self.player_id in self._attr_group_members
+                    and self.protocol_id in self._attr_group_members
                 ):
                     self._attr_group_members = []
 
             # handle additions
-            for player_id in player_ids_to_add or []:
-                if player_id == self.player_id or player_id in self.group_members:
+            active_output = self.player.active_output_protocol if self.player else None
+            for protocol_id in player_ids_to_add or []:
+                if protocol_id == self.protocol_id or protocol_id in self.group_members:
                     # nothing to do: player is already part of the group
                     continue
                 child_player_to_add: AirPlayPlayer | None = cast(
-                    "AirPlayPlayer | None", self.mass.players.get_player(player_id)
+                    "AirPlayPlayer | None", self.provider.get_protocol(protocol_id)
                 )
                 if not child_player_to_add:
                     # should not happen, but guard against it
@@ -777,45 +1001,46 @@ class AirPlayPlayer(Player):
 
                 # ensure the child does not have an existing stream session active
                 if child_player_to_add := cast(
-                    "AirPlayPlayer | None", self.mass.players.get_player(player_id)
+                    "AirPlayPlayer | None", self.provider.get_protocol(protocol_id)
                 ):
+                    for endpoint in child_player_to_add.session_endpoints:
+                        if (
+                            child_player_to_add.playback_state == PlaybackState.PAUSED
+                            and endpoint.stream
+                        ):
+                            # Stop the paused stream to avoid a deadlock situation
+                            await endpoint.stream.stop()
                     if (
-                        child_player_to_add.playback_state == PlaybackState.PAUSED
-                        and child_player_to_add.stream
-                    ):
-                        # Stop the paused stream to avoid a deadlock situation
-                        await child_player_to_add.stream.stop()
-                    if (
-                        child_player_to_add.stream
-                        and child_player_to_add.stream.running
-                        and child_player_to_add.stream.session
-                        and child_player_to_add.stream.session != stream_session
-                    ):
-                        await child_player_to_add.stream.session.remove_client(
-                            child_player_to_add, reason="moving to different session"
-                        )
+                        child_session := child_player_to_add.session
+                    ) and child_session != stream_session:
+                        for endpoint in child_player_to_add.session_endpoints:
+                            await child_session.remove_client(
+                                endpoint, reason="moving to different session"
+                            )
 
                 # add new child to the existing stream (RAOP or AirPlay2) session (if any)
-                self._attr_group_members.append(player_id)
+                self._attr_group_members.append(protocol_id)
                 if stream_session and child_player_to_add is not None:
                     # Skip add_client if the player is already streaming in this session
-                    # (e.g. after a dynamic leader switch where the stream continues)
-                    if child_player_to_add not in stream_session.sync_clients:
-                        await stream_session.add_client(child_player_to_add)
-                elif self.active_output_protocol not in (None, "native"):
+                    # (e.g. after a dynamic leader switch where the stream continues).
+                    # The device of a set that is not heard joins after its speakers.
+                    for endpoint in child_player_to_add.endpoints:
+                        if endpoint not in stream_session.sync_clients:
+                            await stream_session.add_client(endpoint)
+                elif active_output not in (None, "native", self.protocol_id):
                     # Members can only be attached to this player's own stream session, which
                     # does not exist while it renders through one of its output protocols.
                     self.logger.warning(
                         "%s joined the group of %s while that player renders through another "
                         "output protocol: there is no stream session to join, so it stays silent",
-                        child_player_to_add.display_name if child_player_to_add else player_id,
+                        child_player_to_add.display_name if child_player_to_add else protocol_id,
                         self.display_name,
                     )
 
             # Ensure group leader includes itself in group_members when it has members
             # This is required for the synced_to property to work correctly
-            if self._attr_group_members and self.player_id not in self._attr_group_members:
-                self._attr_group_members.insert(0, self.player_id)
+            if self._attr_group_members and self.protocol_id not in self._attr_group_members:
+                self._attr_group_members.insert(0, self.protocol_id)
 
             # always update the state after modifying group members
             self.update_state()
@@ -827,7 +1052,7 @@ class AirPlayPlayer(Player):
             # a level we sent ourselves is still echoing back
             return True
         return bool(
-            self.config.get_value(CONF_IGNORE_VOLUME)
+            self.settings.get_value(CONF_IGNORE_VOLUME)
             or self.device_info.manufacturer.lower() == "apple"
         )
 
@@ -852,14 +1077,16 @@ class AirPlayPlayer(Player):
             self.mass.create_task(self._adopt_device_volume(volume))
         else:
             self._attr_volume_level = volume
-            self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
+            self.mass.config.set_protocol_value(self.protocol_id, CONF_STORED_VOLUME, volume)
             self.update_state()
+            self._sync_bridge_volume()
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
         """Set/update the discovery info for the player."""
         self._attr_name = display_name
         if discovery_info.type == AIRPLAY_DISCOVERY_TYPE:
             self.airplay_discovery_info = discovery_info
+            self._airplay_record_gone = False
         elif discovery_info.type == RAOP_DISCOVERY_TYPE:
             self.raop_discovery_info = discovery_info
         else:  # guard
@@ -878,7 +1105,7 @@ class AirPlayPlayer(Player):
                     and ipaddress.ip_address(new_address) in _DOCKER_SUBNET
                     and ipaddress.ip_address(cur_address) not in _DOCKER_SUBNET
                 ):
-                    self.logger.warning(
+                    self.logger.debug(
                         "Ignoring mDNS update from %s to Docker address %s",
                         cur_address,
                         new_address,
@@ -891,6 +1118,10 @@ class AirPlayPlayer(Player):
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, new_address)
             self.address = new_address
         self.update_state()
+
+    def set_airplay_record_gone(self) -> None:
+        """Mark the _airplay._tcp record of the device as gone, until a fresh one arrives."""
+        self._airplay_record_gone = True
 
     def set_state_from_stream(
         self,
@@ -907,6 +1138,9 @@ class AirPlayPlayer(Player):
         """
         # Ignore state updates from old/stale streams
         if stream is not None and stream != self.stream:
+            return
+        if stream is not None and not self.renders_audio:
+            # the state of a set is the one of its speakers, which is what is heard
             return
         # The stream reclaims the device: an external (Companion-observed)
         # source snapshot can leak in during a brief stream-restart window and
@@ -932,15 +1166,23 @@ class AirPlayPlayer(Player):
 
         :param session_pcm_format: The PCM format of the (shared) stream session.
         """
-        if not self.hires_playback_enabled:
+        # the speakers of a set decide whether it plays 24-bit; its own device is not heard
+        if not self.hires_playback_enabled or not self.renders_audio:
             return AIRPLAY_PCM_FORMAT
         # 24-bit: the binary expects raw s32le input on stdin (--bitdepth 24)
         # and truncates to 24-bit ALAC internally.
-        supported_rates = {sample_rate for sample_rate, _ in self.supported_sample_rates}
+        # only the 24-bit rates the receiver lists (Shairport Sync decodes 48 kHz
+        # only); one that lists none had 24-bit switched on by hand and gets both
+        listed_rates = [
+            sample_rate
+            for bit, sample_rate in AIRPLAY_HIRES_FORMATS.items()
+            if self.advertised_audio_formats & bit
+        ] or list(AIRPLAY_HIRES_FORMATS.values())
+        # an unlisted session rate falls back to the first listed one
         sample_rate = (
             session_pcm_format.sample_rate
-            if session_pcm_format.sample_rate in supported_rates
-            else AIRPLAY_PCM_FORMAT.sample_rate
+            if session_pcm_format.sample_rate in listed_rates
+            else listed_rates[0]
         )
         return AudioFormat(
             content_type=ContentType.PCM_S32LE,
@@ -957,24 +1199,20 @@ class AirPlayPlayer(Player):
         device and persists there after the session ends. It may therefore only be set
         when no other control owns the volume of this output.
         """
-        if not (parent_id := self.protocol_parent_id):
-            # a standalone AirPlay player has no other interface to defer to
+        if (player := self.player) is None:
+            # not attached to a player, so there is no other interface to defer to
             return True
-        if not (parent_player := self.mass.players.get_player(parent_id)):
-            return True
-        return self._control_routes_to_self(parent_player.volume_control_for_output(self.player_id))
+        return self._control_routes_to_self(player.volume_control_for_output(self.protocol_id))
 
     def release_foreign_mute_latch(self) -> None:
         """Clear our mute latch when another control owns the mute of this output."""
         if not self._attr_volume_muted:
             # nothing latched, so nothing that could silence this stream
             return
-        if not (parent_id := self.protocol_parent_id):
+        if (player := self.player) is None:
             return
-        if not (parent_player := self.mass.players.get_player(parent_id)):
-            return
-        if self._control_routes_to_self(parent_player.mute_control_for_output(self.player_id)):
-            # our own mute, applied through the parent
+        if self._control_routes_to_self(player.mute_control_for_output(self.protocol_id)):
+            # our own mute, applied through the player
             return
         # The mute belongs to a control that does not own this output (a sibling interface,
         # the receiver itself, or nothing at all). Our mute is a latch that only an explicit
@@ -982,22 +1220,82 @@ class AirPlayPlayer(Player):
         # next volume command into a silent one.
         self._attr_volume_muted = False
         self.update_state()
+        self._sync_bridge_volume()
 
     async def on_config_updated(self) -> None:
         """Handle logic when the player config is updated."""
         await super().on_config_updated()
         prov = cast("AirPlayProvider", self.provider)
-        await prov.bridge_manager.evaluate_bridge(self)
+        # not awaited: the attach of this protocol does not wait for its Sendspin bridge
+        self.mass.create_task(prov.bridge_manager.evaluate_bridge(self))
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
+    async def on_attach(self, player: Player) -> None:
+        """
+        Handle logic when the protocol is attached to its player.
+
+        :param player: The player the protocol is attached to.
+        """
+        await super().on_attach(player)
+        if self.carries_set:
+            self.report_speakers()
+
+    def report_speakers(self) -> None:
+        """
+        Have the players removed that the speakers of this set had before they joined it.
+
+        Only speakers that both records name as part of the set right now are reported, each
+        once while it stays in the set.
+        """
+        if self.player is None or not self.available or self._airplay_record_gone:
+            return
+        if (own := parse_set_membership(self.airplay_discovery_info)) is None:
+            # the set is gone: a speaker in it once it is formed again is reported again
+            self._reported_speaker_ids = set()
+            return
+        # What both current records tell, never an earlier record: those of a pair only name it
+        # in their idle pair form, while nobody plays to it.
+        if own.position is None:
+            return
+        provider = cast("AirPlayProvider", self.provider)
+        speaker_ids = {
+            speaker.protocol_id
+            for speaker in self.speakers
+            if (membership := parse_set_membership(speaker.airplay_discovery_info))
+            and membership.position is not None
+            # the room of a pair is never taken for the old player of its other HomePod
+            and not (
+                own.kind == SetKind.STEREO_PAIR and provider.has_stored_room(speaker.protocol_id)
+            )
+        }
+        if added := speaker_ids - self._reported_speaker_ids:
+            self.mass.create_task(
+                self.mass.players.remove_absorbed_players(self.protocol_id, sorted(added))
+            )
+        self._reported_speaker_ids = speaker_ids
+
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        await super().on_detach()
         self.cancel_group_rejoin()
-        if self.stream:
+        if session := self.session:
             # remove this player from the stream session if it is running
-            if self.stream.running and self.stream.session:
-                await self.stream.session.remove_client(self, reason="player unloaded")
-            self.stream = None
+            for endpoint in self.session_endpoints:
+                await session.remove_client(endpoint, reason="player unloaded")
+        self.stream = None
+        if (
+            (membership := self.set_membership)
+            and membership.position == 0
+            and not self.mass.players.wants_protocol(self.protocol_id)
+        ):
+            # the user disabled the player of a set: its speakers are players of their own again
+            prov = cast("AirPlayProvider", self.provider)
+            self.mass.create_task(prov.release_set_speakers(membership.set_id))
+
+    async def on_remove(self) -> None:
+        """Handle logic when the protocol is removed for good."""
+        await cast("AirPlayProvider", self.provider).bridge_manager.remove_bridge(
+            self.protocol_id, permanent=True
+        )
 
     def schedule_group_rejoin(self, candidate_ids: list[str]) -> None:
         """
@@ -1009,13 +1307,16 @@ class AirPlayPlayer(Player):
         late-join path after a short backoff. Any user action on the player (or it
         joining a session by other means) cancels the re-join; when the group is
         no longer playing, its membership was changed meanwhile or the device is
-        offline, the re-join is abandoned and the player simply stays idle.
+        offline or switched off at its power control, the re-join is abandoned and
+        the player simply stays idle.
 
-        :param candidate_ids: Player ids that led or shared the group at the
-            moment the stream was lost, used to resolve the re-join target (the
-            leadership may transfer while the backoff runs).
+        :param candidate_ids: Protocol ids of the AirPlay players that led or shared
+            the group at the moment the stream was lost, used to resolve the re-join
+            target (the leadership may transfer while the backoff runs).
         """
         self.cancel_group_rejoin()
+        if self.player is not None and self.player.offline_by_power_control:
+            return
         self.logger.info(
             "Scheduling automatic re-join of %s to its group after unexpected stream loss",
             self.display_name,
@@ -1037,9 +1338,13 @@ class AirPlayPlayer(Player):
 
     def on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
+        # the speakers of a set play the media of their set
+        for speaker in self.speakers:
+            speaker.on_player_media_updated()
         if not self.stream or not self.stream.running:
             return
-        metadata = self.state.current_media
+        owner = self.owner
+        metadata = owner.player.current_media if owner and owner.player else None
         if not metadata:
             return
         progress = int(metadata.corrected_elapsed_time or 0)
@@ -1061,13 +1366,19 @@ class AirPlayPlayer(Player):
             self._volume_reports_ignored_until = ignored_until
 
     def _control_routes_to_self(self, control: str) -> bool:
-        """Return True if the given (resolved) control routes to this player."""
-        if control == self.player_id:
+        """Return True if the given (resolved) control of the player routes to this protocol."""
+        if (player := self.player) is None:
+            return False
+        if (control_protocol := player.get_control_protocol(control)) is None:
+            return False
+        if control_protocol is self:
             return True
-        # bridge players riding on this player (e.g. Sendspin-over-AirPlay) forward to us
-        if control_player := self.mass.players.get_player(control):
-            return control_player.underlying_player_id == self.player_id
-        return False
+        # bridge protocols riding on this one (e.g. Sendspin-over-AirPlay) forward to us
+        return control_protocol.underlying_protocol_id == self.protocol_id
+
+    def _sync_bridge_volume(self) -> None:
+        """Hand the volume and mute this protocol reports to its Sendspin bridge, if any."""
+        cast("AirPlayProvider", self.provider).bridge_manager.sync_volume(self.protocol_id)
 
     def _get_flags(self) -> int:
         # Flags are either present via "sf" or "flags". Taken from pyatv.protocols.airplay.utils.
@@ -1142,6 +1453,17 @@ class AirPlayPlayer(Player):
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         """
+        if (
+            self.carries_home_theater
+            and self.setup_reason == "pairing_required"
+            and await self._offer_homepods_only(session)
+        ):
+            await self.set_option(CONF_HOMEPODS_ONLY, True)
+        if self.homepods_only:
+            # the speakers of a set take no pairing, only the password stored on the set
+            if self.needs_password_setup:
+                await self._ask_device_password(session)
+            return
         password_collected = await self._run_protocol_pairing(session, collected)
         if not password_collected and self.needs_password_setup:
             await self._ask_device_password(session)
@@ -1281,6 +1603,25 @@ class AirPlayPlayer(Player):
         )
         return bool(values[CONF_PAIR_NOW])
 
+    async def _offer_homepods_only(self, session: SetupSession) -> bool:
+        """
+        Ask whether a set plays on its HomePods only, which takes no pairing of its Apple TV.
+
+        :param session: The setup flow session used to interact with the user.
+        """
+        values = await session.form(
+            [
+                ConfigEntry(
+                    key=CONF_HOMEPODS_ONLY,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=False,
+                    category="protocol_generic",
+                )
+            ],
+            step_id="homepods_only_offer",
+        )
+        return bool(values[CONF_HOMEPODS_ONLY])
+
     async def _prepare_streaming_pairing(
         self, protocol: StreamingProtocol, *, pin_pairing: bool
     ) -> AirPlayPairing:
@@ -1387,10 +1728,10 @@ class AirPlayPlayer(Player):
         """Get all sync clients for a player."""
         sync_clients: list[AirPlayPlayer] = []
         # we need to return the player itself too
-        group_child_ids = {self.player_id}
+        group_child_ids = {self.protocol_id}
         group_child_ids.update(self.group_members)
         for child_id in group_child_ids:
-            if client := cast("AirPlayPlayer | None", self.mass.players.get_player(child_id)):
+            if client := cast("AirPlayPlayer | None", self.provider.get_protocol(child_id)):
                 sync_clients.append(client)
         return sync_clients
 
@@ -1422,6 +1763,13 @@ class AirPlayPlayer(Player):
                     self.display_name,
                 )
                 return
+            if self.player is not None and self.player.offline_by_power_control:
+                # the protocol may read available long after the power was cut
+                self.logger.debug(
+                    "Automatic group re-join for %s cancelled: player is switched off",
+                    self.display_name,
+                )
+                return
             target = self._resolve_rejoin_target(candidate_ids)
             if target is None:
                 # the group may be between sessions (e.g. a track change); keep
@@ -1436,14 +1784,11 @@ class AirPlayPlayer(Player):
             # When the sync membership survived the stream loss (a static group,
             # where membership is configuration), only the running session needs
             # healing; a group command would no-op on the existing membership.
-            heal_session = (
-                target.stream.session
-                if self.player_id in target.group_members and target.stream is not None
-                else None
-            )
+            heal_session = target.session if self.protocol_id in target.group_members else None
             try:
                 if heal_session is not None:
-                    await heal_session.add_client(self)
+                    for endpoint in self.endpoints:
+                        await heal_session.add_client(endpoint)
                 else:
                     # Join through the target's own set_members: both ends are
                     # players of this provider, so the join never needs the
@@ -1451,8 +1796,8 @@ class AirPlayPlayer(Player):
                     # pipeline - and that pipeline's capability gate reflects
                     # grouping state that is in flux right after a stream loss,
                     # so it may silently refuse an internal re-join.
-                    await target.set_members(player_ids_to_add=[self.player_id])
-            except Exception as err:
+                    await target.set_members(player_ids_to_add=[self.protocol_id])
+            except Exception as err:  # noqa: BLE001 - a failed re-join attempt is retried
                 self.logger.warning(
                     "Automatic re-join of %s to group of %s failed (attempt %d/%d): %s",
                     self.display_name,
@@ -1465,11 +1810,8 @@ class AirPlayPlayer(Player):
             # A late-join can also fail without raising (the player then holds
             # group membership without a live stream), so verify the session
             # actually carries this player before declaring success.
-            if (
-                self.stream
-                and self.stream.running
-                and self.stream.session
-                and self in self.stream.session.sync_clients
+            if (session := self.session) and any(
+                endpoint in session.sync_clients for endpoint in self.endpoints
             ):
                 self.logger.info(
                     "Automatically re-joined %s to the group of %s after stream loss",
@@ -1487,8 +1829,8 @@ class AirPlayPlayer(Player):
                 # undo the group membership this attempt created so a retry (or
                 # a manual regroup) starts from a clean join
                 try:
-                    await target.set_members(player_ids_to_remove=[self.player_id])
-                except Exception as err:
+                    await target.set_members(player_ids_to_remove=[self.protocol_id])
+                except Exception as err:  # noqa: BLE001 - see the comment below
                     # a failed undo leaves the membership for the next attempt,
                     # which then heals the session instead of joining anew
                     self.logger.debug(
@@ -1506,7 +1848,7 @@ class AirPlayPlayer(Player):
     def _resolve_rejoin_target(self, candidate_ids: list[str]) -> AirPlayPlayer | None:
         """Resolve which player now carries the group's actively playing session."""
         for candidate_id in candidate_ids:
-            candidate = self.mass.players.get_player(candidate_id)
+            candidate = self.provider.get_protocol(candidate_id)
             if candidate is None or candidate is self:
                 continue
             if not isinstance(candidate, AirPlayPlayer):
@@ -1523,7 +1865,7 @@ class AirPlayPlayer(Player):
             # session has no live timeline to anchor against
             if candidate.playback_state != PlaybackState.PLAYING:
                 continue
-            if not (candidate.stream and candidate.stream.running and candidate.stream.session):
+            if candidate.session is None:
                 continue
             return candidate
         return None
@@ -1534,22 +1876,54 @@ class AirPlayPlayer(Player):
 
         :param password: The plaintext password entered by the user.
         """
-        self.mass.config.set_raw_player_config_value(
-            self.player_id, CONF_PASSWORD, self.mass.config.encrypt_string(password)
+        self.mass.config.set_protocol_value(
+            self.protocol_id, CONF_PASSWORD, self.mass.config.encrypt_string(password)
         )
         # a freshly entered password deserves a clean slate: the reject marker
         # would otherwise keep the player in "needs setup" until the next connect
         self.set_password_invalid(False)
 
     @property
+    def _carries_speaker_pair(self) -> bool:
+        """Return whether this device carries a set of more than one speaker."""
+        if (membership := self.set_membership) is None or membership.position != 0:
+            return False
+        # the Apple TV of a home theater set counts in its size
+        return membership.kind == SetKind.STEREO_PAIR or membership.size > 2
+
+    @property
+    def _hires_enabled_here(self) -> bool:
+        """Return whether this device itself takes 24-bit audio."""
+        if not self._hires_route:
+            return False
+        # a stored toggle is the user's choice; without one it follows the probed formats,
+        # which the config parsed at registration predates
+        return bool(
+            self.mass.config.get_protocol_value(
+                self.protocol_id, CONF_ENABLE_HIRES, self._hires_default_enabled
+            )
+        )
+
+    @property
+    def _hires_route(self) -> bool:
+        """Return whether the current streaming route can carry 24-bit audio."""
+        # 24-bit only works over the AirPlay 2 flow, so a device that streams RAOP
+        # (a legacy receiver, or the force-RAOP escape hatch) stays on the 16-bit
+        # base, and so does the compat lane.
+        return (
+            self.protocol == StreamingProtocol.AIRPLAY2
+            and self.streaming_mode != STREAMING_MODE_AP2_COMPAT
+        )
+
+    @property
     def _hires_default_enabled(self) -> bool:
         """Return the per-device default for the 24-bit toggle."""
-        return default_hires_enabled(
-            self.device_info.manufacturer or "", self.device_info.model or ""
+        return bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS) and (
+            default_hires_enabled(self.device_info.manufacturer or "", self.device_info.model or "")
         )
 
 
 class GenericAirPlayPlayer(AirPlayPlayer):
     """AirPlay protocol endpoint without independent device control."""
 
-    _attr_type = PlayerType.PROTOCOL
+    _attr_role = ProtocolRole.AUDIO

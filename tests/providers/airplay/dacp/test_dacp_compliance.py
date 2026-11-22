@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.airplay.provider import AirPlayProvider
 
@@ -43,7 +45,18 @@ async def test_transport_commands_dispatch(
     """Simple transport paths dispatch the matching player command with the player id."""
     player = make_player(mock_mass)
     await replay(airplay_provider, build_dacp_request(path))
-    getattr(mock_mass.players, cmd).assert_called_once_with(player.player_id)
+    getattr(mock_mass.players, cmd).assert_called_once_with(player.player.player_id)
+    assert player.player.player_id != player.protocol_id
+
+
+async def test_unattached_protocol_dispatches_nothing(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """A protocol without a player has nothing a command could address."""
+    player = make_player(mock_mass)
+    player.player = None
+    await replay(airplay_provider, build_dacp_request("/ctrl-int/1/stop"))
+    mock_mass.players.cmd_stop.assert_not_called()
 
 
 async def test_play_when_not_playing_dispatches_play(
@@ -52,7 +65,7 @@ async def test_play_when_not_playing_dispatches_play(
     """/play starts playback when the player is not already playing."""
     player = make_player(mock_mass, playing=False)
     await replay(airplay_provider, build_dacp_request("/ctrl-int/1/play"))
-    mock_mass.players.cmd_play.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_play.assert_called_once_with(player.player.player_id)
 
 
 async def test_play_when_already_playing_is_ignored(
@@ -64,13 +77,38 @@ async def test_play_when_already_playing_is_ignored(
     mock_mass.players.cmd_play.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("path", "cmd"),
+    [("/ctrl-int/1/play", "cmd_play"), ("/ctrl-int/1/playpause", "cmd_play_pause")],
+)
+async def test_play_while_own_stream_starts_is_ignored(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock, path: str, cmd: str
+) -> None:
+    """Play before MA's starting stream reports playing is an echo of that start."""
+    player = make_player(mock_mass, playing=False)
+    player.stream.start_pending = True
+    await replay(airplay_provider, build_dacp_request(path))
+    getattr(mock_mass.players, cmd).assert_not_called()
+
+
+async def test_play_after_a_start_that_was_stopped_dispatches_play(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """A stream stopped before it ever played does not swallow a later play press."""
+    player = make_player(mock_mass, playing=False)
+    player.stream.start_pending = True
+    player.stream.running = False
+    await replay(airplay_provider, build_dacp_request("/ctrl-int/1/play"))
+    mock_mass.players.cmd_play.assert_called_once_with(player.player.player_id)
+
+
 async def test_pause_when_playing_dispatches_pause(
     airplay_provider: AirPlayProvider, mock_mass: MagicMock
 ) -> None:
     """/pause pauses when the player is playing."""
     player = make_player(mock_mass, playing=True)
     await replay(airplay_provider, build_dacp_request("/ctrl-int/1/pause"))
-    mock_mass.players.cmd_pause.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_pause.assert_called_once_with(player.player.player_id)
 
 
 async def test_pause_when_not_playing_is_ignored(
@@ -102,8 +140,8 @@ async def test_discrete_pause_schedules_debounced_pause(
     mock_mass.call_later.assert_called_once_with(
         1.0,
         mock_mass.players.cmd_pause,
-        player.player_id,
-        task_id=f"debounced_pause_{player.player_id}",
+        player.player.player_id,
+        task_id=f"debounced_pause_{player.player.player_id}",
     )
 
 
@@ -127,7 +165,7 @@ async def test_prevent_playback_cancels_pending_discrete_pause(
         airplay_provider,
         build_dacp_request("/ctrl-int/1/setproperty?device-prevent-playback=1"),
     )
-    mock_mass.cancel_timer.assert_any_call(f"debounced_pause_{player.player_id}")
+    mock_mass.cancel_timer.assert_any_call(f"debounced_pause_{player.player.player_id}")
 
 
 async def test_device_volume_updates_volume(
@@ -150,6 +188,17 @@ async def test_device_volume_mute_threshold_mutes(
     await replay(airplay_provider, raw)
     assert player._attr_volume_muted is True
     player.stream.send_cli_command.assert_called_once_with("VOLUME=0")
+
+
+async def test_device_volume_mute_reaches_the_sendspin_bridge(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """A mute the device reports reaches the bridge of its AirPlay protocol."""
+    player = make_player(mock_mass)
+    raw = build_dacp_request("/ctrl-int/1/setproperty?dmcp.device-volume=-144.000000")
+    await replay(airplay_provider, raw)
+    sync_volume = cast("MagicMock", airplay_provider.bridge_manager).sync_volume
+    sync_volume.assert_called_once_with(player.protocol_id)
 
 
 async def test_device_volume_ignored_for_apple_device(
@@ -193,7 +242,7 @@ async def test_prevent_playback_ungroups_synced_player(
     """prevent-playback=1 on a synced player ungroups instead of stopping the stream."""
     player = make_player(mock_mass, synced_to="parent")
     await replay(airplay_provider, build_dacp_request(_PREVENT_1))
-    mock_mass.players.cmd_ungroup.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_ungroup.assert_called_once_with(player.player.player_id)
     player.stream.stop.assert_not_called()
 
 
@@ -239,7 +288,7 @@ async def test_prevent_playback_zero_schedules_reset(
         player.stream,
         "prevent_playback",
         False,
-        task_id=f"reset_prevent_playback_{player.player_id}",
+        task_id=f"reset_prevent_playback_{player.player.player_id}",
     )
 
 
@@ -278,7 +327,7 @@ async def test_headers_only_request_does_not_crash(
     player = make_player(mock_mass, playing=False)
     raw = b"POST /ctrl-int/1/play HTTP/1.1\r\nActive-Remote: 123"
     await replay(airplay_provider, raw)
-    mock_mass.players.cmd_play.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_play.assert_called_once_with(player.player.player_id)
 
 
 async def test_malformed_header_line_is_skipped(
@@ -292,7 +341,7 @@ async def test_malformed_header_line_is_skipped(
         b"Active-Remote: 123\r\n\r\n"
     )
     await replay(airplay_provider, raw)
-    mock_mass.players.cmd_play.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_play.assert_called_once_with(player.player.player_id)
 
 
 async def test_unknown_path_returns_204_without_command(
@@ -348,3 +397,102 @@ async def test_documented_unhandled_commands_noop(
     ):
         getattr(players, cmd).assert_not_called()
     assert response.startswith(b"HTTP/1.0 204 No Content")
+
+
+def _set_with_speakers(
+    mock_mass: MagicMock, airplay_provider: AirPlayProvider, **kwargs: object
+) -> tuple[MagicMock, list[MagicMock]]:
+    """
+    Make the player of a set with two speakers, each with a stream of its own.
+
+    :param kwargs: Passed on to make_player for the player of the set.
+    """
+    airplay_set = make_player(mock_mass, active_remote="apple-tv", **kwargs)  # type: ignore[arg-type]
+    airplay_set.renders_audio = False
+    speakers = []
+    for index in (1, 2):
+        speaker = MagicMock(owner=airplay_set, renders_audio=True, _transitioning=False)
+        speaker.name = f"HomePod {index}"
+        speaker.player = None
+        speaker.synced_to = None
+        speaker.playback_state = PlaybackState.IDLE
+        speaker.stream = MagicMock(
+            active_remote_id=f"speaker-{index}",
+            running=True,
+            connected=True,
+            prevent_playback=False,
+            stop=AsyncMock(),
+        )
+        speakers.append(speaker)
+    airplay_set.session_endpoints = [*speakers, airplay_set]
+    airplay_set.stream.session.remove_silent_member = MagicMock(return_value="leave")
+    airplay_provider._speakers = {f"apspeaker{index}": s for index, s in enumerate(speakers)}
+    return airplay_set, speakers
+
+
+async def test_a_request_of_a_speaker_acts_on_its_set(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """A HomePod of a set controls the set: its commands address the player of the set."""
+    airplay_set, _ = _set_with_speakers(mock_mass, airplay_provider, synced_to="leader")
+
+    await replay(airplay_provider, build_dacp_request("/ctrl-int/1/nextitem", "speaker-1"))
+    await replay(airplay_provider, build_dacp_request(_PREVENT_1, "speaker-1"))
+
+    mock_mass.players.cmd_next_track.assert_called_once_with(airplay_set.player.player_id)
+    # the set is grouped, so the HomePod switching away takes the set out of its group
+    mock_mass.players.cmd_ungroup.assert_called_once_with(airplay_set.player.player_id)
+
+
+async def test_a_speaker_switching_away_stops_its_whole_set(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """Another sender taking one HomePod stops the set on every speaker and its Apple TV."""
+    airplay_set, speakers = _set_with_speakers(mock_mass, airplay_provider)
+
+    await replay(airplay_provider, build_dacp_request(_PREVENT_1, "speaker-1"))
+
+    for endpoint in (*speakers, airplay_set):
+        endpoint.stream.stop.assert_called_once()
+    mock_mass.players.cmd_ungroup.assert_not_called()
+
+
+async def test_the_apple_tv_of_a_set_switching_away_leaves_its_speakers_playing(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """
+    The Apple TV only shows what its speakers play: switching away it leaves alone.
+
+    Its speakers play on until another sender takes them, which stops the set.
+    """
+    airplay_set, speakers = _set_with_speakers(mock_mass, airplay_provider)
+
+    await replay(airplay_provider, build_dacp_request(_PREVENT_1, "apple-tv"))
+
+    airplay_set.stream.session.remove_silent_member.assert_called_once_with(
+        airplay_set, rejoin=False
+    )
+    for speaker in speakers:
+        speaker.stream.stop.assert_not_called()
+    airplay_set.stream.stop.assert_not_called()
+
+
+async def test_a_speaker_follows_the_transition_and_the_state_of_its_set(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """While its set starts anew a speaker's switch away is stale; its pause follows the set."""
+    airplay_set, speakers = _set_with_speakers(mock_mass, airplay_provider, transitioning=True)
+    # the speakers themselves read idle and settled: only the set says otherwise
+    assert speakers[0]._transitioning is False
+
+    await replay(airplay_provider, build_dacp_request(_PREVENT_1, "speaker-1"))
+    await replay(airplay_provider, build_dacp_request("/ctrl-int/1/discrete-pause", "speaker-2"))
+
+    for endpoint in (*speakers, airplay_set):
+        endpoint.stream.stop.assert_not_called()
+    mock_mass.call_later.assert_called_once_with(
+        1.0,
+        mock_mass.players.cmd_pause,
+        airplay_set.player.player_id,
+        task_id=f"debounced_pause_{airplay_set.player.player_id}",
+    )

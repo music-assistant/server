@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+import inspect
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, RepeatMode
-from music_assistant_models.media_items import Audiobook, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Audiobook,
+    MediaItemChapter,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import CompareState
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 QUEUE_ID = "queue-1"
@@ -30,7 +36,7 @@ def _mappings(item_id: str) -> set[ProviderMapping]:
     }
 
 
-def _book(item_id: str, resume_position_ms: int = 0) -> QueueItem:
+def _book(item_id: str, resume_position_ms: int = 0, fully_played: bool = False) -> QueueItem:
     return QueueItem(
         queue_id=QUEUE_ID,
         queue_item_id=item_id,
@@ -42,6 +48,7 @@ def _book(item_id: str, resume_position_ms: int = 0) -> QueueItem:
             name=item_id,
             duration=120,
             resume_position_ms=resume_position_ms,
+            fully_played=fully_played,
             provider_mappings=_mappings(item_id),
         ),
     )
@@ -89,8 +96,29 @@ def _controller(
     )
     get_stream_details = AsyncMock(return_value=MagicMock(duration=None))
     mass.streams.audio.get_stream_details = get_stream_details
+    # the lookup of the chapters the controller starts for an audiobook finds none
+    mass.music.audiobooks.get_provider_item = AsyncMock(
+        return_value=MagicMock(metadata=MagicMock(chapters=None))
+    )
+    mass.create_task.side_effect = _close_task
     controller.mass = mass
+    mass.player_queues = controller
     return controller, get_stream_details
+
+
+def _close_task(target: object, *_args: object, **_kwargs: object) -> MagicMock:
+    """Stand in for a task that a test does not run: close its coroutine, so none is left."""
+    if inspect.iscoroutine(target):
+        target.close()
+    return MagicMock()
+
+
+async def _run_tasks(tasks: list[asyncio.Task[None]]) -> None:
+    """Await the tasks the controller started, also those they started in turn."""
+    awaited = 0
+    while awaited < len(tasks):
+        awaited = len(tasks)
+        await asyncio.gather(*tasks)
 
 
 def _report_played(
@@ -129,6 +157,27 @@ async def test_next_audiobook_starts_at_its_resume_point() -> None:
     assert get_stream_details.call_args.kwargs["seek_position"] == 59
 
 
+async def test_next_fully_played_audiobook_starts_from_the_beginning() -> None:
+    """A finished audiobook plays from 0:00, not just before its end."""
+    items = [_book("book-a"), _book("book-b", resume_position_ms=119000, fully_played=True)]
+    controller, get_stream_details = _controller(items)
+
+    await controller.load_next_queue_item(QUEUE_ID, "book-a")
+
+    assert get_stream_details.call_args.kwargs["seek_position"] == 0
+
+
+async def test_finished_audiobook_left_part_way_this_time_resumes_there() -> None:
+    """A finished audiobook replayed part way during this queue resumes where it was left."""
+    items = [_book("book-a"), _book("book-b", resume_position_ms=119000, fully_played=True)]
+    controller, get_stream_details = _controller(items)
+    _report_played(controller, items[1], seconds_played=40, now=items[0])
+
+    await controller.load_next_queue_item(QUEUE_ID, "book-a")
+
+    assert get_stream_details.call_args.kwargs["seek_position"] == 39
+
+
 async def test_repeated_audiobook_starts_from_the_beginning() -> None:
     """Repeat all wraps around to the start of the first audiobook, not its old bookmark."""
     items = [_book("book-a", resume_position_ms=60000), _book("book-b")]
@@ -162,7 +211,8 @@ async def test_flow_repeat_preserves_previous_playback_offset(repeat_mode: Repea
     previous_entry = PlayLogEntry(item.queue_item_id, seconds_streamed=61, seek_position=59)
     queue_data.flow_mode_stream_log = [previous_entry]
     player = MagicMock()
-    player.state = SimpleNamespace(corrected_elapsed_time=10, playback_state=PlaybackState.PLAYING)
+    player.corrected_elapsed_time = 10
+    player.playback_state = PlaybackState.PLAYING
     get_stream_details.return_value.seek_position = 0
 
     await controller.load_next_queue_item(QUEUE_ID, item.queue_item_id)
@@ -170,7 +220,7 @@ async def test_flow_repeat_preserves_previous_playback_offset(repeat_mode: Repea
 
     assert get_stream_details.call_args.kwargs["seek_position"] == 0
     assert controller._get_flow_queue_stream_index(queue_data.queue, player) == (0, 69)
-    player.state.corrected_elapsed_time = 66
+    player.corrected_elapsed_time = 66
     assert controller._get_flow_queue_stream_index(queue_data.queue, player) == (0, 5)
 
 
@@ -190,7 +240,7 @@ async def test_non_flow_repeat_preloads_and_enqueues(repeat_mode: RepeatMode) ->
     controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
 
     controller._preload_next_item(QUEUE_ID, item.queue_item_id)
-    await asyncio.gather(*tasks)
+    await _run_tasks(tasks)
 
     get_stream_details.assert_awaited_once()
     assert get_stream_details.call_args.kwargs["seek_position"] == 0
@@ -211,7 +261,7 @@ async def test_preload_next_audiobook_still_resumes_and_enqueues(flow_mode: bool
     controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
 
     controller._preload_next_item(QUEUE_ID, items[0].queue_item_id)
-    await asyncio.gather(*tasks)
+    await _run_tasks(tasks)
 
     assert get_stream_details.call_args.kwargs["seek_position"] == 59
     controller._enqueue_next_item.assert_called_once_with(QUEUE_ID, items[1])
@@ -247,3 +297,35 @@ async def test_next_track_starts_from_the_beginning() -> None:
     await controller.load_next_queue_item(QUEUE_ID, "book-a")
 
     assert get_stream_details.call_args.kwargs["seek_position"] == 0
+
+
+@pytest.mark.parametrize(
+    ("start_position", "start_item", "seek_position"),
+    [(600, None, 599), (None, "2", 299), (None, None, 449)],
+    ids=["start position", "chapter", "newer provider progress"],
+)
+async def test_finished_audiobook_starts_at_its_fresh_resume_point(
+    start_position: int | None, start_item: str | None, seek_position: int
+) -> None:
+    """A finished audiobook starts at a picked position, chapter or newer provider progress."""
+    book = _book("book-a", resume_position_ms=119000, fully_played=True)
+    media_item = cast("Audiobook", book.media_item)
+    media_item.duration = book.duration = 1200
+    media_item.metadata.chapters = [
+        MediaItemChapter(position=1, name="1", start=0),
+        MediaItemChapter(position=2, name="2", start=300),
+    ]
+    controller, _ = _controller([book])
+    # re-listened part way in the provider's own app after it was finished in Music Assistant
+    cast("MagicMock", controller.mass).music.get_resume_position = AsyncMock(
+        return_value=(False, 450000)
+    )
+    resolver = MediaResolver.__new__(MediaResolver)
+    resolver.mass = controller.mass
+    resolver.logger = MagicMock()
+
+    await resolver._resolve_media_items(
+        media_item, start_item=start_item, start_position=start_position
+    )
+
+    assert await controller._get_resume_position(book) == seek_position

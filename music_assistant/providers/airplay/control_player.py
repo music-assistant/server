@@ -17,7 +17,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerFeature,
-    PlayerType,
+    ProtocolRole,
 )
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import MediaItemImage
@@ -75,11 +75,13 @@ from .player import AirPlayPlayer
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.models.player import Player
     from music_assistant.models.setup_flow import SetupSession
 
     from .provider import AirPlayProvider
 
-_CONTROL_RECONNECT_DELAY: Final[float] = 30.0
+_CONTROL_RECONNECT_INITIAL_DELAY: Final[float] = 30.0
+_CONTROL_RECONNECT_MAX_DELAY: Final[float] = 600.0
 _WAKE_TIMEOUT: Final[float] = 10.0
 
 # mDNS TXT keys whose values change with transient playback, session or group
@@ -123,12 +125,12 @@ _COMMAND_ERRORS = (
 class AirPlayControlPlayer(AirPlayPlayer):
     """AirPlay player with independent device monitoring and control."""
 
-    _attr_type = PlayerType.PLAYER
+    _attr_role = ProtocolRole.NATIVE
 
     def __init__(  # noqa: PLR0913
         self,
         provider: AirPlayProvider,
-        player_id: str,
+        protocol_id: str,
         raop_discovery_info: AsyncServiceInfo | None,
         airplay_discovery_info: AsyncServiceInfo | None,
         companion_discovery_info: AsyncServiceInfo | None,
@@ -146,7 +148,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_device: AppleTV | None = None
         super().__init__(
             provider=provider,
-            player_id=player_id,
+            protocol_id=protocol_id,
             raop_discovery_info=raop_discovery_info,
             airplay_discovery_info=airplay_discovery_info,
             address=address,
@@ -160,6 +162,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_push_listener: _AirPlayPushListener | None = None
         self._connection_task: asyncio.Task[None] | None = None
         self._connection_lock = asyncio.Lock()
+        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
+        self._reconnect_wakeup = asyncio.Event()
         self._power_on_event = asyncio.Event()
         self._volume_before_mute: int | None = None
         self._disconnecting = False
@@ -202,13 +206,19 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # POWER is advertised only when it can actually be served: a connected
         # control channel exposing power commands, or stored Companion
         # credentials (so the feature does not flap while (re)connecting).
-        if (
+        # A set that plays on its speakers only leaves its device off: the players
+        # controller powers a player on before it plays, which could switch the TV on.
+        if not self.homepods_only and (
             self.get_setup_value(CONF_COMPANION_CREDENTIALS)
             or self._device_for_power_feature(FeatureName.TurnOn)
             or self._device_for_power_feature(FeatureName.TurnOff)
         ):
             features.add(PlayerFeature.POWER)
-        if not self._stream_active and not self._device_for_feature(FeatureName.SetVolume):
+        if (
+            not self._stream_active
+            and not self.carries_home_theater
+            and not self._device_for_feature(FeatureName.SetVolume)
+        ):
             features.discard(PlayerFeature.VOLUME_MUTE)
         return features
 
@@ -237,9 +247,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """
         collected: dict[str, ConfigValueType] = {}
         await self._run_streaming_pairing(session, collected)
+        # a set that plays on its HomePods only has no use for the controls of its Apple TV
         if (
-            self.companion_pairing_supported or self.mrp_pairing_supported
-        ) and await self._offer_optional_pairing(session, "control_offer"):
+            not self.homepods_only
+            and (self.companion_pairing_supported or self.mrp_pairing_supported)
+            and await self._offer_optional_pairing(session, "control_offer")
+        ):
             await self._run_companion_pairing(session, collected)
             await self._run_mrp_pairing(session, collected)
         await session.finish(collected)
@@ -266,7 +279,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def play(self) -> None:
         """Resume Music Assistant or external playback."""
-        await self._wake_for_playback()
+        await self._wake_before_play()
         if self._stream_active:
             await super().play()
             return
@@ -316,12 +329,13 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Wake the controlled device and start Music Assistant playback."""
-        await self._wake_for_playback()
+        await self._wake_before_play()
         await super().play_media(media)
 
     async def volume_set(self, volume_level: int) -> None:
         """Set stream or native device volume."""
-        if self._stream_active:
+        # the volume of a home theater set is that of its speakers, never the one of its Apple TV
+        if self._stream_active or self.carries_home_theater:
             await super().volume_set(volume_level)
             return
         device = self._device_for_feature(FeatureName.SetVolume)
@@ -333,7 +347,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def volume_mute(self, muted: bool) -> None:
         """Mute an active stream or native device volume."""
-        if self._stream_active:
+        if self._stream_active or self.carries_home_theater:
             await super().volume_mute(muted)
             return
         device = self._device_for_feature(FeatureName.SetVolume)
@@ -466,7 +480,18 @@ class AirPlayControlPlayer(AirPlayPlayer):
         await super().on_config_updated()
         self._schedule_connection(force=True)
 
-    async def on_unload(self) -> None:
+    async def on_attach(self, player: Player) -> None:
+        """
+        Connect the control services again when the object attaches after a detach.
+
+        :param player: The player the protocol is attached to.
+        """
+        await super().on_attach(player)
+        if self._unloading:
+            self._unloading = False
+            self._schedule_connection(force=True)
+
+    async def on_detach(self) -> None:
         """Close control connections and pairing resources."""
         self._unloading = True
         if self._connection_task and not self._connection_task.done():
@@ -474,7 +499,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._connection_task
         await self._disconnect_control_services()
-        await super().on_unload()
+        await super().on_detach()
 
     def _schedule_connection(self, *, force: bool = False) -> None:
         """Start or restart the Apple service connection loop."""
@@ -482,22 +507,32 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         if self._connection_task and not self._connection_task.done():
             if not force:
+                # a dropped channel must not wait out another channel's backoff
+                self._reconnect_wakeup.set()
                 return
             self._connection_task.cancel()
+        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
         self._restart_connections = self._restart_connections or force
         self._connection_task = self.mass.create_task(
             self._connection_loop(),
-            task_id=f"airplay_apple_control_{self.player_id}",
+            task_id=f"airplay_apple_control_{self.protocol_id}",
             abort_existing=force,
         )
 
     async def _connection_loop(self) -> None:
         """Connect control services and retry transient failures."""
-        retry = True
-        while retry and not self._unloading:
+        while not self._unloading:
+            self._reconnect_wakeup.clear()
             retry = await self._connect_control_services()
-            if retry:
-                await asyncio.sleep(_CONTROL_RECONNECT_DELAY)
+            if self._reconnect_wakeup.is_set():
+                # a channel dropped during this pass
+                continue
+            if not retry:
+                return
+            delay = self._reconnect_delay
+            self._reconnect_delay = min(delay * 2, _CONTROL_RECONNECT_MAX_DELAY)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._reconnect_wakeup.wait(), delay)
 
     async def _connect_control_services(self) -> bool:
         """Connect Companion and MRP independently."""
@@ -679,7 +714,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         config = AppleTVConfig(address, self.display_name)
         config.add_service(
             ManualService(
-                self.player_id,
+                self.protocol_id,
                 protocol,
                 info.port,
                 properties,
@@ -703,8 +738,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     @property
     def _stream_active(self) -> bool:
-        """Return whether Music Assistant is actively streaming to this device."""
-        active = bool((stream := getattr(self, "stream", None)) and stream.running)
+        """Return whether Music Assistant is actively streaming to this device or its set."""
+        # also a stream of the Sendspin bridge, which plays in no session
+        active = any(
+            (stream := getattr(endpoint, "stream", None)) is not None and stream.running
+            for endpoint in self.session_endpoints
+        )
         if active:
             self._stream_last_active = time.monotonic()
         return active
@@ -816,6 +855,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._power_on_event.clear()
         await self._run_control_command(device.power.turn_on(), "wake")
         await self._wait_for_wake()
+
+    async def _wake_before_play(self) -> None:
+        """Wake the device before playback, unless its set plays on its HomePods only."""
+        # a set that plays on its speakers only has no session to wake its device for
+        if not self.homepods_only:
+            await self._wake_for_playback()
 
     async def _wait_for_wake(self) -> None:
         """Wait briefly for a pushed powered-on state."""
@@ -1068,12 +1113,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _handle_volume_update(self, source: str, volume: float) -> None:
         """Apply a pushed pyatv volume level."""
-        # MRP volume is ignored when Companion owns volume, and always on a transient
-        # tunnel: that only exposes the speaker's own volume, which Music Assistant
-        # never drives. Worse, a 0 from there latches a mute, and a muted player
-        # skips the stream volume command entirely - so every later volume change
-        # silently stops reaching the device.
-        if source == "mrp" and (self._companion_device is not None or self._uses_transient_mrp):
+        # Companion owns the volume while it is connected; MRP reports only count without it
+        if source == "mrp" and self._companion_device is not None:
+            return
+        # The native volume of the Apple TV of a home theater set is the one its own apps
+        # play at, which is not the level Music Assistant plays the set's speakers at.
+        if self.carries_home_theater:
             return
         # While Music Assistant streams, volume_set drives the stream volume and
         # deliberately leaves the native device volume alone. The two are separate
@@ -1083,17 +1128,24 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         volume_level = max(0, min(100, round(volume)))
         if volume_level == 0:
+            # Only our own mute latches: a muted player skips the stream volume command and
+            # starts every stream silent, so a 0 the device reports itself (such as an Apple
+            # TV whose audio goes to the TV) must not mute it.
+            if source != "command":
+                return
             if self._volume_before_mute is None and self._attr_volume_level:
                 self._volume_before_mute = self._attr_volume_level
             mute_changed = self._attr_volume_muted is not True
             self._attr_volume_muted = True
             if mute_changed:
                 self.update_state()
+                self._sync_bridge_volume()
             return
         mute_changed = self._attr_volume_muted is not False
         self._attr_volume_muted = False
         self._volume_before_mute = None
         self._update_native_volume(volume_level, state_changed=mute_changed)
+        self._sync_bridge_volume()
 
     def _update_native_volume(self, volume: int, *, state_changed: bool = False) -> None:
         """Update and persist a volume reported by device control."""
@@ -1103,8 +1155,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 self.update_state()
             return
         self._attr_volume_level = volume
-        self.mass.config.set_raw_player_config_value(
-            self.player_id,
+        self.mass.config.set_protocol_value(
+            self.protocol_id,
             CONF_STORED_VOLUME,
             volume,
         )
@@ -1170,7 +1222,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             MediaType.TRACK if playing.media_type == PyatvMediaType.Music else MediaType.UNKNOWN
         )
         self._attr_current_media = PlayerMedia(
-            uri=playing.content_identifier or f"apple-device://{self.player_id}/{playing.hash}",
+            uri=playing.content_identifier or f"apple-device://{self.protocol_id}/{playing.hash}",
             media_type=media_type,
             title=playing.title or source_name,
             artist=playing.artist,
@@ -1220,7 +1272,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Return the image-proxy URL for external MRP artwork."""
         image = MediaItemImage(
             type=ImageType.THUMB,
-            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.player_id}/{artwork_id}",
+            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.protocol_id}/{artwork_id}",
             provider=self.provider_id,
             remotely_accessible=False,
         )
@@ -1275,7 +1327,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # Without a live connection the snapshot can no longer be updated, and the
         # last one is typically an app held at paused: leaving it in place keeps
         # transport commands aimed at that app instead of the Music Assistant queue.
-        self.mark_external_source_ended()
+        if self.player is not None:
+            self.player.mark_external_source_ended()
+        else:
+            self.on_external_source_ended()
         self.update_state()
 
     def _notify_companion_state_change(self) -> None:
@@ -1374,6 +1429,6 @@ async def _close_abandoned_pairing(task: asyncio.Task[PairingHandler]) -> None:
     """Close a pairing session that started after its caller was cancelled."""
     try:
         pairing = await task
-    except Exception:
+    except Exception:  # noqa: BLE001 - a failed pairing start leaves nothing to close
         return
     await pairing.close()

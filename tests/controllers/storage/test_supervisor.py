@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Callable
 from typing import Any
 
@@ -901,16 +900,16 @@ async def test_info_while_the_share_states_are_unknown(
     if trouble == "failing":
         ready.refuse_access = True
     elif trouble == "slow":
-        ready.list_delay = 1
+        ready.list_delay = 30
 
-    started = time.monotonic()
-    if trouble == "busy":
-        async with storage._shares_lock:
+    # an info that waits for the Supervisor runs into this timeout
+    async with asyncio.timeout(5):
+        if trouble == "busy":
+            async with storage._shares_lock:
+                info = await storage.get_info()
+        else:
             info = await storage.get_info()
-    else:
-        info = await storage.get_info()
 
-    assert time.monotonic() - started < 0.8
     by_name = {loc.share_name: loc for loc in info.locations if loc.share_name}
     assert (by_name["music"].available, by_name["music"].error) == (True, None)
     assert (by_name["movies"].available, by_name["movies"].error_key) == (False, "share_changed")

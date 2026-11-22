@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from music_assistant_models.enums import AlbumType, LinkType, MediaType, ProviderFeature
 
+# the public MusicBrainz website, for links shown to users; lookups go to our mirror instead
+MUSICBRAINZ_WEB_URL = "https://musicbrainz.org"
+MAGICISRC_URL = "https://magicisrc.kepstin.ca/"
+
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
 # A recording search lists only a few of the releases a song appeared on, and for a much

@@ -14,6 +14,14 @@
     "include_videos_in_search": {
       "label": "Include videos in search results",
       "description": "Search YouTube Music videos as well as songs, including covers, remixes and live performances. This does not change radio or library imports."
+    },
+    "stream_profile": {
+      "label": "Stream resolver profile",
+      "description": "Stable is the proven default. Fast resolves streams several times quicker by skipping requests yt-dlp only needs for the PO token. Experimental, and it relies on YouTube Music Premium, which this provider requires anyway. Brand accounts always use Stable.",
+      "options": {
+        "stable": "Stable",
+        "fast": "Fast (experimental)"
+      }
     }
   },
   "errors": {
