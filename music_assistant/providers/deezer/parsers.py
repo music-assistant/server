@@ -642,6 +642,36 @@ def parse_audiobook_from_album(
     )
 
 
+def parse_audiobook_from_chapter(
+    provider: DeezerProvider, chapter: SearchSearchResultsTracksEdgesNode
+) -> Audiobook:
+    """
+    Create the Audiobook a chapter belongs to (search context).
+
+    :param provider: The Deezer provider instance.
+    :param chapter: A track search result whose album is an audiobook.
+    """
+    assert chapter.album is not None
+    images: UniqueList[MediaItemImage] = UniqueList()
+    if img := _cover_image(provider, chapter.album.cover):
+        images.append(img)
+
+    authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
+    for edge in chapter.contributors.edges:
+        if "MAIN" in edge.roles and edge.node.id != UNKNOWN_ARTIST_ID:
+            authors.append(parse_author(provider, edge.node.id, edge.node.name))
+
+    return Audiobook(
+        item_id=chapter.album.id,
+        provider=provider.instance_id,
+        name=chapter.album.display_title,
+        authors=authors,
+        media_type=MediaType.AUDIOBOOK,
+        provider_mappings={_provider_mapping(provider, chapter.album.id)},
+        metadata=MediaItemMetadata(images=images),
+    )
+
+
 def parse_audiobook_chapters(
     chapter_edges: Sequence[GetAudiobookAudiobookChaptersEdges],
 ) -> list[MediaItemChapter]:

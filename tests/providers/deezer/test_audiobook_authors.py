@@ -275,6 +275,47 @@ async def test_search_lists_an_author_without_music_only_as_author(
 
 
 @pytest.mark.parametrize(
+    ("media_types", "checked", "audiobooks"),
+    [
+        ([MediaType.TRACK, MediaType.AUDIOBOOK], ["1", "album", "2"], ["1", "2"]),
+        ([MediaType.TRACK], ["album", "1", "2"], []),
+    ],
+    ids=["with audiobooks", "tracks only"],
+)
+async def test_search_leads_from_a_chapter_to_its_audiobook(
+    provider: DeezerProvider,
+    gql: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    media_types: list[MediaType],
+    checked: list[str],
+    audiobooks: list[str],
+) -> None:
+    """A chapter found is no track hit, its audiobook is listed once instead."""
+    monkeypatch.setattr(media, "parse_track", lambda _provider, node: node.id)
+    conni = _artist_node("75255", "Conni")
+
+    def _track(track_id: str, album_id: str) -> SimpleNamespace:
+        album = SimpleNamespace(id=album_id, display_title=f"Release {album_id}", cover=None)
+        edges = [SimpleNamespace(roles=["MAIN"], node=conni)]
+        return SimpleNamespace(id=track_id, album=album, contributors=SimpleNamespace(edges=edges))
+
+    hits = _search_hits(conni)
+    tracks = [_track("song", "album"), _track("c1", "1"), _track("c2", "2"), _track("c3", "2")]
+    hits.results.tracks = SimpleNamespace(edges=[SimpleNamespace(node=t) for t in tracks])
+    gql.search.return_value = hits
+    gql.check_audiobook_ids.return_value = {"1", "2"}
+
+    result = await _unwrap(DeezerMediaManager.search)(provider.media_manager, "conni", media_types)
+
+    assert result.tracks == ["song"]
+    assert [book.item_id for book in result.audiobooks] == audiobooks
+    for book in result.audiobooks:
+        assert [a.item_id for a in book.authors] == ["author_75255"]
+        provider._validate_audiobook_author_narrator_types(book)
+    gql.check_audiobook_ids.assert_awaited_once_with(checked)
+
+
+@pytest.mark.parametrize(
     ("audiobooks", "author_only"),
     [({"1", "2"}, True), ({"2"}, False), ({"1"}, False), (set(), False)],
     ids=["all audiobooks", "newest is music", "older music", "only music"],
