@@ -460,6 +460,18 @@ class SpotifyConnectProvider(PluginProvider):
             daemon.active_player_id if daemon.active_player_id != active_player_id else None
         )
 
+        # A second stream request for the same selection is the renderer reopening its
+        # stream on its own, as Sonos does with a radio stream: never a reason to resume
+        # or take back playback. Every selection from MA starts a new playback session.
+        # Read before any await, while the session is still the one this request is for.
+        source_session = self.mass.players.get_audio_source_session(owner_player_id)
+        playback_session_id = source_session.playback_session_id if source_session else None
+        reopened = (
+            playback_session_id is not None
+            and playback_session_id == daemon.streamed_playback_session_id
+        )
+        daemon.streamed_playback_session_id = playback_session_id
+
         # Claim ownership for this queue BEFORE kicking the previous player: the
         # awaited stop below can complete the old stream's teardown, and only an
         # already-replaced session id lets on_source_unselected's stale-guard
@@ -493,17 +505,6 @@ class SpotifyConnectProvider(PluginProvider):
                 shuffle_enabled=daemon.last_playback_options.shuffle,
                 repeat_mode=daemon.last_playback_options.repeat,
             )
-
-        # A second stream request for the same selection is the renderer reopening its
-        # stream on its own, as Sonos does with a radio stream: never a reason to resume
-        # or take back playback. Every selection from MA starts a new playback session.
-        source_session = self.mass.players.get_audio_source_session(owner_player_id)
-        playback_session_id = source_session.playback_session_id if source_session else None
-        reopened = (
-            playback_session_id is not None
-            and playback_session_id == daemon.streamed_playback_session_id
-        )
-        daemon.streamed_playback_session_id = playback_session_id
 
         # Externally triggered: the backend is already playing → nothing to do.
         # Otherwise acquire playback, then confirm it actually started.

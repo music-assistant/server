@@ -1220,3 +1220,42 @@ async def test_handoff_kick_cannot_release_the_session() -> None:
     assert daemon.active_session_id == "sess_new"
     assert daemon.active_player_id == "queue_new"
     mass.players.cmd_stop.assert_awaited_once_with("queue_old")
+
+
+async def test_reselect_during_handoff_kick_is_no_reopen() -> None:
+    """A request keeps the selection it came for when the target is reselected meanwhile."""
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        active_player_id="queue_old",
+        in_use_by_queue="queue_old",
+        active_session_id="sess_old",
+        last_context_uri="spotify:playlist:ctx",
+    )
+    _player_with_volume(mass, 25)
+    _source_session(mass, "queue_new", "pb1")
+
+    async def _reselect_while_stopping(_player_id: str) -> None:
+        _source_session(mass, "queue_new", "pb2")
+
+    mass.players.cmd_stop = AsyncMock(side_effect=_reselect_while_stopping)
+
+    await provider.on_source_selected(_PLAYER_ID, "proto_new", "queue_new", "sess1")
+    # the superseded request ends while it still holds the claim, releasing Spotify
+    await provider.on_source_unselected(_PLAYER_ID, "queue_new", "sess1")
+    assert ("deactivate", None) in backend.calls
+    daemon.playing = False
+    daemon.spotify_session_active = False
+    backend.calls.clear()
+
+    def _mark_playing() -> None:
+        daemon.playing = True
+
+    backend.on_acquire = _mark_playing
+
+    # the request of the new selection takes playback back instead of staying silent
+    await provider.on_source_selected(_PLAYER_ID, "proto_new", "queue_new", "sess2")
+
+    assert backend.calls == [("play", ("spotify:playlist:ctx", None)), ("set_volume", 25)]
