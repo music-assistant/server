@@ -16,7 +16,7 @@ async def get_shairport_sync_binary() -> str:
     Return the path of the installed shairport-sync binary.
 
     :raises RuntimeError: When shairport-sync is not installed, too old, built for AirPlay 2,
-        or built without metadata support.
+        or built without the pipe backend or metadata support.
     """
     min_version = ".".join(str(part) for part in MIN_SHAIRPORT_SYNC_VERSION)
     if not (binary := shutil.which("shairport-sync")):
@@ -30,7 +30,8 @@ async def get_shairport_sync_binary() -> str:
     if returncode != 0 or not _is_supported_version(version):
         msg = (
             f"shairport-sync {version} can not be used: the AirPlay Receiver needs a classic "
-            f"AirPlay build (not AirPlay 2) of version {min_version}+, with metadata support."
+            f"AirPlay build (not AirPlay 2) of version {min_version}+, with the pipe backend "
+            "and metadata support."
         )
         raise RuntimeError(msg)
     return binary
@@ -46,9 +47,11 @@ def _is_supported_version(version: str) -> bool:
     if not (match := re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", version)):
         return False
     release = tuple(int(part or 0) for part in match.groups())
-    # an AirPlay 2 build pipes 48 kHz 32-bit audio and may advertise a second service
+    # the receivers need the audio pipe backend and metadata; an AirPlay 2 build pipes
+    # 48 kHz 32-bit audio and may advertise a second service
+    capabilities = set(version.split("-"))
     return (
         release >= MIN_SHAIRPORT_SYNC_VERSION
-        and "-metadata" in version
-        and "-AirPlay2" not in version
+        and {"pipe", "metadata"} <= capabilities
+        and "AirPlay2" not in capabilities
     )

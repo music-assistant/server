@@ -39,6 +39,8 @@ async def test_a_recent_build_with_metadata_support_is_used(version: str) -> Non
     [
         pytest.param("4.3.7-OpenSSL-tinysvcmdns-stdout-pipe-metadata-sysconfdir:/etc", id="old"),
         pytest.param("5.6.3-FFmpeg-OpenSSL-stdout-pipe-sysconfdir:/etc", id="no-metadata"),
+        # PipeWire is an output backend of its own, not the audio pipe
+        pytest.param("5.6.3-FFmpeg-OpenSSL-ALSA-PipeWire-metadata-sysconfdir:/etc", id="no-pipe"),
         # an AirPlay 2 build pipes 48 kHz 32-bit audio
         pytest.param(
             "5.6.3-AirPlay2-smi11-OpenSSL-Avahi-ALSA-stdout-pipe-soxr-metadata-sysconfdir:/etc",
