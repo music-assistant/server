@@ -3524,7 +3524,9 @@ async def test_unexpected_death_of_solo_player_schedules_resume() -> None:
         return "plplayera0001"
 
     player.get_resumable_solo_queue_id.side_effect = _get_queue_id
-    player.set_state_from_stream.side_effect = lambda **_: call_order.append("set_state_from_stream")
+    player.set_state_from_stream.side_effect = lambda **_: call_order.append(
+        "set_state_from_stream"
+    )
     player.schedule_solo_resume.side_effect = lambda _qid: call_order.append("schedule_solo_resume")
 
     stream = AirPlayStream(player)
