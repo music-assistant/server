@@ -164,7 +164,6 @@ FINISHED_CLIP_STATES = (
 # playback states in which a session holds its speaker
 RENDERING_STATES = (PlaybackState.PLAYING, PlaybackState.PAUSED)
 SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
-# the suffix of an id that serves a queue item again in a later round of repeat
 REPEAT_ROUND_SUFFIX = re.compile(r"~r(\d+)")
 
 
@@ -1062,6 +1061,7 @@ class SonosPlayer(PlayerProtocol):
 
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
+        upcoming_positions: dict[int, str] = {}
         last_index: int | str = center_index
         last_position = center_index
         for _ in range(min(UPCOMING_ITEMS, max_upcoming)):
@@ -1080,7 +1080,9 @@ class SonosPlayer(PlayerProtocol):
                     next_item.queue_item_id, next_index, generation, asked, repeat_round
                 )
             )
-            positions[next_index] = wire_ids[-1]
+            # the speaker fetches ahead of the item it plays: a position this window lists
+            # again in a later round is fetched for the round it reaches first
+            upcoming_positions.setdefault(next_index, wire_ids[-1])
             if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
                 # a track or a pair that repeats itself gets one more round, not a window
                 # full: the speaker is never refused the track it plays or the one before
@@ -1096,7 +1098,7 @@ class SonosPlayer(PlayerProtocol):
             # check after the loop in case the window filled exactly up to the last item
             includes_end=self.mass.player_queues.get_next_item(queue_id, last_index) is None,
         )
-        self._window_item_ids = positions
+        self._window_item_ids = positions | upcoming_positions
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Serving Sonos queue window for %s on player %s: %s",

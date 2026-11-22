@@ -403,6 +403,43 @@ async def test_the_rounds_of_repeat_all_agree_from_window_to_window() -> None:
     assert after.wire_ids[:4] == ["track0@0~r1", "track1@0~r1", "track2@0~r1", "track0@0~r2"]
 
 
+async def test_a_fetch_on_repeat_all_binds_the_round_the_speaker_reaches_first() -> None:
+    """
+    Test a fetch at a position a short queue on repeat lists twice binds its nearest round.
+
+    A track added behind the playing one takes the position the speaker cached the next
+    track at, and goes out under the id of that track's first round.
+    """
+    player = _make_player_on_real_queues(4, RepeatMode.ALL)
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    queue_data.queue.current_index = 1
+    await player.build_cloud_queue_window("track1@0")
+    queue_data.items.insert(2, _make_queue_item("guest"))
+    player.on_queue_position_served(2, "guest")
+
+    assert player.served_item_id("track2@0") == "guest"
+    # the speaker has not fetched the round after it yet
+    assert player.served_item_id("track2@0~r1") == "track2"
+
+
+async def test_a_fetch_on_repeat_one_binds_the_repeat() -> None:
+    """
+    Test a fetch at the position of a track on repeat binds the round after the playing one.
+
+    The speaker fetched the round it plays already: a track added before it takes its
+    position, and goes out under the id of the repeat.
+    """
+    player = _make_player_on_real_queues(3, RepeatMode.ONE)
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    queue_data.queue.current_index = 1
+    await player.build_cloud_queue_window("track1@0")
+    queue_data.items.insert(1, _make_queue_item("guest"))
+    player.on_queue_position_served(1, "guest")
+
+    assert player.served_item_id("track1@0~r1") == "guest"
+    assert player.served_item_id("track1@0") == "track1"
+
+
 def test_an_id_of_a_later_round_names_its_queue_item() -> None:
     """Test a report on a repeat round is read as the queue item of the current load."""
     player, _ = _make_player([_make_queue_item("track0")])
