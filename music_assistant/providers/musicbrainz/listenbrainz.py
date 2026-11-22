@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientResponseError, ClientTimeout
 from mashumaro import DataClassDictMixin
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import RateLimited
@@ -129,23 +129,35 @@ class ListenBrainzClient:
         )
         return TopRecordings(recordings=recordings, fetched=True)
 
-    @throttle_with_retries
     async def _get_top_recordings(self, artist_mbid: str) -> list[dict[str, Any]] | None:
         """Fetch the ranking of an artist's recordings, None when ListenBrainz asks for a token."""
         # the endpoint answers any query parameter with a 401, so the whole list is fetched
-        url = f"{LB_BASE_URL}/popularity/top-recordings-for-artist/{artist_mbid}"
+        try:
+            recordings: list[dict[str, Any]] = await self._get_data(
+                f"/popularity/top-recordings-for-artist/{artist_mbid}"
+            )
+            return recordings
+        except ClientResponseError as err:
+            if err.status == 401:
+                return None
+            raise
+
+    @throttle_with_retries
+    async def _get_data(self, path: str) -> Any:
+        """
+        Make a request to the ListenBrainz API and return the response data.
+
+        :param path: API path relative to LB_BASE_URL.
+        """
         headers = {"User-Agent": MASS_USER_AGENT}
         async with self.mass.http_session.get(
-            url, headers=headers, timeout=REQUEST_TIMEOUT
+            f"{LB_BASE_URL}{path}", headers=headers, timeout=REQUEST_TIMEOUT
         ) as response:
             if response.status == 429:
                 backoff_time = parse_retry_after(response.headers.get("X-RateLimit-Reset-In"))
                 raise RateLimited("ListenBrainz rate limit", backoff_time=backoff_time)
-            if response.status == 401:
-                return None
             response.raise_for_status()
-            answer: list[dict[str, Any]] = await response.json(loads=json_loads)
-            return answer
+            return await response.json(loads=json_loads)
 
 
 def _top_recordings(answer: list[dict[str, Any]], artist_mbid: str) -> list[TopRecording]:

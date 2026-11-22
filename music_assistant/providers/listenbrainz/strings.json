@@ -1,0 +1,23 @@
+{
+  "config_entries": {
+    "enable_weekly_jams": {
+      "label": "Enable Weekly Jams",
+      "description": "Load the current and previous Weekly Jams playlists."
+    },
+    "enable_weekly_exploration": {
+      "label": "Enable Weekly Exploration",
+      "description": "Load the current and previous Weekly Exploration playlists."
+    },
+    "enable_yearly_missed_tracks": {
+      "label": "Enable Yearly Missed Tracks",
+      "description": "Load all available yearly Missed Tracks playlists."
+    },
+    "enable_yearly_top_discoveries": {
+      "label": "Enable Yearly Top Discoveries",
+      "description": "Load all available yearly Top Discoveries playlists."
+    }
+  },
+  "config_categories": {
+    "playlists": "Playlists"
+  }
+}
