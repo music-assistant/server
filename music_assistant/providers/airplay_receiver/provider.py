@@ -35,6 +35,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.config_entries import (
@@ -51,11 +52,11 @@ from music_assistant.helpers.player import (
     get_available_player,
 )
 from music_assistant.helpers.process import AsyncProcess, check_output
-from music_assistant.helpers.util import interface_name_for_ip
+from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.media_capabilities import SourceControlValue
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
-from music_assistant.providers.airplay_receiver.metadata import MetadataReader
+from music_assistant.providers.airplay_receiver.metadata import MdnsService, MetadataReader
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -149,6 +150,9 @@ class _ReceiverDaemon:
     # the player a failed playback start waits for, until it can play
     waiting_player_id: str | None = None
     unsubscribe_waiting: Callable[[], None] | None = None
+    # the mDNS service published on behalf of the running shairport-sync process
+    mdns_info: AsyncServiceInfo | None = None
+    mdns_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def cover_art_path(self, img_hash: str) -> str:
         """
@@ -700,6 +704,9 @@ class AirPlayReceiverProvider(PluginProvider):
             if daemon.metadata_reader:
                 await daemon.metadata_reader.stop()
 
+            # nothing answers on the advertised port any more
+            await self._unpublish_mdns_service(daemon)
+
             # Clean up pipes and config
             await self._cleanup_pipes_and_config(daemon)
 
@@ -796,9 +803,6 @@ class AirPlayReceiverProvider(PluginProvider):
         config_content = config_content.replace("{METADATA_PIPE}", daemon.metadata_pipe.path)
         config_content = config_content.replace("{AUDIO_PIPE}", daemon.audio_pipe.path)
         config_content = config_content.replace("{PORT}", str(daemon.port))
-        config_content = config_content.replace(
-            "{INTERFACE_LINE}", await self._get_mdns_interface_line()
-        )
 
         # Set default volume based on the connected player's current volume if available
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
@@ -817,22 +821,63 @@ class AirPlayReceiverProvider(PluginProvider):
 
         await asyncio.to_thread(_write_config)
 
-    async def _get_mdns_interface_line(self) -> str:
+    async def _publish_mdns_service(
+        self, daemon: _ReceiverDaemon, proc: AsyncProcess | None, service: MdnsService
+    ) -> None:
         """
-        Build the shairport-sync ``general.interface`` directive, or an empty string.
+        Publish, or refresh, the mDNS service a receiver's shairport-sync handed over.
 
-        Pins the receiver's mDNS records to the interface of the stream server's bind IP,
-        or of its publish IP when it binds all interfaces, so senders only learn addresses
-        on the network Music Assistant is reached on instead of those of unrelated
-        interfaces (e.g. Docker or VPN). Returns an empty string to advertise on all
-        interfaces when no local interface holds that IP.
+        :param daemon: The receiver the service belongs to.
+        :param proc: The shairport-sync process that handed the service over.
+        :param service: The service to publish.
         """
-        ip = await self.mass.streams.get_source_ip() or self.mass.streams.publish_ip
-        iface_name = interface_name_for_ip(ip)
-        if not iface_name:
-            self.logger.debug("No interface found for IP %s; advertising on all interfaces", ip)
-            return ""
-        return f'\tinterface = "{iface_name}";\n'
+        async with daemon.mdns_lock:
+            # the process may have exited, and withdrawn its service, in the meantime
+            if proc is None or proc is not daemon.shairport_proc or proc.closed:
+                return
+            service_type = f"{service.service_type}.local."
+            # an mDNS instance name is a single DNS label of at most 63 bytes
+            name = service.name.encode()[:63].decode("utf-8", "ignore")
+            # senders only learn the address Music Assistant is reached on, not those of
+            # unrelated interfaces (e.g. Docker or VPN)
+            ip = await self.mass.streams.get_source_ip() or self.mass.streams.publish_ip
+            aiozc = self.mass.discovery.aiozc
+            try:
+                info = AsyncServiceInfo(
+                    service_type,
+                    f"{name}.{service_type}",
+                    port=service.port,
+                    properties=service.txt,
+                    addresses=[await get_ip_pton(ip)],
+                    # a host name of our own: other mDNS responders on this host also
+                    # answer for its host name, with addresses senders may not reach
+                    server=f"ma-airplay-receiver-{self.mass.server_id[:8]}.local.",
+                )
+                if daemon.mdns_info is None:
+                    # no probing: the name derives from this host's MAC address, and a
+                    # restart would otherwise trip over the previous process's goodbye
+                    await aiozc.async_register_service(info, cooperating_responders=True)
+                else:
+                    await aiozc.async_update_service(info)
+            except Exception as err:  # noqa: BLE001 - a failed announcement must not stop the receiver
+                self.logger.warning(
+                    "Unable to announce AirPlay receiver '%s' on the network: %s",
+                    daemon.airplay_name,
+                    err,
+                )
+                return
+            daemon.mdns_info = info
+
+    async def _unpublish_mdns_service(self, daemon: _ReceiverDaemon) -> None:
+        """Withdraw the mDNS service published for a receiver, if any."""
+        async with daemon.mdns_lock:
+            if daemon.mdns_info is None:
+                return
+            info, daemon.mdns_info = daemon.mdns_info, None
+            try:
+                await self.mass.discovery.aiozc.async_unregister_service(info)
+            except Exception as err:  # noqa: BLE001 - e.g. zeroconf already closed at shutdown
+                self.logger.debug("Unable to withdraw mDNS service %s: %s", info.name, err)
 
     async def _write_silence_to_unblock_stream(self, daemon: _ReceiverDaemon) -> None:
         """
@@ -897,6 +942,12 @@ class AirPlayReceiverProvider(PluginProvider):
         # the metadata reader outlives the cancelled tasks for a moment during
         # teardown; a stopped daemon must not schedule new work from late events
         if daemon.stop_called:
+            return
+
+        if "mdns_service" in metadata:
+            self.mass.create_task(
+                self._publish_mdns_service(daemon, daemon.shairport_proc, metadata["mdns_service"])
+            )
             return
 
         # Handle play state changes (shairport-sync's active state begin/end)

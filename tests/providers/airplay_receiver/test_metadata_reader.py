@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from music_assistant.providers.airplay_receiver.metadata import MetadataReader
+from music_assistant.providers.airplay_receiver.metadata import MdnsService, MetadataReader
 
 
 @pytest.fixture
@@ -80,6 +80,48 @@ async def test_active_state_marker_delivered(pipe_path: str) -> None:
         await _write(pipe_path, _item("ssnc", "abeg"))
         await _wait_for(lambda: bool(updates))
         assert updates == [{"play_state": "playing"}]
+    finally:
+        await reader.stop()
+
+
+async def test_mdns_service_hand_over_is_delivered(pipe_path: str) -> None:
+    """The mDNS service shairport-sync hands over (svrg) is delivered for publishing."""
+    updates: list[dict[str, Any]] = []
+    reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
+    await reader.start()
+    payload = (
+        b"service=_raop._tcp\nname=0A1B2C3D4E5F@Kitchen | Music Assistant\nport=7123\n"
+        b"txt=am=ShairportSync\ntxt=md=0,1,2\ntxt=pw=false\n"
+    )
+    try:
+        await _write(pipe_path, _item("ssnc", "svrg", payload))
+        await _wait_for(lambda: bool(updates))
+        assert updates == [
+            {
+                "mdns_service": MdnsService(
+                    service_type="_raop._tcp",
+                    name="0A1B2C3D4E5F@Kitchen | Music Assistant",
+                    port=7123,
+                    txt={"am": "ShairportSync", "md": "0,1,2", "pw": "false"},
+                )
+            }
+        ]
+    finally:
+        await reader.stop()
+
+
+async def test_malformed_mdns_service_hand_over_is_ignored(
+    pipe_path: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An svrg item without a port publishes nothing."""
+    updates: list[dict[str, Any]] = []
+    reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
+    await reader.start()
+    try:
+        payload = b"service=_raop._tcp\nname=0A1B2C3D4E5F@Kitchen\n"
+        await _write(pipe_path, _item("ssnc", "svrg", payload))
+        await _wait_for(lambda: "malformed mDNS service" in caplog.text)
+        assert not updates
     finally:
         await reader.stop()
 
