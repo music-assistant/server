@@ -48,7 +48,7 @@ class MetadataReader:
     async def start(self) -> None:
         """Start reading metadata from the pipe."""
         self._stop = False
-        # Open the FIFO up front so hook writers never block on a missing reader.
+        # Open the FIFO up front: shairport-sync drops metadata while it has no reader.
         try:
             self._fd = await self._open_pipe()
         except OSError as err:
@@ -73,8 +73,8 @@ class MetadataReader:
         """
         Keep the pipe reader alive until stopped.
 
-        A dead reader would silently drop all sessioncontrol markers and leave
-        hook writers blocked on the FIFO, so unexpected errors must not be fatal.
+        A dead reader would silently drop all metadata, including the playback start
+        and end markers, so unexpected errors must not be fatal.
         """
         backoff = 1
         while not self._stop:
@@ -133,35 +133,12 @@ class MetadataReader:
                     await asyncio.sleep(0.1)
 
         finally:
-            # Remove the reader callback, but keep the fd open so hook writers
-            # never find the FIFO readerless while _run() restarts the loop.
+            # Remove the reader callback, but keep the fd open so shairport-sync
+            # never finds the FIFO readerless while _run() restarts the loop.
             loop.remove_reader(fd)
 
     def _process_buffer(self) -> None:
-        """Process all complete metadata items in the buffer (XML format or plain text markers)."""
-        # First, check for plain text markers from sessioncontrol hooks
-        while "\n" in self._buffer:
-            # Check if we have a complete line before any XML
-            line_end = self._buffer.index("\n")
-            if "<item>" not in self._buffer or self._buffer.index("<item>") > line_end:
-                # We have a plain text line before any XML
-                line = self._buffer[:line_end].strip()
-                self._buffer = self._buffer[line_end + 1 :]
-
-                # Handle our custom markers
-                if line == "MA_PLAY_BEGIN":
-                    self.logger.info("Playback started (via sessioncontrol hook)")
-                    if self.on_metadata:
-                        self.on_metadata({"play_state": "playing"})
-                elif line == "MA_PLAY_END":
-                    self.logger.info("Playback ended (via sessioncontrol hook)")
-                    if self.on_metadata:
-                        self.on_metadata({"play_state": "stopped"})
-                # Ignore other plain text lines
-            else:
-                # XML item comes first, stop looking for lines
-                break
-
+        """Process all complete metadata items in the buffer, in order."""
         # Look for complete <item>...</item> blocks
         while "<item>" in self._buffer and "</item>" in self._buffer:
             try:
@@ -289,6 +266,19 @@ class MetadataReader:
         if item_type == "ssnc" and code == "mden":
             if self.on_metadata and self._current_metadata:
                 self.on_metadata(dict(self._current_metadata))
+            return
+
+        # Handle active state begin/end markers (playback started/ended)
+        if item_type == "ssnc" and code == "abeg":
+            self.logger.info("Playback started")
+            if self.on_metadata:
+                self.on_metadata({"play_state": "playing"})
+            return
+
+        if item_type == "ssnc" and code == "aend":
+            self.logger.info("Playback ended")
+            if self.on_metadata:
+                self.on_metadata({"play_state": "stopped"})
             return
 
         # Parse core metadata (from iTunes/iOS)
