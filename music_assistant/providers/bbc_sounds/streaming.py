@@ -120,8 +120,10 @@ class StreamManager:
         try:
             if update := stream_details.stream_metadata_update_callback:
                 await update(stream_details, 0)
-        except exceptions.SoundsException:
-            self.logger.exception("Failed to update live stream metadata for %s", item_id)
+        except Exception:  # bare exception to prevent stopping playback
+            self.logger.warning(
+                "Failed to update live stream metadata for %s", item_id, exc_info=True
+            )
         return stream_details
 
     @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
@@ -143,8 +145,8 @@ class StreamManager:
 
         try:
             segments = await self.now_playing.programme_segments(episode.id)
-        except exceptions.SoundsException:
-            self.logger.debug("No track list for %s", episode.id, exc_info=True)
+        except Exception:  # bare exception to prevent stopping playback
+            self.logger.warning("No track list for %s", episode.id, exc_info=True)
             segments = []
         stream_details.stream_metadata_update_callback = partial(
             self.now_playing.update_on_demand,
