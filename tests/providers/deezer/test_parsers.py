@@ -111,7 +111,7 @@ def _audiobook(**details: str) -> SimpleNamespace:
         duration=3600,
         publisher=None,
         is_favorite=False,
-        release_date=details.pop("release_date", None),
+        original_release_date=details.pop("original_release_date", None),
         **details,
     )
 
@@ -130,7 +130,7 @@ def test_audiobook_from_a_list_has_no_barcode(provider: DeezerProvider) -> None:
 
 def test_audiobook_has_its_release_date(provider: DeezerProvider) -> None:
     """The audiobook carries its release date."""
-    audiobook = _audiobook(release_date="2023-11-03T00:00:00.000Z")
+    audiobook = _audiobook(original_release_date="2023-11-03T00:00:00.000Z")
     parsed = parse_audiobook(provider, audiobook)  # type: ignore[arg-type]
     assert parsed.metadata.release_date == datetime(2023, 11, 3, tzinfo=UTC)
 

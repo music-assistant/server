@@ -573,7 +573,8 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
     metadata = MediaItemMetadata(
         images=images,
         explicit=audiobook.is_explicit,
-        release_date=parse_date(audiobook.release_date),
+        # releaseDate can be a later re-release, this one matches the album
+        release_date=parse_date(audiobook.original_release_date),
     )
     if audiobook.description:
         metadata.description = audiobook.description
