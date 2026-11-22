@@ -330,6 +330,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
+        cue_stems: set[str],
         scan_errors: ScanErrors,
         metadata_files: list[FileSystemItem],
     ) -> None:
@@ -377,6 +378,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                     cur_filenames=cur_filenames,
                     items_to_process=items_to_process,
                     unchanged_cue_items=unchanged_cue_items,
+                    cue_stems=cue_stems,
                     ignore_album_playlists=ignore_album_playlists,
                     metadata_files=metadata_files,
                 )

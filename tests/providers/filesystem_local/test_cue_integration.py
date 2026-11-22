@@ -19,6 +19,7 @@ from music_assistant.providers.filesystem_local.cue import (
     CUE_TRACK_ID_DELIMITER,
     CueSheetHandler,
     cue_metadata_checksum,
+    cue_referenced_audio_stem,
     is_multi_file_cue,
     make_cue_track_id,
     parse_cue_track_id,
@@ -309,32 +310,8 @@ class TestFindCueAudioFile:
         assert result is None
 
 
-class TestCompanionAudioStem:
-    """Tests for which audio file a CUE sheet hides from regular track import."""
-
-    @pytest.mark.asyncio
-    async def test_located_audio_file_is_hidden(self, tmp_path: Path) -> None:
-        """The audio file named by a single-file CUE is the one it absorbs."""
-        (tmp_path / "album.flac").write_bytes(b"")
-        cue_item = _make_cue_item(tmp_path, SAMPLE_CUE, name="Live.cue")
-        provider = _make_provider(base_path=str(tmp_path))
-        cue_sheet = await provider._cue.load_cue_sheet(cue_item)
-
-        result = await provider._cue.companion_audio_stem(cue_item, cue_sheet)
-
-        assert result == str(tmp_path / "album")
-
-    @pytest.mark.asyncio
-    async def test_missing_audio_file_hides_nothing(self, tmp_path: Path) -> None:
-        """A FILE entry naming a missing file does not hide a same-named file of another type."""
-        (tmp_path / "album.flac").write_bytes(b"")
-        cue_item = _make_cue_item(
-            tmp_path, SAMPLE_CUE.replace('"album.flac"', '"album.wav"'), name="Live.cue"
-        )
-        provider = _make_provider(base_path=str(tmp_path))
-        cue_sheet = await provider._cue.load_cue_sheet(cue_item)
-
-        assert await provider._cue.companion_audio_stem(cue_item, cue_sheet) is None
+class TestMultiFileCue:
+    """Tests for CUE sheets that reference one audio file per track."""
 
     @pytest.mark.asyncio
     async def test_multi_file_cue_hides_nothing(self, tmp_path: Path) -> None:
@@ -347,7 +324,7 @@ class TestCompanionAudioStem:
 
         assert is_multi_file_cue(cue_sheet)
         assert await provider._cue.find_audio_file(cue_item, cue_sheet) is None
-        assert await provider._cue.companion_audio_stem(cue_item, cue_sheet) is None
+        assert cue_referenced_audio_stem(cue_item, cue_sheet) is None
 
     @pytest.mark.asyncio
     async def test_multi_file_cue_yields_no_tracks(self, tmp_path: Path) -> None:
@@ -960,10 +937,12 @@ class TestClassifyScanItemCue:
         list[tuple[FileSystemItem, str | None]],
         list[FileSystemItem],
         set[str],
+        set[str],
     ]:
         items_to_process: list[tuple[FileSystemItem, str | None]] = []
         unchanged_cue_items: list[FileSystemItem] = []
         cur_filenames: set[str] = set()
+        cue_stems: set[str] = set()
         provider._classify_scan_item(
             item,
             file_checksums={},
@@ -971,16 +950,17 @@ class TestClassifyScanItemCue:
             cur_filenames=cur_filenames,
             items_to_process=items_to_process,
             unchanged_cue_items=unchanged_cue_items,
+            cue_stems=cue_stems,
             ignore_album_playlists=False,
             metadata_files=[],
         )
-        return items_to_process, unchanged_cue_items, cur_filenames
+        return items_to_process, unchanged_cue_items, cur_filenames, cue_stems
 
     def test_unchanged_cue_routes_to_unchanged_bucket(self) -> None:
         """Matching checksum: CUE is marked present and not re-processed."""
         provider = _make_provider()
         cue_item = self._cue_item("checksum-v1")
-        items, unchanged, cur = self._classify(
+        items, unchanged, cur, stems = self._classify(
             provider,
             cue_item,
             cue_file_checksums={"album.cue": {cue_metadata_checksum("checksum-v1")}},
@@ -988,12 +968,13 @@ class TestClassifyScanItemCue:
         assert items == []
         assert unchanged == [cue_item]
         assert cur == {"album.cue"}
+        assert stems == {"/music/album"}
 
     def test_edited_cue_forwards_prior_checksum(self) -> None:
         """Changed checksum: prior value is forwarded so downstream overwrite=True."""
         provider = _make_provider()
         cue_item = self._cue_item("checksum-v2")
-        items, unchanged, _ = self._classify(
+        items, unchanged, _, _ = self._classify(
             provider,
             cue_item,
             cue_file_checksums={"album.cue": {cue_metadata_checksum("checksum-v1")}},
@@ -1005,7 +986,7 @@ class TestClassifyScanItemCue:
         """An unversioned mapping is reprocessed even when the file is unchanged."""
         provider = _make_provider()
         cue_item = self._cue_item("checksum-v1")
-        items, unchanged, _ = self._classify(
+        items, unchanged, _, _ = self._classify(
             provider,
             cue_item,
             cue_file_checksums={"album.cue": {"checksum-v1"}},
@@ -1021,7 +1002,7 @@ class TestClassifyScanItemCue:
             "checksum-v1",
             cue_metadata_checksum("checksum-v1"),
         }
-        items, unchanged, _ = self._classify(
+        items, unchanged, _, _ = self._classify(
             provider,
             cue_item,
             cue_file_checksums={"album.cue": previous_checksums},
@@ -1033,7 +1014,7 @@ class TestClassifyScanItemCue:
         """First-time ingest: prev_checksum is None, item queued for processing."""
         provider = _make_provider()
         cue_item = self._cue_item("checksum-v1")
-        items, unchanged, _ = self._classify(
+        items, unchanged, _, _ = self._classify(
             provider,
             cue_item,
             cue_file_checksums={},

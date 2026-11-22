@@ -211,6 +211,7 @@ async def test_reads_refuse_a_base_symlink_re_pointed_after_first_use(tmp_path: 
         cur_filenames=set(),
         items_to_process=items_to_process,
         unchanged_cue_items=[],
+        cue_stems=set(),
         scan_errors=scan_errors,
         metadata_files=[],
     )

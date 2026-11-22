@@ -42,6 +42,7 @@ async def _run_enumerate(
         cur_filenames=cur_filenames if cur_filenames is not None else set(),
         items_to_process=[],
         unchanged_cue_items=[],
+        cue_stems=set(),
         scan_errors=scan_errors if scan_errors is not None else ScanErrors(),
         metadata_files=[],
     )
@@ -161,6 +162,7 @@ async def test_enumerate_routes_metadata_files_separately_from_media() -> None:
         cur_filenames=cur_filenames,
         items_to_process=items_to_process,
         unchanged_cue_items=[],
+        cue_stems=set(),
         scan_errors=ScanErrors(),
         metadata_files=metadata_files,
     )

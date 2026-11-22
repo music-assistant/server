@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from types import MethodType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +14,6 @@ from music_assistant_models.media_items import Album, Artist
 from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.providers.filesystem_local import _ONDEMAND_NFO_ITEMS, LocalFileSystemProvider
-from music_assistant.providers.filesystem_local.cue import CueSheetHandler
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
 INSTANCE_ID = "filesystem_local--test"
@@ -38,11 +36,6 @@ def _provider() -> Any:
     provider._sync_nfo_index_ready = False
     provider._missing_album_artist_warned = set()
     provider._cue = MagicMock()
-    # the real lookup, driven by each test's own find_audio_file mock
-    provider._cue.companion_audio_stem = MethodType(
-        CueSheetHandler.companion_audio_stem, provider._cue
-    )
-    provider._cue.provider.resolve = AsyncMock(side_effect=_item)
     return provider
 
 
