@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerType
@@ -151,11 +151,11 @@ async def test_pause_keeps_the_last_played_position(
 async def test_pause_while_idle_marks_active_queue_halted() -> None:
     """A pause request while the active queue is IDLE still records halted_by_command."""
     ctrl = _controller(_book())
-    ctrl.mass.players._handle_cmd_pause = AsyncMock()  # type: ignore[method-assign]
-    await ctrl.play_index(QUEUE_ID, 0)
-    _player_reports(ctrl, PlaybackState.IDLE, 0)
-    assert ctrl._queue_data[QUEUE_ID].queue.state == PlaybackState.IDLE
-    assert ctrl._queue_data[QUEUE_ID].halted_by_command is False
+    with patch.object(ctrl.mass.players, "_handle_cmd_pause", new_callable=AsyncMock):
+        await ctrl.play_index(QUEUE_ID, 0)
+        _player_reports(ctrl, PlaybackState.IDLE, 0)
+        assert ctrl._queue_data[QUEUE_ID].queue.state == PlaybackState.IDLE
+        assert ctrl._queue_data[QUEUE_ID].halted_by_command is False
 
-    await ctrl.pause(QUEUE_ID)
+        await ctrl.pause(QUEUE_ID)
     assert ctrl._queue_data[QUEUE_ID].halted_by_command is True
