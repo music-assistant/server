@@ -134,6 +134,8 @@ CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
 CONF_AI_DEFAULT_ENGINES_MIGRATED: Final[str] = "ai_default_engines_migrated"
 CONF_PLAYER_SPLIT_SESSION_ONLY: Final[str] = "player_split_session_only"
 CONF_PLAYER_SPLIT_TREE: Final[str] = "player_split_tree"
+# the rate correction the timeline clock runs on, as measured on this host
+CONF_TIMELINE_RATE_PPB: Final[str] = "timeline_rate_ppb"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
 # the registered folders that were a mountpoint when they were registered
 CONF_STORAGE_FOLDER_MOUNTS: Final[str] = "storage_folder_mounts"

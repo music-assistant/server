@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from aiohttp import web
-from aiosendspin.clock import ManualClock, RawMonotonicClock
+from aiosendspin.clock import ManualClock
 from aioslimproto.cli import SlimCLICommand, parse_args
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
@@ -14,6 +14,7 @@ from music_assistant_models.enums import EventType, ProtocolRole, ProviderFeatur
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.event import MassEvent
 
+from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.squeezelite import SUPPORTED_FEATURES
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
@@ -253,6 +254,7 @@ async def test_the_slimproto_server_runs_on_the_clock_of_sendspin() -> None:
     """Every server time of aioslimproto is on the clock the Sendspin timestamps are on."""
     provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
     provider.mass = MagicMock()
+    provider.mass.timeline_clock = TimelineClock()
     provider.config = MagicMock()
     provider.logger = MagicMock()
 
@@ -263,12 +265,39 @@ async def test_the_slimproto_server_runs_on_the_clock_of_sendspin() -> None:
     ):
         await provider.handle_async_init()
 
-    # a clock of its own, of the kind Sendspin makes for itself
-    assert provider.clock == RawMonotonicClock()
+    # the timeline clock of the server, which Sendspin runs on too
+    assert provider.clock is provider.mass.timeline_clock
     assert isinstance(provider.bridge_manager, SendspinBridgeManager)
     server_time = slim_server.call_args.kwargs["clock"]
     provider.clock = ManualClock(now_us_value=5_000_000_250_000)
     assert server_time() == 5_000_000.25
+
+
+async def test_a_bridge_stream_pins_the_rate_of_the_timeline_clock() -> None:
+    """While a bridge streams to its player, the rate of the timeline clock waits."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    provider.mass = MagicMock()
+    provider.mass.timeline_clock = clock = TimelineClock()
+    provider.config = MagicMock()
+    provider.logger = MagicMock()
+    with (
+        patch("music_assistant.providers.squeezelite.provider.logging"),
+        patch("music_assistant.providers.squeezelite.provider.SlimServer"),
+        patch.object(provider, "_validate_all_ports", new=AsyncMock()),
+    ):
+        await provider.handle_async_init()
+    bridge = MagicMock(owns_stream=False, stop=AsyncMock())
+    provider.bridge_manager._bridges["sq01"] = bridge
+
+    pinned = [clock.rate_pinned]
+    bridge.owns_stream = True
+    pinned.append(clock.rate_pinned)
+    await provider.unload()
+    provider.bridge_manager._bridges["sq01"] = bridge
+    pinned.append(clock.rate_pinned)
+
+    # an unloaded provider holds nothing back
+    assert pinned == [False, True, False]
 
 
 async def test_the_bridge_stream_route_follows_the_provider() -> None:

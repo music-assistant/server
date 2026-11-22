@@ -1771,7 +1771,7 @@ class _BridgeTransport:
             timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
         sendspin_now_us = self._bridge.sendspin_server.clock.now_us()
-        unix_now = cli_clock_time()
+        unix_now = cli_clock_time(self.mass.timeline_clock)
         now_ms = int(unix_now * 1000)
         # The instant Sendspin wants the first chunk we hold to be audible; the
         # anchor never precedes it, so nothing Sendspin scheduled is thrown away.
@@ -1835,7 +1835,7 @@ class _BridgeTransport:
         # The command carries the device's sync offset; the group timeline does not.
         acked_timeline_ms = acked_adjusted - adjust_ms
         sendspin_now_us = self._bridge.sendspin_server.clock.now_us()
-        unix_now = cli_clock_time()
+        unix_now = cli_clock_time(self.mass.timeline_clock)
         anchor_us = unix_ms_to_sendspin_audible_instant(
             acked_timeline_ms, sendspin_now_us, unix_now
         )
@@ -2210,7 +2210,10 @@ class _BridgeTransport:
                 # than dumped into the CLI ahead of its start anchor (which desyncs it).
                 if self._start_unix_ms:
                     ahead = device_buffer_ahead_seconds(
-                        self._start_unix_ms, bytes_written, bytes_per_second, cli_clock_time()
+                        self._start_unix_ms,
+                        bytes_written,
+                        bytes_per_second,
+                        cli_clock_time(self.mass.timeline_clock),
                     )
                     if ahead > MAX_DEVICE_BUFFER_SECONDS:
                         await asyncio.sleep(ahead - MAX_DEVICE_BUFFER_SECONDS)
