@@ -190,9 +190,15 @@ class SendspinSources:
             self._refresh_player_listing(client_id)
 
     async def get_audio_sources(self) -> list[AudioSource]:
-        """Return one AudioSource per connected source client or approved held input."""
+        """
+        Return one AudioSource per connected source client or approved held input.
+
+        None for a client whose player the user disabled, or whose Sendspin output is off.
+        """
         sources: list[AudioSource] = []
         for client in self.provider.server_api.clients:
+            if not self.mass.players.wants_protocol(client.client_id):
+                continue
             if client.is_connected:
                 if self._get_source_role(client) is None:
                     continue
@@ -213,6 +219,7 @@ class SendspinSources:
             or client.connection is None
             or self._get_source_role(client) is None
             or "player" not in {role_family(role_id) for role_id in client.negotiated_role_ids}
+            or not self.mass.players.wants_protocol(player_id)
         ):
             return []
         return [self._audio_source(client)]
@@ -716,6 +723,9 @@ class SendspinSources:
 
     async def _resolve_autostart_target(self, client_id: str) -> tuple[str, str] | None:
         """Return the queue id and source uri to autostart, if the source is configured."""
+        # the client of a disabled player offers no source to start
+        if not self.mass.players.wants_protocol(client_id):
+            return None
         target_player_id = self._protocol_config_value(
             client_id, CONF_SOURCE_AUTOSTART_TARGET, SOURCE_AUTOSTART_OFF
         )
