@@ -415,6 +415,36 @@ async def test_a_rolled_back_start_is_released_only_once() -> None:
     deactivate.assert_awaited_once()
 
 
+async def test_the_pause_a_release_starts_with_does_not_cut_it_short() -> None:
+    """
+    A failed start still gives up the device when the backend pauses before doing so.
+
+    The 'paused' event answering that pause cancels the pending playback start, which is the
+    very task that releases the session.
+    """
+    provider, daemon, _, play_media = _starting_provider()
+    play_media.side_effect = PlayerUnavailableError("Player player1 is not available")
+    mass = cast("MagicMock", provider.mass)
+    mass.create_task.side_effect = asyncio.get_running_loop().create_task
+    device_given_up = asyncio.Event()
+
+    async def _pause_then_deactivate() -> None:
+        await provider._handle_backend_event(daemon, BackendEvent(type=BackendEventType.PAUSED))
+        # the pause acknowledgement
+        await asyncio.sleep(0)
+        device_given_up.set()
+
+    cast("MagicMock", daemon.backend).deactivate = _pause_then_deactivate
+    with patch("music_assistant.providers.spotify_connect.provider.PLAY_MEDIA_DEBOUNCE_S", 0):
+        provider._schedule_play_media(daemon)
+        start = daemon.pending_play_media_task
+        assert start is not None
+        with contextlib.suppress(asyncio.CancelledError):
+            await start
+
+    await asyncio.wait_for(device_given_up.wait(), timeout=1)
+
+
 async def test_a_slow_stop_after_pause_is_reported() -> None:
     """A stop that takes its time is reported, and still runs to completion."""
     stopped = asyncio.Event()

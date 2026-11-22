@@ -566,7 +566,9 @@ class SpotifyConnectProvider(PluginProvider):
         # the player we were on - which by now is playing whatever took our place.
         daemon.active_player_id = None
         try:
-            await daemon.backend.deactivate()
+            # shielded: a failed playback start releases from within its own task, which the
+            # 'paused' event of a backend that pauses before giving up the device cancels
+            await asyncio.shield(daemon.backend.deactivate())
         except Exception as err:
             self.logger.debug("Failed to release Spotify session: %s", err)
 
