@@ -39,6 +39,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -306,7 +307,8 @@ class UniversalGroupPlayer(PlayerProtocol):
         :param media: The media to play.
         :raises PlayerUnavailableError: When none of the members can play right now.
         """
-        if not self._playable_members():
+        # a display or lighting member follows the playback of the group but cannot play it
+        if not any(member.type in PLAYBACK_TARGET_TYPES for member in self._playable_members()):
             raise PlayerUnavailableError(
                 f"None of the members of {self.display_name} can play right now",
                 translation_key="no_member_can_play",
@@ -538,7 +540,7 @@ class UniversalGroupPlayer(PlayerProtocol):
         already-prepared group.
         """
         # rebuild the effective member list from the configured static set
-        self._attr_group_members = self._playable_members()
+        self._attr_group_members = [member.player_id for member in self._playable_members()]
         # ensure each member is free of any prior group/sync allegiance and ready to play
         group_player = self._group_player
         for member in self.mass.players.iter_group_members(
@@ -585,10 +587,10 @@ class UniversalGroupPlayer(PlayerProtocol):
                 with suppress(PlayerUnavailableError):
                     await self.mass.players.cmd_power(member.player_id, True)
 
-    def _playable_members(self) -> list[str]:
-        """Return the ids of the configured members that can be played to right now."""
+    def _playable_members(self) -> list[Player]:
+        """Return the configured members that can be played to right now."""
         return [
-            member_id
+            member
             for member_id in self._attr_static_group_members
             if (member := self.mass.players.get_player(member_id))
             and member.available

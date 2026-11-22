@@ -352,19 +352,20 @@ class TestPowerlessLifecycle:
         mass.players.cmd_power.assert_not_awaited()
 
     async def test_play_media_fails_when_no_member_can_play(self) -> None:
-        """A play fails while every member is offline or switched off, and leaves the group as it was."""
+        """A play fails while every speaker is offline or switched off, also with a light to follow."""
         mass = _make_mock_mass()
         ugp = _make_ugp(mass)
-        ugp._attr_static_group_members = ["m1", "den"]
-        ugp._attr_group_members = ["m1", "den"]
+        ugp._attr_static_group_members = ["m1", "den", "lamp"]
+        ugp._attr_group_members = ["m1", "den", "lamp"]
         _make_member(mass, "m1", available=False)
         _switched_off_member(mass, "den")
+        _make_member(mass, "lamp", player_type=PlayerType.LIGHT)
 
         with pytest.raises(PlayerUnavailableError):
             await ugp.play_media(MagicMock(uri="track://x", source_id="src"))
 
         assert ugp.stream is None
-        assert ugp._attr_group_members == ["m1", "den"]
+        assert ugp._attr_group_members == ["m1", "den", "lamp"]
         assert ugp.playback_state == PlaybackState.IDLE
         mass.streams.get_stream.assert_not_called()
         mass.players._handle_play_media.assert_not_awaited()
