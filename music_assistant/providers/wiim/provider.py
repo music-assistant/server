@@ -254,13 +254,12 @@ class WiimProvider(PlayerProvider):
         # a speaker of a stereo pair made in the WiiM app is part of the player of the pair's
         # leader. Only the slave list of that leader tells, so a follower whose leader was not
         # read yet is looked at again later.
-        if self.native_groups.is_native_set_member(protocol_id):
-            self.logger.debug(
-                "Not adding %s: it is part of the speaker set of its leader", ip_address
+        if (
+            not self.native_groups.is_native_set_member(protocol_id)
+            and not follower_deferred
+            and await self.native_groups.follows_unread_leader(
+                WiiMClient(ip_address, session=self.mass.http_session)
             )
-            return
-        if not follower_deferred and await self.native_groups.follows_unread_leader(
-            WiiMClient(ip_address, session=self.mass.http_session)
         ):
             self.mass.call_later(
                 FOLLOWER_DECISION_DELAY,
@@ -270,6 +269,12 @@ class WiimProvider(PlayerProvider):
                 mac_address,
                 task_id=f"wiim_follower_{ip_address}",
                 follower_deferred=True,
+            )
+            return
+        # checked after the speaker was asked: its leader can have been read meanwhile
+        if self.native_groups.is_native_set_member(protocol_id):
+            self.logger.debug(
+                "Not adding %s: it is part of the speaker set of its leader", ip_address
             )
             return
 

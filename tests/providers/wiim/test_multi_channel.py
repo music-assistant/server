@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ChannelLayout, PlayerType
@@ -241,6 +241,21 @@ class TestNativeSet:
         await coordinator.refresh_leader(left, force=True)
 
         remove.assert_called_once_with(LEFT_ID, [RIGHT_ID])
+
+    async def test_a_set_speaker_that_got_a_player_later_is_removed_at_the_next_read(
+        self,
+    ) -> None:
+        """A set speaker registered after its identification is reported for removal again."""
+        left = _native_player(LEFT_ID, _client("master", _pair_alone()))
+        coordinator, provider = _coordinator(left)
+        remove = provider.mass.players.remove_absorbed_players
+        await coordinator.refresh_leader(left, force=True)
+
+        right = _native_player(RIGHT_ID, _client("slave", [], LEFT_UUID), RIGHT_IP)
+        provider.protocols = [left, right]
+        await coordinator.refresh_leader(left, force=True)
+
+        assert remove.call_args_list == [call(LEFT_ID, [RIGHT_ID]), call(LEFT_ID, [RIGHT_ID])]
 
     async def test_an_ordinary_group_of_the_two_is_no_set(self) -> None:
         """An ordinary group of the two speakers has the right speaker as a member."""
@@ -547,6 +562,28 @@ class TestDiscovery:
             await WiimProvider._discover_device(provider, RIGHT_IP, (RIGHT_IP,))
 
         client_class.assert_not_called()
+        provider.try_add_player.assert_not_awaited()
+        provider.try_add_linkplay_player.assert_not_awaited()
+
+    async def test_a_speaker_its_leader_identifies_while_it_is_asked_is_not_added(
+        self, provider: MagicMock
+    ) -> None:
+        """A speaker whose leader is read while the speaker itself is asked gets no player."""
+        left = _native_player(LEFT_ID, _client("master", _pair_alone()))
+        provider.protocols = [left]
+        provider.get_protocol = MagicMock(side_effect={LEFT_ID: left}.get)
+        client = _client("slave", [], LEFT_UUID)
+        answer: MagicMock = client.get_device_group_info.return_value
+
+        async def _leader_is_read_meanwhile() -> MagicMock:
+            await provider.native_groups.refresh_leader(left, force=True)
+            return answer
+
+        client.get_device_group_info = AsyncMock(side_effect=_leader_is_read_meanwhile)
+        with patch("music_assistant.providers.wiim.provider.WiiMClient", return_value=client):
+            await WiimProvider._discover_device(provider, RIGHT_IP, (RIGHT_IP,))
+
+        client.get_device_group_info.assert_awaited_once()
         provider.try_add_player.assert_not_awaited()
         provider.try_add_linkplay_player.assert_not_awaited()
 

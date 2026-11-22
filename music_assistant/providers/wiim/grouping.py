@@ -910,8 +910,8 @@ class NativeGroupCoordinator:
         A slave joins the set when the list gives it a set channel, which the leader reports
         while the set plays alone. It stays in the set while the list has it play the left or
         right channel, as the leader reports while the set is part of a larger group, and
-        leaves the set otherwise. The players of newly identified slaves are removed, and
-        discovery looks for a slave that left the set.
+        leaves the set otherwise. The player of an identified slave is removed, and discovery
+        looks for a slave that left the set.
 
         :param player_id: The leader that reported the slave list.
         :param slaves_info: The slave list of a read in which the leader is no follower.
@@ -931,7 +931,13 @@ class NativeGroupCoordinator:
         reported = self._reported_set_slaves.setdefault(player_id, set())
         reported.intersection_update(current)
         registered = [player.protocol_id for player in self._native_players()]
-        if added := [uuid for uuid in identified if uuid not in reported]:
+        # a set slave that has a player is reported at every identification: it can have been
+        # registered while its leader identified it, when it had no player to remove yet
+        if added := [
+            uuid
+            for uuid in identified
+            if uuid not in reported or match_slave_uuid_to_player_id(uuid, registered)
+        ]:
             reported.update(added)
             absorbed = {
                 match_slave_uuid_to_player_id(uuid, registered)
