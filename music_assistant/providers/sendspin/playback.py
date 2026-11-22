@@ -26,6 +26,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.audio import overlay_mixed_in
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
+from music_assistant.controllers.streams.controller import AudioSourceRefusedError
 from music_assistant.helpers.audio import arriving_audio_format, iter_pcm_slices, resample_pcm_audio
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import import_module_in_thread
@@ -612,7 +613,8 @@ class SendspinPlaybackSession:
                 return
             with suppress(Exception):
                 exc = done_task.exception()
-                if exc is not None:
+                # the streams controller logs a source refusing this speaker itself
+                if exc is not None and not isinstance(exc, AudioSourceRefusedError):
                     self.player.logger.exception(
                         "Background task failed: %s",
                         name,
