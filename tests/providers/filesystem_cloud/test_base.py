@@ -97,7 +97,6 @@ async def _run_enumerate(
         cur_filenames=set(),
         items_to_process=[],
         unchanged_cue_items=[],
-        cue_stems=set(),
         scan_errors=scan_errors if scan_errors is not None else ScanErrors(),
         metadata_files=[],
     )

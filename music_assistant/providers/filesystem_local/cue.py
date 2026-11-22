@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 CUE_TRACK_ID_DELIMITER = "::track"
 
 # Bump when CUE decoding or parsing changes so cached and library metadata are refreshed.
-_CUE_METADATA_VERSION = 1
+_CUE_METADATA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,20 +84,16 @@ def make_cue_track_id(cue_relative_path: str, track_number: int) -> str:
     return f"{cue_relative_path}{CUE_TRACK_ID_DELIMITER}{track_number:02d}"
 
 
-def cue_referenced_audio_stem(cue_item: FileSystemItem, cue_sheet: CueSheet) -> str | None:
+def is_multi_file_cue(cue_sheet: CueSheet) -> bool:
     """
-    Return the absolute path (without extension) of the CUE's referenced audio file.
+    Return True when the CUE sheet references more than one audio file.
 
-    Returns None if the CUE names no file. The named file may differ from the CUE's
-    own filename.
+    Only single-file CUE sheets are supported: one with a FILE entry per track (e.g. left
+    behind by a per-track rip) is ignored and its audio files are imported on their own.
 
-    :param cue_item: The CUE file's FileSystemItem.
     :param cue_sheet: The parsed CUE sheet.
     """
-    if not cue_sheet.file_path:
-        return None
-    companion = os.path.join(os.path.dirname(cue_item.absolute_path), cue_sheet.file_path)
-    return companion.rsplit(".", 1)[0]
+    return len(cue_sheet.file_paths) > 1
 
 
 def parse_cue_track_id(item_id: str) -> tuple[str, int] | None:
@@ -185,6 +181,8 @@ class CueSheetHandler:
         :param cue_item: The CUE file's FileSystemItem.
         :param cue_sheet: The parsed CUE sheet data.
         """
+        if is_multi_file_cue(cue_sheet):
+            return None
         cue_dir = os.path.dirname(cue_item.relative_path)
 
         def _join(name: str) -> str:
@@ -204,6 +202,30 @@ class CueSheetHandler:
                 return candidate
 
         return None
+
+    async def companion_audio_stem(
+        self, cue_item: FileSystemItem, cue_sheet: CueSheet
+    ) -> str | None:
+        """
+        Return the absolute path (without extension) of the audio file this CUE absorbs.
+
+        Returns None when the audio file cannot be located or the CUE is not supported, in
+        which case no audio file should be hidden on its behalf.
+
+        :param cue_item: The CUE file's FileSystemItem.
+        :param cue_sheet: The parsed CUE sheet.
+        """
+        if not cue_sheet.tracks:
+            return None
+        audio_relative_path = await self.find_audio_file(cue_item, cue_sheet)
+        if audio_relative_path is None:
+            return None
+        # rebuilt from the CUE's own absolute path so it matches the scanned items'
+        # absolute_path form on every filesystem provider
+        cue_dir = os.path.dirname(cue_item.relative_path)
+        name = os.path.relpath(audio_relative_path, cue_dir) if cue_dir else audio_relative_path
+        companion = os.path.join(os.path.dirname(cue_item.absolute_path), name)
+        return companion.rsplit(".", 1)[0]
 
     async def parse_tracks(self, cue_item: FileSystemItem) -> list[Track]:
         """
@@ -325,6 +347,13 @@ class CueSheetHandler:
         provider = self.provider
         logger = provider.logger
         cue_sheet = await self.load_cue_sheet(cue_item)
+
+        if is_multi_file_cue(cue_sheet):
+            logger.debug(
+                "Ignoring CUE sheet that references multiple audio files: %s",
+                cue_item.relative_path,
+            )
+            return []
 
         if not cue_sheet.tracks:
             msg = f"CUE sheet has no tracks: {cue_item.relative_path}"

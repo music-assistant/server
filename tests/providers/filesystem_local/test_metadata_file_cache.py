@@ -378,7 +378,6 @@ def test_classify_scan_item_routes_metadata_file_without_recording_it() -> None:
         cur_filenames=cur_filenames,
         items_to_process=items_to_process,
         unchanged_cue_items=[],
-        cue_stems=set(),
         ignore_album_playlists=False,
         metadata_files=metadata_files,
     )
@@ -412,7 +411,6 @@ def test_classify_scan_item_ignores_unrecognized_metadata_extension_files() -> N
             cur_filenames=cur_filenames,
             items_to_process=items_to_process,
             unchanged_cue_items=[],
-            cue_stems=set(),
             ignore_album_playlists=False,
             metadata_files=metadata_files,
         )
@@ -443,7 +441,6 @@ def test_track_classification_uses_checksum_not_metadata_token() -> None:
         cur_filenames=cur_filenames,
         items_to_process=items_to_process,
         unchanged_cue_items=[],
-        cue_stems=set(),
         ignore_album_playlists=False,
         metadata_files=[],
     )

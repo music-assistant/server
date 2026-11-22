@@ -159,7 +159,7 @@ from .constants import (
 from .cue import (
     CueSheetHandler,
     cue_metadata_checksum,
-    cue_referenced_audio_stem,
+    is_multi_file_cue,
     make_cue_track_id,
     parse_cue_track_id,
 )
@@ -500,21 +500,21 @@ class LocalFileSystemProvider(MusicProvider):
             for item in scanned:
                 if item.ext not in CUE_EXTENSIONS:
                     continue
-                cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                 try:
                     cue_sheet = await self._cue.load_cue_sheet(item)
                 except InvalidDataError as err:
                     self.logger.warning("Unable to parse CUE sheet %s: %s", item.relative_path, err)
                     continue
-                if await self._cue.find_audio_file(item, cue_sheet) is None:
+                if is_multi_file_cue(cue_sheet):
+                    continue
+                companion_stem = await self._cue.companion_audio_stem(item, cue_sheet)
+                if companion_stem is None:
                     self.logger.debug(
                         "Skipping CUE sheet with missing companion audio file: %s",
                         item.relative_path,
                     )
                     continue
-                # also hide the audio file named in the CUE (may differ from its stem)
-                if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
-                    cue_stems.add(companion_stem)
+                cue_stems.add(companion_stem)
                 for cue_track in cue_sheet.tracks:
                     items.append(
                         ItemMapping(
@@ -642,8 +642,8 @@ class LocalFileSystemProvider(MusicProvider):
 
         items_to_process: list[tuple[FileSystemItem, str | None]] = []
         unchanged_cue_items: list[FileSystemItem] = []
-        # absolute paths of every CUE sheet in this scan with the ".cue" stripped,
-        # used for O(1) companion-CUE lookups per audio file
+        # absolute paths (extension stripped) of the audio files absorbed by a CUE sheet,
+        # filled after the walk and used for O(1) companion-CUE lookups per audio file
         cue_stems: set[str] = set()
         # local metadata files (NFO/images) collected by the walk alongside normal media;
         # never imported themselves, only used to detect a change worth reparsing their
@@ -669,7 +669,6 @@ class LocalFileSystemProvider(MusicProvider):
                 cur_filenames=cur_filenames,
                 items_to_process=items_to_process,
                 unchanged_cue_items=unchanged_cue_items,
-                cue_stems=cue_stems,
                 scan_errors=scan_errors,
                 metadata_files=metadata_files,
             )
@@ -696,7 +695,8 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             if force_refresh_tracks:
                 await self._drop_stale_album_artist_caches()
-            # a CUE may name an audio file other than its own; hide that companion too
+            # hide only the audio file each CUE actually absorbs; one that cannot be
+            # located (or a CUE with a FILE entry per track) leaves every file importable
             if self.media_content_type == "music":
                 for cue_item in (
                     *unchanged_cue_items,
@@ -706,7 +706,7 @@ class LocalFileSystemProvider(MusicProvider):
                         cue_sheet = await self._cue.load_cue_sheet(cue_item)
                     except InvalidDataError:
                         continue
-                    if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
+                    if companion_stem := await self._cue.companion_audio_stem(cue_item, cue_sheet):
                         cue_stems.add(companion_stem)
             # drop CUE companion audio: absorbed into CUE tracks and not tracked in
             # provider_mappings, so they would otherwise flag as changed every sync
@@ -742,6 +742,8 @@ class LocalFileSystemProvider(MusicProvider):
                     self.logger.warning(
                         "Unable to parse CUE sheet %s: %s", cue_item.relative_path, err
                     )
+                    continue
+                if is_multi_file_cue(cue_sheet):
                     continue
                 for cue_track in cue_sheet.tracks:
                     cur_filenames.add(make_cue_track_id(cue_item.relative_path, cue_track.number))
@@ -1462,7 +1464,6 @@ class LocalFileSystemProvider(MusicProvider):
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
-        cue_stems: set[str],
         scan_errors: ScanErrors,
         metadata_files: list[FileSystemItem],
     ) -> None:
@@ -1479,7 +1480,6 @@ class LocalFileSystemProvider(MusicProvider):
         :param cur_filenames: Receives the ids/paths present in this scan.
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
-        :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
         :param scan_errors: Receives the errors raised while walking the tree.
         :param metadata_files: Receives local metadata files (NFO/images) found in the walk.
         """
@@ -1514,7 +1514,6 @@ class LocalFileSystemProvider(MusicProvider):
                         cur_filenames=cur_filenames,
                         items_to_process=items_to_process,
                         unchanged_cue_items=unchanged_cue_items,
-                        cue_stems=cue_stems,
                         ignore_album_playlists=ignore_album_playlists,
                         metadata_files=metadata_files,
                     )
@@ -1532,7 +1531,6 @@ class LocalFileSystemProvider(MusicProvider):
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
-        cue_stems: set[str],
         ignore_album_playlists: bool,
         metadata_files: list[FileSystemItem],
     ) -> None:
@@ -1545,7 +1543,6 @@ class LocalFileSystemProvider(MusicProvider):
         :param cur_filenames: Receives the ids/paths present in this scan.
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
-        :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
         :param ignore_album_playlists: When True, skip playlists nested inside
             album directories.
         :param metadata_files: Receives local metadata files (NFO/images) found in the walk.
@@ -1587,7 +1584,6 @@ class LocalFileSystemProvider(MusicProvider):
         is_cue = item.ext in CUE_EXTENSIONS and self.media_content_type == "music"
         item_checksum = item.checksum
         if is_cue:
-            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
             item_checksum = cue_metadata_checksum(item.checksum)
             prev_checksums = cue_file_checksums.get(item.relative_path, set())
             prev_checksum = min(prev_checksums, default=None)
@@ -2474,6 +2470,7 @@ class LocalFileSystemProvider(MusicProvider):
             CUEs and still shared with every directory scanned afterwards.
         """
         cue_sheets: dict[str, CueSheet] = {}
+        absorbing_cues: set[str] = set()
         for item in items:
             if item.is_dir or item.ext not in CUE_EXTENSIONS:
                 continue
@@ -2481,15 +2478,13 @@ class LocalFileSystemProvider(MusicProvider):
                 cue_sheet = await self._cue.load_cue_sheet(item)
             except InvalidDataError:
                 continue
-            if not cue_sheet.tracks:
-                # parses cleanly but names no tracks (e.g. truncated/malformed content):
-                # excluding its same-named companion here would lose that otherwise
-                # playable file entirely, since this CUE itself yields nothing below
-                continue
-            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
             cue_sheets[item.relative_path] = cue_sheet
-            if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
+            # a CUE with no tracks, one FILE entry per track, or no locatable audio file
+            # yields nothing below, so excluding a companion for it would lose that
+            # otherwise playable file entirely
+            if companion_stem := await self._cue.companion_audio_stem(item, cue_sheet):
                 cue_stems.add(companion_stem)
+                absorbing_cues.add(item.relative_path)
         for item in items:
             if item.is_dir:
                 continue
@@ -2498,7 +2493,9 @@ class LocalFileSystemProvider(MusicProvider):
                 if loaded_cue_sheet is None:
                     self.logger.warning("Skipping unreadable CUE sheet %s", item.relative_path)
                     continue
-                if await self._cue.find_audio_file(item, loaded_cue_sheet) is None:
+                if not loaded_cue_sheet.tracks or is_multi_file_cue(loaded_cue_sheet):
+                    continue
+                if item.relative_path not in absorbing_cues:
                     self.logger.warning(
                         "Skipping CUE sheet with missing companion audio file: %s",
                         item.relative_path,
@@ -2614,8 +2611,8 @@ class LocalFileSystemProvider(MusicProvider):
         :param item: The filesystem item to process (the podcast folder for a podcasts source).
         :param prev_checksum: Previous checksum from the database, or None for new items.
         :param cur_filenames: Set of current filenames being tracked (for CUE track IDs).
-        :param cue_stems: Absolute paths (without extension) of CUE sheets in this scan,
-            used to detect companion-CUE audio files without a filesystem stat.
+        :param cue_stems: Absolute paths (without extension) of the audio files absorbed by
+            a CUE sheet in this scan, used to skip them without a filesystem stat.
         :param prev_filenames: The ids/paths the previous scan found, used to keep the
             ids of a CUE sheet that fails to parse.
         :param folder_signatures: Signature of each audiobook folder in this scan, stored
