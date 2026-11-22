@@ -369,6 +369,7 @@ class DeezerStreamingManager:
 
         prev_chapter: StreamDetails | None = None
         current_chapter: StreamDetails | None = None
+        first_chunk = True
         try:
             for i in range(start_chapter, len(chapter_ids)):
                 chapter_id = chapter_ids[i]
@@ -405,7 +406,13 @@ class DeezerStreamingManager:
                 self._start_listen(chapter_details)
                 seek = chapter_seek if i == start_chapter else 0
                 async for chunk in self._stream_encrypted_track(chapter_details, seek):
-                    yield chunk
+                    if first_chunk and chunk[:4] == b"fLaC":
+                        # ffmpeg keeps the max block size of the first chapter and drops
+                        # bigger blocks of later chapters, so allow the FLAC maximum
+                        yield chunk[:10] + b"\xff\xff" + chunk[12:]
+                    else:
+                        yield chunk
+                    first_chunk = False
                 prev_chapter = chapter_details
                 current_chapter = None
         finally:
