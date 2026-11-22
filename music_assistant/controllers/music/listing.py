@@ -20,6 +20,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import create_safe_string, create_sort_name
 from music_assistant_models.media_items import (
     Album,
+    Audiobook,
     BrowseFolder,
     ItemMapping,
     MediaCollection,
@@ -161,15 +162,15 @@ def _date_added(item: ListingItem) -> float:
 
 
 def _release_date(item: ListingItem) -> float:
-    """Return the release timestamp, falling back to January 1 of the release year."""
-    if not isinstance(item, Album):
+    """Return the release timestamp, falling back to January 1 of an album's release year."""
+    if not isinstance(item, Album | Audiobook):
         return float("-inf")
     if released := item.metadata.release_date:
         return (
             released if released.tzinfo is not None else released.replace(tzinfo=UTC)
         ).timestamp()
     # a stored year outside datetime's range (an unvalidated tag) counts as unknown
-    if (year := item.year) and MINYEAR <= year <= MAXYEAR:
+    if isinstance(item, Album) and (year := item.year) and MINYEAR <= year <= MAXYEAR:
         return datetime(year, 1, 1, tzinfo=UTC).timestamp()
     return float("-inf")
 

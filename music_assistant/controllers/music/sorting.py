@@ -188,9 +188,9 @@ LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
     ListingType.ARTIST_ALBUMS: _sort_options(
         SortField.SORT_NAME, SortField.NAME, SortField.YEAR, SortField.RELEASE_DATE
     ),
-    # an audiobook carries no year
+    # an audiobook carries a release date but no year
     ListingType.ARTIST_AUDIOBOOKS: _sort_options(
-        SortField.SORT_NAME, SortField.NAME, SortField.DURATION
+        SortField.SORT_NAME, SortField.NAME, SortField.DURATION, SortField.RELEASE_DATE
     ),
     # the source lists these newest first
     ListingType.ARTIST_APPEARS_ON: _sort_options(
