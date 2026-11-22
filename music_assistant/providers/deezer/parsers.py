@@ -573,6 +573,7 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
     metadata = MediaItemMetadata(
         images=images,
         explicit=audiobook.is_explicit,
+        release_date=parse_date(audiobook.release_date),
     )
     if audiobook.description:
         metadata.description = audiobook.description
@@ -629,12 +630,14 @@ def parse_audiobook_from_album(
         item_id=album.id,
         provider=provider.instance_id,
         name=album.display_title,
+        publisher=getattr(album, "label", None),
         authors=authors,
         media_type=MediaType.AUDIOBOOK,
         provider_mappings={_provider_mapping(provider, album.id)},
         metadata=MediaItemMetadata(
             images=images,
             explicit=getattr(album, "is_explicit", None),
+            release_date=parse_date(album.release_date),
         ),
     )
 

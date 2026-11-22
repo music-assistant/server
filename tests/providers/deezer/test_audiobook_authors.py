@@ -55,6 +55,7 @@ def _album_node(album_id: str, *artists: SimpleNamespace) -> SimpleNamespace:
         cover=None,
         is_explicit=False,
         contributors=SimpleNamespace(edges=edges),
+        release_date=None,
     )
 
 
@@ -98,6 +99,7 @@ def test_audiobook_authors_are_artists(provider: DeezerProvider) -> None:
         duration=3600,
         publisher=None,
         is_favorite=False,
+        release_date=None,
     )
 
     parsed = parse_audiobook(provider, audiobook)  # type: ignore[arg-type]
