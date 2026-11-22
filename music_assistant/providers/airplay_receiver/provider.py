@@ -17,7 +17,6 @@ from music_assistant_models.enums import (
     EventType,
     ImageType,
     MediaType,
-    PlayerType,
     ProviderFeature,
     SourceControl,
     StreamType,
@@ -41,13 +40,16 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.config_entries import (
     CONF_CONNECTED_PLAYERS,
     CONF_PUBLISH_NAME_TEMPLATE,
-    PLAYBACK_TARGET_TYPES,
     create_connected_players_entry,
     create_publish_name_template_entry,
     resolve_publish_name,
 )
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
-from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
+from music_assistant.helpers.player import (
+    PlayerAvailabilityTracker,
+    can_start_playback,
+    get_available_player,
+)
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import interface_name_for_ip
 from music_assistant.models.media_capabilities import SourceControlValue
@@ -944,10 +946,7 @@ class AirPlayReceiverProvider(PluginProvider):
                     # a start is already in flight; a second one would double play_media
                     # and leave the first task untracked for teardown cancellation
                     return
-                # an explicitly selected player wins, else the receiver's own player
-                target_player_id = daemon.active_player_id or self.mass.players.resolve_player_id(
-                    daemon.player_id
-                )
+                target_player_id = self.mass.players.resolve_player_id(daemon.player_id)
                 self.logger.info("Starting AirPlay playback on player %s", target_player_id)
                 daemon.active_player_id = target_player_id
                 daemon.pending_start_task = self.mass.create_task(
@@ -991,7 +990,7 @@ class AirPlayReceiverProvider(PluginProvider):
         try:
             await self.mass.player_queues.play_media(target_player_id, str(daemon.audio_source.uri))
         except PlayerUnavailableError, PlayerCommandFailed:
-            if self._can_play(target_player_id):
+            if can_start_playback(self.mass, target_player_id):
                 raise
             # the AirPlay client starts no new session while it keeps streaming, so the
             # start waits for the player (or a member of a group player) to come back,
@@ -1002,24 +1001,6 @@ class AirPlayReceiverProvider(PluginProvider):
                     target_player_id,
                 )
                 self._wait_for_player(daemon, target_player_id)
-
-    def _can_play(self, player_id: str) -> bool:
-        """
-        Return whether playback can start on a player: for a group player, on one of its members.
-
-        :param player_id: Id of the player to check.
-        """
-        if (player := get_available_player(self.mass, player_id)) is None:
-            return False
-        if player.type != PlayerType.GROUP:
-            return True
-        # a display or lighting member follows the group's playback but cannot lead it
-        return any(
-            (member := get_available_player(self.mass, member_id)) is not None
-            and member.type in PLAYBACK_TARGET_TYPES
-            for member_id in player.group_members
-            if member_id != player.player_id
-        )
 
     def _wait_for_player(self, daemon: _ReceiverDaemon, player_id: str) -> None:
         """
@@ -1046,7 +1027,8 @@ class AirPlayReceiverProvider(PluginProvider):
     def _on_waiting_player_event(self, daemon: _ReceiverDaemon, _event: MassEvent) -> None:
         """Start the playback that waits for its player, once that player can play."""
         # an event dispatched before the wait ended can still arrive afterwards
-        if (player_id := daemon.waiting_player_id) is None or not self._can_play(player_id):
+        player_id = daemon.waiting_player_id
+        if player_id is None or not can_start_playback(self.mass, player_id):
             return
         self._stop_waiting(daemon)
         self.logger.info("Player %s can play again, starting AirPlay playback", player_id)
