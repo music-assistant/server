@@ -11,7 +11,7 @@ from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import IdentifierType, MediaType, ProtocolRole
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import CONF_POWER_CONTROL
+from music_assistant.constants import CONF_POWER_CONTROL, MAIN_ZONE
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.sonos.const import DEVICE_FEATURE_WAKEABLE
 from music_assistant.providers.sonos.player import SonosPlayer
@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo
 
 UID = "RINCON_F0F6C1CC8D0401400"
+# the headphone zone of the same chassis
+HEADPHONE_UID = "RINCON_F0F6C1CC8D0401500"
 
 
 @pytest.fixture
@@ -54,16 +56,23 @@ class _Subscriptions:
         return self.results[-1]
 
 
-async def _attach_speaker(scenario: Scenario) -> SonosPlayer:
-    """Attach a portable speaker that wakes on LAN, the way discovery sets it up."""
-    provider: Any = await scenario.add_provider("sonos")
-    # the UPnP of all speakers, which the Sonos provider sets up
-    provider.upnp = MagicMock()
+async def _attach_speaker(scenario: Scenario, uid: str = UID, provider: Any = None) -> SonosPlayer:
+    """
+    Attach a portable speaker that wakes on LAN, the way discovery sets it up.
+
+    :param scenario: The running server.
+    :param uid: The Sonos UUID of the zone to attach.
+    :param provider: The Sonos provider to attach it to, a new one when not given.
+    """
+    if provider is None:
+        provider = await scenario.add_provider("sonos")
+        # the UPnP of all speakers, which the Sonos provider sets up
+        provider.upnp = MagicMock()
     discovery_info = cast(
         "DiscoveryInfo",
         {
             "device": {
-                "id": UID,
+                "id": uid,
                 "name": "Speaker A",
                 "modelDisplayName": "Roam",
                 "capabilities": [SonosCapability.PLAYBACK],
@@ -71,7 +80,7 @@ async def _attach_speaker(scenario: Scenario) -> SonosPlayer:
             }
         },
     )
-    protocol = SonosPlayer(provider, UID, discovery_info=discovery_info)
+    protocol = SonosPlayer(provider, uid, discovery_info=discovery_info)
     protocol.device_info.add_identifier(IdentifierType.IP_ADDRESS, "192.168.1.61")
     client = MagicMock()
     client.disconnect = AsyncMock()
@@ -136,6 +145,20 @@ async def test_a_new_speaker_is_the_native_protocol_of_a_minted_player(
     assert player.get_role(UID) == ProtocolRole.NATIVE
     assert (IdentifierType.UUID, UID) in protocol.identifiers
     assert (IdentifierType.MAC_ADDRESS, "F0:F6:C1:CC:8D:04") in protocol.identifiers
+    assert (IdentifierType.ZONE, MAIN_ZONE) in protocol.identifiers
+
+
+async def test_the_headphone_zone_is_named_apart_from_the_speaker(
+    scenario: Scenario,
+) -> None:
+    """Sonos names both zones after the room, so the headphone zone gets a name of its own."""
+    speaker = await _attach_speaker(scenario)
+    headphones = await _attach_speaker(scenario, HEADPHONE_UID, speaker.provider)
+
+    assert speaker.name == "Speaker A"
+    assert headphones.name == "Speaker A (Headphones)"
+    assert headphones.player is not None
+    assert headphones.player is not speaker.player
 
 
 async def test_a_new_speaker_sleeps_as_powered_off_by_the_power_control_of_its_player(

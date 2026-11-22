@@ -11,8 +11,9 @@ from async_upnp_client.exceptions import UpnpResponseError
 from music_assistant_models.enums import IdentifierType, PlayerType, ProtocolRole
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.constants import MAIN_ZONE
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
-from music_assistant.providers.dlna.player import DLNAPlayer
+from music_assistant.providers.dlna.player import DLNAPlayer, udn_identifiers
 from tests.providers.dlna.test_player_identifiers import DESCRIPTION_XML, _dmr, _Requester
 from tests.scenarios.harness import Scenario
 
@@ -58,7 +59,8 @@ async def _attach_renderer(scenario: Scenario, udn: str = UDN) -> DLNAPlayer:
         setattr(device, command, AsyncMock())
     protocol = DLNAPlayer(provider, udn, f"http://{IP_ADDRESS}/description.xml", device=device)
     protocol._attr_device_info = DeviceInfo(model="Renderer", manufacturer="Acme")
-    protocol._attr_device_info.add_identifier(IdentifierType.UUID, udn.removeprefix("uuid:"))
+    for identifier_type, value in udn_identifiers(udn):
+        protocol._attr_device_info.add_identifier(identifier_type, value)
     protocol._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, IP_ADDRESS)
     protocol._device_connect = AsyncMock()  # type: ignore[method-assign]
     assert await protocol.setup() is True
@@ -195,3 +197,116 @@ async def test_a_renderer_taken_off_its_player_connects_again(scenario: Scenario
     assert renderer.player.player_id == new_player_id != old_player_id
     connect.assert_awaited_once_with()
     assert renderer.device is device
+
+
+SONOS_UUID = "RINCON_001122334455"
+
+
+@pytest.mark.parametrize("extra_zone_first", [False, True])
+async def test_the_renderer_of_an_extra_sonos_zone_is_not_the_speaker(
+    scenario: Scenario, extra_zone_first: bool
+) -> None:
+    """
+    Of the renderers of a Sonos chassis, only the one of its own zone joins the Sonos player.
+
+    An Amp or soundbar with a headphone zone serves a second renderer on the same MAC and IP.
+    """
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol(
+        f"{SONOS_UUID}01400",
+        "Patio",
+        identifiers={
+            IdentifierType.MAC_ADDRESS: MAC_ADDRESS,
+            IdentifierType.UUID: f"{SONOS_UUID}01400",
+            IdentifierType.ZONE: MAIN_ZONE,
+        },
+    )
+    await scenario.register(speaker)
+    own_udn = f"uuid:{SONOS_UUID}01400_MR"
+    extra_udn = f"uuid:{SONOS_UUID}01500_MR"
+
+    if extra_zone_first:
+        extra = await _attach_renderer(scenario, extra_udn)
+        own = await _attach_renderer(scenario, own_udn)
+    else:
+        own = await _attach_renderer(scenario, own_udn)
+        extra = await _attach_renderer(scenario, extra_udn)
+
+    assert own.player is not None
+    assert own.player.player_id == scenario.player_of(speaker)
+    assert extra.player is not None
+    assert extra.player.player_id != scenario.player_of(speaker)
+
+
+async def test_a_stored_link_to_an_extra_sonos_zone_is_dropped(scenario: Scenario) -> None:
+    """A renderer of an extra zone that an earlier version linked to the speaker leaves it."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol(
+        f"{SONOS_UUID}01400",
+        "Patio",
+        identifiers={
+            IdentifierType.MAC_ADDRESS: MAC_ADDRESS,
+            IdentifierType.UUID: f"{SONOS_UUID}01400",
+            IdentifierType.ZONE: MAIN_ZONE,
+        },
+    )
+    await scenario.register(speaker)
+    extra_udn = f"uuid:{SONOS_UUID}01500_MR"
+    # as an earlier version linked it: the renderer reported no zone
+    with patch(
+        "tests.providers.dlna.test_lifecycle.udn_identifiers",
+        lambda udn: [(IdentifierType.UUID, udn.removeprefix("uuid:").removesuffix("_MR"))],
+    ):
+        extra = await _attach_renderer(scenario, extra_udn)
+    assert extra.player is not None
+    assert extra.player.player_id == scenario.player_of(speaker)
+    await scenario.mass.players.unregister(extra_udn)
+    await scenario.settle()
+
+    extra = await _attach_renderer(scenario, extra_udn)
+
+    assert extra.player is not None
+    assert extra.player.player_id != scenario.player_of(speaker)
+
+
+async def test_an_extra_sonos_zone_back_first_does_not_take_the_speaker(
+    scenario: Scenario,
+) -> None:
+    """
+    After an upgrade, the renderer of an extra zone that reconnects first leaves the speaker.
+
+    An earlier version linked it to the speaker's player. The speaker keeps its player, with
+    its settings, whichever of the two is back first.
+    """
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol(
+        f"{SONOS_UUID}01400",
+        "Patio",
+        identifiers={
+            IdentifierType.MAC_ADDRESS: MAC_ADDRESS,
+            IdentifierType.UUID: f"{SONOS_UUID}01400",
+        },
+    )
+    await scenario.register(speaker)
+    speaker_player = scenario.player_of(speaker)
+    extra_udn = f"uuid:{SONOS_UUID}01500_MR"
+    # as an earlier version linked it: neither side reported a zone
+    with patch(
+        "tests.providers.dlna.test_lifecycle.udn_identifiers",
+        lambda udn: [(IdentifierType.UUID, udn.removeprefix("uuid:").removesuffix("_MR"))],
+    ):
+        extra = await _attach_renderer(scenario, extra_udn)
+    assert extra.player is not None
+    assert extra.player.player_id == speaker_player
+
+    # the upgrade: the speaker reports its zone, and is back after the renderer
+    speaker._device.identifiers[IdentifierType.ZONE] = MAIN_ZONE
+    scenario.set_present(speaker.protocol_id, False)
+    await scenario.restart()
+    extra = await _attach_renderer(scenario, extra_udn)
+    scenario.set_present(speaker.protocol_id, True)
+    await scenario.register(scenario.protocol(speaker.protocol_id))
+
+    assert scenario.player_of(scenario.protocol(speaker.protocol_id)) == speaker_player
+    assert extra.player is not None
+    assert extra.player.player_id != speaker_player

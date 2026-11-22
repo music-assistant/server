@@ -56,9 +56,11 @@ from music_assistant_models.player import PlayerMedia, PlayerOptionValueType
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
+    MAIN_ZONE,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
+from music_assistant.helpers.upnp import get_sonos_zone
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.helpers.wake_on_lan import send_magic_packet
 from music_assistant.models.player import PlayerSource
@@ -319,6 +321,10 @@ class SonosPlayer(PlayerProtocol):
             self.discovery_info["device"]["name"]
             or self.discovery_info["device"]["modelDisplayName"]
         )
+        # Sonos names the headphone zone of an Amp or soundbar after the room of the
+        # speaker itself, which would leave two players with the same name
+        if get_sonos_zone(self.protocol_id) not in (None, MAIN_ZONE):
+            self._attr_name = f"{self._attr_name} (Headphones)"
         self._attr_device_info.model = self.discovery_info["device"]["modelDisplayName"]
         self._attr_device_info.manufacturer = self._provider.manifest.name
         self._attr_can_group_with = {self._provider.instance_id}
@@ -326,6 +332,9 @@ class SonosPlayer(PlayerProtocol):
         # Add identifiers for matching with other protocols (like AirPlay, DLNA)
         # The protocol_id is the Sonos UUID (e.g., RINCON_xxxxxxxxxxxx)
         self._attr_device_info.add_identifier(IdentifierType.UUID, self.protocol_id)
+        # a renderer of another zone of the chassis shares its MAC address
+        if zone := get_sonos_zone(self.protocol_id):
+            self._attr_device_info.add_identifier(IdentifierType.ZONE, zone)
         # Extract MAC address from Sonos player_id (RINCON_XXXXXXXXXXXX01400)
         # The middle part contains the MAC address (last 6 bytes in hex)
         mac_address = self._extract_mac_from_player_id()
