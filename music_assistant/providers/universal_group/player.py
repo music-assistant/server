@@ -300,7 +300,19 @@ class UniversalGroupPlayer(PlayerProtocol):
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Handle PLAY MEDIA on given player."""
+        """
+        Handle PLAY MEDIA on given player.
+
+        :param media: The media to play.
+        :raises PlayerUnavailableError: When none of the members can play right now.
+        """
+        if not self._playable_members():
+            raise PlayerUnavailableError(
+                f"None of the members of {self.display_name} can play right now",
+                translation_key="no_member_can_play",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
         # form on play: cancel any pending idle-grace release, then capture the
         # configured members and free them of any conflicting prior allegiance.
         self._cancel_idle_grace_timer()
@@ -526,14 +538,7 @@ class UniversalGroupPlayer(PlayerProtocol):
         already-prepared group.
         """
         # rebuild the effective member list from the configured static set
-        self._attr_group_members = []
-        for static_group_member in self._attr_static_group_members:
-            if (
-                (member_player := self.mass.players.get_player(static_group_member))
-                and member_player.available
-                and not member_player.offline_by_power_control
-            ):
-                self._attr_group_members.append(static_group_member)
+        self._attr_group_members = self._playable_members()
         # ensure each member is free of any prior group/sync allegiance and ready to play
         group_player = self._group_player
         for member in self.mass.players.iter_group_members(
@@ -579,6 +584,16 @@ class UniversalGroupPlayer(PlayerProtocol):
             if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                 with suppress(PlayerUnavailableError):
                     await self.mass.players.cmd_power(member.player_id, True)
+
+    def _playable_members(self) -> list[str]:
+        """Return the ids of the configured members that can be played to right now."""
+        return [
+            member_id
+            for member_id in self._attr_static_group_members
+            if (member := self.mass.players.get_player(member_id))
+            and member.available
+            and not member.offline_by_power_control
+        ]
 
     def _set_attributes(self) -> None:
         """Set attributes of the group player."""

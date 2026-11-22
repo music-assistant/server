@@ -3052,6 +3052,7 @@
   "provider.universal_group.errors.cannot_add_group_to_itself": "Cannot add {0} to itself as a member.",
   "provider.universal_group.errors.cannot_remove_group_from_itself": "Cannot remove {0} from itself as a member.",
   "provider.universal_group.errors.group_not_dynamic": "Group {0} does not allow dynamically adding or removing members.",
+  "provider.universal_group.errors.no_member_can_play": "None of the members of {0} can play right now.",
   "provider.universal_group.manifest.description": "Create universal groups to group speakers of different protocols/ecosystems to play the same audio (but not in sync).",
   "provider.vban_receiver.config_entries.audio_channels.description": "The number of audio channels",
   "provider.vban_receiver.config_entries.audio_channels.label": "Channels",
