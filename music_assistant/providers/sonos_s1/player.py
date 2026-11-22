@@ -32,14 +32,13 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     AVAILABILITY_TIMEOUT,
     COMMAND_POLL_DELAY,
     DURATION_SECONDS,
-    LINEIN_SOURCE_IDS,
     LINEIN_SOURCE_MAPPING,
     NEVER_TIME,
     PLAYER_FEATURES,
@@ -49,6 +48,7 @@ from .constants import (
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
     SOURCE_LINEIN,
+    SOURCE_LINEIN_OF,
     SOURCE_TV,
     SUBSCRIPTION_SERVICES,
     SUBSCRIPTION_TIMEOUT,
@@ -73,6 +73,9 @@ class SonosSubscriptionsFailed(PlayerCommandFailed):
 
 class SonosPlayer(PlayerProtocol):
     """Sonos Player implementation for S1 speakers."""
+
+    # the speaker reports only the line-in or TV input it plays as its source
+    _attr_trusts_reported_source = True
 
     def __init__(
         self,
@@ -121,6 +124,22 @@ class SonosPlayer(PlayerProtocol):
         self._resub_cooldown_expires_at: float | None = None
         self._poll_task_id: str = f"sonos_poll_{self.protocol_id}"
         self._unloaded: bool = False
+
+    @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return the inputs the speaker played, with its line-in while its group plays it."""
+        own_line_in = f"{SOURCE_LINEIN_OF}{self.soco.uid}"
+        if (
+            (leader_id := self.synced_to)
+            and (leader := self.provider.get_protocol(leader_id))
+            and leader.active_source == own_line_in
+            and own_line_in not in (x.id for x in self._attr_source_list)
+        ):
+            return [
+                *self._attr_source_list,
+                replace(PLAYER_SOURCE_MAP[SOURCE_LINEIN], id=own_line_in),
+            ]
+        return self._attr_source_list
 
     @property
     def missing_subscriptions(self) -> set[str]:
@@ -194,7 +213,7 @@ class SonosPlayer(PlayerProtocol):
                 self.protocol_id,
             )
             return
-        if self._attr_active_source in LINEIN_SOURCE_IDS:
+        if _is_line_in_or_tv(self._attr_active_source):
             # Play an invalid URI to force stop line-in sources
             with contextlib.suppress(SoCoException):
                 await asyncio.to_thread(self.soco.play_uri, "")
@@ -315,18 +334,25 @@ class SonosPlayer(PlayerProtocol):
 
     async def select_source(self, source: str) -> None:
         """Handle SELECT SOURCE command on the player."""
-        if source in LINEIN_SOURCE_IDS:
-
-            def _switch_to_linein() -> None:
-                if source == SOURCE_TV:
-                    self.soco.switch_to_tv()
-                elif source == SOURCE_LINEIN:
-                    self.soco.switch_to_line_in()
-
-            await asyncio.to_thread(_switch_to_linein)
-            self.schedule_poll()
-        else:
+        if not _is_line_in_or_tv(source):
             await self.stop()
+            return
+        line_in_of: SonosPlayer | None = None
+        device_id = source.removeprefix(SOURCE_LINEIN_OF)
+        if source.startswith(SOURCE_LINEIN_OF) and device_id != self.soco.uid:
+            line_in_of = cast("SonosPlayer | None", self.provider.get_protocol(device_id))
+            if line_in_of is None:
+                msg = f"The speaker {device_id} with this line-in is not available"
+                raise PlayerCommandFailed(msg)
+
+        def _switch_to_linein() -> None:
+            if source == SOURCE_TV:
+                self.soco.switch_to_tv()
+            else:
+                self.soco.switch_to_line_in(line_in_of.soco if line_in_of else None)
+
+        await asyncio.to_thread(_switch_to_linein)
+        self.schedule_poll()
 
     async def set_members(
         self,
@@ -849,16 +875,24 @@ class SonosPlayer(PlayerProtocol):
         if source_id := LINEIN_SOURCE_MAPPING.get(audio_source):
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
-            self._attr_active_source = source_id
             self._attr_current_media = None
             source = PLAYER_SOURCE_MAP[source_id]
-            if self.soco.uid not in uri:
-                # the uri names the speaker whose input plays: the line-in of another
-                # speaker is listed, but is no input of this one
+            # the uri names the speaker whose input plays
+            if source_id == SOURCE_LINEIN:
+                # x-rincon-stream:<speaker id>
+                device_id = uri.partition(":")[2]
+                source = replace(
+                    source,
+                    id=f"{SOURCE_LINEIN_OF}{device_id}",
+                    owner_player_id=None if device_id == self.soco.uid else device_id,
+                )
+            elif self.soco.uid not in uri:
+                # the TV input of another speaker is no input of this one
                 source = replace(source, is_input=False)
+            self._attr_active_source = source.id
             source_ids = [x.id for x in self._attr_source_list]
-            if source_id in source_ids:
-                self._attr_source_list[source_ids.index(source_id)] = source
+            if source.id in source_ids:
+                self._attr_source_list[source_ids.index(source.id)] = source
             else:
                 self._attr_source_list.append(source)
             return
@@ -955,3 +989,10 @@ def _timespan_secs(timespan: str | None) -> int | None:
     if timespan is None:
         return None
     return int(sum(60 ** x[0] * int(x[1]) for x in enumerate(reversed(timespan.split(":")))))
+
+
+def _is_line_in_or_tv(source_id: str | None) -> bool:
+    """Return whether a source id names the line-in or TV input of a speaker."""
+    return source_id is not None and (
+        source_id == SOURCE_TV or source_id.startswith(SOURCE_LINEIN_OF)
+    )

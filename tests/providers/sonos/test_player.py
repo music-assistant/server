@@ -71,6 +71,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._airplay_rejoin_members = set()
     player._own_airplay_session = False
     player._reported_bonded_ids = set()
+    player._line_in_connected = None
     player.upnp = MagicMock(
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
@@ -1190,14 +1191,17 @@ def test_a_group_child_does_not_take_over_the_line_in_of_its_coordinator() -> No
     group_parent.client.player.group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PLAYING
     group_parent.client.player.group.position = 0.0
     group_parent.client.player.group.container_type = ContainerType.LINEIN
-    group_parent.client.player.group.playback_metadata = {}
+    group_parent.client.player.group.playback_metadata = {
+        "container": {"type": ContainerType.LINEIN, "lineInSource": "sonos_leader"}
+    }
     mass.players.get_protocol.return_value = group_parent
 
     # twice: a transient entry would only be promoted to its template on the next update
     player.on_player_event(None)
     player.on_player_event(None)
 
-    assert player._attr_active_source == SOURCE_LINE_IN
+    # the member reports the line-in its coordinator plays
+    assert player._attr_active_source == "line_in@sonos_leader"
     assert player._attr_source_list == []
 
 

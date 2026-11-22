@@ -31,12 +31,18 @@ from music_assistant_models.enums import (
     SourceControl,
 )
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
     UnsupportedFeaturedException,
 )
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_player_access,
+    player_access_filter,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.media_capabilities import AudioSourceMixin, SourceControlValue
@@ -49,6 +55,7 @@ from .helpers import handle_player_command
 if TYPE_CHECKING:
     from music_assistant_models.audio_processing import ActiveSourceAudioDetails
     from music_assistant_models.media_items import AudioSource
+    from music_assistant_models.player import PlayerSource
     from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 
@@ -205,32 +212,52 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
             return None
         return session.source, provider
 
-    def get_audio_source_owner(self, source: AudioSource) -> Player | None:
+    def get_audio_source_owner(self, source: AudioSource | PlayerSource) -> Player | None:
         """
-        Return the player a live audio source belongs to, None when it belongs to none.
+        Return the player a source belongs to, None when it names none.
 
-        :param source: The audio source.
+        :param source: A live audio source, or an input a player offers from another player.
         """
         if (owner_id := source.owner_player_id) is None:
             return None
         # a provider may name the player by one of its protocols
         return self.get_player_or_protocol_player(owner_id)
 
-    def get_audio_source_name(self, source: AudioSource, player_id: str | None = None) -> str:
+    def get_audio_source_name(
+        self, source: AudioSource | PlayerSource, player_id: str | None = None
+    ) -> str:
         """
-        Return the name of a live audio source as shown on a player, or outside any player.
+        Return the name of a source as shown on a player, or outside any player.
 
         On the player the source belongs to it is the name of the source. Elsewhere the
         name of that player follows in parentheses, unless the player is only an input.
         A source that belongs to no player shows by its name everywhere.
 
-        :param source: The audio source.
+        :param source: A live audio source, or an input a player offers from another player.
         :param player_id: The player it is shown on, None for outside any player.
         """
         owner = self.get_audio_source_owner(source)
         if owner is None or owner.player_id == player_id or owner.type == PlayerType.SOURCE:
             return source.name
         return f"{source.name} ({owner.name})"
+
+    def may_use_audio_source(self, source: AudioSource | PlayerSource) -> bool:
+        """
+        Return whether the calling user may use a source, by the player it belongs to.
+
+        A source of no player is always allowed. A user limited to some players may use the
+        source of one of those, or of the own client player, and never one whose player is
+        not a known player, such as a disabled one.
+
+        :param source: A live audio source, or an input a player offers from another player.
+        """
+        if source.owner_player_id is None:
+            return True
+        current_user = get_current_user()
+        if player_access_filter(current_user) is None:
+            return True
+        owner = self.get_audio_source_owner(source)
+        return owner is not None and has_player_access(current_user, owner.player_id, owner)
 
     def claim_audio_source_session(
         self,
@@ -455,6 +482,12 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
             source = player_id  # default to MA queue source
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
+        # an input of another player, such as the line-in of another speaker, belongs to that
+        # player: refused before anything happens to the player
+        entry = next((x for x in player.source_list if x.id == source), None)
+        if entry is not None and not self.may_use_audio_source(entry):
+            msg = f"No access to the player that {entry.name} belongs to"
+            raise InsufficientPermissions(msg)
         is_queue = self.mass.player_queues.get(self.resolve_player_id(source)) is not None
         if not is_queue:
             # a source that plays takes the place of a step (next, previous) that has not
