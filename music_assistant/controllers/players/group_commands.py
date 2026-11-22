@@ -16,8 +16,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import PlaybackState, PlayerType, ProviderFeature
+from music_assistant_models.enums import (
+    PlaybackState,
+    PlayerType,
+    ProviderFeature,
+    SpeakerChannel,
+)
 from music_assistant_models.errors import (
+    InvalidDataError,
     PlayerUnavailableError,
     ProviderUnavailableError,
     UnsupportedFeaturedException,
@@ -72,7 +78,7 @@ class GroupCommandsMixin(_PlayerControllerBase):
 
         Will add the given player(s) to the target player (sync leader or group player).
         A player to add that is switched off at its external power control is powered on
-        first, and is left out when its device does not come online.
+        first, and is left out when it can not be played to once it started up.
         Does not check the current user's player access, see check_grouping_access.
 
         :param target_player: player_id of the syncgroup leader or group player.
@@ -106,7 +112,7 @@ class GroupCommandsMixin(_PlayerControllerBase):
             if member := self.get_player(member_id):
                 self._cancel_power_on(member)
         if player_ids_to_add:
-            # no lock while a device comes online: that takes far longer than other
+            # no lock while a player starts up: that takes far longer than other
             # commands wait for the lock
             left_out = await self._power_on_members(parent_player, player_ids_to_add)
             player_ids_to_add = [pid for pid in player_ids_to_add if pid not in left_out]
@@ -237,6 +243,97 @@ class GroupCommandsMixin(_PlayerControllerBase):
                 f"Provider {provider} does not support creating group players"
             )
         return await provider_instance.create_group_player(name, members, dynamic)
+
+    @api_command("players/create_multi_channel_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def create_multi_channel_player(
+        self, provider: str, name: str, members: dict[str, SpeakerChannel]
+    ) -> Player:
+        """
+        Combine speakers into one new multi-channel player.
+
+        The output of each speaker on the provider moves into the new player. A player that
+        has no other output left is removed, with its settings and its queue.
+
+        :param provider: The provider (id) whose speakers to combine.
+        :param name: Name of the new player.
+        :param members: The channel each speaker plays, by the player id of the speaker.
+        """
+        provider_instance = self._get_multi_channel_provider(provider)
+        if not (name := name.strip()):
+            raise InvalidDataError("A multi-channel player needs a name")
+        speakers: dict[str, SpeakerChannel] = {}
+        for player_id, channel in members.items():
+            protocol_id = self._get_multi_channel_speaker(player_id, provider_instance)
+            if channel == SpeakerChannel.UNKNOWN or channel in speakers.values():
+                raise InvalidDataError("Every speaker needs a channel of its own")
+            speakers[protocol_id] = channel
+        return await provider_instance.create_multi_channel_player(name, speakers)
+
+    @api_command("players/add_multi_channel_speaker", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def add_multi_channel_speaker(
+        self, player_id: str, speaker: str, channel: SpeakerChannel
+    ) -> None:
+        """
+        Add a speaker to a multi-channel player, on a channel of its own.
+
+        The output of the speaker on the provider of the player moves into the player. A player
+        that has no other output left is removed, with its settings and its queue.
+
+        :param player_id: The player id of the multi-channel player.
+        :param speaker: The player id of the speaker.
+        :param channel: The channel the speaker plays.
+        """
+        provider_instance, protocol_id = self._get_multi_channel_player(player_id)
+        speaker_protocol_id = self._get_multi_channel_speaker(speaker, provider_instance)
+        if channel == SpeakerChannel.UNKNOWN:
+            raise InvalidDataError("A speaker needs a channel")
+        await provider_instance.add_multi_channel_speaker(protocol_id, speaker_protocol_id, channel)
+
+    @api_command("players/remove_multi_channel_speaker", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def remove_multi_channel_speaker(self, player_id: str, number: int) -> None:
+        """
+        Remove a speaker from a multi-channel player, which plays on with its other speakers.
+
+        The speaker comes back as a player of its own. A speaker without which the others make
+        up no layout stays: taking the player apart is removing the player.
+
+        :param player_id: The player id of the multi-channel player.
+        :param number: The number of the speaker, as its settings name it (speaker_<number>_*).
+        """
+        provider_instance, protocol_id = self._get_multi_channel_player(player_id)
+        await provider_instance.remove_multi_channel_speaker(protocol_id, number)
+
+    @api_command("players/multi_channel_candidates", required_scope=Scope.PLAYERS_READ)
+    def multi_channel_candidates(self, provider: str) -> list[str]:
+        """
+        Return the players whose speaker can go up in a new multi-channel player.
+
+        :param provider: The provider (id) whose speakers to combine.
+        :return: The player ids, of the players the current user may use.
+        """
+        provider_instance = self._get_multi_channel_provider(provider)
+        current_user = get_current_user()
+        player_ids: list[str] = []
+        for protocol_id in provider_instance.get_multi_channel_candidates():
+            player = self.get_player_by_protocol(protocol_id)
+            if (
+                player is not None
+                and player.player_id not in player_ids
+                and has_player_access(current_user, player.player_id, player)
+            ):
+                player_ids.append(player.player_id)
+        return player_ids
+
+    @api_command("players/multi_channel_layouts", required_scope=Scope.PLAYERS_READ)
+    def multi_channel_layouts(self, provider: str) -> dict[str, list[SpeakerChannel]]:
+        """
+        Return the layouts a provider combines speakers into, each with its channels in order.
+
+        :param provider: The provider (id) whose speakers to combine.
+        :return: The channels of each layout, by the value of the layout (such as "2.1").
+        """
+        layouts = self._get_multi_channel_provider(provider).get_multi_channel_layouts()
+        return {layout.value: list(channels) for layout, channels in layouts.items()}
 
     @api_command("players/remove_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_group_player(self, player_id: str) -> None:
@@ -405,6 +502,63 @@ class GroupCommandsMixin(_PlayerControllerBase):
                 await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
             if was_playing:
                 await self.mass.player_queues.resume(new_leader_id)
+
+    def _get_multi_channel_player(self, player_id: str) -> tuple[PlayerProvider, str]:
+        """
+        Return the provider and the own protocol of a multi-channel player it combined.
+
+        :param player_id: The player id of the multi-channel player.
+        :raises PlayerUnavailableError: When the player is not there.
+        :raises UnsupportedFeaturedException: When it is no multi-channel player a provider
+            combined.
+        """
+        if not (player := self.get_player(player_id)):
+            raise PlayerUnavailableError(f"Player {player_id} not found")
+        if player.type != PlayerType.MULTI_CHANNEL or (protocol := player.own_protocol) is None:
+            raise UnsupportedFeaturedException(f"Player {player.name} is no multi-channel player")
+        return self._get_multi_channel_provider(protocol.provider_id), protocol.protocol_id
+
+    def _get_multi_channel_speaker(self, player_id: str, provider: PlayerProvider) -> str:
+        """
+        Return the id of the protocol of a speaker on the provider that combines it.
+
+        :param player_id: The player id of the speaker.
+        :param provider: The provider that combines speakers.
+        :raises PlayerUnavailableError: When the player is not there.
+        :raises UnsupportedFeaturedException: When the player has no output of the provider.
+        """
+        if not (player := self.get_player(player_id)):
+            raise PlayerUnavailableError(f"Player {player_id} not found")
+        protocol = next(
+            (
+                protocol
+                for protocol in player.attached_protocols.values()
+                if protocol.provider_id == provider.instance_id
+            ),
+            None,
+        )
+        if protocol is None:
+            raise UnsupportedFeaturedException(
+                f"Player {player.name} has no output of provider {provider.instance_id}"
+            )
+        return protocol.protocol_id
+
+    def _get_multi_channel_provider(self, provider: str) -> PlayerProvider:
+        """
+        Return the provider that combines speakers into multi-channel players.
+
+        :param provider: The provider (id).
+        :raises ProviderUnavailableError: When the provider is not loaded.
+        :raises UnsupportedFeaturedException: When the provider can not combine speakers.
+        """
+        if not (provider_instance := self.mass.get_provider(provider)):
+            raise ProviderUnavailableError(f"Provider {provider} not found")
+        provider_instance = cast("PlayerProvider", provider_instance)
+        if ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER not in provider_instance.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Provider {provider} does not support creating multi-channel players"
+            )
+        return provider_instance
 
     async def _release_group_session(self, group_id: str) -> None:
         """

@@ -14,6 +14,7 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.airplay import announce
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ANNOUNCE_AT_MARGIN_MS,
@@ -34,6 +35,7 @@ ANNOUNCE_DATA = {
     "announce_player_id": None,
 }
 HIRES_PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S32LE, sample_rate=48000, bit_depth=24)
+CLOCK = TimelineClock()
 
 
 def _make_render(duration: float = 1.5) -> MagicMock:
@@ -87,8 +89,12 @@ def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
     player.player.volume_level = 30
     player.has_live_audio = stream is not None
     player.stream = stream
+    player.session = stream.session if stream is not None else None
+    player.owner = player
+    player.endpoints = [player]
     player._lock = asyncio.Lock()
     player.logger = logging.getLogger("test.airplay.announce")
+    player.mass.timeline_clock = CLOCK
     player.mass.create_task = MagicMock(
         side_effect=lambda coro, *_args, **_kwargs: asyncio.get_running_loop().create_task(coro)
     )
@@ -111,7 +117,7 @@ def _make_playing_group(*streams: MagicMock) -> list[MagicMock]:
     session = MagicMock()
     session.sync_clients = members
     for member in members:
-        member.stream.session = session
+        member.stream.session = member.session = session
     return members
 
 
@@ -154,7 +160,7 @@ def _timeline(player: MagicMock) -> Iterator[list[tuple[str, float]]]:
     """
     events: list[tuple[str, float]] = []
 
-    async def hold_until(unix_ms: float) -> None:
+    async def hold_until(unix_ms: float, _clock: TimelineClock) -> None:
         events.append(("hold", unix_ms))
 
     player.mass.players.cmd_volume_set = AsyncMock(
@@ -194,9 +200,9 @@ def test_shared_instant_covers_the_slowest_member() -> None:
     slow.latency_lead_ms = 1900
     unreported = _make_stream()
 
-    before_ms = int(cli_clock_time() * 1000)
-    at_unix_ms = announce._shared_announce_instant([fast, slow, unreported])
-    after_ms = cli_clock_time() * 1000
+    before_ms = int(cli_clock_time(CLOCK) * 1000)
+    at_unix_ms = announce._shared_announce_instant([fast, slow, unreported], CLOCK)
+    after_ms = cli_clock_time(CLOCK) * 1000
 
     # the unreported member's fallback span (2000) is the largest of the three
     expected_lead = AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
@@ -396,13 +402,13 @@ async def test_armed_members_ignore_their_own_volume_echoes() -> None:
     """
     # taken WITH the clock the ack is built from, so the window below is
     # bracketed exactly however slow the run itself is
-    now_ms = int(cli_clock_time() * 1000)
+    now_ms = int(cli_clock_time(CLOCK) * 1000)
     file_ms = 3000
     (member,) = _make_playing_group(_make_stream(ack=(now_ms + 300, file_ms)))
 
     with _timeline(member):
         await announce.play_announcement(member, _make_announcement(), 55)
-    elapsed = cli_clock_time() - now_ms / 1000
+    elapsed = cli_clock_time(CLOCK) - now_ms / 1000
 
     audible_end_s = (300 + file_ms) / 1000
     window = member.suppress_volume_reports.call_args.args[0]
@@ -497,7 +503,7 @@ async def test_cancelled_announcement_hands_the_bumped_volume_back() -> None:
     parked = asyncio.Event()
     member.mass.players.cmd_volume_set = AsyncMock(side_effect=lambda *_args: raised.set())
 
-    async def hold_until(_unix_ms: float) -> None:
+    async def hold_until(_unix_ms: float, _clock: TimelineClock) -> None:
         if not raised.is_set():
             return
         # the hold in the ducked tail, where the cancel lands
@@ -596,13 +602,13 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
     streams[1].latency_lead_ms = largest_span_ms
     announcement = _make_announcement()
 
-    before_ms = int(cli_clock_time() * 1000)
+    before_ms = int(cli_clock_time(CLOCK) * 1000)
     await asyncio.gather(
         announce.play_announcement(leader, announcement, None),
         announce.play_announcement(member_1, announcement, None),
         announce.play_announcement(member_2, announcement, None),
     )
-    after_ms = cli_clock_time() * 1000
+    after_ms = cli_clock_time(CLOCK) * 1000
 
     instants = set()
     for stream in streams:
@@ -684,7 +690,7 @@ async def test_return_holds_until_the_audible_end() -> None:
     # taken WITH the clock the ack is built from, so the hold is measured
     # from that same instant however slow the setup below runs
     started = time.monotonic()
-    now_unix_ms = int(cli_clock_time() * 1000)
+    now_unix_ms = int(cli_clock_time(CLOCK) * 1000)
     stream = _make_stream(ack=(now_unix_ms + 250, 100))
     members = _make_playing_group(stream)
 
@@ -776,3 +782,56 @@ async def test_announcement_without_audio_plays_nothing(
     stream.announce.assert_not_awaited()
     assert "produced no audio" in caplog.text
     player.mass.streams.announcement_renderer.release.assert_awaited_once()
+
+
+def test_a_set_announces_on_its_speakers_at_its_own_volume() -> None:
+    """The speakers of a set mix the clip, and the volume bump of a speaker is the set's."""
+    airplay_set = _make_player("set")
+    airplay_set.stream = None
+    airplay_set.synced_to = "leader"
+    speaker = _make_player("speaker", stream=_make_stream())
+    speaker.owner = airplay_set
+    speaker.player = None
+    airplay_set.endpoints = [speaker]
+    airplay_set.has_live_audio = True
+
+    assert announce._live_members(airplay_set) == [speaker]
+    assert announce._volume_target(speaker) is airplay_set.player
+
+
+def test_a_bridged_set_announces_on_its_speakers() -> None:
+    """A set the Sendspin bridge feeds mixes the clip into the streams of its speakers."""
+    airplay_set = _make_player("set", stream=_make_stream())
+    airplay_set.stream.session = None
+    airplay_set.session = None
+    speaker = _make_player("speaker", stream=_make_stream())
+    speaker.stream.session = None
+    speaker.owner = airplay_set
+    airplay_set.endpoints = [speaker]
+    airplay_set.provider.bridge_manager.get_bridge = MagicMock(
+        return_value=MagicMock(owns_airplay_stream=True)
+    )
+
+    assert announce._live_members(airplay_set) == [speaker]
+
+
+def test_the_apple_tv_of_a_set_takes_no_announcement() -> None:
+    """
+    A set that leads its session announces on its speakers only, timed by them alone.
+
+    The Apple TV is not heard, and the clip is mixed in after its silenced feed.
+    """
+    speaker, apple_tv = _make_playing_group(_make_stream(), _make_stream())
+    speaker.renders_audio = True
+    apple_tv.renders_audio = False
+    apple_tv.endpoints = [speaker]
+    apple_tv.has_live_audio = True
+    # the Apple TV runs far ahead: its span must not move the instant of the speakers
+    apple_tv.stream.latency_lead_ms = 60_000
+
+    members = announce._live_members(apple_tv)
+    with patch("music_assistant.providers.airplay.announce.cli_clock_time", return_value=100.0):
+        at_unix_ms = announce._resolve_announce_instant(apple_tv, members, "clip")
+
+    assert members == [speaker]
+    assert at_unix_ms < 100_000 + 60_000

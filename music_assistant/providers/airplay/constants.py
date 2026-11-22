@@ -84,6 +84,9 @@ STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
 STREAMING_MODE_AP2_COMPAT: Final[str] = "ap2_compat"
 STREAMING_MODE_RAOP: Final[str] = "raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
+# Player option of an Apple TV with HomePods as its speakers, stored on its protocol (absent
+# is off): play on the HomePods only, without a session to the Apple TV.
+CONF_HOMEPODS_ONLY: Final[str] = "homepods_only"
 CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
@@ -225,6 +228,25 @@ AIRPLAY_REPLACEMENT_POLL_INTERVAL: Final[float] = 1.0
 # its queued audio.
 AIRPLAY_SPLICE_LEAD_MARGIN_MS: Final[int] = 150
 
+# How long a group waits after the last starvation shift ([STATUS] REANCHOR) of
+# any member before it compares the members' shifts. Each member recovers from a
+# dry feed on its own: a realtime member shifts by about its queue depth minus
+# the binary's 250 ms floor, and again every depth for as long as the feed stays
+# dry, while a buffered member never shifts. At the deepest queue (3 s) those
+# reports come up to 3 s apart, so this outlasts the reports of one stall.
+AIRPLAY_STALL_SETTLE_SECONDS: Final[float] = 4.0
+# How far apart the members' shifts may be and still play as one group. Members
+# with the same queue depth shift by the same amount, give or take a few ms of
+# scheduling jitter. Different depths, or a buffered member next to a realtime
+# one, put them hundreds of ms apart.
+AIRPLAY_STALL_SHIFT_TOLERANCE_MS: Final[int] = 30
+# Minimum time between two restarts that bring a group back in sync after a
+# stall. It doubles with each restart up to the cap, so a source that keeps
+# stalling cannot keep restarting the group. A group that drifts apart within it
+# is restarted once it has passed.
+AIRPLAY_STALL_RESYNC_HOLDOFF: Final[float] = 60.0
+AIRPLAY_STALL_RESYNC_MAX_HOLDOFF: Final[float] = 900.0
+
 # Floor for the late-join PCM ring, which has to hold every sample between the
 # audible position and the write head: a joiner's anchor maps onto content the
 # group was already fed but has not played yet. That distance - the write-head
@@ -265,6 +287,20 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # the whole schedule is abandoned as soon as either no longer holds.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
 AIRPLAY_SOLO_RESUME_GUARD_SECONDS: Final[float] = 30.0
+# Seconds before the one re-add of the Apple TV of a set that left the session of its
+# speakers: a session opened 5 s after the Apple TV reset one stayed up (measured).
+AIRPLAY_SILENT_MEMBER_REJOIN_DELAY: Final[int] = 5
+# A speaker of a set that sets up resets the session of the Apple TV of the set, which then
+# reports another sender took over (measured, about 1 s after that SETUP). For this long after
+# a speaker joined, that report is taken for the reset, not for another sender.
+AIRPLAY_SILENT_MEMBER_RESET_WINDOW: Final[float] = 10.0
+# How long the Apple TV of a set waits for all its speakers to play before it joins those
+# that do (it needs their timeline), and how often it looks.
+AIRPLAY_SILENT_MEMBER_JOIN_TIMEOUT: Final[float] = 10.0
+AIRPLAY_SILENT_MEMBER_JOIN_POLL_INTERVAL: Final[float] = 0.25
+# Longest the session waits on the Apple TV of a set (a flush, a START, or an audio write once
+# it was started) before it plays on without it.
+AIRPLAY_SILENT_MEMBER_TIMEOUT: Final[float] = 5.0
 
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into

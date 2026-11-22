@@ -49,6 +49,7 @@ from music_assistant.models.player_state import (
     ProtocolSnapshot,
     StateInputs,
 )
+from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderAccess
@@ -206,6 +207,30 @@ def scheduled_call(coro: CoroutineType[Any, Any, Any]) -> tuple[str, dict[str, A
 # Mock classes for testing
 
 
+def use_real_bridge_holders(sendspin_provider: Any) -> None:
+    """
+    Give a stand-in of the Sendspin provider its real record of which bridge holds a client.
+
+    With it comes the real lock under which the bridges of a player hand its output over.
+
+    :param sendspin_provider: The mocked or fake Sendspin provider.
+    """
+    sendspin_provider._bridge_holders = {}
+    sendspin_provider._bridge_waiters = {}
+    sendspin_provider._bridge_locks = {}
+    for name in (
+        "hold_bridge_client",
+        "get_bridge_holder",
+        "release_bridge_client",
+        "wait_for_bridge_client",
+        "stop_waiting_for_bridge_client",
+        "wake_bridge_waiters",
+        "bridge_lock",
+    ):
+        method = MethodType(getattr(SendspinProvider, name), sendspin_provider)
+        setattr(sendspin_provider, name, method)
+
+
 def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
     """
     Give a mocked MusicAssistant the real create_task implementation.
@@ -232,6 +257,28 @@ def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
     mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
 
 
+def use_real_timers(mass: MagicMock) -> None:
+    """
+    Give a mocked MusicAssistant the real timers (call_later) and tasks of the server.
+
+    For tests of code that waits for a timer of the server to fire. Use it from a test
+    that runs in an event loop.
+
+    :param mass: The mock standing in for the MusicAssistant instance.
+    """
+    use_real_create_task(mass)
+    mass._tracked_timers = {}
+    real_call_later = MethodType(MusicAssistant.call_later, mass)
+
+    def _call_later(*args: Any, **kwargs: Any) -> Any:
+        mass.loop = asyncio.get_running_loop()
+        return real_call_later(*args, **kwargs)
+
+    mass.call_later = MagicMock(side_effect=_call_later)
+    mass.cancel_timer = MethodType(MusicAssistant.cancel_timer, mass)
+    mass.cancel_task = MethodType(MusicAssistant.cancel_task, mass)
+
+
 def bare_player_controller() -> PlayerController:
     """Return a bare players controller, carrying just enough state for its real player locks."""
     players = PlayerController.__new__(PlayerController)
@@ -249,12 +296,15 @@ def mock_player_mass() -> MagicMock:
     """
     Return a mocked MusicAssistant for tests of players and protocols without a server.
 
-    Nothing is stored in its config, no queue or player control exists, and its players
-    controller looks players and protocols up for real, in what
-    ``attach_mock()`` registers for a provider of it.
+    Nothing is stored in its config, no queue or player control exists, a stream shows
+    only its own metadata, and its players controller looks players and protocols up for
+    real, in what ``attach_mock()`` registers for a provider of it.
     """
     mass = MagicMock()
     mass.closing = False
+    mass.streams.audio_analysis.shown_stream_metadata = MagicMock(
+        side_effect=lambda streamdetails: streamdetails.stream_metadata
+    )
     config = mass.config
     config.get = MagicMock(side_effect=lambda _key, default=None: default)
     config.get_player_value = MagicMock(side_effect=lambda _player_id, _key, default=None: default)
@@ -292,6 +342,9 @@ def use_player_registry(mass: MagicMock | MusicAssistant) -> MagicMock:
         "get_output_protocol",
         "iter_players",
         "iter_protocols",
+        "get_audio_source_owner",
+        "get_audio_source_name",
+        "may_use_audio_source",
     ):
         setattr(players, lookup, MethodType(getattr(PlayerController, lookup), players))
     players.get_audio_source_session = MagicMock(return_value=None)
@@ -323,7 +376,10 @@ def use_api_command_registry(mass: MagicMock, *command_owners: object) -> None:
                 continue
             if hasattr(handler := getattr(owner, attr_name), "api_cmd"):
                 mass.register_api_command(
-                    handler.api_cmd, handler, required_scope=handler.api_required_scope
+                    handler.api_cmd,
+                    handler,
+                    required_scope=handler.api_required_scope,
+                    allow_impersonation=handler.api_allow_impersonation,
                 )
 
 
@@ -756,6 +812,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "player_id": player_id,
         "provider": "test_prov",
         "player_type": PlayerType.PLAYER,
+        "channel_layout": None,
         "now": 1000.0,
         "previous_state": make_player_state(player_id),
         "enabled": True,
@@ -805,7 +862,11 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "mass_sources": frozenset(),
         "session": None,
         "session_image_url": None,
+        "followed_sessions": {},
+        "followed_source_names": {},
         "standing_sources": (),
+        "input_sources": (),
+        "source_names": {},
     }
     return StateInputs(**(defaults | values))
 

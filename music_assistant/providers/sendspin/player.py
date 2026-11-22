@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable, Iterable
 from contextlib import suppress
 from copy import deepcopy
+from dataclasses import replace
 from io import BytesIO
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -69,7 +70,7 @@ from aiosendspin.server.roles.color.state import Color
 from aiosendspin.server.roles.metadata.state import Metadata
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
-from aiosendspin.server.roles.player.v1 import PlayerPersistentState
+from aiosendspin.server.roles.player.v1 import PlayerPersistentState, PlayerV1Role
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -92,7 +93,10 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import CONF_ENTRY_FLOW_MODE_SAMPLE_RATE
+from music_assistant.constants import (
+    CONF_ALLOW_AUDIO_ANALYSIS,
+    CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
+)
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import (
@@ -103,7 +107,7 @@ from music_assistant.models.player import (
 from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.models.setup_flow import FINISH_STEP_SILENT, AbortFlow, StepExpiredError
 
-from .bridge_manager import evaluate_bridge_of
+from .bridge_manager import evaluate_bridge_of, hand_static_delay_over
 from .bridge_role import BridgePlayerRole
 from .constants import (
     BRIDGE_PREFIX,
@@ -124,12 +128,14 @@ from .constants import (
     CONF_SOURCE_AUTOSTART_TARGET,
     CONF_SOURCE_INPUT_ACTION,
     CONF_SOURCE_INPUT_DECLINED,
+    CONF_SOURCE_NAME,
     CONF_VIRTUAL_PLAYER_OWNER,
     CONNECT_METHOD_PAIR,
     CONNECT_METHOD_UNPAIRED,
     CONNECT_METHOD_UNPAIRED_WITH_INPUT,
     CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
     DEFAULT_SENDSPIN_STATIC_DELAY,
+    DEFAULT_SOURCE_NAME,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
@@ -184,7 +190,7 @@ SENDSPIN_FORMAT_AUTOMATIC = "automatic"
 # Player types that can render a line-in, so groups and pairs stay selectable.
 SOURCE_AUTOSTART_TARGET_TYPES = {
     PlayerType.PLAYER,
-    PlayerType.STEREO_PAIR,
+    PlayerType.MULTI_CHANNEL,
     PlayerType.GROUP,
 }
 
@@ -329,6 +335,20 @@ def _group_leader_id(clients: Iterable[SendspinClient]) -> str | None:
     return leader.client_id if leader else None
 
 
+def _member_clients(
+    provider: SendspinProvider, clients: Iterable[SendspinClient]
+) -> list[SendspinClient]:
+    """
+    Return the group clients that are members of their own.
+
+    The speakers of a multi-channel player are members through that player.
+
+    :param provider: The Sendspin provider.
+    :param clients: The clients of a group.
+    """
+    return [c for c in clients if provider.multi_channel_player_of(c.client_id) is None]
+
+
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.models.management import ManagementResultData, PairingMethodConfig
@@ -420,14 +440,23 @@ class SendspinBasePlayer(PlayerProtocol):
                         self._on_group_stopped()
                 self.update_state()
             case GroupMemberAddedEvent(client_id=client_id):
-                is_group_leader = _group_leader_id(group.clients) == self.protocol_id
-                if is_group_leader and (
-                    not self._attr_group_members or self._attr_group_members[0] != self.protocol_id
+                # a speaker of a multi-channel player is a member through that player
+                if (
+                    cast("SendspinProvider", self.provider).multi_channel_player_of(client_id)
+                    is None
                 ):
-                    self._attr_group_members = [self.protocol_id, *self._attr_group_members]
-                if client_id not in self._attr_group_members:
-                    self._attr_group_members.append(client_id)
-                    self.update_state()
+                    members = _member_clients(
+                        cast("SendspinProvider", self.provider), group.clients
+                    )
+                    is_group_leader = _group_leader_id(members) == self.protocol_id
+                    if is_group_leader and (
+                        not self._attr_group_members
+                        or self._attr_group_members[0] != self.protocol_id
+                    ):
+                        self._attr_group_members = [self.protocol_id, *self._attr_group_members]
+                    if client_id not in self._attr_group_members:
+                        self._attr_group_members.append(client_id)
+                        self.update_state()
                 self._schedule_membership_sync(group)
             case GroupMemberRemovedEvent(client_id=client_id):
                 self.mass.create_task(self._handle_group_member_removed(group, client_id))
@@ -521,7 +550,25 @@ class SendspinBasePlayer(PlayerProtocol):
         entries = await super().get_config_entries()
         entries.extend(await self._get_security_config_entries())
         entries.extend(self._get_source_autostart_config_entries())
-        if "source" in self._negotiated_families():
+        families = self._negotiated_families()
+        if "source" in families:
+            # a device that only captures is named by its player, which is the input itself
+            if "player" in families:
+                entries.append(
+                    ConfigEntry(
+                        key=CONF_SOURCE_NAME,
+                        type=ConfigEntryType.STRING,
+                        default_value=DEFAULT_SOURCE_NAME,
+                    )
+                )
+            entries.append(
+                ConfigEntry(
+                    key=CONF_ALLOW_AUDIO_ANALYSIS,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=True,
+                    required=False,
+                )
+            )
             # an entry for the decline keeps it in the config of a client nothing is stored
             # for yet, so it is stored once the user declines the input
             entries.append(
@@ -534,6 +581,11 @@ class SendspinBasePlayer(PlayerProtocol):
                 )
             )
         return entries
+
+    async def on_config_updated(self) -> None:
+        """Handle logic when the PlayerConfig is first loaded or updated."""
+        # an input that is playing holds the source it was selected with
+        cast("SendspinProvider", self.provider).sources.on_client_config_updated(self.protocol_id)
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
         """Run an unpair/management/input action, then re-render the entries."""
@@ -946,8 +998,9 @@ class SendspinBasePlayer(PlayerProtocol):
         # Ignore stale events from a group we no longer belong to.
         if group is not self.api.group:
             return
-        followers = [c.client_id for c in group.clients if c.client_id != self.protocol_id]
-        is_leader = _group_leader_id(group.clients) == self.protocol_id
+        members = _member_clients(cast("SendspinProvider", self.provider), group.clients)
+        followers = [c.client_id for c in members if c.client_id != self.protocol_id]
+        is_leader = _group_leader_id(members) == self.protocol_id
         desired_group_members = [self.protocol_id, *followers] if is_leader else []
         if self._attr_group_members != desired_group_members:
             self._attr_group_members = desired_group_members
@@ -1438,7 +1491,13 @@ class SendspinPlayer(SendspinBasePlayer):
     _content_takeover_pending: bool = False
     # Item (uri and queue item id) of the metadata last published to the group.
     _published_item: tuple[str, str | None] | None = None
+    # The metadata last published, also while it is still scheduled to take effect.
+    _published_metadata: Metadata | None = None
+    # Server-clock time that metadata takes effect at, when it was scheduled ahead.
+    _published_effective_us: int | None = None
     playback_session: SendspinPlaybackSession
+    # set once the format a client asks for could not be read from its player role
+    _requested_format_unreadable: ClassVar[bool] = False
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # output delay the device reported before its config was loaded, stored once it is
     _reported_static_delay: int | None = None
@@ -1450,6 +1509,9 @@ class SendspinPlayer(SendspinBasePlayer):
     _stop_taking_volume_reports: Callable[[], None] | None = None
     # sample rate an automatic Sendspin format follows, set by the last playback session
     _session_sample_rate: int | None = None
+    # bit depth a lossless output of that session has, None when it has no first item: a
+    # bridge reads it
+    session_bit_depth: int | None = None
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -1678,6 +1740,9 @@ class SendspinPlayer(SendspinBasePlayer):
     async def stop(self) -> None:
         """Stop command."""
         self.logger.debug("Received STOP command on player %s", self.display_name)
+        # A new item scheduled for its first audio is not shown yet: the group stop below
+        # freezes what is in effect (the previous item) and drops the scheduled one.
+        update_pending = self._metadata_update_pending()
         if self.player is not None:
             self.player.mark_stop_called()
         self._abort_pending_cast_start()
@@ -1717,12 +1782,13 @@ class SendspinPlayer(SendspinBasePlayer):
             # The cancel is what ends the stream on that path, so deliver the
             # notify again; bridges already torn down ignore it.
             self._notify_bridges_explicit_stop(self.api.group.clients)
-        # The stop cancelled any push still loading, which may have left the previous item.
+        # The stop cancelled any push still loading, or a scheduled update, either of which
+        # may have left the previous item.
         if (
             self.synced_to is None
             and self._published_item is not None
             and (media := self._player_media) is not None
-            and (media.uri, media.queue_item_id) != self._published_item
+            and ((media.uri, media.queue_item_id) != self._published_item or update_pending)
         ):
             self.mass.create_task(
                 self.send_current_media_metadata(),
@@ -1795,6 +1861,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
+        await super().on_config_updated()
         if (reported_delay := self._reported_static_delay) is not None:
             self._reported_static_delay = None
             if reported_delay != self.config.get_value(
@@ -1819,24 +1886,68 @@ class SendspinPlayer(SendspinBasePlayer):
                 abort_existing=True,
             )
 
-    async def follow_session_sample_rate(self, start_streamdetails: StreamDetails | None) -> None:
+    async def follow_session_sample_rate(
+        self,
+        start_streamdetails: StreamDetails | None,
+        *,
+        crossfade_enabled: bool = False,
+        overlay_active: bool = False,
+    ) -> None:
         """
         Match an automatic Sendspin format to the sample rate of a new playback session.
 
         The rate follows the player's sample rate setting for the first item of the session.
         Without a first item, the client's own default format is used.
-        An explicitly configured Sendspin format is left as is.
+        An explicitly configured Sendspin format keeps its sample rate; a bridge may play it
+        in fewer bits when the audio of the session has no more.
 
         :param start_streamdetails: Stream details of the first item of the session, if any.
+        :param crossfade_enabled: Whether the session blends the audio of its items.
+        :param overlay_active: Whether an audio overlay is mixed into the session.
         """
         if start_streamdetails is None:
             self._session_sample_rate = None
+            self.session_bit_depth = None
         else:
             pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
-                self, start_streamdetails=start_streamdetails
+                self,
+                start_streamdetails=start_streamdetails,
+                crossfade_enabled=crossfade_enabled,
+                overlay_active=overlay_active,
             )
             self._session_sample_rate = pcm_format.sample_rate
+            # the codec only stands for a lossless one here
+            output_format = await self.mass.streams.audio.get_output_format(
+                "flac",
+                self,
+                pcm_format.sample_rate,
+                pcm_format.bit_depth,
+                media_type=start_streamdetails.media_type,
+                source_bit_depth=start_streamdetails.audio_format.bit_depth,
+            )
+            self.session_bit_depth = output_format.bit_depth
         await self._apply_preferred_format()
+
+    async def get_session_format(
+        self, start_streamdetails: StreamDetails
+    ) -> tuple[SendspinAudioFormat, AudioCodec] | None:
+        """
+        Return the Sendspin format and codec this player plays in a session starting with an item.
+
+        :param start_streamdetails: Stream details of the first item of the session.
+        :return: The format and codec, or None when the format of this player does not follow
+            the session: an explicitly configured format, or a client without a player role.
+        """
+        player_role = self._player_role
+        config_value = self.config.get_value(
+            CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC
+        )
+        if player_role is None or config_value != SENDSPIN_FORMAT_AUTOMATIC:
+            return None
+        pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
+            self, start_streamdetails=start_streamdetails
+        )
+        return self._played_session_format(player_role, pcm_format.sample_rate)
 
     async def on_group_content_takeover(self) -> object:
         """Clear the protocol snapshot before a new content owner joins."""
@@ -1897,7 +2008,11 @@ class SendspinPlayer(SendspinBasePlayer):
                 and not self.playback_session.playback_task.done()
             ):
                 new_owner_id = _group_leader_id(
-                    c for c in self.api.group.clients if c.client_id != self.protocol_id
+                    c
+                    for c in _member_clients(
+                        cast("SendspinProvider", self.provider), self.api.group.clients
+                    )
+                    if c.client_id != self.protocol_id
                 )
                 new_owner = new_owner_id and self.provider.get_protocol(new_owner_id)
                 if isinstance(new_owner, SendspinPlayer):
@@ -1984,7 +2099,7 @@ class SendspinPlayer(SendspinBasePlayer):
         )
 
     def on_flow_timeline_changed(self) -> None:
-        """Re-publish the beat schedule after the flow stream's timeline was set or moved."""
+        """Re-publish position and beat schedule after the flow stream's timeline was set or moved."""
         if self.synced_to is not None:
             return
         self.mass.create_task(
@@ -1992,6 +2107,22 @@ class SendspinPlayer(SendspinBasePlayer):
             task_id=f"sendspin_beat_rebase_{self.protocol_id}",
             abort_existing=True,
         )
+        # The position published at the play or seek command predates the audio.
+        self._schedule_position_republish()
+
+    def on_first_audio_heard(self) -> None:
+        """Re-publish the position once a new stream's first audio is heard."""
+        if self.synced_to is not None:
+            return
+        # The correction is smaller than a position jump, so nothing re-bases the queue on
+        # it by itself. The queue belongs to the player this protocol is attached to, whose
+        # state only follows on a deferred update: bring it up to date first.
+        if (player := self.player) is not None:
+            player.update_state(force_update=True)
+            self.mass.players.on_player_position_jumped(player)
+        # What was published at the play or seek command predates the audio, and the
+        # queue may only now place the track in the flow stream.
+        self._schedule_position_republish()
 
     def on_queue_updated(self, queue_id: str) -> None:
         """Push the repeat and shuffle state of the queue this player is playing."""
@@ -2068,6 +2199,9 @@ class SendspinPlayer(SendspinBasePlayer):
         track_progress = metadata.track_progress
         if track_progress is None:
             return
+        metadata, timestamp_us = self._timeline_anchored(
+            metadata, queue, queue_item, is_playing=is_playing
+        )
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2081,8 +2215,10 @@ class SendspinPlayer(SendspinBasePlayer):
                     int(current_media.duration * 1000) if current_media.duration else None
                 )
             if (metadata_role := self._metadata_role) is not None:
-                metadata_role.set_metadata(metadata)
+                metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
                 self._published_item = (current_media.uri, current_media.queue_item_id)
+                self._published_metadata = metadata
+                self._published_effective_us = timestamp_us
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2199,6 +2335,19 @@ class SendspinPlayer(SendspinBasePlayer):
             self._stop_taking_volume_reports = None
             stop()
 
+    def ride_on(self, underlying_protocol_id: str) -> None:
+        """
+        Make this client the bridge of another protocol of its device.
+
+        A static delay the user set belongs to the protocol that carries the output: once
+        another protocol carries it, the delay set for the protocol before is put aside, and
+        the one set while the new protocol carried it before is back.
+
+        :param underlying_protocol_id: Id of the protocol the bridge rides on.
+        """
+        super().ride_on(underlying_protocol_id)
+        hand_static_delay_over(self.mass, self.protocol_id, underlying_protocol_id)
+
     async def on_attach(self, player: Player) -> None:
         """Follow the client, from the volume, mute and controls it declares now."""
         await super().on_attach(player)
@@ -2218,9 +2367,13 @@ class SendspinPlayer(SendspinBasePlayer):
         self.stop_taking_volume_reports()
         await self.playback_session.close()
         await super().on_detach()
-        if self.underlying_protocol_id and not self.mass.players.wants_protocol(self.protocol_id):
-            # the user switched this output off: the bridge it rides on goes with it
-            self.mass.create_task(evaluate_bridge_of(self.mass, self.underlying_protocol_id))
+        if (underlying_id := self.underlying_protocol_id) and not (
+            self.mass.players.wants_protocol(self.protocol_id)
+            and self.mass.config.is_protocol_switched_on(underlying_id)
+        ):
+            # this output was switched off: the bridge it rides on goes with it
+            # the protocol it rides on was switched off: another bridge may take the device
+            self.mass.create_task(evaluate_bridge_of(self.mass, underlying_id))
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
@@ -2358,10 +2511,21 @@ class SendspinPlayer(SendspinBasePlayer):
         # Ignore stale events from a group we no longer belong to.
         if group is not self.api.group:
             return
-        followers = [c.client_id for c in group.clients if c.client_id != self.protocol_id]
-        is_leader = _group_leader_id(group.clients) == self.protocol_id
+        provider = cast("SendspinProvider", self.provider)
+        members = _member_clients(provider, group.clients)
+        followers = [c.client_id for c in members if c.client_id != self.protocol_id]
+        is_leader = _group_leader_id(members) == self.protocol_id
         desired_group_members = [self.protocol_id, *followers] if is_leader else []
-        desired_session_members = followers if is_leader else []
+        # the speakers of a multi-channel player play for it, which renders nothing itself
+        desired_session_members = (
+            [
+                c.client_id
+                for c in group.clients
+                if c.client_id != self.protocol_id and not provider.is_silent_client(c.client_id)
+            ]
+            if is_leader
+            else []
+        )
         if self._attr_group_members != desired_group_members:
             self._attr_group_members = desired_group_members
             self.update_state()
@@ -2473,7 +2637,9 @@ class SendspinPlayer(SendspinBasePlayer):
         )
         if config_value == SENDSPIN_FORMAT_AUTOMATIC:
             # Automatic mode: follow the session sample rate, else let the client decide.
-            player_role.set_preferred_format(*self._session_format(player_role))
+            player_role.set_preferred_format(
+                *self._session_format(player_role, self._session_sample_rate)
+            )
             return
 
         parsed = option_value_to_format(config_value)
@@ -2494,21 +2660,46 @@ class SendspinPlayer(SendspinBasePlayer):
                 self.display_name,
             )
 
+    def _played_session_format(
+        self, player_role: PlayerRoleProtocol, session_sample_rate: int
+    ) -> tuple[SendspinAudioFormat, AudioCodec] | None:
+        """
+        Return the format and codec a client plays in a session at a sample rate.
+
+        :param player_role: The player role of the client.
+        :param session_sample_rate: The sample rate of the session.
+        :return: The format and codec, or None for a client that lists no format.
+        """
+        audio_format, codec = self._session_format(player_role, session_sample_rate)
+        if audio_format is not None and codec is not None:
+            return audio_format, codec
+        if (default := self._default_format(player_role)) is None:
+            return None
+        return (
+            SendspinAudioFormat(
+                sample_rate=default.sample_rate,
+                bit_depth=default.bit_depth,
+                channels=default.channels,
+            ),
+            default.codec,
+        )
+
     def _session_format(
-        self, player_role: PlayerRoleProtocol
+        self, player_role: PlayerRoleProtocol, session_sample_rate: int | None
     ) -> tuple[SendspinAudioFormat | None, AudioCodec | None]:
         """
-        Return the client's format for the session sample rate, or (None, None) for its default.
+        Return the client's format for a session sample rate, or (None, None) for its default.
 
         Only formats in the codec of the client's own top choice are considered.
 
         :param player_role: The player role of this client.
+        :param session_sample_rate: The sample rate the session follows, None for none.
         """
         formats = self._top_codec_formats(player_role)
-        if not formats or self._session_sample_rate in (None, formats[0].sample_rate):
+        if not formats or session_sample_rate in (None, formats[0].sample_rate):
             return None, None
         default = formats[0]
-        candidates = [fmt for fmt in formats if fmt.sample_rate == self._session_sample_rate]
+        candidates = [fmt for fmt in formats if fmt.sample_rate == session_sample_rate]
         if not candidates:
             return None, None
         best = max(candidates, key=lambda fmt: (fmt.channels == default.channels, fmt.bit_depth))
@@ -2516,6 +2707,40 @@ class SendspinPlayer(SendspinBasePlayer):
             sample_rate=best.sample_rate, bit_depth=best.bit_depth, channels=best.channels
         )
         return audio_format, best.codec
+
+    def _default_format(self, player_role: PlayerRoleProtocol) -> SupportedAudioFormat | None:
+        """
+        Return the format the client plays while the server sets none.
+
+        :param player_role: The player role of this client.
+        """
+        formats = player_role.get_supported_formats() or []
+        # the player role picks the format the client asks for before its first choice
+        requested = self._requested_format(player_role)
+        return next(
+            (fmt for fmt in formats if requested is not None and requested.matches(fmt)),
+            formats[0] if formats else None,
+        )
+
+    def _requested_format(self, player_role: PlayerRoleProtocol) -> SupportedAudioFormat | None:
+        """
+        Return the format the client asks for in its client/state, None without one.
+
+        :param player_role: The player role of this client.
+        """
+        if not isinstance(player_role, PlayerV1Role):
+            return None
+        # the player role keeps this format to itself
+        try:
+            return player_role._client_format
+        except AttributeError:
+            if not SendspinPlayer._requested_format_unreadable:
+                SendspinPlayer._requested_format_unreadable = True
+                self.logger.warning(
+                    "Cannot read the format Sendspin clients ask for, the sample rate of "
+                    "a group's next session is predicted from their first choice"
+                )
+            return None
 
     @staticmethod
     def _top_codec_formats(player_role: PlayerRoleProtocol) -> list[SupportedAudioFormat]:
@@ -2672,6 +2897,13 @@ class SendspinPlayer(SendspinBasePlayer):
             self.logger.debug("Skipping undecodable artwork: %s", err)
             return None
 
+    def _metadata_update_pending(self) -> bool:
+        """Return whether the metadata last published is still scheduled to take effect."""
+        if self._published_effective_us is None:
+            return False
+        provider = cast("SendspinProvider", self.provider)
+        return self._published_effective_us > provider.server_api.clock.now_us()
+
     def _metadata_publish_allowed(self, generation: int) -> bool:
         """Return whether a metadata task still owns the current snapshot."""
         return generation == self._metadata_generation and not self._content_takeover_pending
@@ -2733,6 +2965,8 @@ class SendspinPlayer(SendspinBasePlayer):
         self.last_sent_artwork_url = None
         self.last_sent_artist_artwork_url = None
         self._published_item = None
+        self._published_metadata = None
+        self._published_effective_us = None
         self._last_beat_queue_item_id = None
         self._last_beat_anchor_us = None
 
@@ -2828,6 +3062,23 @@ class SendspinPlayer(SendspinBasePlayer):
         up to the crossfade duration. Exact handling needs a raw-seek field on
         the flow log entry.
         """
+        if (
+            start := SendspinPlayer._flow_track_start(pq_data, queue_item, flow_position_s)
+        ) is None:
+            return None
+        track_flow_start_s, file_seek_s = start
+        return int((track_flow_start_s - file_seek_s) * 1_000_000)
+
+    @staticmethod
+    def _flow_track_start(
+        pq_data: PlayerQueueData | None, queue_item: QueueItem, flow_position_s: float
+    ) -> tuple[float, float] | None:
+        """
+        Return where the current track starts in the flow stream, and its file seek position.
+
+        The start is stream-time (the flow log counts streamed seconds), the seek media-time.
+        See `_flow_track_offset_us` for which pass of a repeated track is taken.
+        """
         if pq_data is None or queue_item.streamdetails is None:
             return None
         log = pq_data.flow_mode_stream_log
@@ -2845,7 +3096,151 @@ class SendspinPlayer(SendspinBasePlayer):
         file_seek_s = log[match_index].seek_position
         if file_seek_s is None:
             file_seek_s = float(queue_item.streamdetails.seek_position or 0)
-        return int((track_flow_start_s - file_seek_s) * 1_000_000)
+        return track_flow_start_s, file_seek_s
+
+    def _timeline_anchored(
+        self,
+        metadata: Metadata,
+        queue: PlayerQueue | None,
+        queue_item: QueueItem | None,
+        *,
+        is_playing: bool,
+    ) -> tuple[Metadata, int | None]:
+        """
+        Return the metadata with its position taken from the flow stream's timeline.
+
+        The queue's position counts from the play or seek command, before the audio was even
+        prepared; the timeline knows when the track is heard. Also returns the server-clock
+        time the metadata takes effect at: when the track isn't audible yet, then.
+        Unchanged (and None) while the timeline doesn't place the track.
+
+        :param metadata: Metadata with the queue's position.
+        :param queue: The queue the track plays from.
+        :param queue_item: The track playing now.
+        :param is_playing: Whether the player is playing.
+        """
+        if not is_playing or queue_item is None:
+            return metadata, None
+        if queue_item.streamdetails is not None and queue_item.streamdetails.stream_metadata:
+            # A radio station that reports each song: the position is the song's, not the
+            # time since the station started.
+            return metadata, None
+        provider = cast("SendspinProvider", self.provider)
+        now_us = provider.server_api.clock.now_us()
+        if (start := self._timeline_track_start_us(queue, queue_item, now_us)) is None:
+            return metadata, None
+        track_start_us, file_seek_s = start
+        seek_ms = int(file_seek_s * 1000)
+        if track_start_us > now_us:
+            return replace(metadata, track_progress=seek_ms), track_start_us
+        # The timeline runs in stream-time; the position is media-time, like the queue's.
+        speed = float(queue_item.extra_attributes.get("playback_speed") or 1.0)
+        progress_ms = seek_ms + int((now_us - track_start_us) * speed) // 1000
+        if metadata.track_duration:
+            progress_ms = min(progress_ms, metadata.track_duration)
+        return replace(metadata, track_progress=progress_ms), None
+
+    def _timeline_track_anchor_us(
+        self, queue: PlayerQueue | None, queue_item: QueueItem, now_us: int
+    ) -> int | None:
+        """
+        Return the server-clock time at which the current track's file position 0 plays.
+
+        Taken from the flow stream's audio timeline, so it matches what players hear.
+        None until the first chunk commits, or while the flow log hasn't recorded the track.
+
+        :param queue: The queue the track plays from.
+        :param queue_item: The track playing now.
+        :param now_us: The server clock now.
+        """
+        if (start := self._timeline_track_start_us(queue, queue_item, now_us)) is None:
+            return None
+        track_start_us, file_seek_s = start
+        return track_start_us - int(file_seek_s * 1_000_000)
+
+    def _timeline_track_start_us(
+        self, queue: PlayerQueue | None, queue_item: QueueItem, now_us: int
+    ) -> tuple[int, float] | None:
+        """
+        Return the server-clock time the current track's audio starts, and its seek position.
+
+        None until the first chunk commits, or while the flow log hasn't recorded the track.
+
+        :param queue: The queue the track plays from.
+        :param queue_item: The track playing now.
+        :param now_us: The server clock now.
+        """
+        timeline_start_us = self.playback_session.flow_track_anchor_us(0)
+        if timeline_start_us is None:
+            return None
+        pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
+        start = self._flow_track_start(
+            pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
+        )
+        if start is None:
+            return None
+        track_flow_start_s, file_seek_s = start
+        return timeline_start_us + int(track_flow_start_s * 1_000_000), file_seek_s
+
+    def _schedule_position_republish(self) -> None:
+        """Re-publish the position from the flow stream's timeline, without the artwork."""
+        self.mass.create_task(
+            self._republish_position(),
+            task_id=f"sendspin_position_{self.protocol_id}",
+            abort_existing=True,
+        )
+
+    async def _republish_position(self) -> None:
+        """
+        Move the published position of the current item onto the flow stream's timeline.
+
+        Only the position changed, so the artwork and library lookups of a full metadata
+        send are not redone: at the start of a stream they compete with the audio, and
+        aborting a send that is still decoding artwork wastes that work. While the current
+        item is not published yet, the full send in flight (or a new one) places it.
+
+        Built from what this player published rather than from the role's metadata, which
+        is only what is in effect now: a new track scheduled for when it is heard would
+        otherwise be replaced by the previous track's metadata.
+        """
+        media = self._player_media
+        metadata_role = self._metadata_role
+        if media is None or metadata_role is None:
+            return
+        published = self._published_metadata
+        if published is None or (media.uri, media.queue_item_id) != self._published_item:
+            # Joins a send already in flight instead of aborting it.
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.protocol_id}",
+            )
+            return
+        generation = self._metadata_generation
+        queue: PlayerQueue | None = None
+        queue_item: QueueItem | None = None
+        if media.source_id and media.queue_item_id:
+            queue = self.mass.player_queues.get(media.source_id)
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        # Drop the stored timestamp: the position from the timeline counts as of now.
+        base = replace(published, timestamp_us=None)
+        metadata, timestamp_us = self._timeline_anchored(
+            base,
+            queue,
+            queue_item,
+            is_playing=self._player_playing,
+        )
+        if metadata is base:
+            # The timeline doesn't place the track (yet): what was published stands.
+            return
+        async with self._metadata_lock:
+            if (
+                not self._metadata_publish_allowed(generation)
+                or (media.uri, media.queue_item_id) != self._published_item
+            ):
+                return
+            metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
+            self._published_metadata = metadata
+            self._published_effective_us = timestamp_us
 
     async def _send_beat_schedule(
         self,
@@ -2886,15 +3281,7 @@ class SendspinPlayer(SendspinBasePlayer):
         # Anchor beats to the current track's spot in the flow stream's audio
         # timeline. Falls back to the progress-derived anchor until the first
         # chunk commits or while the flow log hasn't recorded this track yet.
-        anchor_us: int | None = None
-        pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
-        timeline_start_us = self.playback_session.flow_track_anchor_us(0)
-        if timeline_start_us is not None:
-            offset_us = self._flow_track_offset_us(
-                pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
-            )
-            if offset_us is not None:
-                anchor_us = timeline_start_us + offset_us
+        anchor_us = self._timeline_track_anchor_us(queue, queue_item, now_us)
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
         # Re-push only on track change, seek or timeline rebase (anchor jumps beyond natural drift).
@@ -3014,7 +3401,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
 
 class SendspinVisualizerPlayer(SendspinBasePlayer):
-    """A non-audio Sendspin player for visualizer/lighting devices."""
+    """A non-audio Sendspin player for display, visualizer, lighting and controller devices."""
 
     _attr_type = PlayerType.VISUALIZER
     # keep in line with SESSION_ONLY_DEFAULTS in controllers/config/player_split.py
@@ -3144,7 +3531,7 @@ class SendspinSourcePlayer(SendspinBasePlayer):
 
     Renders nothing and is never a playback or grouping target. It is listed as an
     audio input so its pairing, enabling and line-in autostart settings are easy to
-    reach. The sendspin_source plugin exposes the audio itself.
+    reach. The Sendspin provider exposes the audio itself, as a line-in source.
     """
 
     _attr_type = PlayerType.SOURCE

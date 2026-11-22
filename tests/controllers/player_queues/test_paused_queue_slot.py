@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -205,7 +206,11 @@ class _Rig:
         assert item.streamdetails is not None
         item.streamdetails.queue_session_id = self.queues._queue_data[item.queue_id].session_id
         return await AudioBuffer.get_buffer(
-            self.mass, item.streamdetails, wait_ready=True, source_wait_timeout=0
+            self.mass,
+            item.streamdetails,
+            wait_ready=True,
+            source_wait_timeout=0,
+            on_created=partial(self.queues.register_audio_buffer, item),
         )
 
     @contextlib.asynccontextmanager
@@ -409,6 +414,136 @@ async def test_a_paused_realtime_holder_is_taken_over_rather_than_refused(rig: _
     await buffer.clear()
 
 
+async def test_a_paused_holder_without_audio_yet_is_taken_over_once_it_has_audio(
+    rig: _Rig,
+) -> None:
+    """A start that finds a paused queue's source on its way in takes the slot over as well."""
+    first_audio = asyncio.Event()
+
+    async def _slow_to_deliver(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        await first_audio.wait()
+        async for chunk in _endless_source():
+            yield chunk
+
+    rig.audio._get_media_stream = _slow_to_deliver  # type: ignore[method-assign]
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED, realtime=True)
+    filling = asyncio.create_task(rig.fill(paused_item))
+    while not rig.provider.stream_slot_holders:
+        await asyncio.sleep(0)
+    rig.audio._get_media_stream = _endless_source  # type: ignore[method-assign]
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    starting = asyncio.create_task(
+        rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=30)
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not starting.done()
+    first_audio.set()
+    paused_buffer = await filling
+    buffer = await asyncio.wait_for(starting, 5)
+
+    assert buffer is not None
+    assert buffer.is_buffering
+    rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
+    assert paused_buffer.cancelled
+    await buffer.clear()
+
+
+async def test_a_paused_queue_that_starts_a_track_is_not_stopped_by_a_start_that_waits(
+    rig: _Rig,
+) -> None:
+    """A start that waits behind a paused queue's own new track is refused, not handed the slot."""
+    first_audio = asyncio.Event()
+
+    async def _slow_to_deliver(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        await first_audio.wait()
+        async for chunk in _endless_source():
+            yield chunk
+
+    rig.audio._get_media_stream = _slow_to_deliver  # type: ignore[method-assign]
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED, realtime=True)
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    async def _load(item: QueueItem, **_kwargs: Any) -> None:
+        await rig.fill(item)
+
+    @contextlib.asynccontextmanager
+    async def _slow_confirmation(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
+        # a slow speaker reports the pause until the wait for it to play has ended
+        yield
+        await asyncio.sleep(0.2)
+
+    rig.queues._load_item = _load  # type: ignore[method-assign,assignment]
+    rig.queues._repin_sleep_timer = MagicMock()  # type: ignore[method-assign]
+    rig.queues.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
+    rig.mass.players.wait_for_player_update = _slow_confirmation
+    rig.mass.players.play_media = AsyncMock()
+    playing = asyncio.create_task(rig.queues._play_index(PAUSED_QUEUE, 0, 0, False))
+    while not rig.provider.stream_slot_holders:
+        await asyncio.sleep(0)
+    rig.audio._get_media_stream = _endless_source  # type: ignore[method-assign]
+    starting = asyncio.create_task(
+        rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=30)
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    first_audio.set()
+
+    with pytest.raises(ProviderStreamHeldError):
+        await asyncio.wait_for(starting, 5)
+    await playing
+    rig.stop_device.assert_not_awaited()
+    assert paused_item.streamdetails is not None
+    paused_buffer = paused_item.streamdetails.buffer
+    assert paused_buffer is not None
+    assert paused_buffer.is_buffering
+    await paused_buffer.clear()
+
+
+async def test_a_paused_queue_that_rebuilds_its_upcoming_tracks_hands_its_slot_over(
+    rig: _Rig,
+) -> None:
+    """A paused dynamic queue that refills its upcoming tracks starts nothing, so it is paused."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED, realtime=True)
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+    paused_buffer = await rig.fill(paused_item)
+    queue_data = rig.queues._queue_data[PAUSED_QUEUE]
+    queue_data.queue.is_dynamic = True
+    filling = asyncio.Event()
+    filled = asyncio.Event()
+
+    async def _fill_pool(*_args: Any, **_kwargs: Any) -> list[Any]:
+        filling.set()
+        await filled.wait()
+        return [paused_item.media_item]
+
+    rig.queues._managed_pool = SimpleNamespace(fill=_fill_pool)  # type: ignore[assignment]
+    rig.queues.is_smart_shuffle_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+    rig.queues.load = AsyncMock()  # type: ignore[method-assign]
+    rig.queues.update_next_item_on_player = MagicMock()  # type: ignore[method-assign]
+
+    async def _add() -> None:
+        async with rig.playback_lock(PAUSED_QUEUE):
+            await rig.queues._enter_dynamic_mode(PAUSED_QUEUE, QueueOption.ADD)
+
+    adding = asyncio.create_task(_add())
+    await filling.wait()
+    starting = asyncio.create_task(
+        rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=2)
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    filled.set()
+    await adding
+    buffer = await asyncio.wait_for(starting, 5)
+
+    assert buffer is not None
+    rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
+    assert paused_buffer.cancelled
+    await buffer.clear()
+
+
 async def test_an_item_resuming_from_its_own_buffer_is_not_refused(rig: _Rig) -> None:
     """Audio that already arrived needs no slot, so a held one is no reason to refuse it."""
     rig.audio._get_media_stream = _finite_source  # type: ignore[method-assign]
@@ -508,6 +643,49 @@ async def test_only_another_queue_playing_a_realtime_source_holds_its_slot_for_g
     await buffer.clear()
 
 
+async def test_a_realtime_source_without_audio_yet_refuses_nobody(rig: _Rig) -> None:
+    """A source that has its slot and no audio yet can still fail, so a start waits behind it."""
+    first_audio = asyncio.Event()
+
+    async def _slow_to_deliver(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        await first_audio.wait()
+        async for chunk in _endless_source():
+            yield chunk
+
+    rig.audio._get_media_stream = _slow_to_deliver  # type: ignore[method-assign]
+    item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True)
+    assert item.streamdetails is not None
+    buffer = await AudioBuffer.get_buffer(
+        rig.mass,
+        item.streamdetails,
+        wait_ready=False,
+        source_wait_timeout=0,
+        on_created=partial(rig.queues.register_audio_buffer, item),
+    )
+    await asyncio.sleep(0)
+    assert rig.provider.stream_slot_holders == (buffer,)
+
+    rig.queues.refuse_held_stream_slot(INSTANCE, STARTING_QUEUE)
+
+    first_audio.set()
+    await asyncio.wait_for(buffer.ready.wait(), 1)
+    with pytest.raises(ProviderStreamHeldError):
+        rig.queues.refuse_held_stream_slot(INSTANCE, STARTING_QUEUE)
+    await buffer.clear()
+
+
+async def test_a_source_whose_track_left_its_queue_still_holds_its_slot(rig: _Rig) -> None:
+    """The source that holds the slot is known by its queue, also once its track is off the list."""
+    item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True)
+    buffer = await rig.fill(item)
+    rig.queues._queue_data[PAUSED_QUEUE].items = []
+
+    with pytest.raises(ProviderStreamHeldError):
+        rig.queues.refuse_held_stream_slot(INSTANCE, STARTING_QUEUE)
+
+    await buffer.clear()
+
+
 @pytest.mark.parametrize(
     ("asking_queue", "queue_state", "player_state", "active_source", "announcing"),
     [
@@ -558,7 +736,11 @@ async def test_a_paused_queue_still_waiting_for_a_slot_is_no_holder(rig: _Rig) -
     waiting_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
     assert waiting_item.streamdetails is not None
     waiting_buffer = await AudioBuffer.get_buffer(
-        rig.mass, waiting_item.streamdetails, wait_ready=False, source_wait_timeout=None
+        rig.mass,
+        waiting_item.streamdetails,
+        wait_ready=False,
+        source_wait_timeout=None,
+        on_created=partial(rig.queues.register_audio_buffer, waiting_item),
     )
     await asyncio.sleep(0)
     assert waiting_buffer.is_buffering

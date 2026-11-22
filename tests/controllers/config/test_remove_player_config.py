@@ -7,12 +7,13 @@ one whose provider is not loaded), and leaves what belongs to other players alon
 removed protocol takes its config with it, and its player when no other protocol of it is
 left. Removing a player provider removes its protocols that way. A removed player also
 disappears from the per user access filters, which would otherwise keep pointing at
-something that no longer exists.
+something that no longer exists. The provider of each removed protocol is told once its
+config is gone, also when it holds no object for it.
 """
 
 import asyncio
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import PlayerType, ProtocolRole
 
@@ -31,6 +32,7 @@ from music_assistant.controllers.player_queues.constants import (
 from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
+from music_assistant.models.player_provider import PlayerProvider
 from tests.common import MockProtocol, MockProvider, attach_mock
 
 # a player that was first seen after the split, and two protocols of its device
@@ -324,3 +326,50 @@ async def test_remove_player_config_strips_user_player_filter(mass: MusicAssista
     while await _get_user_player_filter(mass, user.user_id) != ["other_player"]:
         assert asyncio.get_running_loop().time() < deadline, "player filter was not cleaned up"
         await asyncio.sleep(0.01)
+
+
+def _add_player_provider(
+    mass: MusicAssistant, instance_id: str, *, fails: bool = False
+) -> list[tuple[str, bool]]:
+    """Add a player provider that records each removed protocol and whether its config is left."""
+    removed: list[tuple[str, bool]] = []
+
+    async def _on_protocol_removed(protocol_id: str) -> None:
+        removed.append((protocol_id, mass.config.get_protocol_record(protocol_id) is not None))
+        if fails:
+            raise RuntimeError
+
+    provider = MagicMock(spec=PlayerProvider)
+    provider.instance_id = provider.domain = instance_id
+    provider.available = True
+    provider.manifest = MagicMock()
+    provider.on_protocol_removed = AsyncMock(side_effect=_on_protocol_removed)
+    mass._providers[instance_id] = provider
+    return removed
+
+
+async def test_remove_tells_the_provider_of_a_protocol_it_holds_no_object_for(
+    mass: MusicAssistant,
+) -> None:
+    """A provider learns of a removed protocol of an offline device, once its config is gone."""
+    removed = _add_player_provider(mass, OTHER_PROVIDER_INSTANCE_ID)
+    _store_player(mass)
+    _store_protocol(mass, NATIVE_ID)
+
+    await mass.players.remove(PLAYER_ID)
+
+    assert removed == [(NATIVE_ID, False)]
+
+
+async def test_a_failing_provider_does_not_fail_the_removal(mass: MusicAssistant) -> None:
+    """The player is gone once providers are told, so one that fails stops nothing."""
+    _add_player_provider(mass, OTHER_PROVIDER_INSTANCE_ID, fails=True)
+    removed = _add_player_provider(mass, "second_provider")
+    _store_player(mass)
+    _store_protocol(mass, NATIVE_ID)
+    _store_protocol(mass, AUDIO_ID, provider="second_provider", role=ProtocolRole.AUDIO)
+
+    await mass.players.remove(PLAYER_ID)
+
+    _assert_player_wiped(mass)
+    assert removed == [(AUDIO_ID, False)]

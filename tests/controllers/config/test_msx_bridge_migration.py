@@ -5,7 +5,12 @@ from typing import Any
 
 import pytest
 
-from music_assistant.constants import CONF_PLAYER_SPLIT_SESSION_ONLY, CONF_PLAYER_SPLIT_TREE
+from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
+    CONF_PLAYER_SPLIT_SESSION_ONLY,
+    CONF_PLAYER_SPLIT_TREE,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
+)
 from music_assistant.controllers.config.migrations import _migrate_msx_bridge_settings, migrate
 from music_assistant.controllers.config.player_split import LEGACY_LINKED_PROTOCOL_IDS
 
@@ -40,6 +45,8 @@ async def test_msx_bridge_retired_settings_migrate(
         # the player configs are split already
         CONF_PLAYER_SPLIT_SESSION_ONLY: True,
         CONF_PLAYER_SPLIT_TREE: True,
+        CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: True,
+        CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: True,
     }
     expected = deepcopy(data)
     expected["providers"]["msx_bridge_instance"]["values"] = {

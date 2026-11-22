@@ -280,7 +280,7 @@ class _SourceConsumingFFMpeg(_FakeFFMpeg):
         try:
             async for chunk in self.audio_input:
                 yield chunk
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - records any source failure like the real feeder
             self.stdin_feeder_exception = err
 
 

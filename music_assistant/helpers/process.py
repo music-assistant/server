@@ -468,8 +468,12 @@ class AsyncProcess:
         stderr_left_to_reader = False
         # if we have a stderr task active, allow it to finish
         if self._stderr_reader_task:
+            # a cancellation that cut the stdout drain short can leave the process blocked
+            # on its output, where this reader would wait in vain for it to exit: the
+            # reader is then stopped right away, and the reap below reads both pipes
+            release_timeout = STREAM_RELEASE_TIMEOUT if cancelled is None else 0
             with suppress(TimeoutError, asyncio.CancelledError):
-                await asyncio.wait_for(self._stderr_reader_task, STREAM_RELEASE_TIMEOUT)
+                await asyncio.wait_for(self._stderr_reader_task, release_timeout)
         elif self.proc.stderr and not self.proc.stderr.at_eof():
             stderr_left_to_reader = not await self._acquire_stream_lock(self._stderr_lock)
             if not stderr_left_to_reader:
@@ -579,7 +583,7 @@ class AsyncProcess:
             await asyncio.wait_for(asyncio.gather(*drains), 2)
         except TimeoutError:
             pass  # the escalation below takes over
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - cleanup must not abort, the kill below still runs
             self.logger.warning("Failed to drain the pipes of PID %s: %s", pid, err)
 
         # Wait for process to actually terminate
@@ -743,7 +747,7 @@ class AsyncProcess:
             await task
         except asyncio.CancelledError:
             pass  # expected when we cancel the task
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the task can fail in any way, logged here
             # retrieving the failure is what keeps asyncio from reporting it as
             # unhandled once the task is collected, so log it here rather than
             # dropping the only trace of it

@@ -5,7 +5,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Coroutine
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -16,6 +16,8 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerFeature,
+    PlayerType,
+    ProtocolRole,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import PlayerCommandFailed
@@ -44,6 +46,10 @@ from music_assistant.providers.airplay.constants import (
 from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
+from tests.common import use_player_registry
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -107,6 +113,45 @@ async def test_detached_protocol_leaves_the_stream_session_it_plays_in(
 
     session.remove_client.assert_awaited_once_with(airplay_player, reason="player unloaded")
     assert airplay_player.stream is None
+
+
+def test_session_is_that_of_the_running_stream(airplay_player: AirPlayPlayer) -> None:
+    """The player plays in the session of its running stream, and in none once that stopped."""
+    session = MagicMock()
+    airplay_player.stream = MagicMock(running=True, session=session)
+    running = airplay_player.session
+    airplay_player.stream.running = False
+    stopped = airplay_player.session
+    airplay_player.stream = None
+    without_stream = airplay_player.session
+
+    assert (running, stopped, without_stream) == (session, None, None)
+
+
+async def test_stop_reaches_the_session_its_stopped_stream_was_part_of(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A stop ends the session the player led, also once its own stream stopped running."""
+    session = MagicMock(stop=AsyncMock())
+    airplay_player.stream = MagicMock(running=False, session=session)
+
+    with patch.object(AirPlayPlayer, "update_state"):
+        await airplay_player.stop()
+
+    session.stop.assert_awaited_once()
+
+
+def test_stream_settings_come_from_the_player_config(airplay_player: AirPlayPlayer) -> None:
+    """The sync offset, password and output plan a stream uses are those of the player itself."""
+    _configure_player(airplay_player, {CONF_SYNC_ADJUST: 120, CONF_PASSWORD: "s3cret"})
+
+    assert airplay_player.sync_offset_ms == -120
+    assert airplay_player.device_password == "s3cret"
+    assert airplay_player.output_plan_protocol_id == "test_player"
+
+    _configure_player(airplay_player, {})
+    assert airplay_player.sync_offset_ms == 0
+    assert airplay_player.device_password is None
 
 
 async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
@@ -792,16 +837,26 @@ def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
 
 
 def _make_hires_player(
+    mass: MusicAssistant,
     manufacturer: str,
     model: str,
     stored_toggle: bool | None = None,
     advertised_audio_formats: int = ALAC_44100_24,
 ) -> AirPlayPlayer:
-    """Create an AirPlay 2 player with the given device identity and listed formats."""
-    provider = MagicMock()
-    _stub_raw_config(provider, {} if stored_toggle is None else {CONF_ENABLE_HIRES: stored_toggle})
+    """Create an AirPlay 2 player on a real config, with the given device identity and formats."""
+    players = use_player_registry(mass)
+    players.on_protocol_config_change = AsyncMock()
+    mass.config.create_protocol_record(
+        "test_player",
+        provider="airplay",
+        player_id=None,
+        role=ProtocolRole.NATIVE,
+        default_name="Test Player",
+    )
+    if stored_toggle is not None:
+        mass.config.set_protocol_value("test_player", CONF_ENABLE_HIRES, stored_toggle)
     player = AirPlayPlayer(
-        provider=provider,
+        provider=MagicMock(mass=mass, instance_id="airplay", domain="airplay"),
         protocol_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
@@ -810,9 +865,9 @@ def _make_hires_player(
         raop_discovery_info=None,
         airplay_discovery_info=None,
     )
+    players._protocols[player.protocol_id] = player
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     player.advertised_audio_formats = advertised_audio_formats
-    _configure_player(player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
     return player
 
 
@@ -825,9 +880,11 @@ def _make_hires_player(
         ("Sonos", "Era 300", True),
     ],
 )
-def test_hires_toggle_default_per_device(manufacturer: str, model: str, expected: bool) -> None:
+async def test_hires_toggle_default_per_device(
+    mass_minimal: MusicAssistant, manufacturer: str, model: str, expected: bool
+) -> None:
     """The 24-bit toggle defaults off for HomePods and on for everything else."""
-    player = _make_hires_player(manufacturer, model)
+    player = _make_hires_player(mass_minimal, manufacturer, model)
     assert player.hires_playback_enabled is expected
 
 
@@ -838,32 +895,66 @@ def test_hires_toggle_default_per_device(manufacturer: str, model: str, expected
         ("Apple", "Apple TV 4K Gen2", False, False),
     ],
 )
-def test_hires_toggle_override(manufacturer: str, model: str, stored: bool, expected: bool) -> None:
+async def test_hires_toggle_override(
+    mass_minimal: MusicAssistant, manufacturer: str, model: str, stored: bool, expected: bool
+) -> None:
     """A user-set 24-bit toggle overrides the per-device default."""
-    player = _make_hires_player(manufacturer, model, stored_toggle=stored)
+    player = _make_hires_player(mass_minimal, manufacturer, model, stored_toggle=stored)
     assert player.hires_playback_enabled is expected
 
 
-def test_hires_toggle_for_a_receiver_listing_no_24_bit() -> None:
+async def test_hires_toggle_for_a_receiver_listing_no_24_bit(mass_minimal: MusicAssistant) -> None:
     """24-bit stays off for a receiver that lists none, until switched on by hand."""
-    player = _make_hires_player("JBL", "MA9100HP", advertised_audio_formats=0)
+    player = _make_hires_player(mass_minimal, "JBL", "MA9100HP", advertised_audio_formats=0)
     assert player.hires_playback_enabled is False
     assert player.supported_sample_rates == [(44100, 16)]
 
-    player = _make_hires_player("JBL", "MA9100HP", stored_toggle=True, advertised_audio_formats=0)
+    player = _make_hires_player(
+        mass_minimal, "JBL", "MA9100HP", stored_toggle=True, advertised_audio_formats=0
+    )
     assert player.hires_playback_enabled is True
     assert player.supported_sample_rates == [(44100, 24), (48000, 24)]
 
 
-def test_hires_toggle_is_stored_with_the_protocol() -> None:
+async def test_hires_toggle_is_stored_with_the_protocol(mass_minimal: MusicAssistant) -> None:
     """The 24-bit toggle is read from the stored config of the AirPlay protocol itself."""
-    player = _make_hires_player("JBL", "MA9100HP", stored_toggle=True, advertised_audio_formats=0)
-    config = cast("MagicMock", player.mass.config)
-    config.get_player_value.reset_mock()
+    player = _make_hires_player(mass_minimal, "JBL", "MA9100HP", advertised_audio_formats=0)
+    # a player config with the id of the protocol is not where the toggle lives
+    mass_minimal.config.create_player_record(
+        player.protocol_id,
+        provider="airplay",
+        player_type=PlayerType.PLAYER,
+        default_name=None,
+        values={CONF_ENABLE_HIRES: True},
+    )
+    assert player.hires_playback_enabled is False
 
+    mass_minimal.config.set_protocol_value(player.protocol_id, CONF_ENABLE_HIRES, True)
     assert player.hires_playback_enabled is True
-    config.get_protocol_value.assert_any_call("test_player", CONF_ENABLE_HIRES)
-    config.get_player_value.assert_not_called()
+
+
+async def test_hires_toggle_switched_off_stays_off_through_a_save_before_the_probe(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A 24-bit toggle switched off stays off through a save made before the formats are known."""
+    player = _make_hires_player(mass_minimal, "Sonos", "Era 300")
+    # switched off while the receiver lists 24-bit, so its default is on
+    await mass_minimal.config.save_protocol_config(player.protocol_id, {CONF_ENABLE_HIRES: False})
+
+    # after a restart the formats are not probed yet, so the default is off: a save of the
+    # whole form sends the toggle at that default, along with another change
+    player.advertised_audio_formats = 0
+    await mass_minimal.config.save_protocol_config(
+        player.protocol_id, {CONF_ENABLE_HIRES: False, CONF_ENCRYPTION: False}
+    )
+
+    # the probe lands
+    player.advertised_audio_formats = ALAC_44100_24
+    assert player.hires_playback_enabled is False
+
+    # a reset follows the probed formats again
+    await mass_minimal.config.save_protocol_config(player.protocol_id, {CONF_ENABLE_HIRES: None})
+    assert player.hires_playback_enabled is True
 
 
 @pytest.mark.asyncio
@@ -1805,6 +1896,45 @@ async def test_rejoin_cancelled_when_player_unavailable() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("switched_off", [False, True])
+async def test_rejoin_gives_up_when_player_switched_off(switched_off: bool) -> None:
+    """
+    A player switched off at its power control after the schedule is not re-joined.
+
+    Its protocol still reads available: a device without power says no goodbye.
+    """
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+
+    async def set_members(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        assert player_ids_to_add == [player.protocol_id]
+        assert player_ids_to_remove is None
+        _attach_running_session(player, [leader, player])
+
+    leader.set_members = AsyncMock(side_effect=set_members)  # type: ignore[method-assign]
+    visible_player = MagicMock(offline_by_power_control=False)
+    player._player = visible_player
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    # the later long delays prove the loop returns on the first pass
+    with patch(_NO_DELAYS, (0, 60, 60)):
+        player.schedule_group_rejoin(["leader"])
+        rejoin_task = player._rejoin_task
+        assert rejoin_task is not None
+        visible_player.offline_by_power_control = switched_off
+        await asyncio.wait_for(rejoin_task, timeout=5)
+
+    assert leader.set_members.await_count == (0 if switched_off else 1)
+
+
+@pytest.mark.asyncio
 async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
     """A player the user grouped elsewhere meanwhile is left alone."""
     player = _make_idle_player()
@@ -1999,6 +2129,26 @@ async def test_schedule_and_cancel_group_rejoin() -> None:
         assert player._rejoin_task is None
         await asyncio.sleep(0)
         assert second_task.cancelled()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("switched_off", [False, True])
+async def test_no_rejoin_scheduled_for_player_switched_off(switched_off: bool) -> None:
+    """A player switched off at its power control gets no re-join scheduled."""
+    player = _make_idle_player()
+    _players_mock(player).get_protocol.return_value = None
+    player._player = MagicMock(offline_by_power_control=switched_off)
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with patch(_NO_DELAYS, (60, 60, 60)):
+        player.schedule_group_rejoin(["leader"])
+
+    rejoin_task = player._rejoin_task
+    assert (rejoin_task is None) is switched_off
+    assert cast("MagicMock", player.logger).info.called is not switched_off
+    player.cancel_group_rejoin()
 
 
 @pytest.mark.asyncio

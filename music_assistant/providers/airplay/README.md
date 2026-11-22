@@ -64,6 +64,7 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 airplay/
 ├── provider.py           # Main provider class, MDNS discovery, DACP server, PTP daemon
 ├── player.py             # AirPlayPlayer implementation
+├── speaker.py            # AirPlaySpeaker: a speaker of a set that plays as one player
 ├── stream_session.py     # Manages streaming sessions for synchronized playback
 ├── pairing.py           # Pairing: HAP via cliairplay --pair-setup, RAOP native
 ├── helpers.py           # Utility functions (binary lookup, TXT serialization, etc.)
@@ -165,6 +166,7 @@ The provider discovers AirPlay devices via two MDNS service types:
    - Display name
    - Manufacturer and model (via `get_model_info()` in [helpers.py](helpers.py))
 3. **Filter checks**:
+   - Keep a speaker of a home theater set as a speaker of that set, never a player (see [Home Theater Sets](#home-theater-sets)); this runs before the next check
    - Skip if the player controller does not want the device (`mass.players.wants_protocol()`: the player is disabled, or its AirPlay output is switched off)
    - Skip ShairportSync instances running on the same Music Assistant server (to avoid conflicts with AirPlay Receiver provider)
 4. **Create the protocol object** → `AirPlayPlayer` instance
@@ -175,6 +177,71 @@ replay of the cached mDNS records (when the provider loads, and on every discove
 players controller, such as when a player is enabled or removed) offers exactly the devices that
 have no attached protocol. A device whose services
 disappear from mDNS is unregistered: its player stays, unavailable, until the device returns.
+
+### Home Theater Sets
+
+An Apple TV can use one HomePod, or a stereo pair of them, as its speakers. It never passes a
+stream on to them, so Music Assistant plays such a set as one player: the protocol of the Apple
+TV is the player of the set (named after the room, multi-channel with a stereo layout for a
+pair), and the HomePods are fed directly as its speakers.
+
+- The set is read from the `_airplay._tcp` records only, and only from the keys that stay the
+  same whoever plays to the devices: the Apple TV carries `psgid`, `psgtp=1` and `pgmid=0`, each
+  HomePod the same `psgid` with `pgmid` above zero (`parse_set_membership()` in
+  [helpers.py](helpers.py)). `gid`, `pgid` and `igl` change with every session.
+- A HomePod named by its set is an `AirPlaySpeaker` ([speaker.py](speaker.py)), which is never
+  registered. It plays with the settings, password, output settings and volume of its set,
+  otherwise with the defaults of its device, and stores nothing itself. Its state, commands and
+  stream loss count for its set. Only a current `_airplay._tcp` record makes it available: after
+  a goodbye of either of its records, a `_raop._tcp` record alone does not. One that goes away
+  while it plays stays a speaker of its set until its stream ends.
+- The speakers start the session of the set. The Apple TV joins it as a late joiner after all of
+  them, as its session resets when its SETUP goes out before the one of a HomePod (measured), and
+  in the background, so the music never waits for it. It is fed silence and sent no volume: it
+  only shows what plays and takes the commands of its remote. When its stream ends it is added
+  once more, and again whenever a speaker of its set joins late; each seek or resume it misses
+  gives it a retry of its own, and one that misses a pause joins again once the music plays
+  again. It never stops or fails its speakers. A speaker that sets up resets the session of the
+  Apple TV, which then reports another sender (measured), so right after a speaker joined that
+  report does not keep it out. Power and wake act on the Apple TV, as for a plain Apple TV,
+  which needs to be paired for this.
+- The player option "Play on HomePods only" leaves the Apple TV out: no session to it, no
+  wake and no power control (the players controller powers a player on before it plays), and
+  no pairing needed.
+- A set plays on all of its speakers or not at all: a speaker whose stream ends, or that stops
+  taking audio, stops its set, or takes it out of the group it plays in. A set that joins a group
+  that plays and one of whose speakers fails to join does so too, without a return to that group,
+  as a start of the set fails as a whole. A speaker that was away or not found yet when its set
+  started is added to the session once it is there; if it cannot join then, the set plays on what
+  is there.
+- When the set protocol is attached and both current records name a speaker, the player that
+  speaker had before is removed (`mass.players.remove_absorbed_players()`).
+- While the player of the Apple TV is disabled, its HomePods are players of their own. Without
+  the Apple TV on the network, the player of the set is unavailable and its HomePods stay
+  speakers.
+- In a Sendspin group the bridge of the set feeds its speakers, each anchored on the Sendspin
+  timeline as a join, and the Apple TV after them as in a session of its own: fed silence, sent no
+  volume, added once more when it fails but not after it ended its session itself (unless a
+  speaker of the set just set up again, which ends it too), and never stopping its speakers. A
+  speaker that comes back while the set plays and cannot join is left out until it comes back
+  again, and a set with no speaker left in the stream stops, as in a native session.
+
+A stereo pair of HomePods without an Apple TV plays as one player the same way: the protocol
+of the first HomePod is the player of the pair (named after the room, multi-channel with a
+stereo layout), the second is its speaker, and both are fed the whole stereo stream.
+
+- Both HomePods carry the id of the pair (`tsid`). Their records tell no roles: while nobody
+  plays to the pair the group id has its idle pair form `<tsid>+<digit>+<id>`, the same on both
+  HomePods once the pair settled, and during a session it is the id of that session.
+- Which HomePod carries the pair is decided once and kept (in memory only): the one whose stored
+  player is the multi-channel room; else, with both records seen, the only one that has a stored
+  player at all (the player of the other is removed once the pair formed, while the room stays
+  stored as the player it was until it attaches again), or otherwise the one with the lowest
+  protocol id. Until then both are left alone.
+- The player the second HomePod had before is only removed when both current records are in
+  their idle pair form, never on a remembered one, and never when that player is a
+  multi-channel room.
+- A HomePod that is in a pair and in the set of an Apple TV belongs to the set of the Apple TV.
 
 ### Protocol ID Format
 
@@ -346,6 +413,24 @@ When adding a player to an already-playing session (`add_client()` in [stream_se
 4. **Content mapped onto the acked instant**: The stream position due at that instant is primed from the ring tail (when it is at or behind the write head) or skipped off the head of the live feed (when it is ahead). There is no catch-up: the binary makes the first post-START stdin byte audible exactly at the acked instant and freezes the anchor there
 
 **Note**: The projection can only push a joiner's anchor later, never earlier — `AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS` is the floor, and the one the anchor rests on whenever no projection arrives or the projection does not clear it. The binary also runs a post-commit clock verification that can pull an anchor forward, but it only arms when the receiver has still not probed by the time it reads the START, and only for an anchor that clears the receiver queue depth plus 500 ms. The deeper defaults in `AIRPLAY_BUFFER_DEPTH_DEFAULTS` ([constants.py](constants.py)) reach past ~2 s of effective depth, where a joiner's anchor no longer clears that — by design: the queue starts releasing frames one depth *before* the anchor, and a line with audio on the wire cannot move.
+
+**Stalled joiners**: A joiner whose receiver never answers the server's PTP clock renders silence, so it is removed from the session again (`remove_stalled_joiner()`) and the group plays on without it. The binary only reports that stall (`state=stalled`) at least five seconds after the join's START, well after the join is in place, so the removal follows the report rather than holding up the join.
+
+### Stalled Source Recovery
+
+When the audio source stalls, every member's binary recovers from the dry feed on its own.
+A realtime member pads silence and shifts its playout later by about its queue depth
+minus 250 ms (reported as `[STATUS] REANCHOR`); a buffered member keeps its timeline.
+So members on different routes or queue depths come out of a stall on different
+timelines.
+
+The session therefore compares the members' shifts once the stall is over
+(`AIRPLAY_STALL_SETTLE_SECONDS` after the last report). When they differ by more than
+`AIRPLAY_STALL_SHIFT_TOLERANCE_MS`, it restarts the playback at the current position
+through the players controller, the same flush and shared start as a seek. Members that
+shifted alike stay in sync and are left alone. A late joiner counts from the group shift
+it was mapped onto. Restarts back off (`AIRPLAY_STALL_RESYNC_HOLDOFF`, doubling), so a
+source that keeps stalling cannot restart the group in a loop.
 
 ## DACP (Digital Audio Control Protocol)
 
@@ -612,7 +697,7 @@ keeps the way they are combined with the other protocols of the device stable.
 ### General
 - **`password`**: Device password, stored encrypted (hidden). It is entered through the player's setup flow, not the settings form: a device that announces password protection without one stored - or that rejects the stored one - is marked as needing setup, which offers the password step again
 - **`ignore_volume`**: Ignore device volume reports (default: false)
-- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead is handled automatically by the binary.
+- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; positive = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead is handled automatically by the binary.
 - **`buffer_depth`**: Advanced per-player override of how much audio the receiver keeps queued ahead of playback, in milliseconds. Defaults to the depth the device's family needs, or Automatic when no family matches; Automatic resolves through that same table at stream time, so it never downgrades an affected device. Receivers whose internal pipeline starves at the shallow default render nothing behind an otherwise healthy session, and deepening their queue is what makes them play. Applies to the AirPlay 2 route only - a player forced to RAOP keeps the binary's own depth. The cost is the delay under Known Issues below
 
 ### Pairing
@@ -685,7 +770,7 @@ AirPlay players can be bridged to the Sendspin protocol, enabling cross-protocol
 
 ### How It Works
 
-When the Sendspin provider is enabled, each AirPlay player is automatically registered as an external Sendspin client:
+When the Sendspin provider is enabled, an AirPlay player is registered as an external Sendspin client while its AirPlay connection carries the Sendspin output of its player (a squeezelite connection of the same speaker comes first; see the bridge section of the Sendspin README):
 
 1. **Registration**: The bridge registers the AirPlay player with the Sendspin server using the device's MAC address as the `client_id`
 2. **Protocol Linking**: The bridge's Sendspin protocol rides on the AirPlay protocol, so the player controller attaches it to the player the AirPlay protocol belongs to
@@ -713,13 +798,15 @@ The bridge consists of:
 
 - **`BridgePlayerRole`**: A custom Sendspin role that receives audio chunks from PushStream
 - **`SendspinAirPlayBridge`**: Manages the bridge for a single AirPlay player
+- **`_BridgeTransport`**: The stream the bridge feeds one AirPlay device: the player itself, or
+  each speaker and the Apple TV of a home theater set, each with its own anchor and writer
 - **`SendspinBridgeManager`**: Manages bridges for all AirPlay players
 
 ### Transport Loss
 
-The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing.
+The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing. The fresh stream starts on the audio the bridge still holds, from where a late joiner starts: the chunks Sendspin delivers run up to its whole buffer ahead of what the group plays, so the chunk that exposed the loss would start it that far ahead. A speaker that comes back into a set that plays starts the same way.
 
-Giving up on a stream — a start that raised, a protocol that never became ready, or a transport that dropped again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of a recovery — takes the speaker out of the Sendspin session. Sendspin reports playback from the group's own state, and the protocol gives a player no way to report that it went silent, so a bridge that merely stopped feeding its speaker would hold the visible player on PLAYING for the rest of the stream. Leaving is what surfaces that silence: a shared group plays on without this speaker, a solo one stops.
+Giving up on a stream — a start that raised, a protocol that never became ready, or a transport that dropped again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of a recovery — takes the speaker out of the Sendspin session; for a set, any of its speakers giving up takes the whole set out, while its Apple TV, and a speaker that came back while the set played and never joined, only leave the stream. Sendspin reports playback from the group's own state, and the protocol gives a player no way to report that it went silent, so a bridge that merely stopped feeding its speaker would hold the visible player on PLAYING for the rest of the stream. Leaving is what surfaces that silence: a shared group plays on without this speaker, a solo one stops.
 
 Leaving a shared group schedules a bounded re-join through the ordinary `SendspinGroup.add_client`, on the delays in `BRIDGE_REJOIN_ATTEMPT_DELAYS`, so a speaker that was only briefly away comes back on its own. A bridge that gives up again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of being put back is left out for good — that is what keeps a device which cannot hold a connection from cycling in and out of the group, since re-joining re-runs the very start that just failed. The attempt is abandoned when the speaker has meanwhile been given a group or a stream of its own, is streaming outside the bridge, or the group it left no longer exists. A speaker missing from discovery is not re-joined but is looked for again on the next attempt, because a device that rebooted stays absent for a while after it starts answering. A solo bridge has nothing to re-join, since leaving is what stops it.
 
@@ -727,7 +814,7 @@ The group re-join recovery in `stream.py` only covers native AirPlay grouping �
 
 ### Stalled Receiver Clocks
 
-A receiver that never answers the server's PTP clock renders silence. The bridge warns and anchors anyway, which follows a native group start rather than a late joiner: a joiner is dropped because the session plays on without it, whereas here dropping would stop the speaker — and a stall is not evidence enough for that. The binary reports it as a diagnosis rather than a verdict (a receiver that begins probing late reports probing and then ready as usual) and re-arms that reporting on every `FLUSH` and `START`, while the server latches the last reading it parsed — `state=cold` lines carry no projection and are dropped. The re-armed report waits on the audio loop's next pass, which the flush ack ordinarily beats, so a warm re-anchor is reading the cycle before it. Nothing is lost by that: a flush leaves the receiver's clock alone, so the projection still describes the same acquisition and the anchor is right to sit past it whether or not that instant has arrived; for a receiver that is not answering, that reading is the only evidence there is. Nor is this the give-up case above: the transport is healthy, so the bridge stays in its Sendspin session and the stall reaches the user through the warning the binary's report raises, which names the device and the UDP ports to check.
+A receiver that never answers the server's PTP clock renders silence. The bridge anchors anyway, which follows a native group start rather than a late joiner: a joiner is dropped because the session plays on without it, whereas here dropping would stop the speaker — and a stall is not evidence enough for that. The binary reports it as a diagnosis rather than a verdict (a receiver that begins probing late reports probing and then ready as usual) and re-arms that reporting on every `FLUSH` and `START`, while the server latches the last reading it parsed — `state=cold` lines carry no projection and are dropped. The re-armed report waits on the audio loop's next pass, which the flush ack ordinarily beats, so a warm re-anchor is reading the cycle before it. Nothing is lost by that: a flush leaves the receiver's clock alone, so the projection still describes the same acquisition and the anchor is right to sit past it whether or not that instant has arrived; for a receiver that is not answering, that reading is the only evidence there is. Nor is this the give-up case above: the transport is healthy, so the bridge stays in its Sendspin session and the stall reaches the user through the warning the binary's report raises once per stream, which names the device and the UDP ports to check.
 
 The binary diagnoses a stall deliberately more slowly than it projects readiness (see `AIRPLAY_CLOCK_READY_TIMEOUT_MS`), so a cold start reads `UNREPORTED` and anchors without a projection; a stall is what a warm re-anchor sees. Either way the receiver has not probed, so the post-commit clock verification described under Late Join Support arms wherever the anchor clears the receiver queue depth, and holds the join's `started` ack until it gives up short of the commanded anchor — bounded by that anchor, and well inside `AIRPLAY_JOIN_START_ACK_TIMEOUT_MS`.
 

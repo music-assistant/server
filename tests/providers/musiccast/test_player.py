@@ -7,9 +7,11 @@ import pytest
 from aiohttp import ClientError
 from music_assistant_models.enums import PlaybackState
 
+from music_assistant.controllers.players.power import _CONTINUES_PLAYBACK
 from music_assistant.helpers.upnp import AVTransport
 from music_assistant.providers.musiccast.constants import CONF_PLAYER_AUTO_ADVANCE
 from music_assistant.providers.musiccast.player import MusicCastPlayer, UpnpUpdateHelper
+from tests.common import bare_player_controller
 
 from .conftest import MusicCastNetwork
 
@@ -147,6 +149,65 @@ async def test_end_of_track_advances_the_queue_of_the_player(network: MusicCastN
     network.mass.player_queues.next.assert_awaited_once_with("pl_living")
 
 
+async def test_end_of_track_advance_switches_no_member_of_a_group_on(
+    network: MusicCastNetwork,
+) -> None:
+    """The advance after an end of track is no start of a group, so it switches nothing on."""
+    player = network.player("A___main")
+    _attach_to_new_player(player)
+    queue = MagicMock(queue_id="pl_living", active=True)
+    queue.current_item.queue_item_id = "item_1"
+    network.mass.player_queues.get.side_effect = {"pl_living": queue}.get
+    network.mass.players = bare_player_controller()
+    seen: list[bool] = []
+
+    async def _next(*_args: object) -> None:
+        seen.append(_CONTINUES_PLAYBACK.get())
+
+    network.mass.player_queues.next = _next
+    player._attr_playback_state = PlaybackState.IDLE
+
+    await player._advance_queue_after_idle("item_1")
+
+    assert seen == [True]
+
+
 def test_a_musiccast_player_gets_the_gapless_burst(network: MusicCastNetwork) -> None:
     """A MusicCast device only plays a track gapless once it holds a whole opening chunk of it."""
     assert network.player("A___main").needs_gapless_burst
+
+
+async def test_inputs_of_the_receiver_are_marked_as_inputs(network: MusicCastNetwork) -> None:
+    """The inputs of a zone are inputs; what the receiver plays itself or links in is not."""
+    player = network.player("A___zone2")
+    player.zone_device.zone_data.input_list = [
+        "hdmi1",
+        "optical",
+        "usb_dac",
+        "audio_cd",
+        "line_cd",
+        "usb",
+        "bluetooth",
+        "spotify",
+        "tuner",
+        "cd",
+        "mc_link",
+        "main_sync",
+    ]
+
+    await player.set_static_attributes()
+
+    assert {x.id: x.is_input for x in player._attr_source_list} == {
+        "hdmi1": True,
+        "optical": True,
+        "usb_dac": True,
+        "audio_cd": True,
+        "line_cd": True,
+        "usb": False,
+        "bluetooth": False,
+        "spotify": False,
+        "tuner": False,
+        "cd": False,
+        "mc_link": False,
+        "main_sync": False,
+    }

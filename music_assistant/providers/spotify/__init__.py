@@ -37,6 +37,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.PLAYLIST_TRACKS_MOVE,
     ProviderFeature.BROWSE,
+    ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,

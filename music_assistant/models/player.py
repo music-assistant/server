@@ -22,7 +22,7 @@ import asyncio
 import builtins
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
 from music_assistant_models.config_entries import ConfigValueType
@@ -33,11 +33,11 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import (
+    ChannelLayout,
     PlaybackState,
     PlayerFeature,
     PlayerType,
     ProtocolRole,
-    ProviderFeature,
     SleepTimerMode,
 )
 from music_assistant_models.player import (
@@ -65,6 +65,7 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
+    CONF_POWER_CONTROL_CUTS_POWER,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_DEFAULTS,
     CONF_UNDERLYING_PLAYER_ID,
@@ -86,7 +87,6 @@ from music_assistant.models.player_state import (
     resolve_media_queue,
     resolve_synced_to,
 )
-from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -95,8 +95,10 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import PlayerConfig
     from music_assistant_models.media_items import AudioSource, MediaItemPalette
     from music_assistant_models.player import PlayerOption, PlayerSoundMode
+    from music_assistant_models.player_control import PlayerControl
 
     from music_assistant import MusicAssistant
+    from music_assistant.controllers.players.audio_sources import AudioSourceSession
 
 # TypeVar for config value type inference
 _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
@@ -266,6 +268,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "player_id": state.player_id,
         "provider": state.provider,
         "type": state.type,
+        "channel_layout": state.channel_layout,
         "name": state.name,
         "available": state.available,
         "playback_state": state.playback_state,
@@ -442,6 +445,7 @@ def _protocol_inputs(protocol: PlayerProtocol, probe_synced_to: bool) -> tuple[A
     device_info = protocol.device_info
     return (
         protocol.type,
+        protocol.channel_layout,
         protocol.private,
         protocol.available,
         protocol.enabled,
@@ -586,8 +590,9 @@ class Player:
         self._active_mass_source_expires_at: float | None = None
         self._sleep_timer_expires_at: float | None = None
         self._sleep_timer_mode: SleepTimerMode | None = None
-        # a power on through the power control that waits for the device to come online
-        self._power_on_in_progress: bool = False
+        # when (time of the event loop) the start-up time of the device ends, after its power
+        # came on at a power control that cuts it
+        self._startup_ends_at: float | None = None
         # when (monotonic) Music Assistant issued a power off the player has not reported yet
         self._power_off_issued_at: float | None = None
         self._stop_called: bool = False
@@ -877,6 +882,11 @@ class Player:
         return self._state.protocols
 
     @property
+    def channel_layout(self) -> ChannelLayout | None:
+        """Return how the speakers of a multi-channel player are laid out, None if not known."""
+        return self._state.channel_layout
+
+    @property
     def corrected_elapsed_time(self) -> float | None:
         """Return the elapsed time of the current media as of now."""
         return self._state.corrected_elapsed_time
@@ -965,7 +975,12 @@ class Player:
         own = self._own_protocol
         player_type = own.type if own is not None else self._config.player_type
         # a player is never a protocol, whatever one of its protocols reports
-        return PlayerType.PLAYER if player_type == PlayerType.PROTOCOL else player_type
+        if player_type == PlayerType.PROTOCOL:
+            return PlayerType.PLAYER
+        # a stereo pair is a multi-channel player
+        if player_type == PlayerType.STEREO_PAIR:
+            return PlayerType.MULTI_CHANNEL
+        return player_type
 
     @property
     def provider_id(self) -> str:
@@ -992,12 +1007,14 @@ class Player:
         That takes a protocol that can render audio: a control protocol alone does not
         count. Neither a device that still needs setup - an unpaired AirPlay receiver, for
         example - nor a disabled player can accept a stream, and neither can a device that
-        is switched off at its power control, whatever its protocols still report.
+        is off or starting up at a power control that cuts its power, whatever its
+        protocols still report.
 
         For the players controller and the models, where a stream or a command goes to the
         device at this instant. Everyone else reads available: a player that is switched off
-        at its power control is available too (see offline_by_power_control), and a command
-        that starts playback on it powers it on first.
+        at a power control that cuts its power is available too (see
+        offline_by_power_control), and a command that starts playback on it powers it on
+        first.
         """
         if not self._config.enabled or self.offline_by_power_control:
             return False
@@ -1007,19 +1024,30 @@ class Player:
         return False
 
     @property
+    def power_control_cuts_power(self) -> bool:
+        """
+        Return if the power control of the player cuts the power of the player itself.
+
+        That takes an external power control and the setting of the player that says so.
+        Never for a group player, which has no device of its own that starts up.
+        """
+        return self._power_cut_control() is not None
+
+    @property
     def offline_by_power_control(self) -> bool:
         """
-        Return if the device is offline because it is switched off at its external power control.
+        Return if the device is off, or starting up, at a power control that cuts its power.
 
-        The protocol that reports for the device tells whether it is there (see
-        device_protocol): another one may read available long after the power was cut.
-
-        Also True while Music Assistant powers it on through that control and waits for it
-        to come online. Such a player is reported to clients as available and powered off,
-        so it can be powered on (or played to) from there, while the device itself is not
-        reachable.
+        It is off while that control reads off, and starting up for its start-up time
+        after the control came on, whatever its protocols report: a protocol may read
+        available long after the power was cut. Such a player is reported to clients as
+        available, so it can be powered on (or played to) from there, while the device
+        itself can not take a command.
         """
-        return self._offline_by_power_control(self._reachable)
+        control = self._power_cut_control()
+        return control is not None and (
+            not control.power_state or self._startup_ends_at is not None
+        )
 
     @property
     def extra_data(self) -> dict[str, Any]:
@@ -1647,20 +1675,25 @@ class Player:
         self.update_state()
 
     @property
-    def power_on_in_progress(self) -> bool:
-        """Return if a power on through the power control waits for the device to come online."""
-        return self._power_on_in_progress
-
-    def set_power_on_in_progress(self, value: bool) -> None:
+    def startup_ends_at(self) -> float | None:
         """
-        Set whether a power on through the power control waits for the device to come online.
+        Return when the start-up time of the player ends, None while it does not start up.
+
+        A time of the event loop. The start-up time runs from the moment the power of the
+        player came on at a power control that cuts it.
+        """
+        return self._startup_ends_at
+
+    def set_startup_ends_at(self, value: float | None) -> None:
+        """
+        Set when the start-up time of the player ends.
 
         May only be called by the PlayerController.
 
-        :param value: True while the power on waits for the device, False once it ended or
-            was called off.
+        :param value: The time of the event loop at which it ends, None once it is over or
+            the power was cut again.
         """
-        self._power_on_in_progress = value
+        self._startup_ends_at = value
         self.mark_state_dirty()
 
     @property
@@ -2102,22 +2135,14 @@ class Player:
         )
         return bool(stored.get(key, default)) if isinstance(stored, dict) else default
 
-    def _offline_by_power_control(self, reachable: bool) -> bool:
-        """
-        Return if the device is offline because it is switched off at its external power control.
-
-        :param reachable: Whether a protocol that renders audio reaches the device.
-        """
-        device = self.device_protocol
-        # the device is there while the protocol that reports for it reaches it, and
-        # there is something to play on
-        is_there = reachable and device is not None and device.available
-        if is_there or self.reported_type == PlayerType.GROUP:
-            return False
+    def _power_cut_control(self) -> PlayerControl | None:
+        """Return the external power control that cuts the power of the player itself, if any."""
+        if self.reported_type == PlayerType.GROUP or not self.mass.config.get_player_value(
+            self.player_id, CONF_POWER_CONTROL_CUTS_POWER, False
+        ):
+            return None
         control = self.mass.players.get_player_control(self._power_control)
-        if control is None or not control.supports_power:
-            return False
-        return not control.power_state or self._power_on_in_progress
+        return control if control is not None and control.supports_power else None
 
     def _missing_provider_reason(self) -> str | None:
         """Return why the player has no protocol at all, when its provider is not installed."""
@@ -2383,6 +2408,7 @@ class Player:
             if own_protocol is not None
             else _absent_protocol_snapshot(self.player_id, self._missing_provider_reason())
         )
+        own.source_list = self._name_inputs_of_other_players(own.source_list)
         peers: dict[str, PeerSnapshot] = {}
         linked, active_protocol, foreign_app = self._collect_protocols(
             peers, probe_synced_to=not own.synced_to
@@ -2399,15 +2425,19 @@ class Player:
         can_group_with: set[str] = set()
         protocol_can_group_with: set[str] = set()
         grouping_locked = own_protocol.grouping_locked if own_protocol else False
+        synced_to = resolve_synced_to(own, linked, peers)
         # a player that is synced or keeps its grouping locked has nothing to group with,
         # which saves looking up all protocols of the providers it can group through
-        if not grouping_locked and resolve_synced_to(own, linked, peers) is None:
+        if not grouping_locked and synced_to is None:
             if own_protocol is not None:
                 can_group_with = self._collect_can_group_with(peers, own_protocol)
             for protocol in self._audio_protocols:
                 protocol_can_group_with |= self._collect_can_group_with(peers, protocol)
         groups = self._collect_groups(peers)
         session = self.mass.players.get_audio_source_session(self.player_id)
+        followed_sessions = self._collect_followed_sessions(groups, synced_to)
+        standing_sources = self._collect_standing_sources()
+        input_sources = self._collect_input_sources()
         source_ids = {self._active_mass_source, own.active_source}
         queues = {
             queue_id: QueueSnapshot(queue=queue)
@@ -2423,6 +2453,7 @@ class Player:
             player_id=self.player_id,
             provider=self.provider_id,
             player_type=self.reported_type,
+            channel_layout=own_protocol.channel_layout if own_protocol else None,
             now=time.time(),
             previous_state=self._state,
             enabled=self._config.enabled,
@@ -2441,7 +2472,7 @@ class Player:
             powered=self._power_control_state(),
             volume_level=self._volume_control_level(),
             volume_muted=self._mute_control_state(),
-            offline_by_power_control=self._offline_by_power_control(reachable),
+            offline_by_power_control=self.offline_by_power_control,
             own=own,
             device_info=self._device_info,
             private=self._protocol_default("private", False),
@@ -2483,9 +2514,23 @@ class Player:
                 and not (session.stream_metadata and session.stream_metadata.image_url)
                 else None
             ),
-            standing_sources=self._collect_standing_sources(),
+            followed_sessions=followed_sessions,
+            followed_source_names={
+                holder_id: self.mass.players.get_audio_source_name(x.source, self.player_id)
+                for holder_id, x in followed_sessions.items()
+            },
+            standing_sources=standing_sources,
+            input_sources=input_sources,
+            source_names=self._source_names(
+                [
+                    *standing_sources,
+                    *input_sources,
+                    *([session.source] if session is not None else []),
+                ]
+            ),
         )
-        # artwork is only looked up for the queue the player takes its media from
+        # stream metadata and artwork are only looked up for the queue the player takes its
+        # media from
         if queues and (media_queue := resolve_media_queue(inputs)):
             self._resolve_artwork(media_queue)
         return inputs
@@ -2577,16 +2622,72 @@ class Player:
         return tuple(groups)
 
     def _collect_standing_sources(self) -> tuple[AudioSource, ...]:
-        """Collect the audio sources plugins bound to the player or report as its inputs."""
+        """Collect the audio sources providers bound to the player."""
         sources: list[AudioSource] = []
-        for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
-            if not isinstance(prov, PluginProvider):
-                continue
+        for prov in self.mass.players.get_audio_source_providers():
             sources += prov.get_player_audio_sources(self.player_id) or ()
+        return tuple(sources)
+
+    def _collect_input_sources(self) -> tuple[AudioSource, ...]:
+        """Collect the audio sources providers report as inputs of the player's own device."""
+        sources: list[AudioSource] = []
+        for prov in self.mass.players.get_audio_source_providers():
             # a device's own inputs may be reported for one of its protocols
             for device_id in {self.player_id, *self._protocols}:
                 sources += prov.get_player_input_sources(device_id)
         return tuple(sources)
+
+    def _collect_followed_sessions(
+        self, groups: Iterable[GroupSnapshot], synced_to: str | None
+    ) -> dict[str, AudioSourceSession]:
+        """
+        Collect the live audio sources playing on the players the player can follow.
+
+        Every group player counts, as a group can hold the group that holds the player.
+        Returned by the id of the player each plays on.
+
+        :param groups: The group players.
+        :param synced_to: Id of the player it is synced to.
+        """
+        sessions: dict[str, AudioSourceSession] = {}
+        for parent_id in {*(group.player_id for group in groups), synced_to}:
+            if (
+                parent_id
+                and parent_id != self.player_id
+                and (session := self.mass.players.get_audio_source_session(parent_id))
+            ):
+                sessions[parent_id] = session
+        return sessions
+
+    def _source_names(self, sources: Iterable[AudioSource]) -> dict[str, str]:
+        """Return the names of the given audio sources as shown on the player, by uri."""
+        return {
+            source.uri: self.mass.players.get_audio_source_name(source, self.player_id)
+            for source in sources
+            if source.uri
+        }
+
+    def _name_inputs_of_other_players(self, sources: list[PlayerSource]) -> list[PlayerSource]:
+        """
+        Return the sources of the device, an input of another player named as shown on this one.
+
+        Such an input names its player by the id the provider knows it by. It is left out when
+        that names no player Music Assistant has, such as a disabled one.
+        """
+        players = self.mass.players
+        named: list[PlayerSource] = []
+        for source in sources:
+            if source.owner_player_id is None:
+                named.append(source)
+            elif owner := players.get_audio_source_owner(source):
+                named.append(
+                    replace(
+                        source,
+                        name=players.get_audio_source_name(source, self.player_id),
+                        owner_player_id=owner.player_id,
+                    )
+                )
+        return named
 
     def _collect_peer(
         self,
@@ -2695,12 +2796,14 @@ class Player:
         )
 
     def _resolve_artwork(self, snapshot: QueueSnapshot) -> None:
-        """Resolve the artwork of the current item of a queue into its snapshot."""
+        """Resolve the stream metadata and artwork of the current item of a queue into its snapshot."""
         if not (current_item := snapshot.queue.current_item):
             return
         # a stream that reports metadata shows its own image, or else that of the item
-        stream_metadata = (
-            current_item.streamdetails.stream_metadata if current_item.streamdetails else None
+        stream_metadata = snapshot.stream_metadata = (
+            self.mass.streams.audio_analysis.shown_stream_metadata(current_item.streamdetails)
+            if current_item.streamdetails
+            else None
         )
         # the image format needs to be 512x512 jpeg for maximum compatibility with players
         if current_item.image and not (stream_metadata and stream_metadata.image_url):

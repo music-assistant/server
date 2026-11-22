@@ -14,7 +14,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.cache import forget_cached, use_cache
 from music_assistant.helpers.external_ids import (
     barcode_to_upc,
     is_valid_barcode,
@@ -67,7 +67,7 @@ class AppleMusicMediaManager:
         limit: int = 5,
     ) -> SearchResults:
         """Perform search on the Apple Music catalog."""
-        endpoint = f"catalog/{self.provider._storefront}/search"
+        endpoint = f"catalog/{self.provider.storefront}/search"
         limit = min(limit, 25)
         searchresult = SearchResults()
         if not media_types:
@@ -135,7 +135,7 @@ class AppleMusicMediaManager:
     @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}"
+        endpoint = f"catalog/{self.provider.storefront}/artists/{prov_artist_id}"
         response = await self.api.get_data(endpoint, extend="editorialNotes")
         return cast("Artist", parse_artist(self.provider, response["data"][0]))
 
@@ -146,7 +146,7 @@ class AppleMusicMediaManager:
             endpoint = f"me/library/albums/{prov_album_id}"
             response = await self.api.get_data(endpoint, include="catalog,artists")
         else:
-            endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}"
+            endpoint = f"catalog/{self.provider.storefront}/albums/{prov_album_id}"
             response = await self.api.get_data(endpoint, include="artists")
         return cast("Album", parse_album(self.provider, response["data"][0]))
 
@@ -157,7 +157,7 @@ class AppleMusicMediaManager:
             endpoint = f"me/library/songs/{prov_track_id}"
             response = await self.api.get_data(endpoint, include="catalog,artists,albums")
         else:
-            endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
+            endpoint = f"catalog/{self.provider.storefront}/songs/{prov_track_id}"
             response = await self.api.get_data(endpoint, include="artists,albums")
         track = parse_track(self.provider, response["data"][0])
         await self.provider.library_manager.mark_purchases_on_sale([(response["data"][0], track)])
@@ -203,7 +203,7 @@ class AppleMusicMediaManager:
         if in_library:
             endpoint = f"me/library/{apple_type}/{prov_item_id}"
         else:
-            endpoint = f"catalog/{self.provider._storefront}/{apple_type}/{prov_item_id}"
+            endpoint = f"catalog/{self.provider.storefront}/{apple_type}/{prov_item_id}"
         response = await self.api.get_data(endpoint, include="catalog")
         item_obj = response["data"][0]
         attributes = item_obj.get("attributes") or {}
@@ -222,7 +222,7 @@ class AppleMusicMediaManager:
         if external_id_type != ExternalID.ISRC:
             return None
 
-        endpoint = f"catalog/{self.provider._storefront}/songs"
+        endpoint = f"catalog/{self.provider.storefront}/songs"
         if not is_valid_isrc(external_id):
             return None
         normalized_isrc = normalize_external_id(ExternalID.ISRC, external_id)
@@ -246,7 +246,7 @@ class AppleMusicMediaManager:
         if external_id_type != ExternalID.BARCODE:
             return None
 
-        endpoint = f"catalog/{self.provider._storefront}/albums"
+        endpoint = f"catalog/{self.provider.storefront}/albums"
         if not is_valid_barcode(external_id):
             return None
         normalized_upc = barcode_to_upc(external_id)
@@ -261,6 +261,11 @@ class AppleMusicMediaManager:
             return cast("Album | None", parse_album(self.provider, response["data"][0]))
         except MediaNotFoundError:
             return None
+
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """Drop the kept pages of a playlist and its change marker, so they are fetched anew."""
+        await forget_cached(self._get_playlist_last_modified, prov_playlist_id)
+        await forget_cached(self._get_playlist_tracks_cached, prov_playlist_id)
 
     async def get_station_tracks(self, station_id: str) -> list[Track]:
         """Fetch the next batch of tracks for a radio station."""
@@ -302,7 +307,7 @@ class AppleMusicMediaManager:
             endpoint = f"me/library/albums/{prov_album_id}/tracks"
             response = await self.api.get_data(endpoint, include="catalog,artists")
         else:
-            endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
+            endpoint = f"catalog/{self.provider.storefront}/albums/{prov_album_id}/tracks"
             response = await self.api.get_data(endpoint, include="artists")
         tracks = []
         listed: list[tuple[dict[str, Any], Track]] = []
@@ -332,7 +337,7 @@ class AppleMusicMediaManager:
     ) -> list[Track]:
         """Fetch and cache tracks for a playlist."""
         if is_catalog_id(prov_playlist_id):
-            endpoint = f"catalog/{self.provider._storefront}/playlists/{prov_playlist_id}/tracks"
+            endpoint = f"catalog/{self.provider.storefront}/playlists/{prov_playlist_id}/tracks"
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}/tracks"
         result: list[Track] = []
@@ -371,7 +376,7 @@ class AppleMusicMediaManager:
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
-        endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/albums"
+        endpoint = f"catalog/{self.provider.storefront}/artists/{prov_artist_id}/albums"
         albums: list[Album] = []
         try:
             async for album in self.api.iter_all_items(endpoint):
@@ -390,7 +395,7 @@ class AppleMusicMediaManager:
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
-        endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/view/top-songs"
+        endpoint = f"catalog/{self.provider.storefront}/artists/{prov_artist_id}/view/top-songs"
         try:
             response = await self.api.get_data(endpoint)
         except MediaNotFoundError:
@@ -421,5 +426,5 @@ class AppleMusicMediaManager:
     def _playlist_endpoint(self, prov_playlist_id: str) -> str:
         """Return the catalog or library endpoint for a playlist."""
         if is_catalog_id(prov_playlist_id):
-            return f"catalog/{self.provider._storefront}/playlists/{prov_playlist_id}"
+            return f"catalog/{self.provider.storefront}/playlists/{prov_playlist_id}"
         return f"me/library/playlists/{prov_playlist_id}"

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 from deezer_python_gql import GraphQLClientAuthError, GraphQLClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
+from music_assistant_models.enums import ArtistType, ConfigEntryType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
@@ -97,6 +97,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
     ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+    ProviderFeature.AUTHOR_AUDIOBOOKS,
 }
 
 CONF_ARL_TOKEN = "arl_token"  # noqa: S105 - config key
@@ -122,6 +123,11 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     def stream_format_supersedes_catalog(self) -> bool:
         """Return True: Deezer's format names do not give the full format."""
         return True
+
+    @property
+    def supported_artist_types(self) -> set[ArtistType]:
+        """Return the artist types: audiobook authors are artists of their own."""
+        return {ArtistType.SINGER, ArtistType.AUTHOR}
 
     @property
     def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
@@ -336,6 +342,10 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         """Get top tracks of an artist."""
         return await self.media_manager.get_artist_toptracks(prov_artist_id)
 
+    async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """Get audiobooks by an author."""
+        return await self.media_manager.get_author_audiobooks(prov_artist_id)
+
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes for a given podcast."""
         async for ep in self.media_manager.get_podcast_episodes(prov_podcast_id):
@@ -376,6 +386,10 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         await self.media_manager.remove_playlist_tracks(prov_playlist_id, positions_to_remove)
+
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """Drop what is kept of a playlist's tracks, so the next read fetches them anew."""
+        await self.browse_manager.forget_playlist_tracks(prov_playlist_id)
 
     async def move_playlist_track(
         self, prov_playlist_id: str, from_position: int, to_position: int

@@ -12,10 +12,24 @@ from music_assistant_models.errors import PlayerCommandFailed
 from pywiim import WiiMError
 from wiim.exceptions import WiimException
 
-from .constants import BACKEND_GENERIC, BACKEND_OFFICIAL
-from .helpers import linkplay_group_compatible, match_slave_uuid_to_player_id
+from .constants import (
+    BACKEND_GENERIC,
+    BACKEND_OFFICIAL,
+    CACHE_CATEGORY_NATIVE_SETS,
+    NATIVE_SET_CACHE_EXPIRATION,
+)
+from .helpers import (
+    linkplay_group_compatible,
+    linkplay_slave_uuid_to_player_id,
+    linkplay_slave_uuid_to_udn,
+    match_slave_uuid_to_player_id,
+    native_set_channel,
+    native_set_layout,
+    plays_set_channel,
+)
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import ChannelLayout
     from pywiim import WiiMClient
     from pywiim.models import DeviceInfo
 
@@ -74,6 +88,12 @@ class NativeGroupCoordinator:
         self._command_lock = asyncio.Lock()
         # leader player_id -> raw slave uuids from its last successful topology read
         self._raw_slaves: dict[str, list[str]] = {}
+        # leader player_id -> slave uuid -> set channel of the slaves of its native set (a
+        # stereo pair made in the app), which are part of the leader's player and no group
+        # members of any leader
+        self._set_slaves: dict[str, dict[str, int]] = {}
+        # leader player_id -> set slaves whose players were reported for removal in this run
+        self._reported_set_slaves: dict[str, set[str]] = {}
         self._refreshed_at: dict[str, float] = {}
         # per-leader lock so overlapping refreshes cannot apply out of order
         self._refresh_locks: dict[str, asyncio.Lock] = {}
@@ -83,6 +103,7 @@ class NativeGroupCoordinator:
         self._members: dict[str, list[str]] = {}
         self._reverse: dict[str, str] = {}
         self._role: dict[str, NativeGroupRole] = {}
+        self._layout: dict[str, ChannelLayout] = {}
 
     # --- Topology queries (lock-free, read the last rebuilt snapshot) ---
 
@@ -101,6 +122,24 @@ class NativeGroupCoordinator:
     def leader_of(self, player_id: str) -> str | None:
         """Return the leader a follower belongs to, or None when not a follower."""
         return self._reverse.get(player_id)
+
+    def channel_layout_of(self, player_id: str) -> ChannelLayout | None:
+        """Return the channel layout of the native set a player leads, None when it leads none."""
+        return self._layout.get(player_id)
+
+    def is_native_set_member(self, player_id: str) -> bool:
+        """
+        Return whether a device belongs to the native set of a leader.
+
+        Such a device is part of its leader's player, so it is no player of its own.
+
+        :param player_id: The protocol id of the device.
+        """
+        return any(
+            match_slave_uuid_to_player_id(uuid, (player_id,)) is not None
+            for slaves in self._set_slaves.values()
+            for uuid in slaves
+        )
 
     def is_unknown_leader_follower(self, player_id: str) -> bool:
         """
@@ -140,10 +179,17 @@ class NativeGroupCoordinator:
             if peer.native_available
             and peer.protocol_id != player.protocol_id
             and not self._is_unknown_leader_follower(peer.protocol_id)
+            and not self.is_native_set_member(peer.protocol_id)
             and self._offerable_pair(player, peer)
         }
 
     # --- Topology feeders ---
+
+    async def load_native_sets(self) -> None:
+        """Restore the native sets known before a restart."""
+        self._set_slaves = await self._mass.cache.get_all(
+            provider=self._provider.instance_id, category=CACHE_CATEGORY_NATIVE_SETS
+        )
 
     def set_self_role(self, player_id: str, is_follower: bool) -> bool:
         """
@@ -218,16 +264,15 @@ class NativeGroupCoordinator:
             observed_at = time.monotonic()
             try:
                 info = await client.get_device_group_info()
-                if info.role == "slave":
-                    is_follower, raw = True, []
-                else:
+                slaves_info: list[dict[str, Any]] = []
+                is_follower = info.role == "slave"
+                if not is_follower:
                     # a non-slave is a leader or solo, but get_device_group_info both
                     # swallows a failed slave-list read (reporting solo) and can report a
                     # master with empty slave uuids when it derived them from status ip
                     # strings; read the authoritative getSlaveList so members resolve and a
                     # transient failure retains the cached topology (handled below).
-                    is_follower = False
-                    raw = self._normalize_slave_uuids(await client.get_slaves_info())
+                    slaves_info = await client.get_slaves_info()
             except WiiMError as err:
                 self._provider.logger.debug(
                     "Failed to read group state for %s: %s", player.protocol_id, err
@@ -241,9 +286,33 @@ class NativeGroupCoordinator:
             # official backend builds one per call) does not re-probe the device
             player.store_command_capabilities(client.capabilities)
             self.set_self_role(player.protocol_id, is_follower)
-            self.set_leader_slaves(player.protocol_id, raw, observed_at=observed_at)
+            self.set_leader_slaves(
+                player.protocol_id,
+                self._normalize_slave_uuids(slaves_info),
+                observed_at=observed_at,
+            )
+            if not is_follower:
+                # a follower reports no slave list, so a set it leads stays as last read
+                await self._update_native_set(player.protocol_id, slaves_info)
         await self.reconcile()
         return True
+
+    async def follows_unread_leader(self, client: WiiMClient) -> bool:
+        """
+        Return whether a device follows a leader whose slave list was not read yet.
+
+        Only the slave list of its leader tells whether a follower belongs to the leader's
+        native set, so a device that is not registered yet is decided on after that read.
+
+        :param client: A command client bound to the device.
+        """
+        try:
+            info = await client.get_device_group_info()
+        except WiiMError:
+            return False
+        if info.role != "slave":
+            return False
+        return match_slave_uuid_to_player_id(info.master_uuid, self._refreshed_at) is None
 
     def unregister(self, player_id: str) -> None:
         """Drop a permanently removed player from the topology cache."""
@@ -470,7 +539,7 @@ class NativeGroupCoordinator:
         registered = {player.protocol_id for player in self._native_players()}
         return any(
             match_slave_uuid_to_player_id(uuid, registered) is None
-            for uuid in self._raw_slaves.get(member.protocol_id, ())
+            for uuid in self._group_slave_uuids(member.protocol_id)
         )
 
     def _prevalidate_leave(self, leader: NativePlayer, member: NativePlayer) -> None:
@@ -548,10 +617,10 @@ class NativeGroupCoordinator:
             self._self_follower.discard(stale_id)
 
         candidate_members: dict[str, list[str]] = {}
-        for leader_id, raw in self._raw_slaves.items():
+        for leader_id in self._raw_slaves:
             resolved = [
                 member_id
-                for uuid in raw
+                for uuid in self._group_slave_uuids(leader_id)
                 if (member_id := match_slave_uuid_to_player_id(uuid, registered)) is not None
                 and member_id != leader_id
             ]
@@ -600,7 +669,7 @@ class NativeGroupCoordinator:
                 role[player_id] = NativeGroupRole.FOLLOWER
             elif any(
                 match_slave_uuid_to_player_id(uuid, registered) is None
-                for uuid in self._raw_slaves.get(player_id, ())
+                for uuid in self._group_slave_uuids(player_id)
             ):
                 # leads a native group whose slaves MA cannot resolve to registered players:
                 # it manages no members here (members_of stays empty), but it is NOT
@@ -612,7 +681,13 @@ class NativeGroupCoordinator:
             else:
                 role[player_id] = NativeGroupRole.STANDALONE
 
+        layout: dict[str, ChannelLayout] = {}
+        for leader_id, slaves in self._set_slaves.items():
+            if leader_id in registered and (set_layout := native_set_layout(list(slaves.values()))):
+                layout[leader_id] = set_layout
+
         old_members, old_reverse, old_role = self._members, self._reverse, self._role
+        old_layout = self._layout
         old_unknown = {
             player_id
             for player_id in registered
@@ -635,9 +710,11 @@ class NativeGroupCoordinator:
                 if old_role.get(player_id, NativeGroupRole.STANDALONE) != role[player_id]
                 or old_members.get(player_id, []) != members.get(player_id, [])
                 or old_reverse.get(player_id) != reverse.get(player_id)
+                or old_layout.get(player_id) != layout.get(player_id)
             ]
         # atomic swap: readers between awaits always see one consistent snapshot
         self._members, self._reverse, self._role = members, reverse, role
+        self._layout = layout
         # notify members-publishers (a leader in the old OR new snapshot) before followers:
         # a follower's synced_to scans its leaders' cached group_members, so an old leader
         # shedding it and a new leader gaining it must both refresh first.
@@ -812,6 +889,88 @@ class NativeGroupCoordinator:
             for slave in slaves_info
             if isinstance(slave, dict) and slave.get("ip")
         ]
+
+    def _group_slave_uuids(self, leader_id: str) -> list[str]:
+        """Return the raw slave uuids of a leader without the slaves of any native set."""
+        set_udns = {
+            linkplay_slave_uuid_to_udn(uuid)
+            for slaves in self._set_slaves.values()
+            for uuid in slaves
+        }
+        return [
+            uuid
+            for uuid in self._raw_slaves.get(leader_id, ())
+            if linkplay_slave_uuid_to_udn(uuid) not in set_udns
+        ]
+
+    async def _update_native_set(self, player_id: str, slaves_info: list[dict[str, Any]]) -> None:
+        """
+        Update the native set of a leader from its own slave list.
+
+        A slave joins the set when the list gives it a set channel, which the leader reports
+        while the set plays alone. It stays in the set while the list has it play the left or
+        right channel, as the leader reports while the set is part of a larger group, and
+        leaves the set otherwise. The player of an identified slave is removed, and discovery
+        looks for a slave that left the set.
+
+        :param player_id: The leader that reported the slave list.
+        :param slaves_info: The slave list of a read in which the leader is no follower.
+        """
+        previous = self._set_slaves.get(player_id, {})
+        current: dict[str, int] = {}
+        identified: list[str] = []
+        for slave in slaves_info:
+            if not isinstance(slave, dict) or not slave.get("ip"):
+                continue
+            uuid = (slave.get("uuid") or "").replace("uuid:", "")
+            if (channel := native_set_channel(slave)) is not None:
+                current[uuid] = channel
+                identified.append(uuid)
+            elif uuid in previous and plays_set_channel(slave):
+                current[uuid] = previous[uuid]
+        reported = self._reported_set_slaves.setdefault(player_id, set())
+        reported.intersection_update(current)
+        registered = [player.protocol_id for player in self._native_players()]
+        # a set slave that has a player is reported at every identification: it can have been
+        # registered while its leader identified it, when it had no player to remove yet
+        if added := [
+            uuid
+            for uuid in identified
+            if uuid not in reported or match_slave_uuid_to_player_id(uuid, registered)
+        ]:
+            reported.update(added)
+            absorbed = {
+                match_slave_uuid_to_player_id(uuid, registered)
+                or linkplay_slave_uuid_to_player_id(uuid)
+                for uuid in added
+            }
+            self._mass.create_task(
+                self._mass.players.remove_absorbed_players(
+                    player_id, sorted(protocol_id for protocol_id in absorbed if protocol_id)
+                )
+            )
+        if current == previous:
+            return
+        if any(
+            uuid not in current and not match_slave_uuid_to_player_id(uuid, registered)
+            for uuid in previous
+        ):
+            self._provider.schedule_discovery()
+        cache = self._mass.cache
+        instance_id = self._provider.instance_id
+        if current:
+            self._set_slaves[player_id] = current
+            await cache.set(
+                player_id,
+                current,
+                expiration=NATIVE_SET_CACHE_EXPIRATION,
+                provider=instance_id,
+                category=CACHE_CATEGORY_NATIVE_SETS,
+                persistent=True,
+            )
+        else:
+            self._set_slaves.pop(player_id, None)
+            await cache.delete(player_id, category=CACHE_CATEGORY_NATIVE_SETS, provider=instance_id)
 
     async def _verify_membership(
         self, leader: NativePlayer, member: NativePlayer, *, joined: bool

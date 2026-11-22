@@ -44,7 +44,8 @@ def _controller(*items: SimpleNamespace) -> tuple[PlayerQueuesController, _Playl
     )
     controller._queue_data = {QUEUE_ID: SimpleNamespace(items=list(items))}  # type: ignore[dict-item]
     controller._check_player_permission = MagicMock()  # type: ignore[method-assign]
-    controller.get = MagicMock(return_value=SimpleNamespace(queue_id=QUEUE_ID))  # type: ignore[method-assign]
+    queue = SimpleNamespace(queue_id=QUEUE_ID, display_name="Kitchen")
+    controller.get = MagicMock(return_value=queue)  # type: ignore[method-assign]
     return controller, playlists
 
 
@@ -77,8 +78,11 @@ async def test_an_empty_queue_is_refused() -> None:
     """Nothing to add is an error rather than an empty background task."""
     controller, _ = _controller()
 
-    with pytest.raises(QueueEmpty):
+    with pytest.raises(QueueEmpty) as error:
         await controller.add_to_playlist(QUEUE_ID, PLAYLIST_ID)
+
+    assert error.value.translation_key == "player_queue_empty"
+    assert error.value.translation_args == ["Kitchen"]
 
 
 async def test_a_queue_without_playlist_compatible_items_is_refused() -> None:

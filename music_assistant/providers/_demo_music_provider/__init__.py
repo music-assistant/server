@@ -72,6 +72,8 @@ if TYPE_CHECKING:
         ConfigEntry,
         ProviderConfig,
     )
+    from music_assistant_models.enums import PlaybackState
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -98,6 +100,9 @@ SUPPORTED_FEATURES = {
     # that your music provider supports or an empty set if none.
     # for example 'ProviderFeature.BROWSE' if you can browse the provider's items.
     # see the ProviderFeature enum for all available features
+    # the 'provides' of manifest.json lists the media types a user looks for the provider
+    # under, for discovery only, before the provider is loaded; these features decide what
+    # it does. leave out what depends on the config or account.
 }
 
 
@@ -615,6 +620,27 @@ class MyDemoMusicprovider(MusicProvider):
         """
         # This is an OPTIONAL callback that is called when an item has been streamed.
         # You can use this e.g. for playback reporting or statistics.
+
+    async def on_playback_progress(
+        self,
+        report: MediaItemPlaybackProgressReport,
+        prov_item_id: str,
+        state: PlaybackState,
+    ) -> None:
+        """
+        Handle callback when the playback of an item this provider streamed progresses.
+
+        Called only on the provider instance that streamed the item, and only once a player
+        received audio of it: when it starts, pauses, resumes or stops, when the next item
+        starts and every 30s while it plays.
+
+        :param report: The playback progress report; ``player_id`` names the playing player.
+        :param prov_item_id: The provider-specific id of the streamed item.
+        :param state: PLAYING or PAUSED while the item is current, IDLE once it stopped,
+            ended or was skipped.
+        """
+        # This is an OPTIONAL callback for reporting playback back to the music service,
+        # e.g. the device and position the service shows as playing now.
 
     async def resolve_image(self, path: str) -> str | bytes:
         """

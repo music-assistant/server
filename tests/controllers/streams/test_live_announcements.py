@@ -19,7 +19,6 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
-from music_assistant.controllers.players.constants import OFFLINE_POWER_ON_TIMEOUT
 from music_assistant.controllers.players.controller import PlayerController
 from music_assistant.controllers.players.helpers import handle_player_command
 from music_assistant.controllers.streams import live_announcements
@@ -93,6 +92,7 @@ async def harness_fixture() -> AsyncGenerator[Harness]:
         side_effect=lambda player_id: player if player_id == PLAYER_ID else None
     )
     mass.players.play_announcement = AsyncMock()
+    mass.players.get_power_on_wait = MagicMock(return_value=0)
     # the announcement is dispatched as a task, which must actually run
     use_real_create_task(mass)
     manager = LiveAnnouncementManager(mass, logging.getLogger("test.streams.live_announcements"))
@@ -257,11 +257,31 @@ async def test_a_player_that_never_finishes_is_not_waited_on_forever(
     assert harness.manager.active_sessions == 0
 
 
-def test_the_deadline_leaves_the_time_of_a_clip_after_a_power_on() -> None:
-    """A player that takes its full time to come online still has the time to play the clip."""
-    assert (
-        live_announcements.ANNOUNCEMENT_TIMEOUT - OFFLINE_POWER_ON_TIMEOUT == MAX_CLIP_SECONDS + 60
-    )
+@pytest.mark.asyncio
+async def test_the_deadline_leaves_the_time_of_a_clip_after_a_power_on(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A player that takes its full time to start up still has the time to play the clip."""
+    startup_time = 130
+    harness.mass.players.get_power_on_wait = MagicMock(return_value=startup_time)
+    deadlines: list[float] = []
+    real_timeout = asyncio.timeout
+
+    def _timeout(seconds: float | None) -> asyncio.Timeout:
+        if seconds is not None:
+            deadlines.append(seconds)
+        return real_timeout(seconds)
+
+    monkeypatch.setattr(asyncio, "timeout", _timeout)
+
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    await ws.send_bytes(b"\x01\x02")
+    await ws.send_str('{"type": "stop"}')
+    assert await _reply(ws) == "finished"
+
+    harness.mass.players.get_power_on_wait.assert_called_once_with(PLAYER_ID)
+    assert startup_time + MAX_CLIP_SECONDS + 60 in deadlines
 
 
 @pytest.mark.asyncio
@@ -536,10 +556,10 @@ async def test_a_player_switched_off_at_its_power_control_is_accepted(harness: H
 
 @pytest.mark.asyncio
 async def test_a_power_on_that_fails_is_reported_and_not_as_finished(harness: Harness) -> None:
-    """A switched-off player that does not come online is reported with the reason."""
+    """A switched-off player that can not be reached once it started up is reported as such."""
     _switch_off(harness.player)
     harness.mass.players.play_announcement = AsyncMock(
-        side_effect=PlayerUnavailableError("Player Kitchen did not come online")
+        side_effect=PlayerUnavailableError("Player Kitchen could not be reached")
     )
 
     ws = await _start_speaking(harness.client)
@@ -548,7 +568,7 @@ async def test_a_power_on_that_fails_is_reported_and_not_as_finished(harness: Ha
     await ws.send_str('{"type": "stop"}')
 
     message = await asyncio.wait_for(ws.receive_json(), timeout=REPLY_TIMEOUT)
-    assert message == {"type": "error", "message": "Player Kitchen did not come online"}
+    assert message == {"type": "error", "message": "Player Kitchen could not be reached"}
     assert harness.manager.active_sessions == 0
 
 

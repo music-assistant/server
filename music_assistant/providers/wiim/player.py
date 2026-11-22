@@ -149,6 +149,9 @@ class WiimPlayer(PlayerProtocol):
         # a copy of the low-level client's detected capabilities, reused to pre-seed each
         # fresh command client so topology reads do not re-probe the device
         self._command_capabilities: dict[str, Any] | None = None
+        # the firmware lifts the mute on any volume command, so a level set while muted
+        # is held here and only sent at the unmute
+        self._volume_while_muted: int | None = None
 
     @property
     def device(self) -> WiimDevice:
@@ -394,6 +397,10 @@ class WiimPlayer(PlayerProtocol):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
+        if self.device.is_muted:
+            self._volume_while_muted = volume_level
+            self._update_ma_state_from_sdk_cache()
+            return
         try:
             await self.device.async_set_volume(volume_level)
         except WiimException as err:
@@ -404,6 +411,10 @@ class WiimPlayer(PlayerProtocol):
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         try:
+            if not muted and self._volume_while_muted is not None:
+                # sent first, so the speaker never plays at the level it was muted at
+                await self.device.async_set_volume(self._volume_while_muted)
+                self._volume_while_muted = None
             await self.device.async_set_mute(muted)
         except WiimException as err:
             self._handle_command_error("volume_mute", err)
@@ -609,6 +620,7 @@ class WiimPlayer(PlayerProtocol):
         self._republish_peers_if_availability_changed(was_available)
         if self._device is not None and self._device.name != self._attr_name:
             self._attr_name = self._device.name
+        self._update_channel_layout()
 
         if not self._attr_available:
             self._attr_current_media = None
@@ -616,8 +628,7 @@ class WiimPlayer(PlayerProtocol):
             self.update_state(force_update=force_update)
             return
 
-        self._attr_volume_level = self.device.volume
-        self._attr_volume_muted = self.device.is_muted
+        self._update_volume_from_sdk_cache()
 
         # The coordinator is the single native topology authority across both backends; this
         # mapper only reads the role, never writes it. The self-follower signal is fed from a
@@ -898,3 +909,20 @@ class WiimPlayer(PlayerProtocol):
             self.logger.warning(
                 "Failed to resume %s after the stream restart: %s", self._attr_name, err
             )
+
+    def _update_channel_layout(self) -> None:
+        """Take over the layout of the native set this speaker leads, and its type."""
+        self._attr_channel_layout = self._native_groups.channel_layout_of(self.protocol_id)
+        self._attr_type = (
+            PlayerType.PLAYER if self._attr_channel_layout is None else PlayerType.MULTI_CHANNEL
+        )
+
+    def _update_volume_from_sdk_cache(self) -> None:
+        """Update the level and mute from the SDK cache, keeping a level set while muted."""
+        if not self.device.is_muted:
+            # unmuted on the device itself, which then plays at the level it reports
+            self._volume_while_muted = None
+        self._attr_volume_level = (
+            self.device.volume if self._volume_while_muted is None else self._volume_while_muted
+        )
+        self._attr_volume_muted = self.device.is_muted

@@ -64,6 +64,14 @@
       "label": "Power off when idle (minutes)",
       "description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically.\n\nMusic Assistant only sees playback it knows about, so a device that is in use in another way, such as a TV or receiver on another input, may be turned off while in use."
     },
+    "power_control_cuts_power": {
+      "label": "Power control cuts the power of this player",
+      "description": "Turn this on when the power control, such as a smart plug, cuts the power of the player itself. Music Assistant then treats the player as off while the control is off. When you play to it, Music Assistant switches the control on and waits for the start-up time before it plays. Cutting the power of a smart speaker is not recommended: it can take long before it is available again, and it may not be good for the device."
+    },
+    "power_on_startup_time": {
+      "label": "Start-up time (seconds)",
+      "description": "How long the player needs after its power comes on before it can play. Raise it when playback fails right after the player was switched on."
+    },
     "crossfade_different_sample_rates": {
       "label": "Allow crossfades between tracks of different sample rates",
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
@@ -84,7 +92,7 @@
     },
     "flow_mode": {
       "label": "Enable queue flow mode",
-      "description": "Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream.\nUse for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks."
+      "description": "Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream.\nUse for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks.\nA player without gapless support always uses flow mode while crossfade is enabled, regardless of this setting."
     },
     "flow_mode_sample_rate": {
       "label": "Flow Mode sample rate",
@@ -210,7 +218,7 @@
     },
     "output_codec": {
       "label": "Output codec to use for streaming audio to the player",
-      "description": "Select the codec to use for streaming audio to this player. \nBy default, Music Assistant sends lossless, high quality audio to all players and prefers the FLAC codec because it offers some compression while still remaining lossless \n\nSome players however do not support FLAC and require the stream to be packed into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
+      "description": "Select the codec to use for streaming audio to this player. \nMost players get lossless, high quality FLAC by default, which offers some compression while still remaining lossless. \n\nSome players default to a lossy codec such as MP3 instead, because they do not support FLAC or stop playing a long FLAC stream after a while. \n\nChoosing a lossy codec also saves some network bandwidth, at the cost of audio quality.",
       "options": {
         "flac": "FLAC (lossless, compressed)",
         "mp3": "MP3 (lossy)",
@@ -263,7 +271,7 @@
     },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
-      "description": "If this player is playing audio synced with other players and you always hear the audio too early or late on this player, you can shift the audio a bit."
+      "description": "If this player is playing audio synced with other players and you always hear the audio too early or late on this player, you can shift the audio a bit. \nPositive values make this player play earlier; negative values make it play later. \nExample: enter the extra delay of an amplifier or TV connected to this player, in milliseconds, so it plays that much earlier."
     },
     "tts_pre_announce": {
       "label": "Pre-announce TTS announcements",
@@ -318,7 +326,7 @@
     },
     "power_control": {
       "label": "Power Control",
-      "description": "A Home Assistant entity chosen here, such as a smart plug, is also used to turn on this player when it is offline.",
+      "description": "A Home Assistant entity chosen here, such as a smart plug, is used to turn this player on and off. If it cuts the power of the player itself, turn on the setting below.",
       "options": {
         "native": "Native power control",
         "none": "None",
@@ -425,6 +433,10 @@
       "action_label": "Reset authentication",
       "description": "Clear the current authentication details."
     },
+    "allow_audio_analysis": {
+      "label": "Allow analysis of the audio input",
+      "description": "Lets the audio analysis you added in the settings listen to this input while it plays, for example to recognize the song that is playing. Nothing it hears is stored. Disable this for an input that should not be listened to, such as a microphone."
+    },
     "verify_ssl": {
       "label": "Verify SSL",
       "description": "Whether or not to verify the certificate of SSL/TLS connections."
@@ -435,24 +447,36 @@
     },
     "ai_engine": {
       "label": "AI engine",
-      "description": "The AI engine used for this feature."
+      "description": "The AI engine used for this feature. Unless you pick one, it uses the default AI engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "ai_engine_unavailable": {
       "label": "No AI engine is available. Set up a plugin that provides AI, for example the Home Assistant plugin with an AI task entity."
     },
     "tts_engine": {
       "label": "Text-to-speech engine",
-      "description": "The text-to-speech engine used for this feature."
+      "description": "The text-to-speech engine used for this feature. Unless you pick one, it uses the default text-to-speech engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "tts_engine_unavailable": {
       "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
     },
     "image_engine": {
       "label": "Image engine",
-      "description": "The image generation engine used for this feature."
+      "description": "The image generation engine used for this feature. Unless you pick one, it uses the default image engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "image_engine_unavailable": {
       "label": "No image engine is available. Set up a plugin that can generate images, for example the Home Assistant plugin with an AI task entity that supports images, or the OpenAI Compatible plugin with an image model selected."
+    },
+    "default_engine_unavailable": {
+      "label": "The default engine is not available. Choose another default engine in the AI settings, or pick an engine here."
     }
   },
   "config_categories": {
@@ -463,21 +487,21 @@
     "sync_options": "Sync/import options",
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
-    "playback": "Queue Playback",
+    "playback": "Playback",
     "source_selection": "Source selection",
     "items_to_select": "Items to select",
     "default_enqueue_option": "Default enqueue option",
     "click_actions": "Click actions",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
+    "volume_normalization": "Volume normalization",
     "smart_shuffle": "Smart shuffle",
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
     "protocol_output_settings_via": "Enable {0} support (over {1})",
-    "plugins": "Plugins",
+    "audio_sources": "Audio sources",
     "dsp": "Digital Signal Processing (DSP)",
     "options": "Player options",
-    "audio": "Audio",
     "preferences": "Preferences",
     "display_settings": "Display",
     "airplay": "AirPlay specific settings",
@@ -491,7 +515,8 @@
     "discover": "Discover",
     "debug": "Debug",
     "server": "Server",
-    "recommendations": "Recommendations"
+    "recommendations": "Recommendations",
+    "account_access": "Account access"
   },
   "media": {
     "genre": {
@@ -930,6 +955,9 @@
       "libraries": {
         "name": "Libraries"
       },
+      "live_sources": {
+        "name": "Live sources"
+      },
       "recommendations": {
         "name": "Recommendations"
       },
@@ -1172,6 +1200,9 @@
     "ir_repeater": {
       "name": "IR repeater"
     },
+    "ir_signal_light": {
+      "name": "IR signal light"
+    },
     "link_audio_delay": {
       "name": "Link audio delay"
     },
@@ -1201,9 +1232,6 @@
     },
     "pure_direct": {
       "name": "Pure direct"
-    },
-    "remote_led_feedback": {
-      "name": "Status light on remote control"
     },
     "sleep": {
       "name": "Sleep timer"
@@ -1269,10 +1297,10 @@
     "community_provider_not_listed": "This is no longer in the community catalog, so it no longer runs. You can remove it.",
     "community_provider_not_for_this_version": "This is not available for this version of Music Assistant, so it does not run. You can remove it.",
     "community_provider_requirements_clash": "This needs versions of Python packages that clash with Music Assistant or with something else from the community catalog, so it does not run.",
-    "community_provider_reinstall_failed": "The files of this were changed on your server and could not be downloaded again ({0}), so it does not run. Restart Music Assistant to try again.",
-    "community_provider_went_back": "Version {0} of this failed to load, and the version before it is no longer available, so it does not run.",
-    "community_provider_restart_to_go_back": "Version {0} of this failed to load. Restart Music Assistant to finish going back to the version before it.",
-    "community_provider_restart_to_update": "Version {0} of this is ready. Restart Music Assistant to finish the update.",
+    "community_provider_reinstall_failed": "Its files were changed on your server and could not be downloaded again ({0}), so it does not run. Restart Music Assistant to try again.",
+    "community_provider_went_back": "Version {0} failed to load, and the version before it is no longer available, so it does not run.",
+    "community_provider_restart_to_go_back": "Version {0} failed to load. Restart Music Assistant to finish going back to the version before it.",
+    "community_provider_restart_to_update": "Version {0} is ready. Restart Music Assistant to finish the update.",
     "community_provider_moved": "This moved to the community catalog. Music Assistant installs it from there by itself as soon as the catalog offers it for this version and your server can reach it.",
     "community_provider_move_failed": "This moved to the community catalog, but Music Assistant could not install it from there ({0}). It tries again at every start and whenever it checks the catalog.",
     "community_provider_not_installed": "This is no longer installed. An administrator can install it again from the Marketplace, or you can remove it here.",
@@ -1326,6 +1354,7 @@
     "already_registered": "This item is already registered.",
     "setup_failed": "Setup failed. Please check the configuration and try again.",
     "login_failed": "Login failed. Please check your credentials and try again.",
+    "provider_account_changed": "This is a different account than the one this provider was set up with. To use another account, remove this provider and add it again.",
     "audio_error": "An error occurred while processing audio.",
     "provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",
     "provider_stream_held": "{0} is already playing on {1}. Stop playback there first.",
@@ -1353,6 +1382,8 @@
     "invalid_token": "The access token is invalid or has expired.",
     "resource_busy": "This resource is currently in use elsewhere.",
     "rate_limited": "Rate limit reached. Please try again later.",
+    "rate_limited_minutes": "Rate limit reached. Please try again in about {0} minutes.",
+    "rate_limited_hours": "Rate limit reached. Please try again in about {0} hours.",
     "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
     "connection_timeout": "Connection timed out: {0}.",
     "connect_failed": "Failed to connect to {0}.",

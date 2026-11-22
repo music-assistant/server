@@ -24,6 +24,7 @@ from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
@@ -40,7 +41,6 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from music_assistant import MusicAssistant
-    from music_assistant.controllers.player_queues import PlayerQueuesController
     from music_assistant.models.player import Player
 
 
@@ -556,6 +556,8 @@ class _PlayingQueues:
 
     def _drop_pending_step(self, queue_id: str) -> None:
         """Hold no step to drop."""
+
+    _show_play_action = PlayerQueuesController._show_play_action
 
 
 @handle_play_action
@@ -1244,7 +1246,7 @@ class TestAdHocLeadershipTransfer:
         leader_protocol.set_members.assert_awaited_once_with(
             player_ids_to_add=None, player_ids_to_remove=[_device("visualizer")]
         )
-        queue_stop.assert_awaited_once_with("leader")
+        queue_stop.assert_awaited_once_with("leader", keep_sleep_timer=False)
         controller._handle_cmd_stop.assert_not_awaited()
 
     async def test_handle_set_members_dissolves_leader_when_idle(
@@ -1271,7 +1273,7 @@ class TestAdHocLeadershipTransfer:
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         # an idle queue is where leftovers hide: its session and item buffers outlive
         # the playback that already ended, so the dissolve tears them down too
-        queue_stop.assert_awaited_once_with("leader")
+        queue_stop.assert_awaited_once_with("leader", keep_sleep_timer=False)
         controller._handle_cmd_stop.assert_not_awaited()
 
     async def test_transfer_stops_nothing_on_the_way_out(self, mock_mass: MagicMock) -> None:
@@ -1337,7 +1339,7 @@ class TestDissolvedLeaderEndsTheQueue:
 
         await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
 
-        queue_stop.assert_awaited_once_with("leader")
+        queue_stop.assert_awaited_once_with("leader", keep_sleep_timer=False)
         # the queue stop issues the device stop itself
         device_stop.assert_not_awaited()
 

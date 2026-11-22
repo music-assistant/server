@@ -3139,5 +3139,17 @@
   "provider.bookorbit.media.folder.authors.name": "Autori",
   "provider.qobuz.media.recommendations.best_sellers.name": "Najpredávanejšie",
   "provider.qobuz.media.recommendations.most_streamed.name": "Najviac streamované",
-  "provider.qobuz.media.recommendations.new_releases.name": "Nové vydania"
+  "provider.qobuz.media.recommendations.new_releases.name": "Nové vydania",
+  "provider.playlist_metadata.config_entries.ai_preview_description.label": "Popis: {0}",
+  "provider.playlist_metadata.config_entries.ai_preview_image.label": "Náhľad",
+  "common.player_options.night_mode.name": "Nočný režim",
+  "common.errors.community_provider_safe_mode": "Keď je aplikácia Music Assistant v bezpečnom režime, nebeží žiadna aplikácia z komunitného katalógu.",
+  "core.community_catalog.config_entries.auto_update.label": "Aktualizovať automaticky",
+  "core.community_catalog.config_entries.community_catalog_enabled.description": "Komunitný katalóg obsahuje hudobné zdroje, podporu pre prehrávače, zdroje metadát a doplnky, ktoré vytvárajú a udržiavajú členovia komunity. Tím Music Assistant kontroluje, či každý z nich spĺňa pravidlá komunitného katalógu, ale netestuje ich ani neposkytuje podporu. Tieto doplnky bežia ako súčasť vášho servera, takže ich inštalujete na vlastné riziko. Ak potrebujete pomoc s niektorým z nich, obráťte sa na jeho správcu.",
+  "core.community_catalog.config_entries.community_catalog_enabled.label": "Komunitný katalóg",
+  "core.community_catalog.manifest.description": "Zdroje hudby, podpora prehrávačov, zdroje metadát a doplnky, ktoré vytvárajú a udržiavajú členovia komunity.",
+  "core.community_catalog.manifest.name": "Komunitný katalóg",
+  "provider.bbc_sounds.media.folder.international_radio.name": "Medzinárodné rádio",
+  "provider.bbc_sounds.media.folder.live.name": "Živé rádio",
+  "provider.bbc_sounds.media.folder.local_radio.name": "Miestne rádio"
 }

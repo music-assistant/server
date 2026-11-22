@@ -529,7 +529,9 @@ class SetupFlowMixin:
         """Finish handler for provider setup flows: create, persist and load the instance."""
         try:
             config = await self._create_provider_instance(
-                session.context.domain, {}, setup_data=self._encrypt_values(values)
+                session.context.domain,
+                session.finish_options,
+                setup_data=self._encrypt_values(values),
             )
         except Exception as err:
             raise SetupFlowError(
@@ -544,7 +546,7 @@ class SetupFlowMixin:
     async def _finish_provider_reconfigure(
         self, session: SetupSession, values: dict[str, ConfigValueType]
     ) -> dict[str, str]:
-        """Finish handler for provider reconfigure flows: merge setup_data and reload."""
+        """Finish handler for provider reconfigure flows: merge setup_data and options, reload."""
         instance_id = session.context.instance_id
         assert instance_id is not None  # always set for reconfigure flows
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
@@ -552,16 +554,22 @@ class SetupFlowMixin:
         if not raw_conf:
             raise SetupFlowError(f"Provider {instance_id} no longer exists")
         snapshot = dict(raw_conf.get("setup_data") or {})
+        values_snapshot = dict(raw_conf.get("values") or {})
         self.set(f"{conf_key}/setup_data", {**snapshot, **self._encrypt_values(values)})
+        self.set(f"{conf_key}/values", {**values_snapshot, **session.finish_options})
         try:
             config = await self.get_provider_config(instance_id)
             await self.mass.load_provider_config(config)
         except asyncio.CancelledError:
             self.set(f"{conf_key}/setup_data", snapshot)
+            self.set(f"{conf_key}/values", values_snapshot)
             raise
         except Exception as err:
-            # reloading with the new values failed: restore the previous setup_data
+            # reloading with the new values failed: restore the previous setup_data and options
+            # and bring the instance back up on them before the flow can retry
             self.set(f"{conf_key}/setup_data", snapshot)
+            self.set(f"{conf_key}/values", values_snapshot)
+            await self.mass.load_provider(instance_id)
             raise SetupFlowError(
                 str(err) or err.__class__.__name__,
                 translation_key=getattr(err, "translation_key", None),
@@ -575,6 +583,9 @@ class SetupFlowMixin:
         self, session: SetupSession, values: dict[str, ConfigValueType]
     ) -> dict[str, str]:
         """Finish handler for player setup flows: persist and apply the collected setup data."""
+        if session.finish_options:
+            msg = "A player setup flow can not store option values"
+            raise NotImplementedError(msg)
         # the flow of a player is that of one of its protocols, which the context names
         protocol_id = session.context.player_id
         assert protocol_id is not None  # always set for player flows

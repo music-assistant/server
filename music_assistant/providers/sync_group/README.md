@@ -81,6 +81,8 @@ The sync leader is selected when the group is powered on (which forms the group)
 4. **Prioritize static members**: For static groups, prefer members from the configured list
 5. **First available**: Otherwise pick the first available member as leader
 
+Within steps 2 to 5 the first member leads, unless it can group with none of the other members while a later member can: that member leads then. This only happens on what is certain. The first member gives way only while it is at rest: what it can group with is unknown while it follows another player, and can be narrowed by what it plays itself. A member that leads players of its own does not take its place. Members that can not group with the chosen leader are left out of the group.
+
 ### Leader Responsibilities
 
 The sync leader is the **source of truth** for the group's playback state:
@@ -118,7 +120,7 @@ Players can only be grouped if they support the same sync protocol. This is enfo
 
 - AirPlay players can group with other AirPlay players
 - Sonos players can group with other Sonos players
-- Squeezelite players can group with other Squeezelite players
+- Squeezelite players can group with other Squeezelite players, through their Sendspin outputs
 - **Cross-protocol grouping is NOT supported**
 
 ## Protocol Linking Integration

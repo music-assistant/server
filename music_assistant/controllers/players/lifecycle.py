@@ -52,6 +52,8 @@ from .grouping import apply_group_change
 from .grouping_plan import ChangeKind, GroupChange
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from music_assistant_models.config_entries import PlayerConfig
 
     from music_assistant.models.player_protocol import PlayerProtocol
@@ -123,7 +125,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         The controller detaches the protocol from its player, which tells it through
         on_detach, and calls off a registration of it that is still in progress. The
         player stays and keeps its queue; it is unavailable while none of its other
-        protocols is available, unless it is switched off at its external power control.
+        protocols is available, unless it is switched off at a power control that cuts
+        its power.
         A player that only exists while its device is connected goes with its last
         protocol, unless it is kept: the user changed its config, a plugin keeps it (see
         keep_player), or its queue has items. Silently ignored for a protocol the
@@ -252,9 +255,56 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
                 await self._remove_player(player.player_id, rediscover=False)
             removed.append(player.player_id)
         if waits and not removed:
-            msg = f"Players are still being found, try again in {math.ceil(max(waits))} seconds"
-            raise ActionUnavailable(msg)
+            seconds = math.ceil(max(waits))
+            msg = f"Players are still being found, try again in {seconds} seconds"
+            raise ActionUnavailable(
+                msg,
+                translation_key="players_still_being_found",
+                translation_owner=self.translation_owner,
+                translation_args=[seconds],
+            )
         return removed
+
+    async def remove_absorbed_players(
+        self, protocol_id: str, absorbed_protocol_ids: Iterable[str]
+    ) -> None:
+        """
+        Remove the players of the other speakers of the set of speakers that a protocol delivers.
+
+        A set (a stereo pair, a home theater set) is one multi-channel player. The player of each
+        protocol in the list is removed for good, as when the user removes it, with its config,
+        settings and saved queue: this can not be undone. Its providers are not asked to look
+        for its device again; a speaker that leaves its set later is found again as a new player.
+        An id is skipped when it has no stored config that names a player, when it is of
+        another provider than this protocol, or when its player is the player of this protocol,
+        a group, or being removed already. Nothing happens when this protocol has no stored
+        config, or while the server shuts down.
+
+        :param protocol_id: Id of the protocol that delivers the set.
+        :param absorbed_protocol_ids: Ids of the protocols of the other speakers of the set.
+        """
+        config = self.mass.config
+        # a list built while the connections of a provider go down must not delete players
+        if self.mass.closing or (record := config.get_protocol_record(protocol_id)) is None:
+            return
+        for absorbed_protocol_id in absorbed_protocol_ids:
+            absorbed = config.get_protocol_record(absorbed_protocol_id) or {}
+            if not (player_id := absorbed.get("player_id")):
+                continue
+            player = self._players.get(player_id)
+            player_type = (
+                player.reported_type
+                if player
+                else config.get(f"{CONF_PLAYERS}/{player_id}/player_type")
+            )
+            if (
+                absorbed.get("provider") != record.get("provider")
+                or player_id == record.get("player_id")
+                or player_type == PlayerType.GROUP
+                or player_id in self._removing
+            ):
+                continue
+            await self._remove_player(player_id, rediscover=False)
 
     def keep_player(self, player_id: str) -> None:
         """
@@ -368,10 +418,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             # the attached object goes without anything being published: another object
             # of the protocol takes its place, or it attaches again in another role
             replaced_player = await self._unbind(existing) if existing else None
-            if protocol.role != ProtocolRole.VIRTUAL and protocol.type not in (
-                PlayerType.GROUP,
-                PlayerType.STEREO_PAIR,
-            ):
+            if protocol.role != ProtocolRole.VIRTUAL and protocol.type != PlayerType.GROUP:
                 await self._resolve_mac_addresses(protocol)
                 # the await above may have staled the guards of register()
                 if self._attach_aborted(protocol, attach) or self._teardown_in_progress(protocol):
@@ -811,6 +858,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         for prefix in [p.value for p in PlayerLockPurpose]:
             self._player_command_locks.pop(f"{prefix}_{player_id}", None)
         self._clear_sleep_timer(player)
+        self._drop_power_state(player)
         self.mass.cancel_timer(f"player_update_state_{player_id}")
         # once the player is gone its id can be a legacy id of another player, whose queue
         # this update must not reach
@@ -865,9 +913,13 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if player is not None or stored is not None:
                 await self._drop_player(player_id, player)
             # a protocol found again during the awaits above belongs to another player now
-            self._delete_player_config(
-                player_id, set(self.mass.config.get_protocol_ids_of_player(player_id))
-            )
+            deleted_protocol_ids = set(self.mass.config.get_protocol_ids_of_player(player_id))
+            protocol_provider_ids = {
+                protocol_id: str(record.get("provider"))
+                for protocol_id in deleted_protocol_ids
+                if (record := self.mass.config.get_protocol_record(protocol_id))
+            }
+            self._delete_player_config(player_id, deleted_protocol_ids)
         finally:
             self._removing.discard(player_id)
         self.logger.info("Player removed: %s", player.name if player else player_id)
@@ -875,12 +927,21 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if protocol.protocol_id in self._protocols or protocol.protocol_id in self._unattached:
                 # its device was found again meanwhile, so its provider still needs it
                 continue
+            # a protocol that only exists while connected has no record to name its provider
+            protocol_provider_ids.setdefault(protocol.protocol_id, protocol.provider_id)
             # the provider only cleans up what it keeps about the device itself.
             # Best-effort: the player is gone by now, whatever happens to that
             try:
                 await protocol.on_remove()
             except Exception:
                 self.logger.exception("Error removing protocol %s", protocol.protocol_id)
+        for protocol_id, provider_id in protocol_provider_ids.items():
+            if not isinstance(provider := self.mass.get_provider(provider_id), PlayerProvider):
+                continue
+            try:
+                await provider.on_protocol_removed(protocol_id)
+            except Exception:
+                self.logger.exception("Error removing protocol %s", protocol_id)
         if not rediscover or is_group:
             # a group is no device on the network: with its config gone there is nothing
             # left for its provider to find

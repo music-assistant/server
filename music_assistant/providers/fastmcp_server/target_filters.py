@@ -13,6 +13,7 @@ from music_assistant_models.auth import User
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InsufficientPermissions
 
+from music_assistant.controllers.music.constants import LIVE_SOURCES_BROWSE_SCHEME
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES, _parse_share_url
 
@@ -317,7 +318,7 @@ def queue_visible(user: Any, queue: Any) -> bool:
 _PLAYER_KINDS = frozenset({TargetKind.PLAYER, TargetKind.PLAYERS})
 _SEQUENCE_KINDS = frozenset({TargetKind.PLAYERS, TargetKind.MUSIC_PROVIDERS})
 _REFERENCE_KINDS = frozenset({TargetKind.MUSIC_REFERENCE, TargetKind.MUSIC_REFERENCES})
-_INTERNAL_MUSIC_TARGETS = frozenset({"builtin", "library"})
+_INTERNAL_MUSIC_TARGETS = frozenset({"builtin", "library", LIVE_SOURCES_BROWSE_SCHEME})
 _UNRESOLVED_SHARE_URL = "<unresolved share url>"
 
 

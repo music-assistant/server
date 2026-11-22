@@ -23,7 +23,11 @@ from music_assistant.providers.sync_group.constants import SGP_PREFIX
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
     from music_assistant.providers.snapcast.provider import SnapCastProvider
-    from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto, SnapstreamProto
+    from music_assistant.providers.snapcast.snap_cntrl_proto import (
+        SnapclientProto,
+        SnapgroupProto,
+        SnapstreamProto,
+    )
 
 
 class TrackedPlayerState(TypedDict, total=False):
@@ -369,6 +373,7 @@ class SnapCastPlayer(PlayerProtocol):
         orig_volume_level: int | None = self.volume_level
 
         prev_stream = self.active_snap_ma_stream
+        prev_snap_stream_id = self.snap_client.group.stream if self.snap_client.group else None
         # the music keeps streaming unheard while the group plays the clip, so the queue
         # restarts where the clip began instead of rejoining the live stream
         resume_queue = (
@@ -438,11 +443,7 @@ class SnapCastPlayer(PlayerProtocol):
                     resume_queue.queue_id, resume_item.queue_item_id, resume_pos
                 )
             else:
-                await player_group.set_stream(
-                    prev_stream.stream_id
-                    if prev_stream and prev_stream.stream_id is not None
-                    else "default"
-                )
+                await self._restore_snap_stream(player_group, prev_snap_stream_id)
         finally:
             self._announcement_clip_playing = False
             if prev_stream:
@@ -700,3 +701,16 @@ class SnapCastPlayer(PlayerProtocol):
         except MusicAssistantError as err:
             # an error escaping here would end the player's state update worker
             self.logger.warning("Failed to stop the queue of %s: %s", self.display_name, err)
+
+    async def _restore_snap_stream(self, group: SnapgroupProto, stream_id: str | None) -> None:
+        """Put the group back on the given stream, else on 'default' when the server has one."""
+        server_streams = {stream.identifier for stream in self.snap_provider._snapserver.streams}
+        for candidate in (stream_id, "default"):
+            if candidate in server_streams:
+                await group.set_stream(candidate)
+                return
+        self.logger.warning(
+            "Cannot restore stream %s of %s after the announcement, it no longer exists",
+            stream_id,
+            self.display_name,
+        )

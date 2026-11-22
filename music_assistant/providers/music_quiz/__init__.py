@@ -6,6 +6,9 @@ join with a QR code on their own device and play the selected quiz type:
 guess-the-song uses multiple-choice answers, while Music Timeline uses a shared
 chronological timeline with optional artist and title bonuses. Trivia uses
 AI-worded multiple-choice questions grounded in selected library metadata.
+Title Reveal uses free-text guesses against the song title, whose letters are
+uncovered one by one while the song plays, with a bonus for the first correct
+guess and an optional artist bonus once the title is solved.
 
 Playback is hosted by a SharedPlaybackSession in one of two modes selected for
 each game:
@@ -36,6 +39,9 @@ The public game state is guest-safe by construction. Common state contains:
   fragment. Multiple-choice exposes opaque ``suggestions``. Timeline exposes
   the revealed shared ``timeline`` and redacted ``bonus_definitions``; the
   current song, year, correct placement and bonus answers remain protected.
+  Hint-text exposes the title ``mask`` (unrevealed letters as null, other
+  characters always shown); the title, its reveal order and every guess text
+  remain protected.
 - reveal/finished rounds additionally expose common ``answer_label``,
   ``track_uri``, ``image_url``, ``duration``, ``audio_started_at`` and
   ``ended_at`` fields. ``audio_started_at`` is when the round's track became
@@ -85,7 +91,6 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Track
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENABLED
-from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
@@ -95,9 +100,11 @@ from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.plugin_engines import (
+    EngineKind,
+    EngineSetting,
     create_ai_engine_config_entries,
     get_ai_engines,
-    select_ai_engine,
+    resolve_ai_engine_setting,
 )
 from music_assistant.helpers.shared_playback import (
     SENDSPIN_DOMAIN,
@@ -157,6 +164,8 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizSource,
     MusicQuizVenuePlayerOption,
     TimelineBonusMode,
+    TitleRevealHintSpeed,
+    TitleRevealTypoTolerance,
 )
 from music_assistant.providers.music_quiz.quiz_types import (
     get_available_quiz_types,
@@ -238,6 +247,8 @@ async def setup(
 class MusicQuizPlugin(PluginProvider):
     """Music Quiz plugin provider for Music Assistant."""
 
+    engine_settings = (EngineSetting(EngineKind.TEXT, CONF_AI_ENGINE),)
+
     def __init__(
         self,
         mass: MusicAssistant,
@@ -255,7 +266,9 @@ class MusicQuizPlugin(PluginProvider):
         self._playback_session: SharedPlaybackSession | None = None
         self._playback_lock = asyncio.Lock()
         self._next_round_task: asyncio.Task[MusicQuizRound] | None = None
-        self._warm_next_track_task: asyncio.Task[None] | None = None
+        # readies the track of the upcoming round: queues the first round's track in the
+        # lobby, and queues and buffers the track of a later round
+        self._upcoming_track_task: asyncio.Task[None] | None = None
         # queue item of the first round's track, staged on the playback target in the lobby
         self._staged_item_id: str | None = None
         # the venue queue's own content from before the quiz first took it over
@@ -384,6 +397,8 @@ class MusicQuizPlugin(PluginProvider):
         play_reveal_audio: bool = True,
         artist_bonus_mode: str = TimelineBonusMode.OFF.value,
         title_bonus_mode: str = TimelineBonusMode.OFF.value,
+        hint_speed: str = TitleRevealHintSpeed.NORMAL.value,
+        typo_tolerance: str = TitleRevealTypoTolerance.NORMAL.value,
         playback_mode: str | None = None,
         venue_player_id: str | None = None,
     ) -> dict[str, Any]:
@@ -402,6 +417,8 @@ class MusicQuizPlugin(PluginProvider):
         :param play_reveal_audio: Play Trivia's grounded track during each reveal.
         :param artist_bonus_mode: Music Timeline artist bonus mode.
         :param title_bonus_mode: Music Timeline title bonus mode.
+        :param hint_speed: Title Reveal hint speed ("slow", "normal" or "fast").
+        :param typo_tolerance: Title Reveal typo tolerance ("strict", "normal" or "lenient").
         :param playback_mode: Playback mode for this game ("venue" or "remote").
         :param venue_player_id: Venue player selected for this game.
         """
@@ -416,11 +433,19 @@ class MusicQuizPlugin(PluginProvider):
                 translation_key="music_quiz_invalid_bonus_mode",
                 translation_owner=TRANSLATION_OWNER,
             ) from err
+        parsed_hint_speed, parsed_typo_tolerance = _parse_title_reveal_options(
+            hint_speed, typo_tolerance
+        )
         playback_defaults = await self._resolve_playback_defaults()
         effective_mode, effective_player_id, effective_player_name = self._resolve_create_playback(
             playback_mode,
             venue_player_id,
             playback_defaults.options,
+        )
+        # resolved on use rather than at init: providers load concurrently, so the plugin
+        # supplying the engines may not have been available back then
+        ai_engine = await resolve_ai_engine_setting(
+            self.mass, self.config.get_value(CONF_AI_ENGINE)
         )
         game_config = quiz_type_class.normalize_config(
             MusicQuizConfig(
@@ -435,15 +460,13 @@ class MusicQuizPlugin(PluginProvider):
                 venue_player_name=effective_player_name,
                 difficulty=difficulty,
                 use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
-                # selected on first use rather than at init: providers load concurrently,
-                # so the plugin supplying the engines may not have been available back then
-                ai_engine=(
-                    engine.uid if (engine := await select_ai_engine(self, CONF_AI_ENGINE)) else None
-                ),
+                ai_engine=ai_engine.uid if ai_engine else None,
                 language=language,
                 play_reveal_audio=play_reveal_audio,
                 artist_bonus_mode=parsed_artist_bonus_mode,
                 title_bonus_mode=parsed_title_bonus_mode,
+                hint_speed=parsed_hint_speed,
+                typo_tolerance=parsed_typo_tolerance,
             )
         )
         quiz_type_class.validate_config(game_config)
@@ -499,7 +522,7 @@ class MusicQuizPlugin(PluginProvider):
                 self._answer_type = answer_strategy
                 self._next_round_task = initial_round_task
                 self._signal_game_updated()
-            self._warm_first_round(initial_round_task.result())
+            self._stage_first_round(initial_round_task.result())
             await self._store_playback_preference(
                 game_config.playback_mode,
                 remembered_venue_player_id,
@@ -573,7 +596,7 @@ class MusicQuizPlugin(PluginProvider):
                 self._schedule_presence_expiry(now)
                 if auto_start and _has_active_players(game, now):
                     self._schedule_replay_auto_start(game, now)
-                self._warm_first_round(initial_round_task.result())
+                self._stage_first_round(initial_round_task.result())
             finally:
                 # a failed preparation keeps the previous game, so clear and
                 # broadcast here too or clients wait on the preparing state forever
@@ -988,6 +1011,13 @@ class MusicQuizPlugin(PluginProvider):
                 started_at + answer_window,
                 task_id=self._reveal_timer_id,
             )
+            # a player that reports no position (Sendspin) leaves only the assumed latency
+            hint_times = answer_type.open_round(
+                next_round.answer_state,
+                started_at + ASSUMED_AUDIO_START_LATENCY,
+                started_at + answer_window,
+            )
+            self._schedule_hint(game, round_index, hint_times, 0, started_at)
             self._prefetch_round(round_index + 1)
             self._signal_game_updated()
 
@@ -1033,6 +1063,7 @@ class MusicQuizPlugin(PluginProvider):
         game, quiz_type, answer_type = self._require_game_strategies()
         reveal_round(game, answer_type)
         self.mass.cancel_timer(self._reveal_timer_id)
+        self.mass.cancel_timer(self._hint_timer_id)
         current_round = get_current_round(game)
         current_round.auto_advance_at = None
         if quiz_type.plays_track_before_answering:
@@ -1207,6 +1238,65 @@ class MusicQuizPlugin(PluginProvider):
                 return
             self._do_reveal()
 
+    def _schedule_hint(
+        self,
+        game: MusicQuizGame,
+        round_index: int,
+        hint_times: list[float],
+        hint_index: int,
+        now: float,
+    ) -> None:
+        """
+        Schedule the next hint of an answering round, if one is left.
+
+        :param game: Game the round belongs to.
+        :param round_index: Answering round index.
+        :param hint_times: Absolute timestamps of all hints of the round.
+        :param hint_index: Index of the hint to schedule.
+        :param now: Current timestamp.
+        """
+        if hint_index >= len(hint_times):
+            return
+        self.mass.call_later(
+            max(hint_times[hint_index] - now, 0.0),
+            self._on_hint_due,
+            game,
+            self._game_generation,
+            round_index,
+            hint_times,
+            hint_index,
+            task_id=self._hint_timer_id,
+        )
+
+    async def _on_hint_due(
+        self,
+        game: MusicQuizGame,
+        generation: int,
+        round_index: int,
+        hint_times: list[float],
+        hint_index: int,
+    ) -> None:
+        """
+        Reveal a hint whose scheduled time was reached and schedule the next one.
+
+        :param game: Game for which the hint was scheduled.
+        :param generation: Lifecycle generation for which the hint was scheduled.
+        :param round_index: Answering round index.
+        :param hint_times: Absolute timestamps of all hints of the round.
+        :param hint_index: Index of the hint that is due.
+        """
+        async with self._game_lock:
+            if (
+                self._game is not game
+                or self._game_generation != generation
+                or not self._is_current_round(round_index, MusicQuizPhase.ANSWERING)
+                or self._answer_type is None
+            ):
+                return
+            if self._answer_type.reveal_hint(get_current_round(game).answer_state, hint_index):
+                self._signal_game_updated()
+            self._schedule_hint(game, round_index, hint_times, hint_index + 1, time.time())
+
     async def _on_reveal_auto_advance(
         self,
         game: MusicQuizGame,
@@ -1314,17 +1404,17 @@ class MusicQuizPlugin(PluginProvider):
                 self._prepare_round(quiz_type, round_index, list(game.rounds), track_known)
             )
             if track_known is not None:
-                self._warm_next_track_task = self.mass.create_task(
+                self._upcoming_track_task = self.mass.create_task(
                     self._warm_next_track(track_known)
                 )
 
-    def _warm_first_round(self, first_round: MusicQuizRound) -> None:
-        """Queue and buffer the first round's track in the background while the lobby is open."""
+    def _stage_first_round(self, first_round: MusicQuizRound) -> None:
+        """Queue the first round's track in the background while the lobby is open."""
         _, quiz_type, _ = self._require_game_strategies()
         if not quiz_type.plays_track_before_answering or first_round.track_uri is None:
             return
-        self._warm_next_track_task = self.mass.create_task(
-            self._warm_first_track(first_round.track_uri)
+        self._upcoming_track_task = self.mass.create_task(
+            self._stage_first_track(first_round.track_uri)
         )
 
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
@@ -1350,10 +1440,10 @@ class MusicQuizPlugin(PluginProvider):
 
     def _cancel_next_round_task(self) -> None:
         """Cancel a pending round prefetch task."""
-        if self._warm_next_track_task is not None:
-            self._warm_next_track_task.cancel()
-            self._warm_next_track_task.add_done_callback(_consume_task_exception)
-            self._warm_next_track_task = None
+        if self._upcoming_track_task is not None:
+            self._upcoming_track_task.cancel()
+            self._upcoming_track_task.add_done_callback(_consume_task_exception)
+            self._upcoming_track_task = None
         self._staged_item_id = None
         if self._next_round_task is not None:
             self._next_round_task.cancel()
@@ -1523,9 +1613,9 @@ class MusicQuizPlugin(PluginProvider):
                 session.queue_id, track_uri, option=QueueOption.ADD
             )
 
-    async def _warm_first_track(self, track_uri: str) -> None:
+    async def _stage_first_track(self, track_uri: str) -> None:
         """
-        Queue the first round's track on an idle playback target and buffer its audio.
+        Queue the first round's track on an idle playback target.
 
         :param track_uri: URI of the first round's track.
         """
@@ -1536,7 +1626,7 @@ class MusicQuizPlugin(PluginProvider):
                 venue = self.mass.players.get_player(game.config.venue_player_id or "")
                 # a venue that is playing or paused (e.g. a party while the lobby is open) is
                 # left alone, without a session either: a lobby teardown stops the session's
-                # playback. Its first round then starts without prepared audio.
+                # playback. Its first round then starts without a staged track.
                 if (
                     venue is None
                     or not venue.available
@@ -1562,17 +1652,6 @@ class MusicQuizPlugin(PluginProvider):
                 if not await self._is_round_track(staged_item, track_uri):
                     return
                 self._staged_item_id = staged_item.queue_item_id
-                # A cold start decodes the track at full speed while the player has no lead
-                # yet; buffering it in the lobby lets the first round start from audio already
-                # in hand. Best effort: audio that is missing or lapsed in a long lobby is
-                # resolved on demand when the round starts.
-                await self.mass.streams.audio.get_audio_buffer(
-                    staged_item,
-                    reason="prepare_next",
-                    capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
-                    allow_provider_match=False,
-                    stop_paused_queues=False,
-                )
             except MusicAssistantError as err:
                 self.logger.debug("Could not prepare the first Music Quiz track: %s", err)
 
@@ -2198,6 +2277,11 @@ class MusicQuizPlugin(PluginProvider):
         return f"music_quiz_reveal_{self.instance_id}"
 
     @property
+    def _hint_timer_id(self) -> str:
+        """Return the task_id of the answering hint timer."""
+        return f"music_quiz_hint_{self.instance_id}"
+
+    @property
     def _advance_timer_id(self) -> str:
         """Return the task_id of the reveal auto-advance timer."""
         return f"music_quiz_advance_{self.instance_id}"
@@ -2220,6 +2304,7 @@ class MusicQuizPlugin(PluginProvider):
     def _cancel_timers(self) -> None:
         """Cancel all scheduled game timers."""
         self.mass.cancel_timer(self._reveal_timer_id)
+        self.mass.cancel_timer(self._hint_timer_id)
         self.mass.cancel_timer(self._advance_timer_id)
         self.mass.cancel_timer(self._track_end_timer_id)
         self._cancel_replay_auto_start(cancel_task=True)
@@ -2242,6 +2327,34 @@ def _playback_summary(game: MusicQuizGame) -> MusicQuizPlaybackSummary:
         "venue_player_id": game.config.venue_player_id if is_venue else None,
         "venue_player_name": game.config.venue_player_name if is_venue else None,
     }
+
+
+def _parse_title_reveal_options(
+    hint_speed: str, typo_tolerance: str
+) -> tuple[TitleRevealHintSpeed, TitleRevealTypoTolerance]:
+    """
+    Return the parsed Title Reveal hint speed and typo tolerance.
+
+    :param hint_speed: Requested hint speed.
+    :param typo_tolerance: Requested typo tolerance.
+    """
+    try:
+        parsed_hint_speed = TitleRevealHintSpeed(hint_speed)
+    except ValueError as err:
+        raise InvalidDataError(
+            "Unknown hint speed",
+            translation_key="music_quiz_invalid_hint_speed",
+            translation_owner=TRANSLATION_OWNER,
+        ) from err
+    try:
+        parsed_typo_tolerance = TitleRevealTypoTolerance(typo_tolerance)
+    except ValueError as err:
+        raise InvalidDataError(
+            "Unknown typo tolerance",
+            translation_key="music_quiz_invalid_typo_tolerance",
+            translation_owner=TRANSLATION_OWNER,
+        ) from err
+    return parsed_hint_speed, parsed_typo_tolerance
 
 
 def _clean_game_name(name: str | None) -> str | None:

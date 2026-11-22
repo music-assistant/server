@@ -237,6 +237,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Allow a few parallel fetches and leave YouTube to enforce its account allowance."""
         return 3
 
+    @property
+    def account_id(self) -> str | None:
+        """Return the username (or brand account id) the library is read from, lower-cased."""
+        return str(self.get_setup_value(CONF_USERNAME) or "").strip().lower() or None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (
@@ -1136,7 +1141,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             except MediaNotFoundError:
                 # personal playlist might not be available for all users, ignore if not found
                 return None
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one mix must not fail the others
                 self.logger.debug("Failed to fetch personal mix %s: %s", playlist_id, err)
                 return None
 

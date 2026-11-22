@@ -14,8 +14,8 @@ from auntie_sounds.playback import PlaybackService
 from auntie_sounds.schedule import ScheduleService
 from auntie_sounds.stations import StationService
 
-from music_assistant.providers.bbc_sounds import SUPPORTED_FEATURES, BBCSoundsProvider
-from music_assistant.providers.bbc_sounds.adaptor import Adaptor
+from music_assistant.providers.bbc_sounds import BrowseManager
+from music_assistant.providers.bbc_sounds.provider import BBCSoundsProvider
 
 RADIO_FOUR_SERVICE_ID = "bbc_radio_fourfm"
 
@@ -46,10 +46,16 @@ def provider(client: SoundsClient) -> BBCSoundsProvider:
     config.get_value.side_effect = lambda key, default=None: {
         "log_level": "GLOBAL",
     }.get(key, default)
-    instance = BBCSoundsProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    instance.adaptor = Adaptor(instance)
+    instance = BBCSoundsProvider(mass, manifest, config)
     instance.client = client
+    instance._create_managers()
     return instance
+
+
+@pytest.fixture
+def browse_manager(provider: BBCSoundsProvider) -> BrowseManager:
+    """Return the provider's real browse manager."""
+    return provider.browse_manager
 
 
 @pytest.fixture
@@ -73,6 +79,9 @@ def cache_tasks(provider: BBCSoundsProvider) -> list[asyncio.Future[Any]]:
 
     provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
         side_effect=_cache_get
+    )
+    provider.mass.cache.get = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda key, **_kwargs: store.get(key)
     )
     provider.mass.cache.set = AsyncMock(side_effect=_cache_set)  # type: ignore[method-assign]
     provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]

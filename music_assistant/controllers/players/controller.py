@@ -42,12 +42,16 @@ from music_assistant.constants import (
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_VOLUME_STEP,
 )
-from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
+from music_assistant.helpers.plugin_engines import (
+    EngineKind,
+    EngineSetting,
+    create_tts_engine_config_entries,
+)
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 
 from .announcements import AnnouncementsMixin
-from .audio_sources import AudioSourceMixin, AudioSourceSession
+from .audio_sources import AudioSourceSession, PlayerAudioSourcesMixin
 from .config_changes import ConfigChangesMixin
 from .group_commands import GroupCommandsMixin
 from .lifecycle import PlayerLifecycleMixin, _Attach
@@ -55,7 +59,7 @@ from .locks import PlayerLocksMixin
 from .merging import PlayerMergingMixin
 from .outputs import OutputsMixin
 from .playback import PlaybackMixin
-from .power import PowerMixin
+from .power import PowerMixin, _PowerOnWait
 from .protocol_linking import ProtocolLinkingMixin
 from .sleep_timer import SleepTimerMixin
 from .state_updates import StateUpdatesMixin
@@ -80,7 +84,7 @@ class PlayerController(
     PlayerLocksMixin,
     PlaybackMixin,
     OutputsMixin,
-    AudioSourceMixin,
+    PlayerAudioSourcesMixin,
     PowerMixin,
     VolumeMixin,
     GroupCommandsMixin,
@@ -90,6 +94,7 @@ class PlayerController(
     """Controller holding all logic to control the players it owns."""
 
     domain: str = "players"
+    engine_settings = (EngineSetting(EngineKind.SPEECH, CONF_ANNOUNCE_TTS_ENGINE),)
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""
@@ -139,6 +144,12 @@ class PlayerController(
         # the wait of each command for the switched-off members of a player, with the id
         # of that player and of those members: cancelling it calls the wait off
         self._member_power_ons: dict[asyncio.Future[list[bool]], tuple[str, frozenset[str]]] = {}
+        # the commands that wait for a player to start up after its power control was
+        # switched on, by player id
+        self._power_on_waits: dict[str, _PowerOnWait] = {}
+        # the players whose power control, which cuts their power, read off or was
+        # switched off, by player id: whether their power counts as cut by now
+        self._power_cuts: dict[str, bool] = {}
         # Subscribers for player state updates (called with player + changed_values)
         self._state_update_subscribers: list[
             Callable[[Player, dict[str, tuple[Any, Any]]], None]

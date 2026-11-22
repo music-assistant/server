@@ -179,6 +179,7 @@ def _control_config_entries() -> tuple[ConfigEntry, ...]:
             required=True,
             default_value=[],
             category="player_controls",
+            immediate_apply=True,
         )
         for conf_key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS, CONF_MUTE_CONTROLS)
     )
@@ -305,6 +306,9 @@ class HomeAssistantProvider(PluginProvider):
             await self._cleanup_failed_init()
             err_msg = str(err) or err.__class__.__name__
             raise SetupFailedError(err_msg) from err
+        except Exception:
+            await self._cleanup_failed_init()
+            raise
         self._listen_task = self.mass.create_task(self._hass_listener())
         try:
             # the registry subscription must be live before the first registry read, so no

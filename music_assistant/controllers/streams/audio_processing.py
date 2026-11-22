@@ -49,6 +49,8 @@ class AudioOutputPlan:
     input_format: AudioFormat
     handoff_format: AudioFormat | None = None
     dsp_config_id: str | None = None
+    # an intentionally hidden transform alters the samples
+    alters_audio: bool = False
 
 
 @dataclass(slots=True)
@@ -68,6 +70,7 @@ class _AudioOutputEntry:
     input_format: AudioFormat
     handoff_format: AudioFormat | None = None
     dsp_config_id: str | None = None
+    alters_audio: bool = False
 
 
 @dataclass(slots=True)
@@ -285,6 +288,7 @@ class AudioProcessingManager:
                 input_format=deepcopy(output_plan.input_format),
                 handoff_format=deepcopy(output_plan.handoff_format),
                 dsp_config_id=output_plan.dsp_config_id,
+                alters_audio=output_plan.alters_audio,
             )
             entry.details.player_ids = [destination_player_id]
             entries[destination_player_id] = entry
@@ -819,7 +823,7 @@ def _is_bit_perfect(
     output_format = output.details.output_format
     if output_format is None or queue_processing is None or queue_processing.pcm_format is None:
         return None
-    if item.alters_audio:
+    if item.alters_audio or output.alters_audio:
         return False
     if get_audio_quality(output_format) not in (AudioQuality.LOSSLESS, AudioQuality.HI_RES):
         return False

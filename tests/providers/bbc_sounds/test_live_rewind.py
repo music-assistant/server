@@ -1,7 +1,9 @@
 """Tests for playing a BBC programme that is on air now from the station's rewind window."""
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator, Callable
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
@@ -22,6 +24,7 @@ from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.players.power import _CONTINUES_PLAYBACK
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.live_rewind import (
     PROGRAMME_DATE_OFFSET,
@@ -30,7 +33,7 @@ from music_assistant.providers.bbc_sounds.live_rewind import (
     rewind_playlist_url,
     stream_programme,
 )
-from tests.common import use_real_create_task
+from tests.common import bare_player_controller, use_real_create_task
 
 LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://example.com/live/bbc_radio_one/bbc_radio_one.isml/"
@@ -323,7 +326,7 @@ class TestLiveProgrammeStreamDetails:
         programme_id = LiveProgrammeId("bbc_radio_one", "m0031hzl", now - 7200, now - 60)
         on_demand = Mock(spec=StreamDetails)
         catch_up = AsyncMock(return_value=on_demand)
-        monkeypatch.setattr(provider, "_catch_up_stream_details", catch_up)
+        monkeypatch.setattr(provider.stream_manager, "_catch_up_stream_details", catch_up)
 
         details = await provider.get_stream_details(programme_id.item_id, MediaType.PODCAST_EPISODE)
 
@@ -384,6 +387,23 @@ class TestLiveProgrammeLookup:
             station_id="bbc_radio_one", date=broadcast_date
         )
 
+    async def test_live_programme_is_matched_on_its_start_time(
+        self, provider: BBCSoundsProvider
+    ) -> None:
+        """Test a programme broadcast twice in a day is matched on its start, not its pid alone."""
+        start = datetime(2026, 9, 24, 7, 0, tzinfo=UTC)
+        end = start + timedelta(hours=3)
+        repeat = _schedule_item(start + timedelta(hours=12), end + timedelta(hours=12))
+        item = _schedule_item(start, end)
+        provider.client.schedules.get_schedule.return_value = Schedule(  # type: ignore[attr-defined]
+            id="schedule", sub_items=[repeat, item]
+        )
+        programme_id = LiveProgrammeId(
+            "bbc_radio_one", "m0031hzl", int(start.timestamp()), int(end.timestamp())
+        )
+
+        assert await provider.live_programme(programme_id) is item
+
 
 class TestContinueWithStation:
     """Tests for carrying on with the station live once a live programme ends."""
@@ -400,7 +420,7 @@ class TestContinueWithStation:
         station = Mock()
         monkeypatch.setattr(provider, "get_radio", AsyncMock(return_value=station))
 
-        await provider._continue_with_station(details, PROGRAMME)
+        await provider.stream_manager._continue_with_station(details, PROGRAMME)
 
         play_media.assert_awaited_once_with("queue_id", station, option=QueueOption.ADD)
 
@@ -423,7 +443,7 @@ class TestContinueWithStation:
         play_media = AsyncMock()
         monkeypatch.setattr(provider.mass.player_queues, "play_media", play_media)
 
-        await provider._continue_with_station(details, PROGRAMME)
+        await provider.stream_manager._continue_with_station(details, PROGRAMME)
 
         play_media.assert_not_called()
 
@@ -435,9 +455,13 @@ class TestContinueWithStation:
         async def _segments(**_kwargs: object) -> AsyncGenerator[bytes]:
             yield b"segment"
 
-        monkeypatch.setattr("music_assistant.providers.bbc_sounds.stream_programme", _segments)
+        monkeypatch.setattr(
+            "music_assistant.providers.bbc_sounds.streaming.stream_programme", _segments
+        )
         continue_with_station = Mock()
-        monkeypatch.setattr(provider, "_continue_with_station", continue_with_station)
+        monkeypatch.setattr(
+            provider.stream_manager, "_continue_with_station", continue_with_station
+        )
         create_task = Mock()
         monkeypatch.setattr(provider.mass, "create_task", create_task)
         details = _programme_details()
@@ -458,7 +482,9 @@ class TestContinueWithStation:
             details.buffer = Mock()
             yield b"segment"
 
-        monkeypatch.setattr("music_assistant.providers.bbc_sounds.stream_programme", _segments)
+        monkeypatch.setattr(
+            "music_assistant.providers.bbc_sounds.streaming.stream_programme", _segments
+        )
         create_task = Mock()
         monkeypatch.setattr(provider.mass, "create_task", create_task)
 
@@ -474,6 +500,7 @@ class TestSnapToLive:
     def create_task(self, provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch) -> Mock:
         """Capture the tasks the provider creates, with the queue seek mocked."""
         monkeypatch.setattr(provider.mass.player_queues, "seek", Mock())
+        monkeypatch.setattr(provider.mass.players, "without_member_power_on", nullcontext)
         create_task = Mock()
         monkeypatch.setattr(provider.mass, "create_task", create_task)
         return create_task
@@ -485,7 +512,9 @@ class TestSnapToLive:
         details = _programme_details()
         _playing_queue(monkeypatch, provider, details)
 
-        provider._snap_to_live(details, PROGRAMME, PROGRAMME.start + 1500, PROGRAMME.start + 500)
+        provider.stream_manager._snap_to_live(
+            details, PROGRAMME, PROGRAMME.start + 1500, PROGRAMME.start + 500
+        )
 
         provider.mass.player_queues.seek.assert_called_once_with("queue_id", 500)  # type: ignore[attr-defined]
         create_task.assert_called_once()
@@ -503,8 +532,31 @@ class TestSnapToLive:
         details = _programme_details()
         _playing_queue(monkeypatch, provider, details if streamed_by_queue else Mock())
 
-        provider._snap_to_live(
+        provider.stream_manager._snap_to_live(
             details, PROGRAMME, PROGRAMME.start + requested, PROGRAMME.start + 500
         )
 
         create_task.assert_not_called()
+
+
+async def test_the_seek_back_to_the_live_edge_switches_no_member_of_a_group_on(
+    provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The seek back to the live edge is no start of a group, so it switches nothing on."""
+    details = _programme_details()
+    _playing_queue(monkeypatch, provider, details)
+    use_real_create_task(provider.mass)
+    provider.mass.players = bare_player_controller()
+    seen: list[bool] = []
+
+    async def _seek(*_args: object) -> None:
+        seen.append(_CONTINUES_PLAYBACK.get())
+
+    monkeypatch.setattr(provider.mass.player_queues, "seek", _seek)
+
+    provider.stream_manager._snap_to_live(
+        details, PROGRAMME, PROGRAMME.start + 1500, PROGRAMME.start + 500
+    )
+    await asyncio.sleep(0)
+
+    assert seen == [True]

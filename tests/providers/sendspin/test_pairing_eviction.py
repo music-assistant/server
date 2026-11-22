@@ -53,6 +53,9 @@ class _EvictionServerApi:
         await self.pairing_store.remove_record(client_id)
         self.unpaired.append(client_id)
 
+    async def untrust_unpaired(self, client_id: str) -> None:
+        await self.pairing_store.remove_trusted_unpaired(client_id)
+
 
 class _FakeAuth:
     """Auth stand-in resolving only the account lookup the reconciliation needs."""
@@ -89,6 +92,7 @@ def _make_provider(
     provider._held_paired = set()
     provider._refused_here = {}
     provider._unencrypted_clients = set()
+    provider._multi_channel_speakers = {}
     refreshed: list[str] = []
 
     async def _record_refresh(client_id: str) -> None:

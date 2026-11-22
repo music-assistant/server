@@ -72,6 +72,9 @@ def airplay_provider(
     provider = AirPlayProvider(mock_mass, manifest_mock, config_mock)
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.get_transport_command_target.return_value = None
+    provider._speakers = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     return provider
 
 
@@ -109,6 +112,9 @@ def make_player(  # noqa: PLR0913
     """
     player = MagicMock()
     player.protocol_id = protocol_id
+    player.owner = player
+    player.renders_audio = True
+    player.session_endpoints = [player]
     player.name = "Test Player"
     # the player the protocol is attached to
     player.player.player_id = f"pl_{protocol_id}"
@@ -125,6 +131,7 @@ def make_player(  # noqa: PLR0913
         stream = MagicMock()
         stream.active_remote_id = active_remote
         stream.running = True
+        stream.start_pending = False
         stream.connected = stream_connected
         stream.prevent_playback = prevent_playback
         stream.session = MagicMock() if has_session else None

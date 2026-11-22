@@ -493,7 +493,7 @@ def _get_model_module_names() -> tuple[str, ...]:
                 music_assistant_models.__path__, prefix="music_assistant_models."
             )
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - importing a module can raise anything
         return ()
 
 

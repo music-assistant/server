@@ -47,6 +47,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
     UniqueList,
@@ -66,7 +67,6 @@ from music_assistant.helpers.external_ids import (
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.playlists import validate_playlist_block_move
 from music_assistant.helpers.throttle_retry import (
-    MAX_WAIT_TIME,
     RequestPriority,
     ThrottlerManager,
     current_priority,
@@ -103,6 +103,7 @@ from .constants import (
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
     CREDENTIALS_FILE,
+    GLOBAL_SEARCH_LIMIT,
     GLOBAL_SEARCH_TIMEOUT,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
     SOLOIST_DATA_DIR_NAME,
@@ -205,6 +206,7 @@ class SpotifyProvider(MusicProvider):
         # global session (heavy rate limited) and developer session (custom client id)
         self._global_session = self._create_session(
             "global",
+            "shared client",
             app_var("spotify_client_id"),
             self.login,
             self._clear_auth_info_global,
@@ -213,12 +215,13 @@ class SpotifyProvider(MusicProvider):
         )
         self._dev_session = self._create_session(
             "dev",
+            "custom Client ID",
             str(self.get_setup_value(CONF_CLIENT_ID) or ""),
             self.login_dev,
             self._clear_auth_info_dev,
             rate_limit=30,
             period=30,
-            fallback_for_playback=True,
+            has_fallback=True,
         )
 
         # playback authorization is independent of the Web API tokens
@@ -379,6 +382,8 @@ class SpotifyProvider(MusicProvider):
                 else None
             ),
             "dev_session_active": self.dev_session_active,
+            "global_session_rate_limit": self._global_session.get_diagnostics(),
+            "dev_session_rate_limit": self._dev_session.get_diagnostics(),
             "playback_backend": str(self.get_setup_value(CONF_PLAYBACK_BACKEND) or "librespot"),
             "audiobooks_supported": self._audiobooks_supported,
             **(await self.backend.get_diagnostics() if hasattr(self, "backend") else {}),
@@ -456,7 +461,7 @@ class SpotifyProvider(MusicProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
-        Browse Spotify items, including curated sections (new releases, genres & moods).
+        Browse Spotify items, including curated sections (new releases, genres & moods, recently played).
 
         :param path: The path to browse (e.g. provider_id:// or provider_id://new-releases).
         """
@@ -473,6 +478,9 @@ class SpotifyProvider(MusicProvider):
 
         if subpath == "categories":
             return await self._get_categories(locale)
+
+        if subpath == "recently-played":
+            return await self._get_recently_played()
 
         # For root path, add curated folders on top of standard library folders.
         # At the root the path always ends in "://", so curated paths can be appended directly.
@@ -494,11 +502,43 @@ class SpotifyProvider(MusicProvider):
                     translation_key="genres_and_moods",
                     is_playable=False,
                 ),
+                BrowseFolder(
+                    item_id="recently-played",
+                    provider=self.instance_id,
+                    path=f"{path}recently-played",
+                    name="Recently Played",
+                    translation_key="recently_played",
+                    is_playable=True,
+                ),
             ]
             standard = await super().browse(path)
             return [*curated, *standard]
 
         return await super().browse(path)
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get Spotify's recommendation row descriptors without fetching items."""
+        return [
+            RecommendationFolder(
+                item_id="recently_played",
+                provider=self.instance_id,
+                name="Recently played on Spotify",
+                translation_key="recently_played",
+                icon="mdi-history",
+            )
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single Spotify recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == "recently_played":
+            return UniqueList(await self._get_recently_played())
+        return UniqueList()
 
     @use_cache(cache_checksum="global_session_v1")
     async def search(
@@ -516,6 +556,8 @@ class SpotifyProvider(MusicProvider):
             return searchresult
 
         search_query = search_query.replace("'", "")
+        if not self.dev_session_active:
+            limit = min(limit, GLOBAL_SEARCH_LIMIT)
         searches: list[tuple[list[MediaType], bool]] = [(media_types, False)]
         if self.dev_session_active and MediaType.PLAYLIST in media_types:
             # Spotify returns the playlists a developer app may not access (its own
@@ -665,7 +707,7 @@ class SpotifyProvider(MusicProvider):
             except MediaNotFoundError:
                 raise NotImplementedError("Episode not found on Spotify")
             except (ResourceTemporarilyUnavailable, RetriesExhausted, aiohttp.ClientError) as e:
-                self.logger.debug(f"Error fetching episode {item_id}: {e}")
+                self.logger.debug("Error fetching episode %s: %s", item_id, e)
                 raise NotImplementedError("Unable to fetch episode data from Spotify")
 
             if (
@@ -724,7 +766,7 @@ class SpotifyProvider(MusicProvider):
                 RetriesExhausted,
                 aiohttp.ClientError,
             ) as e:
-                self.logger.debug(f"Failed to get audiobook resume position for {item_id}: {e}")
+                self.logger.debug("Failed to get audiobook resume position for %s: %s", item_id, e)
                 raise NotImplementedError("Unable to get audiobook resume position from Spotify")
 
         else:
@@ -757,8 +799,11 @@ class SpotifyProvider(MusicProvider):
                 completion_percentage = 0
 
             self.logger.debug(
-                f"Episode played: {prov_item_id} at {safe_position}s "
-                f"({completion_percentage:.1f}%, fully_played: {fully_played})"
+                "Episode played: %s at %ss (%.1f%%, fully_played: %s)",
+                prov_item_id,
+                safe_position,
+                completion_percentage,
+                fully_played,
             )
 
             # Note: No API exists to sync playback position back to Spotify for episodes
@@ -776,8 +821,11 @@ class SpotifyProvider(MusicProvider):
                 completion_percentage = 0
 
             self.logger.debug(
-                f"Audiobook played: {prov_item_id} at {safe_position}s "
-                f"({completion_percentage:.1f}%, fully_played: {fully_played})"
+                "Audiobook played: %s at %ss (%.1f%%, fully_played: %s)",
+                prov_item_id,
+                safe_position,
+                completion_percentage,
+                fully_played,
             )
 
             # No API exists to sync playback position back to Spotify for audiobooks:
@@ -1305,24 +1353,25 @@ class SpotifyProvider(MusicProvider):
         limit: int,
         searchresult: SearchResults,
         use_global_session: bool,
+        offset: int = 0,
     ) -> None:
         """
         Page through Spotify search results for the given media types.
 
         :param search_query: Search query.
         :param media_types: The media types to search for.
-        :param limit: Number of items to return per media type.
+        :param limit: Number of results per media type to page up to, those before offset included.
         :param searchresult: The search result to add the found items to.
         :param use_global_session: Force use of global session (for features not available on dev).
+        :param offset: Index of the first result to fetch.
         """
         searchtype = self._build_search_types(media_types)
         if not searchtype:
             return
 
-        offset = 0
         page_limit = min(limit, 10)
 
-        while True:
+        while offset < limit:
             api_result = await self._get_data(
                 "search",
                 q=search_query,
@@ -1334,13 +1383,14 @@ class SpotifyProvider(MusicProvider):
             items_received = self._process_search_results(api_result, searchresult)
 
             offset += page_limit
-            if offset >= limit or items_received < page_limit:
+            if items_received < page_limit:
                 break
 
     async def _search_playlists_on_global_session(
         self, search_query: str, limit: int, searchresult: SearchResults
     ) -> None:
         """Search playlists on the global session, topped up by the dev session if it fails."""
+        limit = min(limit, GLOBAL_SEARCH_LIMIT)
         global_result = SearchResults()
         try:
             async with asyncio.timeout(GLOBAL_SEARCH_TIMEOUT):
@@ -1349,10 +1399,15 @@ class SpotifyProvider(MusicProvider):
                 )
         except RetriesExhausted, TimeoutError:
             self.logger.debug("Global session is slow or rate limited, topping up on the dev one")
-            if (missing := limit - len(UniqueList(global_result.playlists))) > 0:
-                await self._search_pages(
-                    search_query, [MediaType.PLAYLIST], missing, global_result, False
-                )
+            # continue after the playlists the global session did return
+            await self._search_pages(
+                search_query,
+                [MediaType.PLAYLIST],
+                limit,
+                global_result,
+                False,
+                offset=len(global_result.playlists),
+            )
         searchresult.playlists = UniqueList(global_result.playlists)[:limit]
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
@@ -1584,6 +1639,30 @@ class SpotifyProvider(MusicProvider):
             if item and item.get("id") and item.get("name")
         ]
 
+    @use_cache(300)
+    async def _get_recently_played(self) -> list[Track]:
+        """Get the user's recently played tracks from Spotify without mutating the playlog."""
+        try:
+            result = await self._get_data("me/player/recently-played", limit=50)
+        except MediaNotFoundError:
+            return []
+        tracks: list[Track] = []
+        seen_ids: set[str] = set()
+        for entry in result.get("items") or []:
+            if not isinstance(entry, dict):
+                continue
+            track_obj = entry.get("track")
+            if (
+                not isinstance(track_obj, dict)
+                or not (track_id := track_obj.get("id"))
+                or track_obj.get("is_local")
+                or track_id in seen_ids
+            ):
+                continue
+            seen_ids.add(track_id)
+            tracks.append(parse_track(track_obj, self))
+        return tracks
+
     async def _get_liked_songs_playlist(self) -> Playlist:
         if self._sp_user is None:
             raise LoginFailed("User info not available - not logged in")
@@ -1744,7 +1823,7 @@ class SpotifyProvider(MusicProvider):
                 audiobook.duration = int(total_duration_seconds)
 
         except (MediaNotFoundError, ResourceTemporarilyUnavailable, ProviderUnavailableError) as e:
-            self.logger.warning(f"Failed to get chapters for audiobook {audiobook.item_id}: {e}")
+            self.logger.warning("Failed to get chapters for audiobook %s: %s", audiobook.item_id, e)
 
     @use_cache(43200)  # 12 hours - balances freshness with performance
     async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
@@ -2000,58 +2079,64 @@ class SpotifyProvider(MusicProvider):
         cooldown = self._dev_session.throttler.cooldown_remaining
         priority = current_priority()
         # background work stays on the custom Client ID, so it never eats into the budget
-        # of the shared client. A user action waits out a short limit, playback does not
-        # wait for a limit at all and takes the shared client as soon as there is one.
-        if priority is RequestPriority.LOW or cooldown <= (
-            0 if priority is RequestPriority.HIGH else MAX_WAIT_TIME
-        ):
+        # of the shared client. User actions and playback do not wait for a limit at all
+        # and take the shared client as soon as there is one.
+        if priority is RequestPriority.LOW or cooldown <= 0:
             return self._dev_session
         if (now := time.monotonic()) >= self._dev_fallback_logged_until:
             self._dev_fallback_logged_until = now + cooldown
             self.logger.info(
-                "Spotify limits the custom Client ID for another %d minutes, "
+                "Spotify limits the custom Client ID for another %d seconds, "
                 "user actions use the shared client meanwhile",
-                math.ceil(cooldown / 60),
+                math.ceil(cooldown),
             )
         return self._global_session
 
     def _create_session(
         self,
         name: str,
+        label: str,
         client_id: str,
         get_auth: Callable[[], Awaitable[dict[str, Any]]],
         on_unauthorized: Callable[[], None],
         rate_limit: int,
         period: float,
-        fallback_for_playback: bool = False,
+        has_fallback: bool = False,
     ) -> SpotifySession:
         """
         Return a session of this instance on its stored throttler, created on first use.
 
         :param name: Name of the session.
+        :param label: Readable name of the Spotify app of the session, for logging.
         :param client_id: The Spotify app the session speaks for.
         :param get_auth: Returns a valid access token of the session.
         :param on_unauthorized: Drops the cached access token of the session.
         :param rate_limit: Number of requests the session may make per period.
         :param period: Length of the period in seconds.
-        :param fallback_for_playback: Whether another session serves playback while this one
-            is rate limited.
+        :param has_fallback: Whether another session serves user actions and playback while
+            this one is rate limited.
         """
         # entries of apps this instance spoke for before stay until the instance is removed:
         # a failed reconfiguration rolls the setup back to the previous app, limit included
         throttler = _THROTTLERS.setdefault(
             (self.instance_id, name, client_id),
-            ThrottlerManager(rate_limit=rate_limit, period=period),
+            ThrottlerManager(
+                rate_limit=rate_limit,
+                period=period,
+                # a request the other session serves meanwhile does not wait out a cooldown
+                foreground_waits_out_cooldown=not has_fallback,
+            ),
         )
         throttler.set_rate_limit(rate_limit=rate_limit, period=period)
         return SpotifySession(
             self.mass,
             self.logger,
             name,
+            label,
             throttler,
             get_auth,
             on_unauthorized,
-            fallback_for_playback=fallback_for_playback,
+            has_fallback=has_fallback,
         )
 
     def _stored_account(self) -> dict[str, Any] | None:

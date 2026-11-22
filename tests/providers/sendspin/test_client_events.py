@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -38,6 +38,7 @@ def _provider(*, wanted: bool = True) -> tuple[SendspinProvider, MagicMock]:
     provider._pending_unregisters = {}
     provider._client_event_versions = {}
     provider._client_event_task_counts = {}
+    provider._multi_channel_speakers = {}
     provider._await_client_hello = AsyncMock(return_value=True)  # type: ignore[method-assign]
     provider._auto_trust_guest_access = AsyncMock()  # type: ignore[method-assign]
     provider._apply_hass_esphome_enrichment = AsyncMock()  # type: ignore[method-assign]
@@ -130,6 +131,7 @@ def _bridge_client(*, wanted: bool) -> tuple[SendspinPlayer, list[Any]]:
     protocol._player = None
     protocol._attr_underlying_protocol_id = "apaabbccddeeff"
     protocol._on_detach_callbacks = []
+    protocol._provider = MagicMock()
     protocol.playback_session = MagicMock(close=AsyncMock())
     protocol.logger = logging.getLogger("test.sendspin.client_events")
     tasks: list[Any] = []
@@ -156,6 +158,24 @@ async def test_a_bridge_output_switched_off_takes_its_bridge_along(
     else:
         evaluate.assert_called_once_with(protocol.mass, "apaabbccddeeff")
         assert tasks == ["evaluation"]
+
+
+async def test_a_bridge_output_whose_protocol_is_switched_off_lets_its_device_go(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bridge client detached with the protocol it rides on lets the device be bridged again."""
+    evaluate = MagicMock(return_value="evaluation")
+    monkeypatch.setattr(player_module, "evaluate_bridge_of", evaluate)
+    protocol, tasks = _bridge_client(wanted=True)
+    config = cast("MagicMock", protocol.mass.config)
+    config.is_protocol_switched_on.return_value = False
+
+    with patch.object(SendspinPlayer, "_unsubscribe_client_callbacks"):
+        await protocol.on_detach()
+
+    config.is_protocol_switched_on.assert_called_once_with("apaabbccddeeff")
+    evaluate.assert_called_once_with(protocol.mass, "apaabbccddeeff")
+    assert tasks == ["evaluation"]
 
 
 @pytest.mark.parametrize("attached", [True, False])

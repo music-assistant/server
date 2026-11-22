@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import replace
@@ -44,6 +45,7 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
 from music_assistant.controllers.config.flows import SetupFlowAccess
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import CONF_BOUND_ACCOUNT_ID
 from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
@@ -54,6 +56,7 @@ from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.setup_flow import (
     AbortFlow,
     SetupFlowContext,
+    SetupFlowError,
     SetupSession,
     StepExpiredError,
 )
@@ -119,6 +122,8 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
         register_dynamic_route=register_dynamic_route,
         unregister_dynamic_route=lambda path, _method="*": routes.pop(path, None),
         routes=routes,
+        # an unloaded instance drops its page addresses
+        provider_pages=MagicMock(),
     )
     mass_minimal.streams = SimpleNamespace(publish_ip="127.0.0.1")  # type: ignore[assignment]
     mass_minimal.music = MagicMock()
@@ -131,6 +136,11 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     # binding it to the mock is only sound because the method does not read self
     mass_minimal.music.library_supported = MethodType(
         MusicController.library_supported, mass_minimal.music
+    )
+    # the real implementation, as a provider load refuses another account through it
+    mass_minimal.music.mass = mass_minimal
+    mass_minimal.music.check_provider_account = MethodType(
+        MusicController.check_provider_account, mass_minimal.music
     )
     players = use_player_registry(mass_minimal)
     players.on_player_config_change = AsyncMock()
@@ -560,6 +570,25 @@ async def test_submit_returns_next_form_step(flow_mass: MusicAssistant) -> None:
 
 
 @pytest.mark.usefixtures("flow_events")
+async def test_finish_stores_options_on_the_new_provider(flow_mass: MusicAssistant) -> None:
+    """Option values handed to finish() are stored as the new instance's config values."""
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([USERNAME_ENTRY])
+        await session.finish(values, {"region": "us"})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"username": "marcel"})
+    assert finish_step.type == FlowStepType.FINISH
+    raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
+    assert raw_conf["values"] == {"region": "us"}
+    assert set(raw_conf["setup_data"]) == {"username"}
+
+
 async def test_finish_failure_rolls_back_provider_config(flow_mass: MusicAssistant) -> None:
     """A failing provider load on finish removes the created config again."""
 
@@ -629,7 +658,7 @@ async def test_finish_failure_author_retry_loop(flow_mass: MusicAssistant) -> No
             try:
                 await session.finish(values)
                 return
-            except Exception as err:
+            except SetupFlowError as err:
                 values = await session.form([USERNAME_ENTRY], errors={"base": str(err)})
 
     load_mock = AsyncMock(side_effect=[LoginFailed("bad creds"), None])
@@ -1444,8 +1473,38 @@ async def test_reconfigure_prefill_and_success(flow_mass: MusicAssistant) -> Non
     assert raw_conf["last_error"] is None
 
 
+async def test_reconfigure_merges_options_into_the_values(flow_mass: MusicAssistant) -> None:
+    """Option values handed to a reconfigure's finish() update the stored values, keeping the rest."""
+    instance_id = FAKE_DOMAIN
+    flow_mass.config.set(
+        f"{CONF_PROVIDERS}/{instance_id}",
+        {
+            "type": "music",
+            "domain": FAKE_DOMAIN,
+            "instance_id": instance_id,
+            "enabled": True,
+            "values": {"region": "eu", "port": 8080},
+            "setup_data": {},
+        },
+    )
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([ConfigEntry(key="token", type=ConfigEntryType.STRING)])
+        await session.finish(values, {"region": "us"})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.reconfigure_provider(instance_id)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"token": "new"})
+    assert finish_step.type == FlowStepType.FINISH
+    raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
+    assert raw_conf["values"] == {"region": "us", "port": 8080}
+
+
 async def test_reconfigure_failure_restores_setup_data(flow_mass: MusicAssistant) -> None:
-    """A failing reload on reconfigure finish restores the previous setup_data."""
+    """A failing reload on reconfigure finish restores the previous setup_data and options."""
     instance_id = FAKE_DOMAIN
     original_setup_data = {"token": flow_mass.config.encrypt_string("old-secret")}
     flow_mass.config.set(
@@ -1455,14 +1514,14 @@ async def test_reconfigure_failure_restores_setup_data(flow_mass: MusicAssistant
             "domain": FAKE_DOMAIN,
             "instance_id": instance_id,
             "enabled": True,
-            "values": {},
+            "values": {"region": "eu"},
             "setup_data": dict(original_setup_data),
         },
     )
 
     async def run_setup(session: SetupSession) -> None:
         values = await session.form([ConfigEntry(key="token", type=ConfigEntryType.STRING)])
-        await session.finish(values)
+        await session.finish(values, {"region": "us"})
 
     with (
         _use_flow(flow_mass, run_setup),
@@ -1476,6 +1535,190 @@ async def test_reconfigure_failure_restores_setup_data(flow_mass: MusicAssistant
     assert abort_step.reason == "still bad"
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
     assert raw_conf["setup_data"] == original_setup_data
+    assert raw_conf["values"] == {"region": "eu"}
+
+
+class _AccountProvider(_FlowlessProvider):
+    """A provider signed in to the account whose token its config holds."""
+
+    account = ""
+
+    @property
+    def account_id(self) -> str | None:
+        """Return the account whose token the config holds, None without one."""
+        return self.account or None
+
+
+def _use_account_provider() -> Any:
+    """Patch the module loader so the fake domain loads an _AccountProvider."""
+
+    async def setup(
+        mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> _AccountProvider:
+        provider = _AccountProvider(mass, manifest, config)
+        setup_data = mass.config.get(f"{CONF_PROVIDERS}/{config.instance_id}/setup_data")
+        provider.account = mass.config.decrypt_string(setup_data["token"])
+        return provider
+
+    return patch(
+        "music_assistant.mass.load_provider_module",
+        AsyncMock(return_value=SimpleNamespace(setup=setup)),
+    )
+
+
+def _store_account_provider(
+    flow_mass: MusicAssistant, account: str, bound_account: str | None = None
+) -> str:
+    """Store the config of an instance of the fake domain holding the given account's token."""
+    instance_id = f"{FAKE_DOMAIN}--a1b2c3d4"
+    setup_data = {"token": flow_mass.config.encrypt_string(account)}
+    if bound_account is not None:
+        setup_data[CONF_BOUND_ACCOUNT_ID] = flow_mass.config.encrypt_string(bound_account)
+    flow_mass.config.set(
+        f"{CONF_PROVIDERS}/{instance_id}",
+        {
+            "type": "music",
+            "domain": FAKE_DOMAIN,
+            "instance_id": instance_id,
+            "enabled": True,
+            "values": {},
+            "setup_data": setup_data,
+        },
+    )
+    # what the reconfigure's unload of the instance calls on
+    cast("Any", flow_mass.music).on_provider_unload = AsyncMock()
+    flow_mass.discovery = MagicMock(run_provider_discovery=AsyncMock())
+    return instance_id
+
+
+async def _load_account_provider(flow_mass: MusicAssistant, account: str) -> str:
+    """Add and load an instance of the fake domain signed in to the given account."""
+    instance_id = _store_account_provider(flow_mass, account)
+    await flow_mass.load_provider_config(await flow_mass.config.get_provider_config(instance_id))
+    return instance_id
+
+
+async def _reconfigure_account(
+    flow_mass: MusicAssistant, instance_id: str, account: str
+) -> SetupFlowStep:
+    """Sign the instance in to the given account through its reconfigure flow."""
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([ConfigEntry(key="token", type=ConfigEntryType.STRING)])
+        await session.finish(values)
+
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.reconfigure_provider(instance_id)
+        return await flow_mass.config.submit_setup_flow(step.flow_id, {"token": account})
+
+
+def _signed_in_account(flow_mass: MusicAssistant, instance_id: str) -> str | None:
+    """Return the account the loaded instance is signed in to, None when it is not loaded."""
+    provider = flow_mass.get_provider(instance_id)
+    return provider.account if isinstance(provider, _AccountProvider) else None
+
+
+def _bound_account(flow_mass: MusicAssistant, instance_id: str) -> ConfigValueType:
+    return flow_mass.config.get_provider_setup_value(instance_id, CONF_BOUND_ACCOUNT_ID)
+
+
+async def test_first_load_binds_the_account(flow_mass: MusicAssistant) -> None:
+    """The first load of an instance binds it to the account it signed in to."""
+    with _use_account_provider():
+        instance_id = await _load_account_provider(flow_mass, "account-a")
+
+    assert _signed_in_account(flow_mass, instance_id) == "account-a"
+    assert _bound_account(flow_mass, instance_id) == "account-a"
+
+
+async def test_reconfigure_to_the_same_account_succeeds(flow_mass: MusicAssistant) -> None:
+    """Signing in again to the bound account, e.g. after a login expired, is accepted."""
+    with _use_account_provider():
+        instance_id = await _load_account_provider(flow_mass, "account-a")
+        step = await _reconfigure_account(flow_mass, instance_id, "account-a")
+
+    assert step.type == FlowStepType.FINISH, step
+    assert _signed_in_account(flow_mass, instance_id) == "account-a"
+    assert _bound_account(flow_mass, instance_id) == "account-a"
+
+
+async def test_reconfigure_to_another_account_is_refused(flow_mass: MusicAssistant) -> None:
+    """Another account is refused and the instance comes back up on the bound one."""
+    with _use_account_provider():
+        instance_id = await _load_account_provider(flow_mass, "account-a")
+        step = await _reconfigure_account(flow_mass, instance_id, "account-b")
+        assert step.type == FlowStepType.ABORT, step
+        assert step.reason_translation is not None
+        assert step.reason_translation.key == "provider_account_changed"
+
+    assert _signed_in_account(flow_mass, instance_id) == "account-a"
+    conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
+    assert flow_mass.config.decrypt_string(conf["setup_data"]["token"]) == "account-a"
+    assert _bound_account(flow_mass, instance_id) == "account-a"
+    assert conf.get("last_error") is None
+
+
+async def test_refused_reconfigure_returns_once_the_previous_account_is_back(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A flow retrying after the refusal never runs next to the recovery load."""
+
+    async def slow_init(_provider: _AccountProvider) -> None:
+        await asyncio.sleep(0.05)
+
+    with (
+        _use_account_provider(),
+        patch.object(_AccountProvider, "handle_async_init", slow_init),
+    ):
+        instance_id = await _load_account_provider(flow_mass, "account-a")
+        step = await _reconfigure_account(flow_mass, instance_id, "account-b")
+        assert step.type == FlowStepType.ABORT, step
+        # no recovery load is still in flight when the flow gets its error back
+        assert _signed_in_account(flow_mass, instance_id) == "account-a"
+        step = await _reconfigure_account(flow_mass, instance_id, "account-a")
+        assert step.type == FlowStepType.FINISH, step
+
+    assert _signed_in_account(flow_mass, instance_id) == "account-a"
+
+
+async def test_provider_without_account_is_not_bound(flow_mass: MusicAssistant) -> None:
+    """An instance that does not report its account is never bound or refused."""
+    with _use_account_provider():
+        instance_id = await _load_account_provider(flow_mass, "")
+        step = await _reconfigure_account(flow_mass, instance_id, "")
+
+    assert step.type == FlowStepType.FINISH, step
+    assert flow_mass.get_provider(instance_id) is not None
+    setup_data = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}/setup_data")
+    assert CONF_BOUND_ACCOUNT_ID not in setup_data
+
+
+async def test_bound_provider_that_stops_reporting_its_account_keeps_the_binding(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A load that cannot tell its account is accepted and leaves the binding in place."""
+    with _use_account_provider():
+        instance_id = _store_account_provider(flow_mass, "", bound_account="account-a")
+        await flow_mass.load_provider_config(
+            await flow_mass.config.get_provider_config(instance_id)
+        )
+
+    assert flow_mass.get_provider(instance_id) is not None
+    assert _bound_account(flow_mass, instance_id) == "account-a"
+
+
+async def test_load_on_another_account_fails_with_the_reason(flow_mass: MusicAssistant) -> None:
+    """A plain load signed in to another account leaves the instance down with the reason."""
+    with _use_account_provider():
+        instance_id = _store_account_provider(flow_mass, "account-b", bound_account="account-a")
+        await flow_mass.load_provider(instance_id, allow_retry=True)
+
+    assert flow_mass.get_provider(instance_id) is None
+    conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
+    assert conf["last_error"]["translation_key"] == "provider_account_changed"
+    assert _bound_account(flow_mass, instance_id) == "account-a"
+    # a different account does not resolve itself, so no retry is scheduled
+    assert f"load_provider_{instance_id}" not in flow_mass._tracked_timers
 
 
 async def test_reconfigure_without_flow_module_aborts(flow_mass: MusicAssistant) -> None:
@@ -1720,6 +1963,24 @@ async def test_player_setup_flow_finish(flow_mass: MusicAssistant) -> None:
     )
     config_event = await _wait_for(lambda: next(iter(events), None))
     assert config_event.object_id == PLAYER_ID
+
+
+async def test_player_setup_refuses_options(flow_mass: MusicAssistant) -> None:
+    """A player flow can not store option values, so handing them to finish() fails it."""
+
+    class _OptionsProtocol(MockProtocol):
+        async def run_setup_flow(self, session: SetupSession) -> None:
+            values = await session.form([ConfigEntry(key="pin", type=ConfigEntryType.STRING)])
+            await session.finish(values, {"volume": 10})
+
+    _attach_player(flow_mass, own_class=_OptionsProtocol)
+
+    step = await flow_mass.config.setup_player(PLAYER_ID)
+    abort_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"pin": "1234"})
+
+    assert abort_step.type == FlowStepType.ABORT
+    assert _stored_setup_data(flow_mass, "own_1") == {}
+    cast("AsyncMock", flow_mass.players.on_protocol_config_change).assert_not_awaited()
 
 
 async def test_player_setup_apply_failure_restores_setup_data(
@@ -2106,7 +2367,8 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         assert "accounts.spotify.com/authorize" in step.url
         # the fixed hosted redirect is used, with the local callback carried in `state`
         assert "music-assistant.io%2Fcallback" in step.url
-        assert step.flow_id in step.url
+        state = parse_qs(urlsplit(step.url).query)["state"][0]
+        assert step.flow_id in base64.urlsafe_b64decode(state + "=" * (-len(state) % 4)).decode()
         session = flow_mass.config._setup_flows[step.flow_id].session
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
         # playback needs an explicit backend choice; stay on librespot here

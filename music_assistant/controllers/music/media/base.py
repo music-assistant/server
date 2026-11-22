@@ -7,7 +7,7 @@ import logging
 import random
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -135,7 +135,15 @@ from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
+    from collections.abc import (
+        AsyncGenerator,
+        Awaitable,
+        Callable,
+        Coroutine,
+        Iterator,
+        Mapping,
+        Sequence,
+    )
 
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
@@ -198,10 +206,19 @@ EXTERNAL_ID_LOOKUP_ERRORS: Final[tuple[type[Exception], ...]] = (
     *PROVIDER_FETCH_ERRORS,
 )
 # a provider or MusicBrainz that could not answer a lookup, which says nothing about
-# whether it has the item
+# whether it has the item; a lookup reports it as one of these
 TEMPORARY_LOOKUP_ERRORS: Final[tuple[type[MusicAssistantError], ...]] = (
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+)
+# a source that timed out, or whose connection or response broke down, could not answer
+# either; a lookup reports it as ResourceTemporarilyUnavailable
+UNREACHABLE_SOURCE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    TimeoutError,
+    aiohttp.ContentTypeError,
+    aiohttp.ClientConnectionError,
+    aiohttp.ClientPayloadError,
 )
 # expected failures of re-reading a library item from one of its providers. On top of the
 # fetch failures: a file that can not be read from a (network) share
@@ -823,6 +840,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :raises ResourceTemporarilyUnavailable: An external item was not found while a
             music provider or MusicBrainz could not answer.
         :raises RetriesExhausted: As above, after the retries ran out.
+        :raises ProviderUnavailableError: As above, for a source that is unavailable.
         """
         if provider_instance_id_or_domain == EXTERNAL_ID_PROVIDER:
             return await self._get_external_item(item_id, allow_update_metadata)
@@ -1257,6 +1275,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :raises ResourceTemporarilyUnavailable: The item was not found while a music
             provider or MusicBrainz could not answer.
         :raises RetriesExhausted: As above, after the retries ran out.
+        :raises ProviderUnavailableError: As above, for a source that is unavailable.
         """
         # an external id is not unique, so the first library item on the user's sources wins
         for library_item in await self.get_library_items_by_external_id(
@@ -1614,8 +1633,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Link a library item to the music providers MusicBrainz knows it on.
 
-        Only providers the item has no mapping for yet are linked, and a linked item that
-        another library item already holds is left alone rather than merged.
+        Only providers the item has no mapping for yet are linked. A linked item that another
+        library item already holds is left alone, unless MusicBrainz says that library item is
+        the same one, which is then merged into this one.
 
         :param db_item: The library item to link.
         :param urls: The item's URLs on MusicBrainz (its URL relations).
@@ -1630,7 +1650,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for candidate in candidates
             if await self._verify_musicbrainz_mapping(db_item, candidate)
         ]
-        added = await self.add_unclaimed_provider_mappings(db_item.item_id, verified)
+        merged = [
+            candidate
+            for candidate in verified
+            if await self._merge_musicbrainz_duplicate(db_item, candidate)
+        ]
+        added = merged + await self.add_unclaimed_provider_mappings(db_item.item_id, verified)
         db_item.provider_mappings.update(added)
         self.logger.debug(
             "Linked %s %s via MusicBrainz to: %s (already mapped: %s, unavailable: %s)",
@@ -2452,6 +2477,41 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         return True
 
+    def _is_musicbrainz_duplicate(self, db_item: ItemCls, holder: ItemCls) -> bool:
+        """
+        Return True if another library item holding a linked provider item is the same item.
+
+        Override in a subclass whose MusicBrainz identity tells two library items apart.
+
+        :param db_item: The library item being linked.
+        :param holder: The other library item that holds the linked provider item.
+        """
+        return False
+
+    async def _merge_musicbrainz_duplicate(
+        self, db_item: ItemCls, mapping: ProviderMapping
+    ) -> bool:
+        """Merge the library item holding a linked mapping into the item if it is the same."""
+        holder = await self.get_library_item_by_prov_id(mapping.item_id, mapping.provider_instance)
+        if (
+            holder is None
+            or int(holder.item_id) == int(db_item.item_id)
+            or not self._is_musicbrainz_duplicate(db_item, holder)
+        ):
+            return False
+        self.logger.debug(
+            "Merging %s item id %s into item id %s: MusicBrainz links both to %s/%s",
+            self.media_type.value,
+            holder.item_id,
+            db_item.item_id,
+            mapping.provider_domain,
+            mapping.item_id,
+        )
+        merged_item = await self.merge_library_items(db_item.item_id, holder.item_id)
+        db_item.provider_mappings.update(merged_item.provider_mappings)
+        db_item.date_added = merged_item.date_added
+        return True
+
     def _musicbrainz_link_provider(self) -> MusicbrainzProvider | None:
         """Return the MusicBrainz provider when it is loaded and linking through it is enabled."""
         if not self.mass.metadata.link_providers_via_musicbrainz:
@@ -2585,8 +2645,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     prov.domain,
                     err,
                 )
-                if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                    could_not_answer = err
+                if unanswered := self._unanswered_lookup_error(err, prov.name):
+                    could_not_answer = unanswered
                 continue
             if result:
                 return result
@@ -2641,8 +2701,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider.instance_id,
                 err,
             )
-            if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                raise
+            if unanswered := self._unanswered_lookup_error(err, provider.name):
+                raise unanswered
         return None
 
     @final
@@ -2669,6 +2729,67 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 category=CACHE_CATEGORY_EXTERNAL_IDS,
             )
             return
+
+    @final
+    def _unanswered_lookup_error(
+        self, err: Exception, source: str, named: bool = True
+    ) -> MusicAssistantError | None:
+        """
+        Return the error a lookup reports for a source that failed, if it could not answer.
+
+        A source that could not answer says nothing about whether it has the item.
+
+        :param err: The error the source failed with.
+        :param source: The source, for the error a timeout or a broken connection becomes.
+        :param named: Whether source is the name the user knows the source by; a source that
+            is only described gets the standard text for a temporarily unavailable resource.
+        :returns: The source's own error, or ResourceTemporarilyUnavailable for a timeout or a
+            broken connection; None when the failure means the source can not supply the item.
+        """
+        if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
+            return err
+        if isinstance(err, UNREACHABLE_SOURCE_ERRORS):
+            return self._unreachable_source_error(source, err, named)
+        return None
+
+    @final
+    @contextmanager
+    def _musicbrainz_request(self) -> Iterator[None]:
+        """
+        Run a request of a lookup to MusicBrainz.
+
+        :raises ResourceTemporarilyUnavailable: MusicBrainz timed out, could not be reached or
+            answered with a server error.
+        """
+        try:
+            yield
+        except UNREACHABLE_SOURCE_ERRORS as err:
+            raise self._unreachable_source_error("MusicBrainz", err) from err
+        except aiohttp.ClientResponseError as err:
+            if err.status < 500:
+                raise
+            raise self._unreachable_source_error("MusicBrainz", err) from err
+
+    @final
+    def _unreachable_source_error(
+        self, source: str, err: Exception, named: bool = True
+    ) -> ResourceTemporarilyUnavailable:
+        """
+        Return the error a lookup reports for a source that timed out or could not be reached.
+
+        :param source: The source.
+        :param err: The error the source failed with, which becomes the cause.
+        :param named: Whether source is the name the user knows the source by, which the
+            translated text then shows.
+        """
+        error = ResourceTemporarilyUnavailable(
+            f"Could not reach {source}",
+            translation_key="service_could_not_be_reached" if named else None,
+            translation_args=[source] if named else None,
+            translation_owner=self.translation_owner if named else None,
+        )
+        error.__cause__ = err
+        return error
 
     @final
     def _external_id_cache_key(self, external_id: str, external_id_type: ExternalID) -> str:
@@ -2712,11 +2833,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         media_type = media_type or self.media_type
         table_alias = table_alias or self.db_table
+        # without table statistics sqlite picks the unique index, which scans every id of the
+        # media type per item, so the index on the item id is forced
         return (
             f"(SELECT JSON_GROUP_ARRAY(json_array("
             f"{DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id_type, "
             f"{DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id)) "
             f"FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+            f"INDEXED BY {DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx "
             f"WHERE {DB_TABLE_EXTERNAL_ID_LOOKUP}.media_type = '{media_type.value}' "
             f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.item_id = {table_alias}.item_id)"
         )
@@ -4243,6 +4367,48 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         async with self.mass.music.database.deferred_commit():
             await self._update_library_item_from_provider(db_id, update)
         return True
+
+    async def _set_main_artists(
+        self,
+        table: str,
+        item_column: str,
+        db_id: int,
+        artists: Iterable[Artist | ItemMapping],
+        overwrite: bool = False,
+    ) -> None:
+        """
+        Store the main artists of an album or track.
+
+        An empty set of artists never clears the stored rows.
+
+        :param table: The table holding the main artists of the item's media type.
+        :param item_column: The column of that table holding the item's library id.
+        :param db_id: Library id of the item.
+        :param artists: The main artists.
+        :param overwrite: Replace the stored main artists rather than adding to them.
+        """
+        all_artists = list(artists)
+        if not all_artists:
+            if overwrite:
+                # a caller asking to replace all artists with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning(
+                    "Ignoring request to clear all artists of %s id %s",
+                    self.media_type.value,
+                    db_id,
+                )
+            return
+        # look up all artists first so a failing lookup leaves the stored rows untouched
+        artist_ids = [
+            await self.mass.music.artists.get_or_add_library_artist_id(artist)
+            for artist in all_artists
+        ]
+        if overwrite:
+            await self.mass.music.database.delete(table, {item_column: db_id})
+        for artist_id in artist_ids:
+            await self.mass.music.database.insert_or_replace(
+                table, {item_column: db_id, "artist_id": artist_id}
+            )
 
     async def _copy_library_item_relations(self, target_id: int, source_id: int) -> None:
         """Copy the relations that reference the merged media item onto the target."""

@@ -231,7 +231,9 @@ class AppleMusicLibraryManager:
         """Remove item from library."""
         self.logger.debug(
             "Deleting items from your library is not yet supported by the Apple Music API. "
-            f"Skipping deletion of {media_type} - {prov_item_id}."
+            "Skipping deletion of %s - %s.",
+            media_type,
+            prov_item_id,
         )
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -497,7 +499,7 @@ class AppleMusicLibraryManager:
                 unknown.append(purchased_id)
             elif cached:
                 on_sale.add(purchased_id)
-        endpoint = f"catalog/{self.provider._storefront}/songs"
+        endpoint = f"catalog/{self.provider.storefront}/songs"
         for offset in range(0, len(unknown), _DETAIL_BATCH_SIZE):
             batch = unknown[offset : offset + _DETAIL_BATCH_SIZE]
             try:
