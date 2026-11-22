@@ -31,6 +31,7 @@ async def test_get_artist_albums_stops_paging_at_limit(
     provider.gql_client.get_artist = AsyncMock(  # type: ignore[method-assign]
         side_effect=[_page(start, 1000) for start in range(0, 1000, 25)]
     )
+    provider.gql_client.check_audiobook_ids = AsyncMock(return_value=set())  # type: ignore[method-assign]
     get_artist_albums = cast("Any", DeezerMediaManager.get_artist_albums).__wrapped__
 
     albums = await get_artist_albums(DeezerMediaManager(provider), "123")

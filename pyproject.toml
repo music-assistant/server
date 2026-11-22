@@ -27,7 +27,7 @@ dependencies = [
   "getmac==0.9.6",
   "hass-client==1.4.1",
   "mashumaro==3.22",
-  "music-assistant-models==1.1.248",
+  "music-assistant-models==1.1.249",
   "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.377/music_assistant_frontend-2.17.377-py3-none-any.whl#sha256=221c922817554f8bdfa30ee42500037e0c7b1d76e91975e818e050978e2707bc",
   "mutagen==1.48.1",
   "orjson==3.11.6",
@@ -272,15 +272,8 @@ extend-select = ["D213"]
 # the provider templates show example code in comments
 "music_assistant/providers/_demo_*/**" = ["ERA001"]
 # BLE001 is being enabled area by area: remove a path once its broad excepts are decided
-"music_assistant/controllers/music/**" = ["BLE001"]
-"music_assistant/controllers/player_queues/**" = ["BLE001"]
-"music_assistant/controllers/players/**" = ["BLE001"]
-"music_assistant/controllers/streams/**" = ["BLE001"]
 "music_assistant/providers/ai_radio/**" = ["BLE001"]
-"music_assistant/providers/airplay/**" = ["BLE001"]
-"music_assistant/providers/airplay_receiver/**" = ["BLE001"]
 "music_assistant/providers/ard_audiothek/**" = ["BLE001"]
-"music_assistant/providers/chromecast/**" = ["BLE001"]
 "music_assistant/providers/fastmcp_server/**" = ["BLE001"]
 "music_assistant/providers/filesystem_local/**" = ["BLE001"]
 "music_assistant/providers/hass/**" = ["BLE001"]
@@ -296,21 +289,14 @@ extend-select = ["D213"]
 "music_assistant/providers/profiler/**" = ["BLE001"]
 "music_assistant/providers/roku_media_assistant/**" = ["BLE001"]
 "music_assistant/providers/samsung_wam/**" = ["BLE001"]
-"music_assistant/providers/sendspin/**" = ["BLE001"]
-"music_assistant/providers/snapcast/**" = ["BLE001"]
 "music_assistant/providers/sonic_analysis/**" = ["BLE001"]
 "music_assistant/providers/sonic_similarity/**" = ["BLE001"]
-"music_assistant/providers/sonos_s1/**" = ["BLE001"]
 "music_assistant/providers/spotify/**" = ["BLE001"]
 "music_assistant/providers/spotify_connect/**" = ["BLE001"]
-"music_assistant/providers/squeezelite/**" = ["BLE001"]
-"music_assistant/providers/sync_group/**" = ["BLE001"]
-"music_assistant/providers/universal_group/**" = ["BLE001"]
 "music_assistant/providers/yandex_music/**" = ["BLE001"]
 "music_assistant/providers/yandex_smarthome/**" = ["BLE001"]
 "music_assistant/providers/yandex_station/**" = ["BLE001"]
 "music_assistant/providers/zvuk_music/**" = ["BLE001"]
-"tests/controllers/streams/test_get_media_stream.py" = ["BLE001"]
 "tests/core/test_diagnostics.py" = ["BLE001"]
 "tests/providers/msx_bridge/**" = ["BLE001"]
 "tests/providers/nicovideo/**" = ["BLE001"]

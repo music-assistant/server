@@ -466,7 +466,7 @@ class _GroupRun:
             return
         try:
             await call
-        except Exception:
+        except Exception:  # noqa: BLE001 - provider code, the step decides how a failure counts
             self.players.logger.warning(step.message, *step.args)
             self.left_out = step.failure == Failure.LEAVE_OUT
 

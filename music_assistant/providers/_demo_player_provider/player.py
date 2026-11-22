@@ -91,6 +91,9 @@ class DemoPlayer(PlayerProtocol):
                 id="line_in",
                 name="Line-In",
                 passive=False,
+                # an input of the device itself (like Line-in, TV or Optical),
+                # not a service or preset it can switch to
+                is_input=True,
                 can_play_pause=False,
                 can_next_previous=False,
                 can_seek=False,

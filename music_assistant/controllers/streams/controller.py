@@ -177,7 +177,7 @@ def _volume_normalization_preference_options() -> list[ConfigValueOption]:
     ]
 
 
-def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -> dict[str, str]:
+def _audio_source_headers(source_name: str, output_format_str: str) -> dict[str, str]:
     """
     Return the response headers for a live audio source stream.
 
@@ -185,12 +185,12 @@ def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -
     flags. ``icy-name`` is sanitized of every control character, not just
     newlines, because aiohttp rejects the rest as a header injection attempt.
 
-    :param session: The session whose source is being streamed.
+    :param source_name: Name of the source as shown on the player it plays on.
     :param output_format_str: Output format to derive the content type from.
     """
     return {
         **DEFAULT_STREAM_HEADERS,
-        "icy-name": sanitize_http_header_value(session.source.name),
+        "icy-name": sanitize_http_header_value(source_name),
         "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
         "Content-Type": get_mime_type(output_format_str),
     }
@@ -326,7 +326,7 @@ class AudioSourceStream:
                 streamdetails=self.streamdetails,
                 pcm_format=pcm_format,
                 raise_on_error=False,
-                display_name=session.source.name,
+                display_name=players.get_audio_source_name(session.source, session.player_id),
                 source_session=session,
                 stream_session_id=self._stream_session_id,
             ):
@@ -1112,7 +1112,7 @@ class StreamsController(CoreController):
                     queue_item.streamdetails = await self.audio.get_stream_details(
                         queue_item=queue_item
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - provider code, any failure is answered as not found
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )
@@ -1496,7 +1496,7 @@ class StreamsController(CoreController):
         # on_source_selected fires (stopping the previous player, redirecting a
         # disallowed switch), so answer it without touching the plugin.
         if request.method != "GET":
-            return await self._serve_audio_source_head(request, session)
+            return await self._serve_audio_source_head(request, session, player)
 
         stream_session_id = uuid4().hex
         # wire the provider in before awaiting the hook: a plugin that claims the
@@ -2256,21 +2256,23 @@ class StreamsController(CoreController):
             )
 
     async def _serve_audio_source_head(
-        self, request: web.Request, session: AudioSourceSession
+        self, request: web.Request, session: AudioSourceSession, player: PlayerProtocol
     ) -> web.StreamResponse:
         """
         Answer a HEAD probe for a live audio source without touching its provider.
 
         :param request: The probe to answer.
         :param session: The session whose source is being probed.
+        :param player: The player probing the stream.
         """
         head_fmt = request.match_info["fmt"]
         if ContentType.try_parse(head_fmt).is_pcm():
             # most DLNA renderers pick a decoder from the HEAD content type and
             # cannot handle raw PCM
             head_fmt = ContentType.WAV.value
+        source_name = self._audio_source_name(session, player)
         resp = web.StreamResponse(
-            status=200, reason="OK", headers=_audio_source_headers(session, head_fmt)
+            status=200, reason="OK", headers=_audio_source_headers(source_name, head_fmt)
         )
         await resp.prepare(request)
         return resp
@@ -2308,10 +2310,11 @@ class StreamsController(CoreController):
             content_bit_depth=pcm_format.bit_depth,
             media_type=MediaType.AUDIO_SOURCE,
         )
+        source_name = self._audio_source_name(session, player)
         resp = web.StreamResponse(
             status=200,
             reason="OK",
-            headers=_audio_source_headers(session, output_format.output_format_str),
+            headers=_audio_source_headers(source_name, output_format.output_format_str),
         )
         resp.content_type = get_mime_type(output_format.output_format_str)
         if player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False):
@@ -2323,7 +2326,7 @@ class StreamsController(CoreController):
             streamdetails=streamdetails,
             pcm_format=pcm_format,
             raise_on_error=False,
-            display_name=session.source.name,
+            display_name=source_name,
             source_session=session,
             stream_session_id=stream_session_id,
         )
@@ -2355,6 +2358,16 @@ class StreamsController(CoreController):
             # source's latency is whatever is buffered between it and the player
             extra_input_args=output_pacing_args(PacingProfile.LOW_LATENCY),
         )
+
+    def _audio_source_name(self, session: AudioSourceSession, player: PlayerProtocol) -> str:
+        """
+        Return the name of the source of a session as shown on the player fetching its stream.
+
+        :param session: The session whose source is streamed.
+        :param player: The protocol fetching the stream.
+        """
+        shown_on = player.player.player_id if player.player else session.player_id
+        return self.mass.players.get_audio_source_name(session.source, shown_on)
 
     async def _get_audio_source_session_stream(
         self,

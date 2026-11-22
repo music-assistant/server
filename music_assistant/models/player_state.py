@@ -56,6 +56,10 @@ if TYPE_CHECKING:
 # position change (seek/buffer correction) instead of regular playback progression
 POSITION_JUMP_THRESHOLD = 1.0
 
+# how many players up the chain of groups and sync leaders a player looks for the live
+# source it hears: a group in a group is as deep as it gets
+FOLLOW_DEPTH_LIMIT = 5
+
 
 @dataclass(slots=True, kw_only=True)
 class ProtocolSnapshot:
@@ -236,8 +240,17 @@ class StateInputs:
     :param session: Live audio source playing on the player.
     :param session_image_url: Url of the image of that audio source. Only given where
         it counts: for a source that reports no image of what it is playing.
-    :param standing_sources: Audio sources that are selectable on the player without
-        a session being active.
+    :param followed_sessions: Live audio sources playing on the players it can follow:
+        the group players and the player it is synced to, by the id of the player each
+        plays on.
+    :param followed_source_names: Names of the sources of those sessions as shown on
+        the player, by the same id.
+    :param standing_sources: Audio sources bound to the player, selectable without a
+        session being active.
+    :param input_sources: Audio sources that are inputs of the player's own device,
+        selectable without a session being active.
+    :param source_names: Names of the standing sources, the inputs and the source of its
+        own session as shown on the player, by uri.
     """
 
     player_id: str
@@ -293,7 +306,11 @@ class StateInputs:
     mass_sources: frozenset[str]
     session: AudioSourceSession | None
     session_image_url: str | None
+    followed_sessions: Mapping[str, AudioSourceSession]
+    followed_source_names: Mapping[str, str]
     standing_sources: tuple[AudioSource, ...]
+    input_sources: tuple[AudioSource, ...]
+    source_names: Mapping[str, str]
 
 
 @dataclass(slots=True, kw_only=True)
@@ -786,6 +803,7 @@ def _source_list(
     """Return the sources of the player."""
     player_id = inputs.player_id
     sources = UniqueList(inputs.own.source_list)
+    input_uris = {x.uri for x in inputs.input_sources}
     # always ensure the Music Assistant Queue is in the source list
     mass_source = next((x for x in sources if x.id == player_id), None)
     if mass_source is None:
@@ -812,8 +830,9 @@ def _source_list(
         sources.append(
             PlayerSource(
                 id=source_uri,
-                name=session.source.name,
+                name=inputs.source_names.get(source_uri, session.source.name),
                 passive=not session.source.can_initiate,
+                is_input=source_uri in input_uris,
                 can_play_pause=session.source.can_play_pause,
                 can_seek=session.source.can_seek,
                 can_next_previous=session.source.can_next_previous,
@@ -837,15 +856,16 @@ def _source_list(
     # an already listed uri is skipped: the live session entry above carries the
     # live shuffle/repeat state and must win
     present_ids = {x.id for x in sources}
-    for source in inputs.standing_sources:
+    for source in (*inputs.standing_sources, *inputs.input_sources):
         if not (uri := source.uri) or uri in present_ids:
             continue
         present_ids.add(uri)
         sources.append(
             PlayerSource(
                 id=uri,
-                name=source.name,
+                name=inputs.source_names.get(uri, source.name),
                 passive=not source.can_initiate,
+                is_input=uri in input_uris,
                 can_play_pause=source.can_play_pause,
                 can_seek=source.can_seek,
                 can_next_previous=source.can_next_previous,
@@ -1048,7 +1068,7 @@ def _current_media(
     # if the player is grouped/synced, use the current_media of the group/parent player
     if parent_id := (active_group or synced_to):
         if parent_id != inputs.player_id and (parent := inputs.peers.get(parent_id)):
-            return parent.state.current_media
+            return _followed_media(inputs, parent.state.current_media, parent_id)
         return None  # if parent player not found, return None for current media
     # a live external source reports what it plays itself
     if inputs.session is not None:
@@ -1181,9 +1201,9 @@ def _session_media(
     """
     Describe what a live external source is playing on the player.
 
-    Falls back to the source's own name and artwork for the parts it has not
-    reported, so a source that reports nothing still shows as itself rather
-    than as an empty player.
+    Falls back to the source's own name (as shown on the player) and artwork for the
+    parts it has not reported, so a source that reports nothing still shows as itself
+    rather than as an empty player.
 
     :param session: The live source session on the player.
     :param elapsed_time: Playback position the player publishes.
@@ -1191,10 +1211,11 @@ def _session_media(
     """
     metadata = session.stream_metadata
     image_url = (metadata.image_url if metadata else None) or inputs.session_image_url
+    source_uri = session.source_uri
     return PlayerMedia(
-        uri=session.source_uri or session.source_id,
+        uri=source_uri or session.source_id,
         media_type=MediaType.AUDIO_SOURCE,
-        title=(metadata.title if metadata else None) or session.source.name,
+        title=_session_title(session, inputs.source_names.get(source_uri) if source_uri else None),
         artist=metadata.artist if metadata else None,
         album=(metadata.album or metadata.description) if metadata else None,
         image_url=image_url,
@@ -1211,6 +1232,58 @@ def _session_media(
         elapsed_time=int(elapsed_time) if elapsed_time is not None else None,
         elapsed_time_last_updated=elapsed_time_last_updated,
     )
+
+
+def _followed_media(
+    inputs: StateInputs, media: PlayerMedia | None, parent_id: str
+) -> PlayerMedia | None:
+    """
+    Return the current media of the player the player follows, as shown on the player.
+
+    :param media: The current media of the player it follows.
+    :param parent_id: Id of the player it follows.
+    """
+    if media is None or (holder_id := _session_holder(inputs, parent_id)) is None:
+        return media
+    session = inputs.followed_sessions[holder_id]
+    if session.source_uri != media.uri:
+        return media
+    # a live source that reports no title shows by its name, which differs per player
+    title = _session_title(session, inputs.followed_source_names.get(holder_id))
+    return media if title == media.title else replace(media, title=title)
+
+
+def _session_holder(inputs: StateInputs, parent_id: str) -> str | None:
+    """
+    Return the id of the player whose live source the player hears, None for none.
+
+    Walks up from the player it follows the way media is taken: from the player that one
+    follows in turn, else from its own session.
+
+    :param parent_id: Id of the player it follows.
+    """
+    player_id = parent_id
+    seen: set[str] = set()
+    while player_id not in seen and len(seen) < FOLLOW_DEPTH_LIMIT:
+        seen.add(player_id)
+        state = peer.state if (peer := inputs.peers.get(player_id)) else None
+        next_id = (state.active_group or state.synced_to) if state else None
+        if not next_id or next_id == player_id:
+            return player_id if player_id in inputs.followed_sessions else None
+        player_id = next_id
+    return None
+
+
+def _session_title(session: AudioSourceSession, name: str | None) -> str:
+    """
+    Return the title the live source reports, else its name.
+
+    :param session: The live source session.
+    :param name: Name of its source as shown on the player, if known.
+    """
+    if (metadata := session.stream_metadata) is not None and metadata.title:
+        return metadata.title
+    return name or session.source.name
 
 
 def _resolved_palette(inputs: StateInputs, image_url: str | None) -> MediaItemPalette | None:

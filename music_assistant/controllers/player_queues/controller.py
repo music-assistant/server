@@ -314,7 +314,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 try:
                     async with asyncio.timeout(QUEUE_SHUTDOWN_STOP_TIMEOUT):
                         await self.stop(queue.queue_id)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one queue that fails to stop must not block shutdown
                     self.logger.warning("Failed to stop queue %s - %s", queue.queue_id, err)
         # flush any pending (debounced) state writes so the latest queue survives shutdown/update;
         # a save that already started is cancelled too, so its older state can't land last
@@ -1146,6 +1146,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # action of the queue still plays its track and keeps it
             self._end_stream_slot_reservations(queue_id)
 
+        def _is_paused(player: Player) -> bool:
+            # a player that cannot pause stops instead, and its queue stays halted by the pause
+            return player.playback_state == PlaybackState.PAUSED or (
+                player.playback_state == PlaybackState.IDLE
+                and (queue_data := self._queue_data.get(queue_id)) is not None
+                and queue_data.halted_by_command
+            )
+
         async def _watch_pause(player: Player) -> None:
             count = 0
             # wait for pause
@@ -1153,11 +1161,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 count += 1
                 await asyncio.sleep(1)
             # wait for unpause
-            if player.playback_state != PlaybackState.PAUSED:
+            if not _is_paused(player):
                 return
             count = 0
             pause_timeout = self._get_pause_timeout()
-            while player.playback_state == PlaybackState.PAUSED:
+            while _is_paused(player):
                 if self.mass.players._has_waiting_start(player):
                     # a start that waits for players to start up is about to play: the
                     # stop below would call it off, so the timeout counts from its end
@@ -1170,6 +1178,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # if player is still paused when the limit is reached, send stop
             if player.playback_state == PlaybackState.PAUSED:
                 await self.stop(queue_id)
+            elif _is_paused(player):
+                # the queue stopped at the pause already, only its sleep timer is left to end
+                self._clear_sleep_timer(queue_id)
 
         # we auto stop a player from paused when its paused for the configured pause timeout
         if (
@@ -1700,7 +1711,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     default=[],
                 )
                 queue_data = PlayerQueueData.from_cache(prev_state, prev_items)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a broken saved queue must not block the player
             self.logger.warning(
                 "Failed to restore the queue(items) for %s - %s",
                 player.name,
@@ -2747,7 +2758,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     persistent=True,
                 )
                 queue_data.items_cache_dirty = False
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failed save must not stop the others on shutdown
             self.logger.warning("Failed to persist the queue for %s - %s", queue_id, err)
 
     def _has_player_permission(self, queue_id: str) -> bool:
@@ -2862,16 +2873,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         return None
 
     @handle_play_action(switched_off=SwitchedOffAction.RUN)
-    async def _handle_stop(self, queue_id: str) -> None:
+    async def _handle_stop(self, queue_id: str, keep_sleep_timer: bool = False) -> None:
         """
         Handle stop without checking the caller's player permissions.
 
         :param queue_id: queue_id of the playerqueue to stop.
+        :param keep_sleep_timer: The stop stands in for a pause, so the sleep timer still
+            waits for its target once the queue resumes.
         """
         # a stop ends what a sleep timer waited for, except the one of an announcement, which
         # resumes the queue afterwards
         queue_player = self.mass.players.get_player(queue_id)
-        if not (queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)):
+        if not keep_sleep_timer and not (
+            queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        ):
             self._clear_sleep_timer(queue_id)
         self._cancel_pending_playback(queue_id)
         if not (queue_data := self._queue_data.get(queue_id)):

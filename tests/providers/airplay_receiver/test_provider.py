@@ -11,7 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import ifaddr
 import pytest
-from music_assistant_models.enums import ContentType, EventType
+from music_assistant_models.enums import ContentType, EventType, MediaType, PlayerType
+from music_assistant_models.errors import AudioError, PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import AudioFormat
 
@@ -74,6 +75,8 @@ def _reconcile_provider(
     registered: dict[str, str],
     unavailable: set[str] | None = None,
     legacy_ids: dict[str, str] | None = None,
+    groups: dict[str, list[str]] | None = None,
+    player_types: dict[str, PlayerType] | None = None,
 ) -> tuple[AirPlayReceiverProvider, _ReconcileMocks]:
     """
     Build a bare provider with the real reconcile logic and mocked daemon control.
@@ -83,6 +86,8 @@ def _reconcile_provider(
     :param unavailable: Registered player ids that are currently unavailable.
     :param legacy_ids: The ids of merged players, mapped to the player they went into;
         the caller may change it afterwards.
+    :param groups: Registered group player ids mapped to their members.
+    :param player_types: The type of registered players that are no plain player or group.
     """
     prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
     prov.logger = MagicMock()
@@ -106,6 +111,10 @@ def _reconcile_provider(
         player.player_id = player_id
         player.name = registered[player_id]
         player.available = player_id not in (unavailable or set())
+        player.type = (player_types or {}).get(player_id, PlayerType.PLAYER)
+        if groups and player_id in groups:
+            player.type = PlayerType.GROUP
+            player.group_members = groups[player_id]
         return player
 
     mass.players.get_player.side_effect = get_player
@@ -513,6 +522,278 @@ def test_a_fatal_log_line_marks_the_daemon_started() -> None:
     assert daemon.started.is_set()
 
 
+# --- AirPlay client sessions ----------------------------------------------------
+
+
+def _session_provider(
+    connected: str,
+    registered: dict[str, str],
+    unavailable: set[str] | None = None,
+    groups: dict[str, list[str]] | None = None,
+    player_types: dict[str, PlayerType] | None = None,
+) -> tuple[AirPlayReceiverProvider, _ReconcileMocks]:
+    """
+    Build a provider with a real receiver for one connected player and mocked playback.
+
+    :param connected: The connected player of the receiver.
+    :param registered: Currently registered player ids mapped to their display name.
+    :param unavailable: Registered player ids that are currently unavailable.
+    :param groups: Registered group player ids mapped to their members.
+    :param player_types: The type of registered players that are no plain player or group.
+    """
+    prov, mocks = _reconcile_provider(
+        (connected,), registered, unavailable, groups=groups, player_types=player_types
+    )
+    mocks.mass.runtime_path = "/ma-runtime"
+    prov.config.instance_id = "airplay_receiver"
+    prov.config.name = "AirPlay Receiver"
+    prov.manifest = MagicMock(domain="airplay_receiver")
+    prov._ports = {connected: 7000}
+    prov._audio_format = AudioFormat(content_type=ContentType.ALAC)
+    prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
+    prov._write_silence_to_unblock_stream = AsyncMock()  # type: ignore[method-assign]
+    AirPlayReceiverProvider._start_receiver(
+        prov, connected, mocks.mass.players.get_player(connected), "Receiver | Music Assistant"
+    )
+    mocks.mass.create_task.side_effect = lambda coro, **_kwargs: asyncio.ensure_future(coro)
+    mocks.mass.player_queues.play_media = AsyncMock()
+    mocks.mass.players.cmd_stop = AsyncMock()
+    mocks.mass.players.deselect_source = AsyncMock()
+    return prov, mocks
+
+
+async def test_source_is_selectable_while_an_airplay_client_streams() -> None:
+    """A player can switch back to the receiver for as long as the AirPlay client streams."""
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen"})
+    daemon = prov._daemons["p1"]
+    trigger_player_update = mocks.mass.players.trigger_player_update
+    assert not prov.get_player_audio_sources("p1")[0].can_initiate
+
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    # the player's cached source list follows
+    trigger_player_update.assert_called_once_with("p1")
+    await prov.on_source_selected("p1", "p1", "p1", "session1")
+    # the player switches to its own queue: its standing source entry stays selectable
+    await prov.on_source_unselected("p1", "p1", "session1")
+    assert prov.get_player_audio_sources("p1")[0].can_initiate
+    # and back to the source
+    await prov.on_source_selected("p1", "p1", "p1", "session2")
+    assert daemon.in_use_by_player == "p1"
+
+    trigger_player_update.reset_mock()
+    prov._handle_play_state_change(daemon, "stopped")
+    assert not prov.get_player_audio_sources("p1")[0].can_initiate
+    trigger_player_update.assert_called_once_with("p1")
+
+
+async def test_selecting_the_source_without_a_streaming_client_is_refused() -> None:
+    """Without an AirPlay client streaming there is nothing to play, so a selection fails."""
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen"})
+    daemon = prov._daemons["p1"]
+    # left over from a session the player switched away from
+    daemon.active_player_id = "p1"
+
+    with pytest.raises(RuntimeError):
+        await prov.on_source_selected("p1", "p1", "p1", "session1")
+    with pytest.raises(AudioError):
+        await prov.get_stream_details("p1", MediaType.AUDIO_SOURCE)
+    assert daemon.in_use_by_player is None
+    mocks.mass.players.cmd_stop.assert_not_awaited()
+
+
+async def test_selecting_the_source_stops_only_a_player_still_streaming_it() -> None:
+    """A player that switched away from the source keeps playing when another one selects it."""
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen", "p2": "Bedroom"})
+    daemon = prov._daemons["p1"]
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    await prov.on_source_selected("p1", "p1", "p1", "session1")
+    # p1 switches to its own queue
+    await prov.on_source_unselected("p1", "p1", "session1")
+
+    await prov.on_source_selected("p1", "p2", "p2", "session2")
+    mocks.mass.players.cmd_stop.assert_not_awaited()
+
+    await prov.on_source_selected("p1", "p1", "p1", "session3")
+    mocks.mass.players.cmd_stop.assert_awaited_once_with("p2")
+
+
+async def test_playback_starts_once_an_unavailable_player_comes_back() -> None:
+    """An AirPlay client that starts while the player is off is heard once the player is back."""
+    unavailable = {"p1"}
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen"}, unavailable)
+    daemon = prov._daemons["p1"]
+    play_media = mocks.mass.player_queues.play_media
+    play_media.side_effect = [PlayerUnavailableError("Player p1 is not available"), None]
+
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    on_player_event = mocks.mass.subscribe.call_args.args[0]
+    on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    await asyncio.sleep(0.01)
+    assert play_media.await_count == 1
+
+    unavailable.clear()
+    on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    await asyncio.sleep(0.01)
+    assert play_media.await_count == 2
+    play_media.assert_awaited_with("p1", str(daemon.audio_source.uri))
+    mocks.mass.subscribe.return_value.assert_called_once()
+
+
+async def test_playback_on_a_group_starts_once_one_of_its_speakers_comes_back() -> None:
+    """A session on a group whose speakers are all off is heard once one speaker is back."""
+    unavailable = {"m1", "m2"}
+    prov, mocks = _session_provider(
+        "g1",
+        {"g1": "Living", "m1": "Left", "m2": "Right", "l1": "Lamp"},
+        unavailable,
+        {"g1": ["m1", "m2", "l1"]},
+        {"l1": PlayerType.LIGHT},
+    )
+    daemon = prov._daemons["g1"]
+    play_media = mocks.mass.player_queues.play_media
+    play_media.side_effect = [
+        PlayerCommandFailed("An empty group cannot play media, consider adding members first"),
+        None,
+    ]
+
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    on_player_event = mocks.mass.subscribe.call_args.args[0]
+    # a light that is on follows the group but cannot play it
+    on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="l1"))
+    await asyncio.sleep(0.01)
+    assert play_media.await_count == 1
+
+    unavailable.discard("m2")
+    on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="m2"))
+    await asyncio.sleep(0.01)
+    assert play_media.await_count == 2
+    play_media.assert_awaited_with("g1", str(daemon.audio_source.uri))
+
+
+async def test_no_playback_starts_once_the_client_stopped_while_waiting() -> None:
+    """A player that comes back after the AirPlay client stopped starts nothing."""
+    unavailable = {"p1"}
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen"}, unavailable)
+    daemon = prov._daemons["p1"]
+    play_media = mocks.mass.player_queues.play_media
+    play_media.side_effect = PlayerUnavailableError("Player p1 is not available")
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    on_player_event = mocks.mass.subscribe.call_args.args[0]
+
+    prov._handle_play_state_change(daemon, "stopped")
+    unavailable.clear()
+    on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    await asyncio.sleep(0.01)
+
+    assert play_media.await_count == 1
+    mocks.mass.subscribe.return_value.assert_called_once()
+
+
+async def test_no_playback_starts_once_another_player_took_the_source_while_waiting() -> None:
+    """A player that comes back does not take the source back from another player."""
+    unavailable = {"p1"}
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen", "p2": "Bedroom"}, unavailable)
+    daemon = prov._daemons["p1"]
+    play_media = mocks.mass.player_queues.play_media
+    play_media.side_effect = PlayerUnavailableError("Player p1 is not available")
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    on_player_event = mocks.mass.subscribe.call_args.args[0]
+
+    await prov.on_source_selected("p1", "p2", "p2", "session1")
+    unavailable.clear()
+    on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    await asyncio.sleep(0.01)
+
+    assert play_media.await_count == 1
+    mocks.mass.subscribe.return_value.assert_called_once()
+
+
+async def test_a_start_failing_after_the_client_stopped_leaves_nothing_waiting() -> None:
+    """A start that only fails once the AirPlay client stopped does not wait for the player."""
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen"}, {"p1"})
+    daemon = prov._daemons["p1"]
+    release = asyncio.Event()
+
+    async def play_media(_player_id: str, _uri: str) -> None:
+        await release.wait()
+        raise PlayerUnavailableError("Player p1 is not available")
+
+    mocks.mass.player_queues.play_media = play_media
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    prov._handle_play_state_change(daemon, "stopped")
+    release.set()
+    await asyncio.sleep(0.01)
+
+    assert daemon.pending_start_task is not None
+    assert daemon.pending_start_task.exception() is None
+    mocks.mass.subscribe.assert_not_called()
+
+
+async def test_a_start_failing_after_another_player_took_over_leaves_nothing_waiting() -> None:
+    """A start that only fails once another player took the source does not wait for the player."""
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen", "p2": "Bedroom"}, {"p1"})
+    daemon = prov._daemons["p1"]
+    release = asyncio.Event()
+
+    async def play_media(_player_id: str, _uri: str) -> None:
+        await release.wait()
+        raise PlayerUnavailableError("Player p1 is not available")
+
+    mocks.mass.player_queues.play_media = play_media
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    await prov.on_source_selected("p1", "p2", "p2", "session1")
+    release.set()
+    await asyncio.sleep(0.01)
+
+    assert daemon.pending_start_task is not None
+    assert daemon.pending_start_task.exception() is None
+    assert daemon.in_use_by_player == "p2"
+    mocks.mass.subscribe.assert_not_called()
+
+
+async def test_no_playback_starts_once_the_receiver_stopped_while_waiting() -> None:
+    """A player that comes back after its receiver was stopped starts nothing."""
+    unavailable = {"p1"}
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen"}, unavailable)
+    daemon = prov._daemons["p1"]
+    play_media = mocks.mass.player_queues.play_media
+    play_media.side_effect = PlayerUnavailableError("Player p1 is not available")
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    on_player_event = mocks.mass.subscribe.call_args.args[0]
+
+    await AirPlayReceiverProvider._stop_receiver(prov, daemon)
+    unavailable.clear()
+    on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    await asyncio.sleep(0.01)
+
+    assert play_media.await_count == 1
+    mocks.mass.subscribe.return_value.assert_called_once()
+
+
+async def test_a_failed_start_on_a_player_that_can_play_is_not_retried() -> None:
+    """A start that fails while the player can play has another cause, so nothing waits."""
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen"})
+    daemon = prov._daemons["p1"]
+    mocks.mass.player_queues.play_media.side_effect = PlayerCommandFailed("boom")
+
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+
+    assert daemon.pending_start_task is not None
+    assert isinstance(daemon.pending_start_task.exception(), PlayerCommandFailed)
+    mocks.mass.subscribe.assert_not_called()
+
+
 # --- Receiver config ------------------------------------------------------------
 
 
@@ -642,6 +923,30 @@ def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
     }
 
 
+def test_receiver_source_is_named_by_the_provider_until_a_track_plays() -> None:
+    """The source carries the provider's name and its player, and no title of its own."""
+    prov, mocks = _reconcile_provider(("p1",), {})
+    mocks.mass.runtime_path = "/ma-runtime"
+    prov.config.instance_id = "airplay_receiver"
+    prov.config.name = "AirPlay Receiver"
+    prov.manifest = MagicMock(domain="airplay_receiver")
+    prov._ports = {"p1": 7000}
+    prov._audio_format = AudioFormat(content_type=ContentType.ALAC)
+    prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
+    player = MagicMock(player_id="p1")
+    player.name = "Player A"
+
+    AirPlayReceiverProvider._start_receiver(prov, "p1", player, "Player A | Music Assistant")
+
+    daemon = prov._daemons["p1"]
+    assert (daemon.audio_source.name, daemon.audio_source.owner_player_id) == (
+        "AirPlay Receiver",
+        "p1",
+    )
+    # the server shows the source by its name while the title is empty
+    assert daemon.stream_metadata.title == ""
+
+
 def test_receiver_of_a_merged_player_keeps_the_port_and_pipes_of_its_stored_id() -> None:
     """A connected player merged into another keeps its port, pipes and config file."""
     prov, mocks = _reconcile_provider(
@@ -670,7 +975,11 @@ def test_receiver_of_a_merged_player_keeps_the_port_and_pipes_of_its_stored_id()
         "/ma-runtime/ma_airplay_metadata_airplay_receiver_p_old",
         "/ma-runtime/ma_shairport_sync_airplay_receiver_p_old.conf",
     }
-    assert daemon.audio_source.name == "AirPlay Receiver (Player A)"
+    # the server resolves the stored id of the merged player to the player it is now
+    assert (daemon.audio_source.name, daemon.audio_source.owner_player_id) == (
+        "AirPlay Receiver",
+        "p_old",
+    )
 
 
 async def test_session_hooks_reach_a_metadata_pipe_whose_path_has_spaces(tmp_path: Path) -> None:

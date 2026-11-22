@@ -470,6 +470,22 @@ also when they were told while that power on was under way.
   - `test_power_control.py::test_a_switch_on_that_fails_leaves_the_power_cut_as_it_was`
   - `test_power_control.py::test_a_switch_on_that_fails_keeps_a_power_cut_that_was_told_meanwhile`
 
+### AWAY-35 · A multi-channel player plays on without its subwoofer, not without its main speakers
+
+Kitchen is a multi-channel player of a left and a right Sendspin speaker and a subwoofer. The
+subwoofer drops off the network: Kitchen stays available, its left and right speaker play the full
+range, and it says the subwoofer is offline. The right speaker drops off: the left one plays both
+channels and still leaves the bass to the subwoofer. Once both main speakers are away, Kitchen is
+unavailable, although its subwoofer is still there, and it stops playing. So does a player of one
+speaker with a subwoofer without that speaker.
+
+- End-to-end: **possible with** three virtual Sendspin speakers combined into Kitchen in the lab,
+  and the bass and the channels checked in the captured audio.
+- Proven by:
+  - `tests/providers/sendspin/test_multi_channel.py::test_a_set_with_a_subwoofer_plays_on_while_a_speaker_is_away`
+  - `tests/providers/sendspin/test_multi_channel.py::test_a_set_whose_main_speakers_are_away_is_unavailable`
+  - `tests/providers/sendspin/test_multi_channel.py::test_a_playing_set_stops_once_none_of_its_main_speakers_is_left`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.
@@ -2207,6 +2223,16 @@ plays. Kitchen plays the stream of Everywhere as any member does, and its speake
 - End-to-end: **possible with** two virtual Sendspin speakers combined into Kitchen in the lab, and
   the left and right channel checked in the captured audio.
 - Proven by: `tests/providers/sendspin/test_multi_channel.py::test_a_set_plays_in_a_universal_group`
+
+### GROUP-64 · A multi-channel player with a subwoofer splits the bass only between its own speakers
+
+Kitchen, a multi-channel player of a left and a right Sendspin speaker and a subwoofer, leads the
+Sendspin player Den. The subwoofer of Kitchen plays the bass and its other speakers leave it to the
+subwoofer, while Den plays the full range as it does on its own.
+
+- End-to-end: **possible with** three virtual Sendspin speakers combined into Kitchen and a fourth
+  as Den in the lab, and the bass checked in the captured audio of each.
+- Proven by: `tests/providers/sendspin/test_multi_channel.py::test_a_set_with_a_subwoofer_splits_the_bass_only_between_its_own_speakers`
 
 ## Where playback goes
 

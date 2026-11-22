@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -20,6 +21,7 @@ from aiosendspin.server import (
     ClientUpdatedEvent,
 )
 from aiosendspin.server import client as sendspin_client_module
+from aiosendspin.server.events import GroupMemberAddedEvent
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ProviderConfig
@@ -27,6 +29,7 @@ from music_assistant_models.enums import (
     ChannelLayout,
     ConfigEntryType,
     ContentType,
+    EventType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -44,7 +47,15 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PROVIDERS
+from music_assistant.constants import (
+    CONF_CROSSOVER_FREQUENCY,
+    CONF_HIGH_PASS_MAIN_SPEAKERS,
+    CONF_OUTPUT_CHANNELS,
+    CONF_PLAYER_PROTOCOLS,
+    CONF_PROVIDERS,
+    CONF_SUBWOOFER_LEVEL,
+    CONF_SUBWOOFER_OWN_CROSSOVER,
+)
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin import multi_channel
@@ -66,6 +77,7 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientWebSocketResponse
     from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
+    from music_assistant_models.event import MassEvent
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
@@ -73,6 +85,8 @@ if TYPE_CHECKING:
 
 LEFT = "speaker-left"
 RIGHT = "speaker-right"
+CENTER = "speaker-center"
+SUB = "speaker-sub"
 DEN = "speaker-den"
 BRIDGE = "spb_a0b765001122"
 WEB = "browser-player"
@@ -83,6 +97,15 @@ SPEAKER_FORMAT = SupportedAudioFormat(
 )
 FLAC_44K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=16)
 FLAC_96K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=96000, bit_depth=24)
+PAN_LEFT = "pan=stereo|c0=FL|c1=FL"
+PAN_RIGHT = "pan=stereo|c0=FR|c1=FR"
+MONO_SUM = "pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"
+CROSSOVER_KEYS = [
+    CONF_SUBWOOFER_OWN_CROSSOVER,
+    CONF_HIGH_PASS_MAIN_SPEAKERS,
+    CONF_CROSSOVER_FREQUENCY,
+    CONF_SUBWOOFER_LEVEL,
+]
 
 
 class _SpeakerRole(BridgePlayerRole):
@@ -340,6 +363,48 @@ async def _compose(
     set_protocol = _set_of(sendspin, player)
     await _wait_for(lambda: {LEFT, RIGHT} <= _group_client_ids(set_protocol))
     return player, left, right
+
+
+async def _compose_with_subwoofer(
+    mass: MusicAssistant, sendspin: SendspinProvider, *, center: bool = False
+) -> Player:
+    """
+    Combine speakers and the subwoofer Kitchen sub into the multi-channel player Kitchen.
+
+    :param center: Combine one center speaker with the subwoofer, instead of a left and a
+        right one.
+    """
+    channels = (
+        {CENTER: SpeakerChannel.FRONT_CENTER}
+        if center
+        else {LEFT: SpeakerChannel.FRONT_LEFT, RIGHT: SpeakerChannel.FRONT_RIGHT}
+    )
+    channels[SUB] = SpeakerChannel.LFE
+    for client_id in channels:
+        await _add_speaker(sendspin, client_id, client_id.replace("speaker-", "Kitchen "))
+    player = await mass.players.create_multi_channel_player(
+        "sendspin",
+        "Kitchen",
+        {_player_id(sendspin, client_id): channel for client_id, channel in channels.items()},
+    )
+    set_protocol = _set_of(sendspin, player)
+    await _wait_for(lambda: set(channels) <= _group_client_ids(set_protocol))
+    return player
+
+
+def _filters(set_protocol: SendspinMultiChannelPlayer, client_id: str) -> list[Any]:
+    """Return the filters a client plays with in the session of a set, biquads by kind."""
+    session = set_protocol.playback_session
+    filters: list[Any] = []
+    for param in session._read_pipeline_config(client_id).filter_params:
+        if not isinstance(param, str) or not param.startswith("biquad="):
+            filters.append(param)
+            continue
+        coefficients = dict(part.split("=") for part in param.removeprefix("biquad=").split(":"))
+        w_0 = math.acos(-float(coefficients["a1"]) / 2)
+        kind = "high-pass" if float(coefficients["b1"]) < 0 else "low-pass"
+        filters.append(f"{kind} {w_0 * session._pcm_format.sample_rate / (2 * math.pi):.0f} Hz")
+    return filters
 
 
 @pytest.fixture(autouse=True)
@@ -695,12 +760,16 @@ async def test_a_speaker_that_is_away_leaves_every_channel_to_the_other(
     player, _, right = await _compose(mass, sendspin)
     set_protocol = _set_of(sendspin, player)
     session = set_protocol.playback_session
-    assert sendspin.speaker_output(LEFT) == (set_protocol.protocol_id, SpeakerChannel.FRONT_LEFT)
+    assert sendspin.speaker_output(LEFT) == (
+        set_protocol.protocol_id,
+        SpeakerChannel.FRONT_LEFT,
+        False,
+    )
     assert "pan=stereo|c0=FL|c1=FL" in session._read_pipeline_config(LEFT).filter_params
 
     _go_away(sendspin, RIGHT)
 
-    assert sendspin.speaker_output(LEFT) == (set_protocol.protocol_id, None)
+    assert sendspin.speaker_output(LEFT) == (set_protocol.protocol_id, None, False)
     assert not session._read_pipeline_config(LEFT).requires_transform
     entries = {entry.key: entry for entry in await set_protocol.get_config_entries()}
     assert (entries["speaker_1_state"].default_value, entries["speaker_2_state"].default_value) == (
@@ -715,7 +784,11 @@ async def test_a_speaker_that_is_away_leaves_every_channel_to_the_other(
     right._volume = 80
     _come_back(sendspin, RIGHT)
 
-    assert sendspin.speaker_output(LEFT) == (set_protocol.protocol_id, SpeakerChannel.FRONT_LEFT)
+    assert sendspin.speaker_output(LEFT) == (
+        set_protocol.protocol_id,
+        SpeakerChannel.FRONT_LEFT,
+        False,
+    )
     await _wait_for(lambda: right.get_player_volume() == 30)
     await _wait_for(lambda: restart.await_count == 2)
     assert mass.players.get_player(player.player_id).volume_level == 30  # type: ignore[union-attr]
@@ -1414,9 +1487,9 @@ async def test_a_speaker_that_becomes_unavailable_is_away_until_the_next_playbac
     # it plays its line-in
     await left_client.handle_availability_change(False)
 
-    await _wait_for(lambda: sendspin.speaker_output(RIGHT) == (set_id, None))
+    await _wait_for(lambda: sendspin.speaker_output(RIGHT) == (set_id, None, False))
     assert LEFT not in _group_client_ids(set_protocol)
-    assert sendspin.speaker_output(LEFT) == (LEFT, None)
+    assert sendspin.speaker_output(LEFT) == (LEFT, None, False)
     await _wait_for(lambda: restart.await_count == 1)
 
     await left_client.handle_availability_change(True)
@@ -1430,7 +1503,7 @@ async def test_a_speaker_that_becomes_unavailable_is_away_until_the_next_playbac
     )
 
     assert LEFT in _group_client_ids(set_protocol)
-    assert sendspin.speaker_output(LEFT) == (set_id, SpeakerChannel.FRONT_LEFT)
+    assert sendspin.speaker_output(LEFT) == (set_id, SpeakerChannel.FRONT_LEFT, False)
 
 
 async def test_a_speaker_that_another_group_takes_comes_back_to_its_set(
@@ -1452,7 +1525,11 @@ async def test_a_speaker_that_another_group_takes_comes_back_to_its_set(
 
     await _wait_for(lambda: LEFT in _group_client_ids(set_protocol))
     assert [client.client_id for client in den_client.group.clients] == [DEN]
-    assert sendspin.speaker_output(LEFT) == (set_protocol.protocol_id, SpeakerChannel.FRONT_LEFT)
+    assert sendspin.speaker_output(LEFT) == (
+        set_protocol.protocol_id,
+        SpeakerChannel.FRONT_LEFT,
+        False,
+    )
 
 
 async def test_removing_a_disabled_set_gives_its_speakers_back(mass: MusicAssistant) -> None:
@@ -1581,6 +1658,26 @@ async def test_a_set_is_combined_through_the_websocket_api(mass: MusicAssistant)
     assert sendspin.speaker_output(RIGHT)[1] == SpeakerChannel.FRONT_RIGHT
 
 
+async def test_the_layouts_are_listed_through_the_websocket_api(mass: MusicAssistant) -> None:
+    """A client gets the layouts a set can have, each with its channels in order."""
+    user = await mass.webserver.auth.create_user(username="admin_user", role=UserRole.ADMIN)
+    token = await mass.webserver.auth.create_token(user, "test")
+
+    async with mass.http_session_no_ssl.ws_connect(
+        f"{mass.webserver.internal_base_url}/ws"
+    ) as client:
+        await client.receive_json(timeout=10)
+        assert "result" in await _send(client, "auth", token=token)
+        answer = await _send(client, "players/multi_channel_layouts", provider="sendspin")
+
+    assert answer["result"] == {
+        "stereo": ["front_left", "front_right"],
+        "2.1": ["front_left", "front_right", "lfe"],
+        "1.1": ["front_center", "lfe"],
+    }
+    assert list(answer["result"]) == ["stereo", "2.1", "1.1"]
+
+
 async def test_only_speakers_that_can_go_up_in_a_set_are_candidates(
     mass: MusicAssistant,
 ) -> None:
@@ -1691,6 +1788,1041 @@ async def test_the_candidates_are_listed_through_the_websocket_api(mass: MusicAs
     assert sorted(answer["result"]) == sorted(
         [_player_id(sendspin, LEFT), _player_id(sendspin, RIGHT)]
     )
+
+
+async def test_a_left_a_right_and_a_subwoofer_combine_into_a_2_1_player(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A left and a right speaker and a subwoofer become one 2.1 multi-channel player.
+
+    The subwoofer plays the bass of the mono sum, and the main speakers leave it to it.
+    """
+    sendspin = _sendspin(mass)
+
+    player = await _compose_with_subwoofer(mass, sendspin)
+
+    set_protocol = _set_of(sendspin, player)
+    set_id = set_protocol.protocol_id
+    assert (player.type, player.channel_layout) == (
+        PlayerType.MULTI_CHANNEL,
+        ChannelLayout.LAYOUT_2_1,
+    )
+    values = (mass.config.get_protocol_record(set_id) or {})["values"]
+    assert [values[f"speaker_{n}_channel"] for n in (1, 2, 3)] == [
+        "front_left",
+        "front_right",
+        "lfe",
+    ]
+    assert not set(CROSSOVER_KEYS) & set(values)
+    assert [sendspin.speaker_output(client_id) for client_id in (LEFT, RIGHT, SUB)] == [
+        (set_id, SpeakerChannel.FRONT_LEFT, True),
+        (set_id, SpeakerChannel.FRONT_RIGHT, True),
+        (set_id, SpeakerChannel.LFE, True),
+    ]
+    assert _filters(set_protocol, LEFT) == [PAN_LEFT, "high-pass 80 Hz", "high-pass 80 Hz"]
+    assert _filters(set_protocol, RIGHT) == [PAN_RIGHT, "high-pass 80 Hz", "high-pass 80 Hz"]
+    assert _filters(set_protocol, SUB) == [MONO_SUM, "low-pass 80 Hz", "low-pass 80 Hz"]
+
+
+async def test_a_speaker_and_a_subwoofer_combine_into_a_1_1_player(mass: MusicAssistant) -> None:
+    """A speaker on the center channel and a subwoofer become one 1.1 multi-channel player."""
+    sendspin = _sendspin(mass)
+
+    player = await _compose_with_subwoofer(mass, sendspin, center=True)
+
+    set_protocol = _set_of(sendspin, player)
+    assert player.channel_layout == ChannelLayout.LAYOUT_1_1
+    assert sendspin.speaker_output(CENTER) == (
+        set_protocol.protocol_id,
+        SpeakerChannel.FRONT_CENTER,
+        True,
+    )
+    assert _filters(set_protocol, CENTER) == [MONO_SUM, "high-pass 80 Hz", "high-pass 80 Hz"]
+    assert _filters(set_protocol, SUB) == [MONO_SUM, "low-pass 80 Hz", "low-pass 80 Hz"]
+
+
+@pytest.mark.parametrize(
+    "channels",
+    [
+        pytest.param({LEFT: SpeakerChannel.FRONT_LEFT, SUB: SpeakerChannel.LFE}, id="no right"),
+        pytest.param({SUB: SpeakerChannel.LFE}, id="a subwoofer alone"),
+        pytest.param({CENTER: SpeakerChannel.FRONT_CENTER}, id="a center speaker alone"),
+        pytest.param(
+            {
+                LEFT: SpeakerChannel.FRONT_LEFT,
+                RIGHT: SpeakerChannel.FRONT_RIGHT,
+                CENTER: SpeakerChannel.FRONT_CENTER,
+                SUB: SpeakerChannel.LFE,
+            },
+            id="a center speaker with a pair",
+        ),
+        pytest.param(
+            {
+                LEFT: SpeakerChannel.FRONT_LEFT,
+                RIGHT: SpeakerChannel.FRONT_RIGHT,
+                CENTER: SpeakerChannel.LFE,
+                SUB: SpeakerChannel.LFE,
+            },
+            id="two subwoofers",
+        ),
+    ],
+)
+async def test_speakers_with_a_subwoofer_that_make_no_layout_are_left_as_they_are(
+    mass: MusicAssistant, channels: dict[str, SpeakerChannel]
+) -> None:
+    """A request whose channels make up no layout with a subwoofer changes nothing."""
+    sendspin = _sendspin(mass)
+    for client_id in channels:
+        await _add_speaker(sendspin, client_id, client_id)
+
+    with pytest.raises(InvalidDataError):
+        await mass.players.create_multi_channel_player(
+            "sendspin",
+            "Kitchen",
+            {_player_id(sendspin, client_id): channel for client_id, channel in channels.items()},
+        )
+
+    assert all(sendspin.get_protocol(client_id) is not None for client_id in channels)
+    assert not [
+        protocol_id
+        for protocol_id in mass.config.get_protocol_ids_of_provider(sendspin.instance_id)
+        if protocol_id.startswith(MULTI_CHANNEL_ID_PREFIX)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("away", "outputs", "state_key"),
+    [
+        pytest.param(
+            SUB,
+            {
+                LEFT: (SpeakerChannel.FRONT_LEFT, False, [PAN_LEFT]),
+                RIGHT: (SpeakerChannel.FRONT_RIGHT, False, [PAN_RIGHT]),
+            },
+            "subwoofer_offline",
+            id="the subwoofer",
+        ),
+        pytest.param(
+            RIGHT,
+            {
+                LEFT: (None, True, ["high-pass 80 Hz", "high-pass 80 Hz"]),
+                SUB: (SpeakerChannel.LFE, True, [MONO_SUM, "low-pass 80 Hz", "low-pass 80 Hz"]),
+            },
+            "speaker_offline",
+            id="a main speaker",
+        ),
+    ],
+)
+async def test_a_set_with_a_subwoofer_plays_on_while_a_speaker_is_away(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    away: str,
+    outputs: dict[str, tuple[SpeakerChannel | None, bool, list[str]]],
+    state_key: str,
+) -> None:
+    """
+    Without its subwoofer a set plays the full range, without a main speaker every channel.
+
+    The other main speaker plays every channel and still leaves the bass to the subwoofer.
+    The set stays available, says what plays while the speaker is offline, and starts the
+    stream again as the speaker goes and as it comes back.
+    """
+    sendspin = _sendspin(mass)
+    restart = AsyncMock()
+    monkeypatch.setattr(mass.players, "on_player_dsp_change", restart)
+    player = await _compose_with_subwoofer(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    set_id = set_protocol.protocol_id
+
+    _go_away(sendspin, away)
+
+    for client_id, (channel, with_subwoofer, filters) in outputs.items():
+        assert sendspin.speaker_output(client_id) == (set_id, channel, with_subwoofer)
+        assert _filters(set_protocol, client_id) == filters
+    entries = {entry.key: entry for entry in await set_protocol.get_config_entries()}
+    number = 3 if away == SUB else 2
+    assert entries[f"speaker_{number}_state"].translation_key == state_key
+    assert mass.players.get_player(player.player_id).available  # type: ignore[union-attr]
+    await _wait_for(lambda: restart.await_count == 1)
+
+    _come_back(sendspin, away)
+
+    await _wait_for(
+        lambda: sendspin.speaker_output(LEFT) == (set_id, SpeakerChannel.FRONT_LEFT, True)
+    )
+    assert _filters(set_protocol, LEFT) == [PAN_LEFT, "high-pass 80 Hz", "high-pass 80 Hz"]
+    await _wait_for(lambda: restart.await_count == 2)
+
+
+@pytest.mark.parametrize("center", [False, True], ids=["2.1", "1.1"])
+async def test_a_set_whose_main_speakers_are_away_is_unavailable(
+    mass: MusicAssistant, center: bool
+) -> None:
+    """A set is unavailable while none of its main speakers is connected, its subwoofer alone."""
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin, center=center)
+
+    for client_id in [CENTER] if center else [LEFT, RIGHT]:
+        _go_away(sendspin, client_id)
+
+    await _wait_for(
+        lambda: not mass.players.get_player(player.player_id).available  # type: ignore[union-attr]
+    )
+    entries = {entry.key: entry for entry in await _set_of(sendspin, player).get_config_entries()}
+    assert entries["speaker_1_state"].translation_key == (
+        "only_speaker_offline" if center else "speaker_offline"
+    )
+
+
+@pytest.mark.parametrize(
+    ("center", "away", "stops"),
+    [
+        pytest.param(False, [LEFT, RIGHT], True, id="both main speakers of a 2.1 set"),
+        pytest.param(True, [CENTER], True, id="the speaker of a 1.1 set"),
+        pytest.param(False, [RIGHT], False, id="one main speaker"),
+        pytest.param(False, [SUB], False, id="the subwoofer"),
+    ],
+)
+async def test_a_playing_set_stops_once_none_of_its_main_speakers_is_left(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    center: bool,
+    away: list[str],
+    stops: bool,
+) -> None:
+    """
+    A playing set whose main speakers are all away stops, so its subwoofer is not left alone.
+
+    It stays unavailable until a main speaker is back. A set with a main speaker left plays on.
+    """
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin, center=center)
+    set_protocol = _set_of(sendspin, player)
+    stop = AsyncMock(side_effect=set_protocol.stop)
+    monkeypatch.setattr(set_protocol, "stop", stop)
+    set_protocol._attr_playback_state = PlaybackState.PLAYING
+    set_protocol.update_state()
+
+    for client_id in away:
+        _go_away(sendspin, client_id)
+
+    state = mass.players.get_player(player.player_id)
+    assert state is not None
+    if stops:
+        await _wait_for(lambda: state.playback_state == PlaybackState.IDLE)
+        stop.assert_awaited_once()
+        assert not state.available
+    else:
+        await asyncio.sleep(0.2)
+        stop.assert_not_awaited()
+        assert (state.playback_state, state.available) == (PlaybackState.PLAYING, True)
+
+
+@pytest.mark.parametrize(
+    "follows",
+    [
+        pytest.param(True, id="in the group of another player"),
+        pytest.param(False, id="in its own group"),
+    ],
+)
+async def test_a_subwoofer_leaves_the_group_while_no_main_speaker_is_connected(
+    mass: MusicAssistant, follows: bool
+) -> None:
+    """
+    The subwoofer of a set whose main speakers are all away leaves the group it plays in.
+
+    So it does not play the bass alone for a player the set follows, which plays on. The set
+    stays a member, a new playback session does not bring the subwoofer back, and it is back
+    with the first main speaker.
+    """
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    den = None
+    if follows:
+        await _add_speaker(sendspin, DEN, "Den")
+        den = sendspin.get_protocol(DEN)
+        assert den is not None
+        await mass.players.cmd_set_members(
+            _player_id(sendspin, DEN), player_ids_to_add=[player.player_id]
+        )
+        await _wait_for(lambda: {DEN, LEFT, RIGHT, SUB} <= _group_client_ids(set_protocol))
+
+    for client_id in (LEFT, RIGHT):
+        _go_away(sendspin, client_id)
+
+    await _wait_for(lambda: SUB not in _group_client_ids(set_protocol))
+    await set_protocol.take_speakers(rejoin=True)
+    assert SUB not in _group_client_ids(set_protocol)
+    if den is not None:
+        assert den.group_members == [DEN, set_protocol.protocol_id]
+
+    _come_back(sendspin, LEFT)
+
+    await _wait_for(lambda: SUB in _group_client_ids(set_protocol))
+    assert set_protocol.speaker_channel(SUB) == SpeakerChannel.LFE
+    if den is not None:
+        assert DEN in _group_client_ids(set_protocol)
+
+
+@pytest.mark.parametrize(
+    "center",
+    [
+        pytest.param(False, id="both main speakers of a 2.1 set"),
+        pytest.param(True, id="the speaker of a 1.1 set"),
+    ],
+)
+async def test_a_subwoofer_leaves_the_group_while_the_main_speakers_play_elsewhere(
+    mass: MusicAssistant, center: bool
+) -> None:
+    """
+    The subwoofer leaves the group while every main speaker is connected but out of it.
+
+    A main speaker that plays its own input stays connected, so the set stays available. A
+    playback session that starts meanwhile takes no subwoofer alone, and the subwoofer is back
+    with the first main speaker a session takes back.
+    """
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin, center=center)
+    set_protocol = _set_of(sendspin, player)
+    main_ids = [CENTER] if center else [LEFT, RIGHT]
+    main_clients = [sendspin.server_api.get_client(client_id) for client_id in main_ids]
+
+    for client in main_clients:
+        assert client is not None
+        # it plays its line-in
+        await client.handle_availability_change(False)
+
+    await _wait_for(lambda: SUB not in _group_client_ids(set_protocol))
+    state = mass.players.get_player(player.player_id)
+    assert state is not None
+    assert state.available
+    await set_protocol.take_speakers(rejoin=True)
+    assert SUB not in _group_client_ids(set_protocol)
+
+    assert main_clients[0] is not None
+    await main_clients[0].handle_availability_change(True)
+    await set_protocol.take_speakers(rejoin=True)
+
+    assert {main_ids[0], SUB} <= _group_client_ids(set_protocol)
+    assert set_protocol.speaker_channel(SUB) == SpeakerChannel.LFE
+
+
+async def test_a_main_speaker_that_comes_back_by_itself_brings_the_subwoofer_back(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A main speaker that moves back into the group by itself plays with its set again.
+
+    It left to play its own input, and its switch moves it back into the group the set shares
+    with another player: the subwoofer that was set aside is back with it, and the speaker
+    stays through a change of group.
+    """
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin, center=True)
+    set_protocol = _set_of(sendspin, player)
+    await _add_speaker(sendspin, DEN, "Den")
+    await mass.players.cmd_set_members(
+        _player_id(sendspin, DEN), player_ids_to_add=[player.player_id]
+    )
+    await _wait_for(lambda: {DEN, CENTER, SUB} <= _group_client_ids(set_protocol))
+    center = sendspin.server_api.get_client(CENTER)
+    assert center is not None
+    # it plays its line-in
+    await center.handle_availability_change(False)
+    await _wait_for(lambda: SUB not in _group_client_ids(set_protocol))
+    await center.handle_availability_change(True)
+
+    await center.handle_switch_command()
+
+    await _wait_for(lambda: {CENTER, SUB} <= _group_client_ids(set_protocol))
+    assert set_protocol.speaker_channel(SUB) == SpeakerChannel.LFE
+    # as when the set joins or leaves a group
+    await set_protocol.take_speakers()
+    assert {CENTER, SUB} <= _group_client_ids(set_protocol)
+
+
+async def test_a_subwoofer_that_was_set_aside_does_not_come_back_alone(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A subwoofer that was set aside leaves again when it moves back into the group by itself.
+
+    Its switch offers the group the set shares with another player, which plays on while the
+    main speaker of the set plays its own input.
+    """
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin, center=True)
+    set_protocol = _set_of(sendspin, player)
+    await _add_speaker(sendspin, DEN, "Den")
+    await mass.players.cmd_set_members(
+        _player_id(sendspin, DEN), player_ids_to_add=[player.player_id]
+    )
+    await _wait_for(lambda: {DEN, CENTER, SUB} <= _group_client_ids(set_protocol))
+    center = sendspin.server_api.get_client(CENTER)
+    subwoofer = sendspin.server_api.get_client(SUB)
+    assert center is not None
+    assert subwoofer is not None
+    # it plays its line-in
+    await center.handle_availability_change(False)
+    await _wait_for(lambda: SUB not in _group_client_ids(set_protocol))
+    set_protocol.api.group._set_playback_state(PlaybackStateType.PLAYING)
+
+    await subwoofer.handle_switch_command()
+
+    assert SUB in _group_client_ids(set_protocol)
+    await _wait_for(lambda: SUB not in _group_client_ids(set_protocol))
+
+
+async def test_a_subwoofer_that_left_by_itself_is_back_at_the_next_playback(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A new playback session takes back a subwoofer that left by itself, whatever its number.
+
+    The subwoofer is the first speaker of the set here, so it is looked at before the main
+    speakers that it can not play without.
+    """
+    sendspin = _sendspin(mass)
+    channels = {
+        SUB: SpeakerChannel.LFE,
+        LEFT: SpeakerChannel.FRONT_LEFT,
+        RIGHT: SpeakerChannel.FRONT_RIGHT,
+    }
+    for client_id in channels:
+        await _add_speaker(sendspin, client_id, client_id.replace("speaker-", "Kitchen "))
+    player = await mass.players.create_multi_channel_player(
+        "sendspin",
+        "Kitchen",
+        {_player_id(sendspin, client_id): channel for client_id, channel in channels.items()},
+    )
+    set_protocol = _set_of(sendspin, player)
+    await _wait_for(lambda: set(channels) <= _group_client_ids(set_protocol))
+    clients = [sendspin.server_api.get_client(client_id) for client_id in channels]
+    for client in clients:
+        assert client is not None
+        await client.handle_availability_change(False)
+    await _wait_for(lambda: not set(channels) & _group_client_ids(set_protocol))
+    await asyncio.sleep(0.2)
+    for client in clients:
+        assert client is not None
+        await client.handle_availability_change(True)
+
+    await set_protocol.take_speakers(rejoin=True)
+
+    assert set(channels) <= _group_client_ids(set_protocol)
+
+
+@pytest.mark.parametrize(
+    ("client_id", "channel"),
+    [
+        pytest.param(SUB, SpeakerChannel.LFE, id="the subwoofer"),
+        pytest.param(LEFT, SpeakerChannel.FRONT_LEFT, id="a main speaker"),
+    ],
+)
+async def test_a_speaker_that_joins_its_set_plays_its_channel_from_the_start(
+    mass: MusicAssistant, client_id: str, channel: SpeakerChannel
+) -> None:
+    """
+    A speaker that comes back to its set plays with the settings of the set from the start.
+
+    The session plans a joining speaker as soon as the group lists it, before the speaker
+    names that group; a subwoofer planned as a speaker of its own would play the full range
+    until the stream starts again.
+    """
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    planned: list[tuple[str, SpeakerChannel | None, bool]] = []
+
+    def _plan_the_joiner(_group: Any, event: Any) -> None:
+        if isinstance(event, GroupMemberAddedEvent) and event.client_id == client_id:
+            planned.append(sendspin.speaker_output(client_id))
+
+    client = sendspin.server_api.get_client(client_id)
+    assert client is not None
+    unsubscribe = set_protocol.api.group.add_event_listener(_plan_the_joiner)
+    try:
+        _go_away(sendspin, client_id)
+        # a speaker that says goodbye leaves for a group of its own, as the server lets it
+        await client.ungroup()
+        await asyncio.sleep(0.2)
+        _come_back(sendspin, client_id)
+        await _wait_for(lambda: bool(planned))
+    finally:
+        unsubscribe()
+
+    assert planned == [(set_protocol.protocol_id, channel, True)]
+
+
+async def test_a_set_with_a_subwoofer_has_the_settings_of_its_crossover(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A set with a subwoofer has the settings of how it splits the bass, above its speakers.
+
+    Each speaker can take the channel of the subwoofer.
+    """
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin)
+
+    config = await mass.config.get_player_config(player.player_id)
+
+    keys = [key for key in config.values if key in CROSSOVER_KEYS or key.startswith("speaker_")]
+    assert keys[:5] == [*CROSSOVER_KEYS, "speaker_1_state"]
+    assert [(config.values[key].type, config.values[key].value) for key in CROSSOVER_KEYS] == [
+        (ConfigEntryType.BOOLEAN, False),
+        (ConfigEntryType.BOOLEAN, True),
+        (ConfigEntryType.INTEGER, 80),
+        (ConfigEntryType.INTEGER, 0),
+    ]
+    frequency = config.values[CONF_CROSSOVER_FREQUENCY]
+    assert [(option.value, option.title) for option in frequency.options][::4] == [
+        (40, "40 Hz"),
+        (80, "80 Hz"),
+        (120, "120 Hz"),
+        (160, "160 Hz"),
+        (200, "200 Hz"),
+    ]
+    assert len(frequency.options) == 17
+    assert config.values[CONF_SUBWOOFER_LEVEL].range == (-12, 0)
+    assert [option.value for option in config.values["speaker_3_channel_setting"].options] == [
+        "front_left",
+        "front_right",
+        "lfe",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("values", "left", "subwoofer"),
+    [
+        pytest.param(
+            {CONF_CROSSOVER_FREQUENCY: 120},
+            [PAN_LEFT, "high-pass 120 Hz", "high-pass 120 Hz"],
+            [MONO_SUM, "low-pass 120 Hz", "low-pass 120 Hz"],
+            id="crossover",
+        ),
+        pytest.param(
+            {CONF_SUBWOOFER_LEVEL: -4},
+            [PAN_LEFT, "high-pass 80 Hz", "high-pass 80 Hz"],
+            [MONO_SUM, "low-pass 80 Hz", "low-pass 80 Hz", "volume=-4dB"],
+            id="level",
+        ),
+        pytest.param(
+            {CONF_SUBWOOFER_OWN_CROSSOVER: True},
+            [PAN_LEFT, "high-pass 80 Hz", "high-pass 80 Hz"],
+            [MONO_SUM],
+            id="own crossover",
+        ),
+        pytest.param(
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False},
+            [PAN_LEFT],
+            [MONO_SUM, "low-pass 80 Hz"],
+            id="main speakers at full range",
+        ),
+    ],
+)
+async def test_a_changed_crossover_starts_the_stream_of_a_set_again(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    values: dict[str, Any],
+    left: list[str],
+    subwoofer: list[str],
+) -> None:
+    """A change of how a set splits the bass starts its stream again, which plays with it."""
+    sendspin = _sendspin(mass)
+    restart = AsyncMock()
+    monkeypatch.setattr(mass.players, "on_player_dsp_change", restart)
+    player = await _compose_with_subwoofer(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    # the speakers that join one by one start the stream again once, as the set is combined
+    await asyncio.sleep(0.2)
+    restart.reset_mock()
+
+    await mass.config.save_player_config(player.player_id, values)
+
+    await _wait_for(lambda: restart.await_count == 1)
+    restart.assert_awaited_with(player.player_id)
+    assert _filters(set_protocol, LEFT) == left
+    assert _filters(set_protocol, SUB) == subwoofer
+
+
+async def test_a_save_that_keeps_the_crossover_of_a_set_leaves_its_stream_as_it_is(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A save that leaves the crossover of a set as it plays does not start the stream again.
+
+    Such as a save of another setting, or a reset of a setting to the default it has.
+    """
+    sendspin = _sendspin(mass)
+    restart = AsyncMock()
+    monkeypatch.setattr(mass.players, "on_player_dsp_change", restart)
+    player = await _compose_with_subwoofer(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    await mass.config.save_player_config(player.player_id, {CONF_CROSSOVER_FREQUENCY: 120})
+    await mass.config.save_player_config(player.player_id, {CONF_CROSSOVER_FREQUENCY: 80})
+    await asyncio.sleep(0.2)
+    restart.reset_mock()
+
+    await mass.config.save_player_config(player.player_id, {CONF_CROSSOVER_FREQUENCY: None})
+    await mass.config.save_player_config(player.player_id, {"speaker_1_output_delay": 120})
+    await asyncio.sleep(0.2)
+
+    restart.assert_not_awaited()
+    values = (mass.config.get_protocol_record(set_protocol.protocol_id) or {})["values"]
+    assert CONF_CROSSOVER_FREQUENCY not in values
+    assert _filters(set_protocol, SUB) == [MONO_SUM, "low-pass 80 Hz", "low-pass 80 Hz"]
+
+
+async def test_a_channel_set_on_the_subwoofer_swaps_it_with_the_speaker_that_had_it(
+    mass: MusicAssistant,
+) -> None:
+    """Giving the subwoofer the channel of a main speaker makes that speaker the subwoofer."""
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+
+    await mass.config.save_player_config(
+        player.player_id, {"speaker_3_channel_setting": "front_left"}
+    )
+
+    assert sendspin.speaker_output(SUB)[1] == SpeakerChannel.FRONT_LEFT
+    assert sendspin.speaker_output(LEFT)[1] == SpeakerChannel.LFE
+    assert _filters(set_protocol, LEFT) == [MONO_SUM, "low-pass 80 Hz", "low-pass 80 Hz"]
+    assert player.channel_layout == ChannelLayout.LAYOUT_2_1
+
+
+@pytest.mark.parametrize(
+    ("subwoofer", "submitted", "channels"),
+    [
+        pytest.param(
+            True,
+            {"speaker_1_channel_setting": "lfe", "speaker_2_channel_setting": "lfe"},
+            None,
+            id="both main speakers on the channel of the subwoofer",
+        ),
+        pytest.param(
+            False,
+            {
+                "speaker_1_channel_setting": "front_right",
+                "speaker_2_channel_setting": "front_right",
+            },
+            [SpeakerChannel.FRONT_RIGHT, SpeakerChannel.FRONT_LEFT],
+            id="the channel a speaker of a pair has set for both",
+        ),
+        pytest.param(
+            False,
+            {"speaker_1_channel_setting": "front_right", "speaker_2_channel_setting": "front_left"},
+            [SpeakerChannel.FRONT_RIGHT, SpeakerChannel.FRONT_LEFT],
+            id="a pair swapped in one save",
+        ),
+        pytest.param(
+            True,
+            {"speaker_1_channel_setting": "front_right", "speaker_3_channel_setting": "front_left"},
+            [SpeakerChannel.FRONT_RIGHT, SpeakerChannel.LFE, SpeakerChannel.FRONT_LEFT],
+            id="two channels of a 2.1 set in one save",
+        ),
+    ],
+)
+async def test_channels_set_in_one_save_are_taken_only_as_a_layout(
+    mass: MusicAssistant,
+    subwoofer: bool,
+    submitted: dict[str, Any],
+    channels: list[SpeakerChannel] | None,
+) -> None:
+    """
+    The channels set for several speakers in one save are taken when they make up a layout.
+
+    Channels that make up none change nothing: the set keeps its channels, its layout, its
+    settings and its availability.
+    """
+    sendspin = _sendspin(mass)
+    if subwoofer:
+        player = await _compose_with_subwoofer(mass, sendspin)
+    else:
+        player, _, _ = await _compose(mass, sendspin)
+    set_id = _set_of(sendspin, player).protocol_id
+    layout = player.channel_layout
+    assert layout is not None
+    before = [
+        speaker.channel
+        for speaker in multi_channel.stored_speakers(
+            (mass.config.get_protocol_record(set_id) or {})["values"]
+        )
+    ]
+
+    await mass.config.save_player_config(player.player_id, submitted)
+
+    values = (mass.config.get_protocol_record(set_id) or {})["values"]
+    stored = [speaker.channel for speaker in multi_channel.stored_speakers(values)]
+    assert stored == (channels or before)
+    assert not [key for key in values if key.endswith("_channel_setting")]
+    assert sendspin.speaker_output(LEFT)[1] == stored[0]
+    state = mass.players.get_player(player.player_id)
+    assert state is not None
+    assert (state.channel_layout, state.available) == (layout, True)
+    config = await mass.config.get_player_config(player.player_id)
+    setting = config.values["speaker_1_channel_setting"]
+    assert [option.value for option in setting.options] == [
+        channel.value for channel in multi_channel.LAYOUT_CHANNELS[layout]
+    ]
+    assert setting.value == stored[0].value
+
+
+async def test_a_stored_stereo_pair_plays_as_it_did(mass: MusicAssistant) -> None:
+    """
+    A stereo pair stored without any setting of a subwoofer loads and plays as it did.
+
+    It has no settings of a crossover, its record stays as it is, and its speakers play their
+    channel at the full range.
+    """
+    sendspin = _sendspin(mass)
+    instance_id = sendspin.instance_id
+    await mass.unload_provider(instance_id)
+    group_id = "A" * 43
+    set_id = f"{MULTI_CHANNEL_ID_PREFIX}{group_id}"
+    stored = {
+        CONF_MULTI_CHANNEL_GROUP_ID: group_id,
+        "speaker_1_client_id": LEFT,
+        "speaker_1_name": "Kitchen left",
+        "speaker_1_channel": "front_left",
+        "speaker_1_output_delay": 0,
+        "speaker_2_client_id": RIGHT,
+        "speaker_2_name": "Kitchen right",
+        "speaker_2_channel": "front_right",
+        "speaker_2_output_delay": 0,
+    }
+    mass.config.create_protocol_record(
+        set_id,
+        provider=instance_id,
+        player_id=None,
+        role=ProtocolRole.NATIVE,
+        default_name="Kitchen",
+    )
+    mass.config.set(f"{CONF_PLAYER_PROTOCOLS}/{set_id}/values", dict(stored))
+
+    await mass.load_provider(instance_id)
+    sendspin = _sendspin(mass)
+    await _add_speaker(sendspin, LEFT, "Kitchen left", as_player=False)
+    await _add_speaker(sendspin, RIGHT, "Kitchen right", as_player=False)
+
+    await _wait_for(
+        lambda: (
+            isinstance(set_protocol := sendspin.get_protocol(set_id), SendspinMultiChannelPlayer)
+            and set_protocol.player is not None
+            and {LEFT, RIGHT} <= _group_client_ids(set_protocol)
+        )
+    )
+    set_protocol = cast("SendspinMultiChannelPlayer", sendspin.get_protocol(set_id))
+    player = set_protocol.player
+    assert player is not None
+    assert (player.type, player.channel_layout) == (PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO)
+    values = (mass.config.get_protocol_record(set_id) or {})["values"]
+    assert {key: values[key] for key in stored} == stored
+    assert not set(CROSSOVER_KEYS) & set(values)
+    config = await mass.config.get_player_config(player.player_id)
+    assert not set(CROSSOVER_KEYS) & set(config.values)
+    assert CONF_OUTPUT_CHANNELS in config.values
+    assert sendspin.speaker_output(LEFT) == (set_id, SpeakerChannel.FRONT_LEFT, False)
+    assert _filters(set_protocol, LEFT) == [PAN_LEFT]
+    assert _filters(set_protocol, RIGHT) == [PAN_RIGHT]
+
+
+async def test_a_set_with_a_subwoofer_splits_the_bass_only_between_its_own_speakers(
+    mass: MusicAssistant,
+) -> None:
+    """Another player in the group of a set with a subwoofer plays the full range."""
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin)
+    await _add_speaker(sendspin, DEN, "Den")
+    den_player_id = _player_id(sendspin, DEN)
+    set_protocol = _set_of(sendspin, player)
+    await _wait_for(
+        lambda: den_player_id in mass.players.get_player(player.player_id).can_group_with  # type: ignore[union-attr]
+    )
+
+    await mass.players.cmd_set_members(player.player_id, player_ids_to_add=[den_player_id])
+
+    await _wait_for(lambda: DEN in set_protocol.playback_session._members)
+    assert sendspin.speaker_output(DEN) == (DEN, None, False)
+    assert _filters(set_protocol, DEN) == []
+    assert _filters(set_protocol, LEFT) == [PAN_LEFT, "high-pass 80 Hz", "high-pass 80 Hz"]
+    assert _filters(set_protocol, SUB) == [MONO_SUM, "low-pass 80 Hz", "low-pass 80 Hz"]
+
+
+async def test_a_subwoofer_added_to_a_playing_pair_makes_it_a_2_1_player(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A subwoofer added to a stereo pair takes the bass, and the pair leaves it to it.
+
+    The subwoofer loses its own player to the set, takes the volume of the set, and plays the
+    bass from its first audio on; the stream starts again for the crossover of the others.
+    Clients are told of the new config of the set, as a save tells them.
+    """
+    sendspin = _sendspin(mass)
+    restart = AsyncMock()
+    monkeypatch.setattr(mass.players, "on_player_dsp_change", restart)
+    player, _, _ = await _compose(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    subwoofer = await _add_speaker(sendspin, SUB, "Kitchen sub", volume=70)
+    sub_player_id = _player_id(sendspin, SUB)
+    await asyncio.sleep(0.2)
+    restart.reset_mock()
+    saved: list[MassEvent] = []
+    mass.subscribe(saved.append, EventType.PLAYER_CONFIG_UPDATED, player.player_id)
+    planned: list[tuple[str, SpeakerChannel | None, bool]] = []
+
+    def _plan_the_joiner(_group: Any, event: Any) -> None:
+        if isinstance(event, GroupMemberAddedEvent) and event.client_id == SUB:
+            planned.append(sendspin.speaker_output(SUB))
+
+    set_protocol.api.group.add_event_listener(_plan_the_joiner)
+
+    await mass.players.add_multi_channel_speaker(
+        player.player_id, sub_player_id, SpeakerChannel.LFE
+    )
+
+    assert planned == [(set_protocol.protocol_id, SpeakerChannel.LFE, True)]
+
+    await _wait_for(lambda: bool(saved))
+    assert saved[-1].data.values["speaker_3_channel_setting"].value == "lfe"
+
+    await _wait_for(lambda: SUB in _group_client_ids(set_protocol))
+    assert player.channel_layout == ChannelLayout.LAYOUT_2_1
+    assert mass.players.get_player(sub_player_id) is None
+    assert sendspin.get_protocol(SUB) is None
+    values = (mass.config.get_protocol_record(set_protocol.protocol_id) or {})["values"]
+    assert {key: value for key, value in values.items() if key.startswith("speaker_3_")} == {
+        "speaker_3_client_id": SUB,
+        "speaker_3_name": "Kitchen sub",
+        "speaker_3_channel": "lfe",
+        "speaker_3_output_delay": 0,
+    }
+    assert subwoofer.volume_commands == [30]
+    assert _filters(set_protocol, LEFT) == [PAN_LEFT, "high-pass 80 Hz", "high-pass 80 Hz"]
+    assert _filters(set_protocol, SUB) == [MONO_SUM, "low-pass 80 Hz", "low-pass 80 Hz"]
+    await _wait_for(lambda: restart.await_count == 1)
+    restart.assert_awaited_with(player.player_id)
+
+
+@pytest.mark.parametrize("away", [False, True], ids=["connected", "away"])
+async def test_a_subwoofer_removed_from_a_set_is_a_player_of_its_own_again(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, away: bool
+) -> None:
+    """
+    A subwoofer removed from a 2.1 set comes back as a player of its own, the set as a pair.
+
+    One that is away comes back as its own player once it connects. The main speakers play the
+    full range from a new stream, and clients are told of the new config of the set.
+    """
+    sendspin = _sendspin(mass)
+    restart = AsyncMock()
+    monkeypatch.setattr(mass.players, "on_player_dsp_change", restart)
+    player = await _compose_with_subwoofer(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    if away:
+        _go_away(sendspin, SUB)
+    await asyncio.sleep(0.2)
+    restart.reset_mock()
+    saved: list[MassEvent] = []
+    mass.subscribe(saved.append, EventType.PLAYER_CONFIG_UPDATED, player.player_id)
+
+    await mass.players.remove_multi_channel_speaker(player.player_id, 3)
+
+    await _wait_for(lambda: bool(saved))
+    assert "speaker_2_state" in saved[-1].data.values
+    assert not [key for key in saved[-1].data.values if key.startswith("speaker_3_")]
+    assert player.channel_layout == ChannelLayout.STEREO
+    assert sendspin.multi_channel_player_of(SUB) is None
+    values = (mass.config.get_protocol_record(set_protocol.protocol_id) or {})["values"]
+    assert not [key for key in values if key.startswith("speaker_3_")]
+    config = await mass.config.get_player_config(player.player_id)
+    assert not set(CROSSOVER_KEYS) & set(config.values)
+    assert _filters(set_protocol, LEFT) == [PAN_LEFT]
+    if away:
+        _come_back(sendspin, SUB)
+    else:
+        await _wait_for(lambda: restart.await_count == 1)
+    await _wait_for(
+        lambda: (
+            (protocol := sendspin.get_protocol(SUB)) is not None
+            and protocol.player is not None
+            and protocol.player.available
+        )
+    )
+    assert SUB not in _group_client_ids(set_protocol)
+    assert {LEFT, RIGHT} <= _group_client_ids(set_protocol)
+
+
+async def test_the_speakers_after_a_removed_one_move_up_a_number(mass: MusicAssistant) -> None:
+    """
+    The speakers after a speaker that is removed move up a number, with all their values.
+
+    The settings of the set name them by their new numbers.
+    """
+    sendspin = _sendspin(mass)
+    for client_id in (SUB, LEFT, RIGHT):
+        await _add_speaker(sendspin, client_id, client_id.replace("speaker-", "Kitchen "))
+    player = await mass.players.create_multi_channel_player(
+        "sendspin",
+        "Kitchen",
+        {
+            _player_id(sendspin, SUB): SpeakerChannel.LFE,
+            _player_id(sendspin, LEFT): SpeakerChannel.FRONT_LEFT,
+            _player_id(sendspin, RIGHT): SpeakerChannel.FRONT_RIGHT,
+        },
+    )
+    set_protocol = _set_of(sendspin, player)
+    await _wait_for(lambda: {SUB, LEFT, RIGHT} <= _group_client_ids(set_protocol))
+    await mass.config.save_player_config(
+        player.player_id,
+        {"speaker_1_output_delay": 10, "speaker_2_output_delay": 20, "speaker_3_output_delay": 30},
+    )
+
+    await mass.players.remove_multi_channel_speaker(player.player_id, 1)
+
+    values = (mass.config.get_protocol_record(set_protocol.protocol_id) or {})["values"]
+    assert {key: value for key, value in values.items() if key.startswith("speaker_")} == {
+        "speaker_1_client_id": LEFT,
+        "speaker_1_name": "Kitchen left",
+        "speaker_1_channel": "front_left",
+        "speaker_1_output_delay": 20,
+        "speaker_2_client_id": RIGHT,
+        "speaker_2_name": "Kitchen right",
+        "speaker_2_channel": "front_right",
+        "speaker_2_output_delay": 30,
+    }
+    config = await mass.config.get_player_config(player.player_id)
+    assert [
+        (key, entry.value) for key, entry in config.values.items() if key.startswith("speaker_")
+    ] == [
+        ("speaker_1_state", "online"),
+        ("speaker_1_display_name", "Kitchen left"),
+        ("speaker_1_channel_setting", "front_left"),
+        ("speaker_1_output_delay", 20),
+        ("speaker_2_state", "online"),
+        ("speaker_2_display_name", "Kitchen right"),
+        ("speaker_2_channel_setting", "front_right"),
+        ("speaker_2_output_delay", 30),
+    ]
+    assert sendspin.speaker_output(RIGHT) == (
+        set_protocol.protocol_id,
+        SpeakerChannel.FRONT_RIGHT,
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("addition", "error"),
+    [
+        pytest.param("a center speaker", InvalidDataError, id="a center speaker"),
+        pytest.param("a second left speaker", InvalidDataError, id="a channel taken"),
+        pytest.param("another set", UnsupportedFeaturedException, id="another set"),
+        pytest.param("an offline speaker", PlayerUnavailableError, id="offline"),
+    ],
+)
+async def test_a_speaker_the_set_can_not_take_is_left_as_it_is(
+    mass: MusicAssistant, addition: str, error: type[Exception]
+) -> None:
+    """A speaker whose channel makes up no layout with a set, or that can not go up in it, stays."""
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    set_id = _set_of(sendspin, player).protocol_id
+    stored = dict((mass.config.get_protocol_record(set_id) or {})["values"])
+    await _add_speaker(sendspin, DEN, "Den")
+    speaker_player_id = _player_id(sendspin, DEN)
+    channel = {
+        "a center speaker": SpeakerChannel.FRONT_CENTER,
+        "a second left speaker": SpeakerChannel.FRONT_LEFT,
+    }.get(addition, SpeakerChannel.LFE)
+    if addition == "another set":
+        await _add_speaker(sendspin, SUB, "Den sub")
+        other = await mass.players.create_multi_channel_player(
+            "sendspin",
+            "Den",
+            {
+                speaker_player_id: SpeakerChannel.FRONT_CENTER,
+                _player_id(sendspin, SUB): SpeakerChannel.LFE,
+            },
+        )
+        speaker_player_id = other.player_id
+    elif addition == "an offline speaker":
+        _go_away(sendspin, DEN)
+
+    with pytest.raises(error):
+        await mass.players.add_multi_channel_speaker(player.player_id, speaker_player_id, channel)
+
+    assert (mass.config.get_protocol_record(set_id) or {})["values"] == stored
+    assert player.channel_layout == ChannelLayout.STEREO
+    assert sendspin.multi_channel_player_of(DEN) != set_id
+
+
+@pytest.mark.parametrize(
+    ("center", "number"),
+    [
+        pytest.param(False, 1, id="a main speaker of a 2.1 set"),
+        pytest.param(True, 2, id="the subwoofer of a 1.1 set"),
+        pytest.param(False, 4, id="no such speaker"),
+    ],
+)
+async def test_a_speaker_without_which_the_set_makes_up_no_layout_stays(
+    mass: MusicAssistant, center: bool, number: int
+) -> None:
+    """A speaker without which the others make up no layout stays: the set is taken apart instead."""
+    sendspin = _sendspin(mass)
+    player = await _compose_with_subwoofer(mass, sendspin, center=center)
+    set_protocol = _set_of(sendspin, player)
+    stored = dict((mass.config.get_protocol_record(set_protocol.protocol_id) or {})["values"])
+
+    with pytest.raises(InvalidDataError):
+        await mass.players.remove_multi_channel_speaker(player.player_id, number)
+
+    assert (mass.config.get_protocol_record(set_protocol.protocol_id) or {})["values"] == stored
+    assert sendspin.multi_channel_player_of(SUB) == set_protocol.protocol_id
+    assert SUB in _group_client_ids(set_protocol)
+
+
+async def test_a_subwoofer_goes_in_and_out_of_a_set_through_the_websocket_api(
+    mass: MusicAssistant,
+) -> None:
+    """A client adds a subwoofer to a set by its channel name, and removes it by its number."""
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    await _add_speaker(sendspin, SUB, "Kitchen sub")
+    user = await mass.webserver.auth.create_user(username="admin_user", role=UserRole.ADMIN)
+    token = await mass.webserver.auth.create_token(user, "test")
+
+    async with mass.http_session_no_ssl.ws_connect(
+        f"{mass.webserver.internal_base_url}/ws"
+    ) as client:
+        await client.receive_json(timeout=10)
+        assert "result" in await _send(client, "auth", token=token)
+        added = await _send(
+            client,
+            "players/add_multi_channel_speaker",
+            player_id=player.player_id,
+            speaker=_player_id(sendspin, SUB),
+            channel="lfe",
+        )
+        assert "error_code" not in added
+        await _wait_for(lambda: SUB in _group_client_ids(set_protocol))
+        assert player.channel_layout == ChannelLayout.LAYOUT_2_1
+        removed = await _send(
+            client,
+            "players/remove_multi_channel_speaker",
+            player_id=player.player_id,
+            number=3,
+        )
+
+    assert "error_code" not in removed
+    state = mass.players.get_player(player.player_id)
+    assert state is not None
+    assert state.channel_layout == ChannelLayout.STEREO
+    assert sendspin.multi_channel_player_of(SUB) is None
 
 
 async def _send(client: ClientWebSocketResponse, command: str, **args: Any) -> dict[str, Any]:

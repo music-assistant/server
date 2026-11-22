@@ -16,9 +16,9 @@ from aiosonos.exceptions import CannotConnect, FailedCommand
 from aiosonos.group import PlaybackActions
 from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import PlaybackState, ProtocolRole, RepeatMode
+from music_assistant_models.enums import IdentifierType, PlaybackState, ProtocolRole, RepeatMode
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.player import OutputProtocol, PlayerMedia
+from music_assistant_models.player import DeviceInfo, OutputProtocol, PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
@@ -29,6 +29,8 @@ from music_assistant.providers.sonos.const import (
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
     SOURCE_SPOTIFY,
+    SOURCE_TV,
+    UPNP_PORT,
 )
 from music_assistant.providers.sonos.player import SonosPlayer, _is_wakeable
 
@@ -72,6 +74,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player.upnp = MagicMock(
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
+    player._upnp_port = UPNP_PORT
     player._attr_options = []
     player.discovery_info = cast(
         "SonosDiscoveryInfo",
@@ -291,6 +294,35 @@ async def test_reconnect_at_a_new_address_moves_upnp_along(timer_mass: MusicAssi
     assert player.upnp.location == "http://192.168.1.21:1400/xml/device_description.xml"
     old_upnp.unfollow.assert_awaited_once()
     await player.on_detach()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_at_a_new_address_keeps_the_upnp_port(timer_mass: MusicAssistant) -> None:
+    """Test a zone of an Amp Multi keeps its own UPnP port at a new address."""
+    player, client = _bind_player(timer_mass)
+    player._upnp_port = 1500
+    client.player_ip = "192.168.1.21"
+
+    await _connect_player(player, client)
+
+    assert player.upnp.location == "http://192.168.1.21:1500/xml/device_description.xml"
+    await player.on_detach()
+
+
+@pytest.mark.asyncio
+async def test_reachability_is_probed_on_the_api_port_of_the_client() -> None:
+    """Test a zone of an Amp Multi is probed on its own API port."""
+    player, _ = _make_player()
+    player.client.port = 1445
+    player._attr_device_info = DeviceInfo()
+    player._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, "192.168.1.20")
+    writer = MagicMock(wait_closed=AsyncMock())
+    open_connection = AsyncMock(return_value=(MagicMock(), writer))
+
+    with patch("music_assistant.providers.sonos.player.asyncio.open_connection", open_connection):
+        assert await player._is_reachable()
+
+    open_connection.assert_awaited_once_with("192.168.1.20", 1445)
 
 
 @pytest.mark.asyncio
@@ -1051,6 +1083,11 @@ def test_a_service_we_did_not_map_leaves_the_templates_untouched() -> None:
     assert PLAYER_SOURCE_MAP[SOURCE_LINE_IN].shuffle_enabled is None
     assert PLAYER_SOURCE_MAP[SOURCE_SPOTIFY].can_shuffle is False
     assert set(PLAYER_SOURCE_MAP) == templates
+
+
+def test_line_in_and_tv_are_the_inputs() -> None:
+    """Line-in and TV are inputs of the speaker; AirPlay and the music services are not."""
+    assert [x.id for x in PLAYER_SOURCE_MAP.values() if x.is_input] == [SOURCE_LINE_IN, SOURCE_TV]
 
 
 def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports() -> None:

@@ -192,29 +192,49 @@ async def test_a_playing_input_follows_a_change_of_the_setting(fake_client: _Fak
 
 
 async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> None:
-    """The source is named after its player, and a rename reaches Browse and now-playing."""
+    """A device that only captures is named after its player, and follows a rename."""
     sources = await make_sources([fake_client])
     get_players(sources).players["client-1"].name = "Living Room"
-    assert [s.name for s in await sources.get_audio_sources()] == ["Sendspin (Living Room)"]
+    assert [s.name for s in await sources.get_audio_sources()] == ["Living Room"]
     get_players(sources).players["client-1"].name = "Den"
-    assert [s.name for s in await sources.get_audio_sources()] == ["Sendspin (Den)"]
-    details = await sources.get_stream_details("client-1", MediaType.AUDIO_SOURCE)
-    assert details.stream_metadata is not None
-    assert details.stream_metadata.title == "Den"
+    assert [s.name for s in await sources.get_audio_sources()] == ["Den"]
 
 
 async def test_source_name_uses_the_player_of_the_client(fake_client: _FakeClient) -> None:
     """The source is named after the player the client's protocol is attached to."""
     sources = await make_sources([fake_client])
     attach_client(sources, "client-1", "pl0123456789ab", name="Kitchen")
-    assert [s.name for s in await sources.get_audio_sources()] == ["Sendspin (Kitchen)"]
+    assert [s.name for s in await sources.get_audio_sources()] == ["Kitchen"]
 
 
 async def test_source_name_falls_back_to_the_device_name(fake_client: _FakeClient) -> None:
     """Before its protocol is attached, the source is named after the device's own name."""
     sources = await make_sources([fake_client])
     get_players(sources).protocols["client-1"].player = None
-    assert [s.name for s in await sources.get_audio_sources()] == ["Sendspin (Turntable)"]
+    assert [s.name for s in await sources.get_audio_sources()] == ["Turntable"]
+
+
+async def test_a_source_belongs_to_the_player_of_its_client(fake_client: _FakeClient) -> None:
+    """
+    The source belongs to the player the protocol of its client is attached to.
+
+    After an unlink the protocol keeps the id of its former player, which is still there.
+    """
+    sources = await make_sources([fake_client])
+    attach_client(sources, "client-1", "pl0123456789ab", name="Kitchen")
+    assert get_players(sources).players["client-1"].player_id == "client-1"
+
+    assert [s.owner_player_id for s in await sources.get_audio_sources()] == ["pl0123456789ab"]
+
+
+async def test_a_source_of_a_protocol_on_no_player_names_the_protocol(
+    fake_client: _FakeClient,
+) -> None:
+    """A source whose protocol is attached to no player names the protocol as its owner."""
+    sources = await make_sources([fake_client])
+    get_players(sources).protocols["client-1"].player = None
+
+    assert [s.owner_player_id for s in await sources.get_audio_sources()] == ["client-1"]
 
 
 async def _speaker_with_line_in(name: str | None = None) -> SendspinSources:
@@ -236,19 +256,20 @@ async def test_a_line_in_is_named_alone_on_its_own_player(name: str | None) -> N
 
 
 @pytest.mark.parametrize("name", [None, "Record player"], ids=["default", "set_by_the_user"])
-async def test_a_line_in_is_named_with_its_player_elsewhere(name: str | None) -> None:
-    """Browse and other players show the input with the player it belongs to."""
+async def test_a_line_in_is_the_same_source_everywhere(name: str | None) -> None:
+    """Browse and other players get the input as its own player does: by its name alone."""
     sources = await _speaker_with_line_in(name)
-    expected = name or DEFAULT_SOURCE_NAME
-    assert [s.name for s in await sources.get_audio_sources()] == [f"{expected} (Living Room)"]
+    expected = (name or DEFAULT_SOURCE_NAME, "client-1")
+    listed = [(s.name, s.owner_player_id) for s in await sources.get_audio_sources()]
+    own = [(s.name, s.owner_player_id) for s in sources.get_player_input_sources("client-1")]
+    assert listed == own == [expected]
 
 
-async def test_a_line_in_plays_with_its_own_name_as_title() -> None:
-    """Now playing titles the stream with the input, so the source below it adds the player."""
+async def test_a_line_in_reports_no_title_of_its_own() -> None:
+    """The stream carries no title, so now playing shows the name of the input as it is now."""
     sources = await _speaker_with_line_in("Record player")
     details = await sources.get_stream_details("client-1", MediaType.AUDIO_SOURCE)
-    assert details.stream_metadata is not None
-    assert details.stream_metadata.title == "Record player"
+    assert details.stream_metadata is None
 
 
 async def test_a_playing_line_in_follows_a_new_name() -> None:
@@ -258,7 +279,28 @@ async def test_a_playing_line_in_follows_a_new_name() -> None:
     get_config(sources).values[("client-1", CONF_SOURCE_NAME)] = "Record player"
     sources.on_client_config_updated("client-1")
     [(player_id, source)] = get_players(sources).refreshed
-    assert (player_id, source.name) == ("queue-1", "Record player (Living Room)")
+    assert (player_id, source.name) == ("queue-1", "Record player")
+
+
+async def test_a_playing_capture_only_device_follows_a_new_player_name(
+    fake_client: _FakeClient,
+) -> None:
+    """The saved config of a renamed player hands the input it names the new name."""
+    sources = await make_sources(
+        [fake_client, _FakeClient("client-2", name="Other", has_player_role=True)]
+    )
+    await sources.on_source_selected("client-1", "player-1", "queue-1", "session-A")
+    players = get_players(sources)
+    # the player publishes its new name before the saved config is announced
+    players.players["client-1"].name = "Den"
+
+    sources.on_player_config_updated("client-2")
+    assert players.refreshed == []
+
+    sources.on_player_config_updated("client-1")
+    assert [(player_id, source.name) for player_id, source in players.refreshed] == [
+        ("queue-1", "Den")
+    ]
 
 
 async def test_line_in_is_listed_on_its_own_player_while_connected() -> None:

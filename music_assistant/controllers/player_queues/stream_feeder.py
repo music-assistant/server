@@ -263,7 +263,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             )
             try:
                 await self._handle_stop(holder_id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # deliberately broad: the device stop is a raw provider call that can surface
                 # anything its client library raises, on a player the requesting playback has
                 # nothing to do with. CancelledError is a BaseException and still propagates.

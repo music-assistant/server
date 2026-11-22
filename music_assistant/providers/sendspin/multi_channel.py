@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import secrets
 import time
 from collections.abc import Iterable, Mapping
@@ -22,11 +23,30 @@ from aiosendspin.server.events import ClientGroupChangedEvent
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ChannelLayout, ConfigEntryType, PlayerType, SpeakerChannel
+from music_assistant_models.enums import (
+    ChannelLayout,
+    ConfigEntryType,
+    PlaybackState,
+    PlayerType,
+    SpeakerChannel,
+)
+from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.constants import CONF_OUTPUT_CHANNELS, CONF_PLAYER_PROTOCOLS
+from music_assistant.constants import (
+    CONF_CROSSOVER_FREQUENCY,
+    CONF_HIGH_PASS_MAIN_SPEAKERS,
+    CONF_OUTPUT_CHANNELS,
+    CONF_PLAYER_PROTOCOLS,
+    CONF_SUBWOOFER_LEVEL,
+    CONF_SUBWOOFER_OWN_CROSSOVER,
+    DEFAULT_CROSSOVER_FREQUENCY,
+    DEFAULT_HIGH_PASS_MAIN_SPEAKERS,
+    DEFAULT_SUBWOOFER_LEVEL,
+    DEFAULT_SUBWOOFER_OWN_CROSSOVER,
+)
 
 from .constants import (
+    CONF_SENDSPIN_STATIC_DELAY,
     CONF_SPEAKER_CHANNEL,
     CONF_SPEAKER_CHANNEL_SETTING,
     CONF_SPEAKER_CLIENT_ID,
@@ -55,7 +75,18 @@ if TYPE_CHECKING:
 # The channels of each layout a multi-channel player can have.
 LAYOUT_CHANNELS: dict[ChannelLayout, tuple[SpeakerChannel, ...]] = {
     ChannelLayout.STEREO: (SpeakerChannel.FRONT_LEFT, SpeakerChannel.FRONT_RIGHT),
+    ChannelLayout.LAYOUT_2_1: (
+        SpeakerChannel.FRONT_LEFT,
+        SpeakerChannel.FRONT_RIGHT,
+        SpeakerChannel.LFE,
+    ),
+    ChannelLayout.LAYOUT_1_1: (SpeakerChannel.FRONT_CENTER, SpeakerChannel.LFE),
 }
+# The crossover frequencies (Hz) and the subwoofer levels (dB) a player with a subwoofer offers.
+CROSSOVER_FREQUENCIES = range(40, 201, 10)
+SUBWOOFER_LEVEL_RANGE = (-12, 0)
+# A stored value of one speaker of a multi-channel player, by the number of the speaker.
+SPEAKER_KEY = re.compile(r"^speaker_(?P<number>\d+)_(?P<field>.+)$")
 # Seconds a speaker that connected again has to report the state it kept, before it takes the
 # volume of its player.
 SPEAKER_JOIN_GRACE = 2.0
@@ -121,8 +152,9 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
     """
     A player made of Sendspin speakers, each of which plays its own channel.
 
-    One volume and one DSP apply to the whole player. While a speaker is away, the others play
-    every channel.
+    One volume and one DSP apply to the whole player. While a main speaker is away, the other
+    main speakers play every channel, and while the subwoofer is away the main speakers play the
+    full range.
     """
 
     _speakers: tuple[SetSpeaker, ...] = ()
@@ -151,11 +183,14 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         self._joining: set[str] = set()
         # speakers that left the group on their own, back at the next playback start
         self._left: set[str] = set()
+        # subwoofers kept out of the group while no main speaker plays in it
+        self._set_aside: set[str] = set()
         self._take_lock = asyncio.Lock()
         self._load_speakers()
         self._played_channels: dict[str, SpeakerChannel | None] = {
             speaker.client_id: speaker.channel for speaker in self._speakers
         }
+        self._crossover = self._crossover_settings()
         self._refresh_speaker_state()
 
     @property
@@ -173,10 +208,15 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         Return the channel a speaker of this player plays.
 
         :param client_id: The client id of the speaker.
-        :return: Its channel, or None while another speaker of this player is away, when it
-            plays every channel.
+        :return: Its channel, or None for a main speaker while another main speaker of this
+            player is away, when it plays every channel.
         """
         return self._current_channels().get(client_id)
+
+    @property
+    def subwoofer_plays(self) -> bool:
+        """Return whether the subwoofer of this player plays, taking the bass of the others."""
+        return SpeakerChannel.LFE in self._current_channels().values()
 
     def plays_with(self, client_id: str) -> bool:
         """
@@ -185,7 +225,9 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         :param client_id: The client id of the speaker.
         """
         client = self._sendspin_provider.server_api.get_client(client_id)
-        return client is not None and client.group is self.api.group
+        # a group lists a client that joins before the client names its group, and the
+        # session plans the client in between
+        return client is not None and client in self.api.group.clients
 
     async def take_speakers(self, *, rejoin: bool = False) -> None:
         """
@@ -206,6 +248,76 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             for speaker in self._speakers:
                 await self._take_speaker(speaker.client_id, rejoin=rejoin)
         self._on_speakers_changed(restart=not rejoin)
+
+    def add_speaker(self, member: SendspinPlayer, channel: SpeakerChannel) -> None:
+        """
+        Store a speaker as the next speaker of this player, which take_speakers then takes.
+
+        :param member: The Sendspin protocol of the speaker.
+        :param channel: The channel the speaker plays.
+        :raises InvalidDataError: When the channels make up no layout a player can have.
+        """
+        if layout_of([*(speaker.channel for speaker in self._speakers), channel]) is None:
+            raise InvalidDataError(
+                f"{member.display_name} can not play {channel.value} in {self.display_name}",
+                translation_key="multi_channel_channels",
+                translation_owner=self._sendspin_provider.translation_owner,
+            )
+        number = len(self._speakers) + 1
+        for key, value in (
+            (CONF_SPEAKER_CLIENT_ID, member.protocol_id),
+            (CONF_SPEAKER_NAME, member.display_name),
+            (CONF_SPEAKER_CHANNEL, channel.value),
+            (
+                CONF_SPEAKER_OUTPUT_DELAY,
+                member.config.get_value(CONF_SENDSPIN_STATIC_DELAY, member.static_delay_default_ms),
+            ),
+        ):
+            self.mass.config.set_protocol_value(self.protocol_id, key.format(n=number), value)
+        self._load_speakers()
+
+    def remove_speaker(self, number: int) -> str:
+        """
+        Let a speaker of this player go, which plays on with its other speakers.
+
+        The speakers after it move up a number.
+
+        :param number: The number of the speaker.
+        :return: The client id of the speaker.
+        :raises InvalidDataError: When this player has no such speaker, or its other speakers
+            make up no layout a player can have.
+        """
+        speaker = next((s for s in self._speakers if s.number == number), None)
+        if speaker is None:
+            raise InvalidDataError(
+                f"{self.display_name} has no speaker {number}",
+                translation_key="multi_channel_unknown_speaker",
+                translation_owner=self._sendspin_provider.translation_owner,
+            )
+        if layout_of(s.channel for s in self._speakers if s is not speaker) is None:
+            raise InvalidDataError(
+                f"Without {speaker.name} the speakers of {self.display_name} make up no layout",
+                translation_key="multi_channel_last_speakers",
+                translation_owner=self._sendspin_provider.translation_owner,
+                translation_args=[speaker.name],
+            )
+        client_id = speaker.client_id
+        self._stop_listening(client_id)
+        self.mass.cancel_timer(f"sendspin_mc_join_{client_id}")
+        self.mass.cancel_timer(f"sendspin_mc_group_{client_id}")
+        self._joining.discard(client_id)
+        self._left.discard(client_id)
+        self._set_aside.discard(client_id)
+        for sent in (self._sent_volumes, self._sent_mutes, self._sent_delays):
+            sent.pop(client_id, None)
+        values = (self.mass.config.get_protocol_record(self.protocol_id) or {}).get("values") or {}
+        self.mass.config.set(
+            f"{CONF_PLAYER_PROTOCOLS}/{self.protocol_id}/values",
+            _without_speaker(values, number),
+        )
+        self._load_speakers()
+        self._on_speakers_changed()
+        return client_id
 
     def on_speaker_changed(self, client_id: str) -> None:
         """
@@ -232,6 +344,7 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             if client is None:
                 self._stop_listening(client_id)
                 self._left.discard(client_id)
+                self._set_aside.discard(client_id)
         self._on_speakers_changed()
 
     async def volume_set(self, volume_level: int) -> None:
@@ -306,6 +419,8 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                 hidden=True,
             ),
         ]
+        if self._has_subwoofer():
+            entries.extend(self._crossover_entries())
         channel_options = [ConfigValueOption(channel.value) for channel in self._layout_channels()]
         for speaker in self._speakers:
             number = speaker.number
@@ -316,7 +431,9 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                         key=CONF_SPEAKER_STATE.format(n=number),
                         type=ConfigEntryType.LABEL,
                         default_value="online" if online else "offline",
-                        translation_key="speaker_online" if online else "speaker_offline",
+                        translation_key="speaker_online"
+                        if online
+                        else self._offline_translation_key(speaker),
                         translation_params=[speaker.name],
                     ),
                     # the record has no entries, so a config save never changes it: the name
@@ -350,32 +467,13 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         return entries
 
     async def on_config_updated(self) -> None:
-        """Apply a changed channel or output delay of a speaker."""
-        previous = {speaker.number: speaker.channel for speaker in self._speakers}
-        self._take_channel_settings()
+        """Apply a changed channel or output delay of a speaker, or a changed crossover."""
+        channels_changed = self._take_channel_settings()
         self._load_speakers()
-        changed = [s for s in self._speakers if previous.get(s.number, s.channel) != s.channel]
-        for speaker in changed:
-            # a channel taken from a speaker that kept its own swaps the two
-            other = next(
-                (
-                    s
-                    for s in self._speakers
-                    if s.number != speaker.number and s.channel == speaker.channel
-                ),
-                None,
-            )
-            if other is not None and other not in changed:
-                self.mass.config.set_protocol_value(
-                    self.protocol_id,
-                    CONF_SPEAKER_CHANNEL.format(n=other.number),
-                    previous[speaker.number].value,
-                )
-        if changed:
-            self._load_speakers()
         for client_id, role in self._speaker_roles():
             self._send_output_delay(client_id, role)
-        self._on_speakers_changed(channels_changed=bool(changed))
+        crossover, self._crossover = self._crossover, self._crossover_settings()
+        self._on_speakers_changed(channels_changed=channels_changed or crossover != self._crossover)
 
     async def on_attach(self, player: Player) -> None:
         """Take the speakers into the group of this player once it is attached."""
@@ -414,7 +512,7 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         self._attr_hidden_by_default = False
         self._attr_private = False
         self._attr_session_only = False
-        self._attr_available = any(self._is_online(s.client_id) for s in self._speakers)
+        self._attr_available = self._main_speaker_online()
 
     def _on_group_changed(self, new_group: SendspinGroup) -> None:
         """Bring the speakers along to the group this player joined."""
@@ -435,10 +533,19 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             tuple(speaker.channel for speaker in self._speakers),
         )
 
-    def _take_channel_settings(self) -> None:
-        """Store the channel the user set for a speaker in the record of this player."""
+    def _take_channel_settings(self) -> bool:
+        """
+        Store the channels the user set for the speakers in the record of this player.
+
+        A channel taken from a speaker that kept its own swaps the two. Channels that make up
+        no layout change nothing.
+
+        :return: Whether the channel of a speaker changed.
+        """
         values = (self.mass.config.get_protocol_record(self.protocol_id) or {}).get("values") or {}
-        channels = {channel.value for channel in self._layout_channels()}
+        layout_channels = {channel.value for channel in self._layout_channels()}
+        previous = {speaker.number: speaker.channel for speaker in self._speakers}
+        channels = dict(previous)
         for speaker in self._speakers:
             key = CONF_SPEAKER_CHANNEL_SETTING.format(n=speaker.number)
             if key not in values:
@@ -446,10 +553,31 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             channel = values[key]
             # a setting that stayed would shadow the channel the record gets from a swap
             self.mass.config.remove(f"{CONF_PLAYER_PROTOCOLS}/{self.protocol_id}/values/{key}")
-            if channel in channels:
+            if channel in layout_channels:
+                channels[speaker.number] = SpeakerChannel(channel)
+        set_numbers = [number for number in channels if channels[number] != previous[number]]
+        for number in set_numbers:
+            # a channel taken from a speaker that kept its own swaps the two
+            other = next(
+                (
+                    other
+                    for other, channel in channels.items()
+                    if other not in set_numbers and channel == channels[number]
+                ),
+                None,
+            )
+            if other is not None:
+                channels[other] = previous[number]
+        if layout_of(channels.values()) is None:
+            return False
+        changed = False
+        for number, channel in channels.items():
+            if channel != previous[number]:
                 self.mass.config.set_protocol_value(
-                    self.protocol_id, CONF_SPEAKER_CHANNEL.format(n=speaker.number), channel
+                    self.protocol_id, CONF_SPEAKER_CHANNEL.format(n=number), channel.value
                 )
+                changed = True
+        return changed
 
     def _speaker_number(self, client_id: str) -> int | None:
         """Return the number of a speaker of this player in its record."""
@@ -479,12 +607,120 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         return roles
 
     def _current_channels(self) -> dict[str, SpeakerChannel | None]:
-        """Return the channel each speaker plays now: none while another one is away."""
+        """
+        Return the channel each speaker plays now.
+
+        A main speaker plays every channel (None) while another main speaker is away, and a
+        subwoofer that is away plays none (None as well).
+        """
+        present = {
+            s.client_id
+            for s in self._speakers
+            if self._is_online(s.client_id) and self.plays_with(s.client_id)
+        }
         complete = all(
-            self._is_online(speaker.client_id) and self.plays_with(speaker.client_id)
-            for speaker in self._speakers
+            s.client_id in present for s in self._speakers if s.channel != SpeakerChannel.LFE
         )
-        return {s.client_id: s.channel if complete else None for s in self._speakers}
+        channels: dict[str, SpeakerChannel | None] = {}
+        for speaker in self._speakers:
+            if speaker.channel == SpeakerChannel.LFE:
+                plays = speaker.client_id in present
+            else:
+                plays = complete
+            channels[speaker.client_id] = speaker.channel if plays else None
+        return channels
+
+    def _has_subwoofer(self) -> bool:
+        """Return whether one of the speakers of this player is a subwoofer."""
+        return any(speaker.channel == SpeakerChannel.LFE for speaker in self._speakers)
+
+    def _is_subwoofer(self, client_id: str) -> bool:
+        """Return whether a speaker of this player is a subwoofer."""
+        return any(
+            s.client_id == client_id and s.channel == SpeakerChannel.LFE for s in self._speakers
+        )
+
+    def _main_speaker_online(self) -> bool:
+        """Return whether a speaker of this player that plays the music is connected."""
+        return any(
+            self._is_online(s.client_id) for s in self._speakers if s.channel != SpeakerChannel.LFE
+        )
+
+    def _main_speaker_plays(self) -> bool:
+        """Return whether a main speaker of this player is connected and in the group it plays in."""
+        return any(
+            self._is_online(s.client_id) and self.plays_with(s.client_id)
+            for s in self._speakers
+            if s.channel != SpeakerChannel.LFE
+        )
+
+    async def _set_subwoofer_aside(self) -> None:
+        """Take the subwoofer out of the group while no main speaker plays in it."""
+        async with self._take_lock:
+            if self._main_speaker_plays():
+                return
+            for speaker in self._speakers:
+                client = self._sendspin_provider.server_api.get_client(speaker.client_id)
+                if (
+                    client is None
+                    or speaker.channel != SpeakerChannel.LFE
+                    or not self.plays_with(speaker.client_id)
+                ):
+                    continue
+                # a subwoofer can not play the music alone
+                self._set_aside.add(speaker.client_id)
+                await self.api.group.remove_client(client)
+
+    def _offline_translation_key(self, speaker: SetSpeaker) -> str:
+        """Return the translation key that says what plays while a speaker is offline."""
+        if speaker.channel == SpeakerChannel.LFE:
+            return "subwoofer_offline"
+        if any(
+            s.number != speaker.number and s.channel != SpeakerChannel.LFE for s in self._speakers
+        ):
+            return "speaker_offline"
+        return "only_speaker_offline"
+
+    def _crossover_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return the entries of how this player splits the bass with its subwoofer."""
+        return (
+            ConfigEntry(
+                key=CONF_SUBWOOFER_OWN_CROSSOVER,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_SUBWOOFER_OWN_CROSSOVER,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_HIGH_PASS_MAIN_SPEAKERS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_HIGH_PASS_MAIN_SPEAKERS,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_CROSSOVER_FREQUENCY,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_CROSSOVER_FREQUENCY,
+                options=[
+                    ConfigValueOption(frequency, title=f"{frequency} Hz")
+                    for frequency in CROSSOVER_FREQUENCIES
+                ],
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_SUBWOOFER_LEVEL,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SUBWOOFER_LEVEL,
+                range=SUBWOOFER_LEVEL_RANGE,
+                required=False,
+            ),
+        )
+
+    def _crossover_settings(self) -> tuple[Any, ...]:
+        """Return the stored settings of how this player splits the bass with its subwoofer."""
+        return tuple(
+            self.mass.config.get_protocol_value(self.protocol_id, entry.key, entry.default_value)
+            for entry in self._crossover_entries()
+        )
 
     async def _join_speaker(self, client_id: str) -> None:
         """Take a speaker that connected again, once it reported the state it kept."""
@@ -509,7 +745,17 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         if not client.available or (client_id in self._left and not rejoin):
             return
         self._left.discard(client_id)
+        is_subwoofer = self._is_subwoofer(client_id)
+        if is_subwoofer and not self._main_speaker_plays():
+            # a subwoofer can not play the music alone
+            self._set_aside.add(client_id)
+            return
+        self._set_aside.discard(client_id)
         await self.api.group.add_client(client)
+        if not is_subwoofer:
+            # a main speaker brings back the subwoofer that was set aside
+            for subwoofer_id in list(self._set_aside):
+                await self._take_speaker(subwoofer_id)
         if client.connection is None:
             return
         role = next(
@@ -558,7 +804,11 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                 key = CONF_SPEAKER_OUTPUT_DELAY.format(n=number)
                 if self.mass.config.get_protocol_value(self.protocol_id, key) != delay_ms:
                     self.mass.config.set_protocol_value(self.protocol_id, key, delay_ms)
-            case ClientGroupChangedEvent(new_group=group) if group is not self.api.group:
+            case ClientGroupChangedEvent(new_group=group) if (
+                group is not self.api.group
+                or client.client_id in self._left
+                or client.client_id in self._set_aside
+            ):
                 self.mass.call_later(
                     SPEAKER_GROUP_SETTLE,
                     self._follow_speaker_group,
@@ -567,12 +817,23 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                 )
 
     async def _follow_speaker_group(self, client_id: str) -> None:
-        """Follow a speaker that another group or a group of its own took."""
+        """Follow a speaker that changed group: another group, one of its own, or back."""
         client = self._sendspin_provider.server_api.get_client(client_id)
         # a speaker that is gone or away is followed through its connection
-        if client is None or client.connection is None or self.plays_with(client_id):
+        if client is None or client.connection is None:
             return
-        if client.available and len(client.group.clients) > 1:
+        if client_id in self._set_aside:
+            if self.plays_with(client_id):
+                # it came back by itself, such as through its switch
+                await self._set_subwoofer_aside()
+            return
+        if self.plays_with(client_id):
+            if client_id not in self._left:
+                return
+            # it came back by itself, such as through its switch
+            async with self._take_lock:
+                await self._take_speaker(client_id, rejoin=True)
+        elif client.available and len(client.group.clients) > 1:
             # another group took it, such as through its switch: it belongs to this player
             async with self._take_lock:
                 await self._take_speaker(client_id)
@@ -649,7 +910,7 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
 
     def _refresh_speaker_state(self) -> None:
         """Refresh what this player reports from its speakers."""
-        self._attr_available = any(self._is_online(s.client_id) for s in self._speakers)
+        self._attr_available = self._main_speaker_online()
         if roles := [role for _, role in self._speaker_roles()]:
             # the volume commands every speaker accepts
             self._sync_control_features(
@@ -660,11 +921,27 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         """
         Publish a change of the speakers, and play the channels they play now.
 
+        The subwoofer of this player leaves the group while none of its main speakers plays
+        in it, and the playback this player leads stops once none of them is connected.
+
         :param channels_changed: Whether the channel of a speaker changed.
         :param restart: Start a running stream again for other channels; False for a session
             that starts, which plays the channels of now already.
         """
         self._refresh_speaker_state()
+        if not self._main_speaker_plays():
+            self.mass.create_task(
+                self._set_subwoofer_aside(), task_id=f"sendspin_mc_aside_{self.protocol_id}"
+            )
+        if (
+            not self._attr_available
+            and self._attr_playback_state == PlaybackState.PLAYING
+            and self.player is not None
+            and self.player.synced_to is None
+        ):
+            # an unavailable player takes no stop command; the playback of a group it follows
+            # goes on for the other players
+            self.mass.create_task(self.stop(), task_id=f"sendspin_mc_stop_{self.protocol_id}")
         played_channels = self._current_channels()
         if not restart:
             self.mass.cancel_timer(f"sendspin_mc_channels_{self.protocol_id}")
@@ -680,6 +957,17 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             )
         self._played_channels = played_channels
         self.update_state()
+
+
+def _without_speaker(values: Mapping[str, Any], number: int) -> dict[str, Any]:
+    """Return the stored values of a multi-channel player without a speaker, renumbering the rest."""
+    kept: dict[str, Any] = {}
+    for key, value in values.items():
+        if (match := SPEAKER_KEY.match(key)) is None or int(match["number"]) < number:
+            kept[key] = value
+        elif (speaker_number := int(match["number"])) > number:
+            kept[f"speaker_{speaker_number - 1}_{match['field']}"] = value
+    return kept
 
 
 def _last_known[T](sent: list[tuple[T, float]], reported: T) -> T:

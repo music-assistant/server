@@ -1797,7 +1797,7 @@ class AirPlayPlayer(PlayerProtocol):
                     # grouping state that is in flux right after a stream loss,
                     # so it may silently refuse an internal re-join.
                     await target.set_members(player_ids_to_add=[self.protocol_id])
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failed re-join attempt is retried
                 self.logger.warning(
                     "Automatic re-join of %s to group of %s failed (attempt %d/%d): %s",
                     self.display_name,
@@ -1830,7 +1830,7 @@ class AirPlayPlayer(PlayerProtocol):
                 # a manual regroup) starts from a clean join
                 try:
                     await target.set_members(player_ids_to_remove=[self.protocol_id])
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - see the comment below
                     # a failed undo leaves the membership for the next attempt,
                     # which then heals the session instead of joining anew
                     self.logger.debug(

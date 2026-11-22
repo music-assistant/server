@@ -99,6 +99,11 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         return self._music_user_token
 
     @property
+    def music_app_token(self) -> str | None:
+        """Return the music app token used for API requests."""
+        return self._music_app_token
+
+    @property
     def max_concurrent_streams(self) -> int:
         """Apple Music accounts allow a single active playback session."""
         return 1
@@ -191,6 +196,14 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         :param item_id: The item_id of the row, as returned by get_recommendations.
         """
         return await self._recommendation_items_from_payload(item_id)
+
+    async def get_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Return the cached full recommendations payload."""
+        return await self._recommendation_payload()
+
+    async def refresh_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Force-fetch and return a fresh recommendations payload."""
+        return await self._refresh_recommendation_payload()
 
     # ------------------------------------------------------------------
     # Media item getters

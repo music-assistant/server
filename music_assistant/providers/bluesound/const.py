@@ -41,6 +41,10 @@ SOURCE_HTTP = "http"
 SOURCE_BLUETOOTH = "Bluetooth"
 SOURCE_TV = "HDMI ARC"
 
+# play urls of the inputs of a player: a capture from its own audio hardware, where
+# Bluetooth and services such as Spotify are captured as "Capture:bluez:" or "Capture:spotify:"
+INPUT_URL_PREFIXES = ("Capture:hw:", "Capture:plughw:")
+
 PLAYER_SOURCE_MAP = {
     SOURCE_HTTP: PlayerSource(
         id=SOURCE_HTTP,
@@ -62,6 +66,7 @@ PLAYER_SOURCE_MAP = {
         id=SOURCE_TV,
         name="HDMI ARC",
         passive=True,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,

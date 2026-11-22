@@ -243,16 +243,40 @@
     "speaker_offline": {
       "label": "{0} is offline. The other speakers play every channel until it is back."
     },
+    "subwoofer_offline": {
+      "label": "{0} is offline. Until it is back, this player plays the full range without it."
+    },
+    "only_speaker_offline": {
+      "label": "{0} is offline. This player is unavailable until it is back."
+    },
     "speaker_channel": {
       "label": "Channel of {0}",
       "options": {
         "front_left": "Left",
-        "front_right": "Right"
+        "front_right": "Right",
+        "front_center": "Center",
+        "lfe": "Subwoofer"
       }
     },
     "speaker_output_delay": {
       "label": "Output delay of {0} (ms)",
       "description": "Offset in milliseconds to keep this speaker in sync with the other speakers of this player. Increase if its audio plays too late."
+    },
+    "subwoofer_own_crossover": {
+      "label": "The subwoofer has its own crossover",
+      "description": "Turn this on when the subwoofer filters out the higher frequencies itself. It then gets the full range."
+    },
+    "high_pass_main_speakers": {
+      "label": "High-pass the main speakers at the crossover",
+      "description": "While the subwoofer plays, the main speakers leave the bass below the crossover to it. Turn this off to let them play the full range."
+    },
+    "crossover_frequency": {
+      "label": "Crossover frequency",
+      "description": "Where the subwoofer hands over to the main speakers. It applies to the low-pass of the subwoofer and to the high-pass of the main speakers, whichever of the two is in use."
+    },
+    "subwoofer_level": {
+      "label": "Subwoofer level (dB)",
+      "description": "The level of the subwoofer next to the main speakers."
     }
   },
   "setup_flow": {
@@ -328,9 +352,11 @@
     "pairing_error_token_mismatch": "The token was issued by a different device.",
     "invalid_value": "Enter the complete pairing code.",
     "no_audio": "{0} did not start streaming its input.",
-    "multi_channel_channels": "A multi-channel player needs one speaker on the left and one on the right.",
+    "multi_channel_channels": "A multi-channel player needs one speaker on the left and one on the right, optionally with a subwoofer, or one speaker with a subwoofer.",
     "multi_channel_not_a_speaker": "{0} can not be part of a multi-channel player.",
     "multi_channel_speaker_unavailable": "{0} is not available. Switch it on and wait until it is connected.",
-    "multi_channel_speaker_taken": "{0} is part of a multi-channel player already."
+    "multi_channel_speaker_taken": "{0} is part of a multi-channel player already.",
+    "multi_channel_unknown_speaker": "This player has no such speaker. Open its settings again and retry.",
+    "multi_channel_last_speakers": "Without {0} the other speakers make up no multi-channel player. Take the player apart instead."
   }
 }

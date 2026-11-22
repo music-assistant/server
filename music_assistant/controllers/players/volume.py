@@ -712,7 +712,7 @@ class VolumeMixin(_PlayerControllerBase):
                 await protocol.volume_set(
                     self.scale_volume_to_device(player.player_id, volume_level)
                 )
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - provider code, the hand-over goes on
                 self.logger.warning(
                     "Could not give %s the volume of %s: %s",
                     protocol.protocol_id,
@@ -726,7 +726,7 @@ class VolumeMixin(_PlayerControllerBase):
         ):
             try:
                 await protocol.volume_mute(volume_muted)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - provider code, the hand-over goes on
                 self.logger.warning(
                     "Could not give %s the mute of %s: %s",
                     protocol.protocol_id,
