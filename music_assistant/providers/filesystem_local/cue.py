@@ -220,12 +220,8 @@ class CueSheetHandler:
         audio_relative_path = await self.find_audio_file(cue_item, cue_sheet)
         if audio_relative_path is None:
             return None
-        # rebuilt from the CUE's own absolute path so it matches the scanned items'
-        # absolute_path form on every filesystem provider
-        cue_dir = os.path.dirname(cue_item.relative_path)
-        name = os.path.relpath(audio_relative_path, cue_dir) if cue_dir else audio_relative_path
-        companion = os.path.join(os.path.dirname(cue_item.absolute_path), name)
-        return companion.rsplit(".", 1)[0]
+        audio_item = await self.provider.resolve(audio_relative_path)
+        return audio_item.absolute_path.rsplit(".", 1)[0]
 
     async def parse_tracks(self, cue_item: FileSystemItem) -> list[Track]:
         """
