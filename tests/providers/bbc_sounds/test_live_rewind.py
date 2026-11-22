@@ -387,6 +387,23 @@ class TestLiveProgrammeLookup:
             station_id="bbc_radio_one", date=broadcast_date
         )
 
+    async def test_live_programme_is_matched_on_its_start_time(
+        self, provider: BBCSoundsProvider
+    ) -> None:
+        """Test a programme broadcast twice in a day is matched on its start, not its pid alone."""
+        start = datetime(2026, 9, 24, 7, 0, tzinfo=UTC)
+        end = start + timedelta(hours=3)
+        repeat = _schedule_item(start + timedelta(hours=12), end + timedelta(hours=12))
+        item = _schedule_item(start, end)
+        provider.client.schedules.get_schedule.return_value = Schedule(  # type: ignore[attr-defined]
+            id="schedule", sub_items=[repeat, item]
+        )
+        programme_id = LiveProgrammeId(
+            "bbc_radio_one", "m0031hzl", int(start.timestamp()), int(end.timestamp())
+        )
+
+        assert await provider.live_programme(programme_id) is item
+
 
 class TestContinueWithStation:
     """Tests for carrying on with the station live once a live programme ends."""
