@@ -85,7 +85,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.provider_access import (
-    playback_sources,
+    playback_sources_for,
     resolve_playback_user,
     resolve_playback_user_or_stand_in,
 )
@@ -135,8 +135,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             raise MediaNotFoundError(f"Item {queue_item.uri} is not available")
         queue_id = queue_item.queue_id
         # as for its stream details: whoever has the item loaded is not necessarily the
-        # user the queue plays for
-        user = await resolve_playback_user_or_stand_in(self.mass, queue_id)
+        # user the item plays for
+        user = await resolve_playback_user_or_stand_in(self.mass, queue_item)
         external_track = queue_item.media_item
         if external_track is None or external_track.provider != EXTERNAL_ID_PROVIDER:
             # another load of the item found its track in the meantime
@@ -425,8 +425,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # Youtube Music has poor thumbs by default, so we always fetch the full item
                     # this also catches the case where they have an unavailable item in a listing
                     # like the stream details that follow, the details are fetched for the
-                    # queue's playback, whoever has the item loaded
-                    playback_user = await resolve_playback_user_or_stand_in(self.mass, queue_id)
+                    # item's playback, whoever has the item loaded
+                    playback_user = await resolve_playback_user_or_stand_in(self.mass, queue_item)
                     try:
                         with user_auth_context(playback_user):
                             fetched_item = await self.mass.music.get_item_by_uri(queue_item.uri)
@@ -1520,7 +1520,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
 
         # Steer provider selection to the playback user's own music sources
-        allowed, preferred = await playback_sources(self.mass, queue_id)
+        allowed, preferred = playback_sources_for(
+            self.mass, await resolve_playback_user(self.mass, queue_id)
+        )
 
         # Some providers have very deterministic similar-track algorithms for a single track
         # seed. When continuing from a single track on a refill, seed from the play history

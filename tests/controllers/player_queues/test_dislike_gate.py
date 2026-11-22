@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import partial
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
@@ -167,7 +167,7 @@ async def test_the_similar_tracks_autoplay_skips_a_disliked_track() -> None:
 
     with (
         patch(f"{MODULE}.gate_tracks", side_effect=lambda tracks, *_args: tracks),
-        patch(f"{MODULE}.playback_sources", AsyncMock(return_value=(None, None))),
+        patch(f"{MODULE}.playback_sources_for", Mock(return_value=(None, None))),
     ):
         await QueueLoaderMixin._fill_autoplay_music_tracks(loader, QUEUE_ID)
 

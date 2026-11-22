@@ -348,7 +348,8 @@ def _queue(ctrl: Any, *tracks: Track, origin: QueueItemOrigin | None = None) -> 
     """Put the tracks on the queue, the first one as the current item, and return its items."""
     queue_data = cast("PlayerQueueData", ctrl._queue_data[QUEUE_ID])
     queue_data.items = [
-        build_queue_item(QUEUE_ID, track, userid=None, origin=origin) for track in tracks
+        build_queue_item(QUEUE_ID, track, userid=queue_data.userid, origin=origin)
+        for track in tracks
     ]
     queue_data.enqueued_media_items = list(tracks)
     queue_data.queue.items = len(tracks)

@@ -77,6 +77,7 @@ def _queue_item(*mappings: ProviderMapping) -> QueueItem:
         provider_mappings=set(mappings),
     )
     return QueueItem(
+        userid=USER_ID,
         queue_id="queue-1",
         queue_item_id="queue-item-1",
         name="Effect",
@@ -144,8 +145,8 @@ def _mass(
     mass.player_queues.queue_data_or_none.return_value = None
     mass.player_queues.has_paused_stream_slot_holder.return_value = False
     mass.player_queues.refuse_held_stream_slot.return_value = None
+    mass.webserver.auth.get_user = AsyncMock(return_value=None)
     if access is not None:
-        mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
         mass.webserver.auth.get_user = AsyncMock(
             return_value=User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
         )

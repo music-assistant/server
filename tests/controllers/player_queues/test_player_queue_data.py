@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from music_assistant_models.enums import AlbumType, RepeatMode
 from music_assistant_models.media_items import (
@@ -208,11 +210,20 @@ def test_from_cache_legacy_without_toggle_overrides_yields_none() -> None:
     assert restored.crossfade_override is None
 
 
-def test_from_cache_keeps_settings_when_item_unreadable() -> None:
+@pytest.mark.parametrize(
+    "unreadable_item",
+    [
+        pytest.param({"sort_index": 0}, id="missing required fields"),
+        pytest.param(None, id="not a dict"),
+    ],
+)
+def test_from_cache_keeps_settings_when_item_unreadable(
+    unreadable_item: Any,
+) -> None:
     """One unreadable queue item is skipped without losing the other items or the settings."""
     queue = _queue(shuffle_enabled=True, crossfade_enabled=True)
     data = PlayerQueueData(queue=queue, items=[QueueItem.from_media_item("q1", _track("t1"))])
-    items_data = [*data.items_to_cache(), {"sort_index": 0}]  # 2nd entry misses required fields
+    items_data = [*data.items_to_cache(), unreadable_item]
 
     restored = PlayerQueueData.from_cache(data.to_cache(), items_data)
 

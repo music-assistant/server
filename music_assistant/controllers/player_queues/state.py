@@ -243,9 +243,9 @@ class PlayerQueueData:
         queue.is_dynamic = has_dynamic_source(source_items)
         items: list[QueueItem] = []
         for item_data in items_data:
-            # items cached before they carried their user played for the queue's owner
-            cached_without_user = "userid" not in item_data
             try:
+                # items cached before they carried their user played for the queue's owner
+                cached_without_user = "userid" not in item_data
                 item = QueueItem.from_cache(item_data)
             except Exception as err:  # noqa: BLE001 - one unreadable item must not drop the queue
                 LOGGER.warning("Skipping unreadable queue item for %s: %s", queue.queue_id, err)
