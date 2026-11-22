@@ -364,7 +364,7 @@ async def test_get_recently_played_handles_not_found(
 async def test_get_recommendations_and_items(
     provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spotify exposes a static Recently Played recommendation row backed by _get_recently_played."""
+    """Spotify exposes a 'Recently played on Spotify' recommendation row via _get_recently_played."""
     assert ProviderFeature.RECOMMENDATIONS in SUPPORTED_FEATURES
 
     folders = await provider.get_recommendations()
@@ -372,6 +372,7 @@ async def test_get_recommendations_and_items(
     folder = folders[0]
     assert isinstance(folder, RecommendationFolder)
     assert folder.item_id == "recently_played"
+    assert folder.name == "Recently played on Spotify"
     assert folder.provider == "spotify--test"
     assert folder.translation_key == "recently_played"
     assert folder.icon == "mdi-history"

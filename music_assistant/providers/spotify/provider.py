@@ -521,7 +521,7 @@ class SpotifyProvider(MusicProvider):
             RecommendationFolder(
                 item_id="recently_played",
                 provider=self.instance_id,
-                name="Recently Played",
+                name="Recently played on Spotify",
                 translation_key="recently_played",
                 icon="mdi-history",
             )
