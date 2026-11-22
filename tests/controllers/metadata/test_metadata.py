@@ -421,6 +421,37 @@ async def test_track_lyrics_continues_after_plain_lyrics_from_own_provider(
     lyrics_provider.get_track_metadata.assert_awaited_once()
 
 
+async def test_track_lyrics_keeps_plain_lyrics_from_fetched_local_track(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Subsonic and Feiniu may return plain lyrics only when their full track is fetched."""
+    mass_minimal.music = MusicController(mass_minimal)
+    own_provider = MagicMock(spec=MusicProvider)
+    own_provider.supported_features = {ProviderFeature.LYRICS}
+    own_provider.is_streaming_provider = False
+    full_track = create_track("subsonic", "t1")
+    full_track.metadata.lyrics = "local plain"
+    provider_item_lookup = AsyncMock(return_value=full_track)
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    track = create_track("subsonic", "t1")
+
+    with (
+        patch.object(mass_minimal.music, "get_visible_provider", return_value=own_provider),
+        patch.object(
+            mass_minimal.music.tracks,
+            "get_provider_item",
+            new=provider_item_lookup,
+        ),
+        patch.object(mass_minimal, "get_providers", return_value=[lyrics_provider]),
+    ):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == ("local plain", None)
+    provider_item_lookup.assert_awaited_once_with(track.item_id, track.provider)
+    lyrics_provider.get_track_metadata.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("local_lyrics", "expected", "lookup_expected"),
     [
