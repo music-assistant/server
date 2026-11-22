@@ -1199,8 +1199,8 @@ def interface_name_for_ip(ip: str) -> str | None:
     Return the name of the network interface that holds the given IP, or None.
 
     Used to map a bind/publish IP to its interface name for components that select
-    their mDNS/zeroconf advertisement interface by name (e.g. shairport-sync and
-    go-librespot), so the advertisement stays on the intended network.
+    their mDNS/zeroconf advertisement interface by name (e.g. go-librespot), so the
+    advertisement stays on the intended network.
 
     :param ip: The IPv4/IPv6 address to look up, in any notation; None is returned for a
         value that is not an IP address.

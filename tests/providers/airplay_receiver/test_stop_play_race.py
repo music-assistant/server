@@ -30,6 +30,7 @@ def provider() -> MagicMock:
     daemon.audio_source.uri = "airplay://source"
     mock.daemon = daemon
     mock._write_silence_to_unblock_stream = AsyncMock()
+    mock._unpublish_mdns_service = AsyncMock()
 
     def _clear_active_player(cleared: MagicMock) -> None:
         cleared.active_player_id = None

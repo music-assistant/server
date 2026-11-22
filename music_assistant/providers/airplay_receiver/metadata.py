@@ -9,6 +9,7 @@ import re
 import struct
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -16,6 +17,17 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 if TYPE_CHECKING:
     from collections.abc import Callable
     from logging import Logger
+
+
+@dataclass
+class MdnsService:
+    """An mDNS service that shairport-sync hands over for publishing."""
+
+    # service type without domain, e.g. "_raop._tcp"
+    service_type: str
+    name: str
+    port: int
+    txt: dict[str, str]
 
 
 class MetadataReader:
@@ -362,6 +374,9 @@ class MetadataReader:
             self._current_metadata["paused"] = True
         elif code == "prsm":  # Playing/resumed
             self._current_metadata["paused"] = False
+        elif code == "svrg":  # mDNS service to publish (mdns_backend = "metadata")
+            if self.on_metadata and (service := self._parse_mdns_service(data)):
+                self.on_metadata({"mdns_service": service})
 
     def _parse_volume(self, data: str) -> None:
         """
@@ -404,3 +419,30 @@ class MetadataReader:
                 self._current_metadata["elapsed_time"] = int(elapsed_seconds)
         except (ValueError, IndexError) as err:
             self.logger.debug("Error parsing progress: %s", err)
+
+    def _parse_mdns_service(self, data: str) -> MdnsService | None:
+        """
+        Parse an mDNS service registration, or return None when it is malformed.
+
+        :param data: The `svrg` payload: `service=`, `name=` and `port=` lines, then a
+            `txt=<key=value>` line per TXT record.
+        """
+        fields: dict[str, str] = {}
+        txt: dict[str, str] = {}
+        for line in data.splitlines():
+            key, _, value = line.partition("=")
+            if key == "txt":
+                txt_key, _, txt_value = value.partition("=")
+                txt[txt_key] = txt_value
+            else:
+                fields[key] = value
+        try:
+            return MdnsService(
+                service_type=fields["service"],
+                name=fields["name"],
+                port=int(fields["port"]),
+                txt=txt,
+            )
+        except KeyError, ValueError:
+            self.logger.warning("Ignoring a malformed mDNS service registration: %r", data)
+            return None
