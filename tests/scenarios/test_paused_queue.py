@@ -397,6 +397,28 @@ async def test_another_source_paused_at_the_speaker_is_not_stopped(scenario: Sce
     assert not _pause_watchers(player_id)
 
 
+async def test_a_source_that_takes_over_a_paused_speaker_is_not_stopped(
+    scenario: Scenario,
+) -> None:
+    """A source that takes a paused speaker over from the queue is not stopped at its timeout."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+    await _pause_at_the_speaker(scenario, speaker, PLAYED_SECONDS)
+    assert _pause_watchers(player_id)
+
+    # a paused session of another app moves onto the speaker within the pause timeout
+    await scenario.advance(10)
+    await scenario.report(speaker, active_source="spotify")
+    await scenario.advance(60)
+
+    assert ("stop",) not in speaker.commands
+    player = scenario.player(player_id)
+    assert player is not None
+    assert (player.active_source, player.playback_state) == ("spotify", PlaybackState.PAUSED)
+    assert not _pause_watchers(player_id)
+
+
 async def test_a_pause_command_is_watched_once(scenario: Scenario) -> None:
     """The pause command and the pause its speaker reports for it share one pause watcher."""
     speaker, player_id = await _speaker(scenario, can_pause=True)

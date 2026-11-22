@@ -2530,7 +2530,7 @@ its own app or a remote. After the pause timeout of 30 s the server stops it, as
 paused through the server, and a resume plays the track on from where it was paused. That is
 also so when the queue was paused through the server and played on at the device before. A queue
 that plays on at the device within the pause timeout is not stopped. Neither is another source,
-such as Spotify, that took the speaker over and is paused there.
+such as Spotify, that took the speaker over, before or during the pause, and is paused there.
 
 - End-to-end: **possible with** a player of the lab that has a pause of its own and can be paused
   at the device, paused for longer than the pause timeout.
@@ -2539,3 +2539,4 @@ such as Spotify, that took the speaker over and is paused there.
   - `test_paused_queue.py::test_a_queue_stopped_after_a_pause_at_the_speaker_resumes_from_that_pause`
   - `test_paused_queue.py::test_a_queue_played_on_at_the_speaker_within_the_pause_timeout_is_not_stopped`
   - `test_paused_queue.py::test_another_source_paused_at_the_speaker_is_not_stopped`
+  - `test_paused_queue.py::test_a_source_that_takes_over_a_paused_speaker_is_not_stopped`

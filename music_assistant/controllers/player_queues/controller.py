@@ -3534,13 +3534,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         Wait for the player to pause and stop the queue when the pause outlasts the pause timeout.
 
-        Returns once the player plays again, or after the stop.
+        Returns once the player plays again or another source takes it over, or after the stop.
 
         :param queue_id: The queue the player plays.
         :param player: The player that pauses.
         """
 
         def _is_paused() -> bool:
+            if player.active_source not in (queue_id, None):
+                # another source took the player over, its pause is not the queue's to end
+                return False
             # a player that cannot pause stops instead, and its queue stays halted by the pause
             return player.playback_state == PlaybackState.PAUSED or (
                 player.playback_state == PlaybackState.IDLE
@@ -3568,10 +3571,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             else:
                 count += 1
             await asyncio.sleep(1)
+        if not _is_paused():
+            return
         # if player is still paused when the limit is reached, send stop
         if player.playback_state == PlaybackState.PAUSED:
             await self.stop(queue_id)
-        elif _is_paused():
+        else:
             # the queue stopped at the pause already, only its sleep timer is left to end
             self._clear_sleep_timer(queue_id)
 
