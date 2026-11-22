@@ -884,11 +884,12 @@ async def test_source_selected_resumes_active_session_via_backend() -> None:
     ids=["paused_session_not_resumed", "playback_not_taken_back"],
 )
 async def test_reopened_stream_leaves_paused_playback_alone(session_active: bool) -> None:
-    """A renderer reopening a stream it already played (Sonos) is served but starts nothing."""
+    """A renderer reopening a stream it already played (Sonos) starts and claims nothing."""
     backend = FakeBackend()
     provider, daemon, mass = _make_provider(
         backend,
         session_active=session_active,
+        active_player_id="queue1",
         last_context_uri="spotify:playlist:ctx",
     )
     _player_with_volume(mass, 25)
@@ -899,9 +900,32 @@ async def test_reopened_stream_leaves_paused_playback_alone(session_active: bool
     await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess2")
 
     assert daemon.playing is False
-    assert backend.calls == [("set_volume", 25)]
-    assert daemon.in_use_by_player == "queue1"
-    assert daemon.active_session_id == "sess2"
+    assert backend.calls == []
+    assert daemon.in_use_by_player is None
+    assert daemon.active_session_id is None
+
+
+async def test_resume_after_reopened_stream_restarts_playback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resume restarts playback; the teardown of a reopened stream releases nothing."""
+    monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0)
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(backend, session_active=True, active_player_id="queue1")
+    daemon.streamed_playback_session_id = "pb1"
+    _source_session(mass, "queue1", "pb1")
+    # the speaker reopens its stream during the pause and drops it again unnoticed
+    await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess2")
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    # the dropped stream only ends at the first write after the resume
+    await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess2")
+    task = daemon.pending_play_media_task
+    assert task is not None
+    await task
+
+    assert ("deactivate", None) not in backend.calls
+    mass.player_queues.play_media.assert_awaited_once_with("queue1", _SOURCE_URI)
 
 
 async def test_reselected_source_resumes_paused_session() -> None:

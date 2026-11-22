@@ -461,9 +461,10 @@ class SpotifyConnectProvider(PluginProvider):
         )
 
         # A second stream request for the same selection is the renderer reopening its
-        # stream on its own, as Sonos does with a radio stream: never a reason to resume
-        # or take back playback. Every selection from MA starts a new playback session.
-        # Read before any await, while the session is still the one this request is for.
+        # stream on its own, as Sonos does with a radio stream. While Spotify is paused it
+        # gets the silent stream but no claim: it must not resume or take back playback,
+        # and its teardown must not release anything. Every selection from MA starts a new
+        # playback session. Read before any await, while the session is still this one.
         source_session = self.mass.players.get_audio_source_session(owner_player_id)
         playback_session_id = source_session.playback_session_id if source_session else None
         reopened = (
@@ -471,6 +472,11 @@ class SpotifyConnectProvider(PluginProvider):
             and playback_session_id == daemon.streamed_playback_session_id
         )
         daemon.streamed_playback_session_id = playback_session_id
+        if reopened and not daemon.playing:
+            self.logger.debug(
+                "Not resuming Spotify for %s: the player reopened its stream", active_player_id
+            )
+            return
 
         # Claim ownership for this queue BEFORE kicking the previous player: the
         # awaited stop below can complete the old stream's teardown, and only an
@@ -508,11 +514,7 @@ class SpotifyConnectProvider(PluginProvider):
 
         # Externally triggered: the backend is already playing → nothing to do.
         # Otherwise acquire playback, then confirm it actually started.
-        if not daemon.playing and reopened:
-            self.logger.debug(
-                "Not resuming Spotify for %s: the player reopened its stream", active_player_id
-            )
-        elif not daemon.playing:
+        if not daemon.playing:
             try:
                 if daemon.spotify_session_active:
                     # Still the active Spotify device (just paused) → resume.
