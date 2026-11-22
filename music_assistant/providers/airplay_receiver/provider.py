@@ -35,6 +35,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+from zeroconf import Error as ZeroconfError
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -879,7 +880,7 @@ class AirPlayReceiverProvider(PluginProvider):
                 # hold the lock until the announcements are out: one sent after a later
                 # goodbye would bring the withdrawn service back in the senders' caches
                 await announcing
-            except Exception as err:  # noqa: BLE001 - a failed announcement must not stop the receiver
+            except (ZeroconfError, OSError) as err:
                 self.logger.warning(
                     "Unable to announce AirPlay receiver '%s' on the network: %s",
                     daemon.airplay_name,
@@ -896,7 +897,8 @@ class AirPlayReceiverProvider(PluginProvider):
                 # wait for the goodbyes, so a receiver started right after (e.g. on a reload)
                 # announces its service after them
                 await (await self.mass.discovery.aiozc.async_unregister_service(info))
-            except Exception as err:  # noqa: BLE001 - e.g. zeroconf already closed at shutdown
+            except (ZeroconfError, OSError) as err:
+                # e.g. zeroconf already closed at shutdown
                 self.logger.debug("Unable to withdraw mDNS service %s: %s", info.name, err)
 
     async def _write_silence_to_unblock_stream(self, daemon: _ReceiverDaemon) -> None:
