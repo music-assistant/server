@@ -24,8 +24,6 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 import music_assistant.helpers.datetime as dt
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
-
-from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.naming import (
     UNKNOWN_STATION,
     TitleParts,
