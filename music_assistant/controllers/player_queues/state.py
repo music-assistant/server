@@ -17,8 +17,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from music_assistant_models.media_items import (
+    Audiobook,
     ItemMapping,
     MediaItemType,
+    Podcast,
     media_from_dict,
 )
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
@@ -56,10 +58,9 @@ class SleepTimerTarget(NamedTuple):
 
 @dataclass(slots=True)
 class ListeningSession:
-    """Uninterrupted playback of one queue item, credited to the queue's user."""
+    """Uninterrupted playback of one audiobook or podcast, credited to the queue's user."""
 
-    queue_item_id: str
-    media_item: MediaItemType
+    listened_item: Audiobook | Podcast | ItemMapping
     userid: str
     started_at: float
     last_seen_at: float

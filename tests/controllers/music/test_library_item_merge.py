@@ -381,40 +381,30 @@ async def test_track_merge_preserves_album_and_artist_relations(mass: MusicAssis
     )
 
     await mass.cache._setup_database()
-    for timestamp, (item_id, provider) in enumerate(
-        (
-            (source.item_id, "library"),
-            (target.item_id, "library"),
-            ("source-track", "source_instance"),
-        ),
-        start=1_000,
+    for item_id, provider in (
+        (source.item_id, "library"),
+        (target.item_id, "library"),
+        ("source-track", "source_instance"),
     ):
-        play = {
-            "item_id": item_id,
-            "provider": provider,
-            "media_type": MediaType.TRACK.value,
-            "userid": MERGE_USER,
-            "name": "Original play snapshot",
-        }
-        await mass.music.database.insert(DB_TABLE_PLAY_HISTORY, {**play, "timestamp": 1_000})
         await mass.music.database.insert(
-            DB_TABLE_LISTENING_SESSIONS,
-            {**play, "queue_id": "queue_1", "timestamp": timestamp, "seconds": 60},
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": item_id,
+                "provider": provider,
+                "media_type": MediaType.TRACK.value,
+                "userid": MERGE_USER,
+                "name": "Original play snapshot",
+                "timestamp": 1_000,
+            },
         )
     original_history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
     with _as_user(User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER)):
         before = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
         await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
         after = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
-        listened = await mass.statistics.get_listening_time(
-            period="all_time", group_by="item", media_type=MediaType.TRACK
-        )
 
     assert len(before) == 2
     assert [(entry.item.item_id, entry.play_count) for entry in after] == [(target.item_id, 3)]
-    assert [(entry.item.item_id, entry.minutes) for entry in listened if entry.item] == [
-        (target.item_id, 3.0)
-    ]
     history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
     assert len(history) == len(original_history) == 3
     for original, current in zip(original_history, history, strict=True):
@@ -451,7 +441,7 @@ async def test_track_merge_preserves_album_and_artist_relations(mass: MusicAssis
 
 
 async def test_audiobook_merge_keeps_per_user_resume_state(mass: MusicAssistant) -> None:
-    """An audiobook merge leaves resume transfer to the library playlog merge."""
+    """An audiobook merge leaves resume transfer and listening time to the playlog merge."""
     target = await mass.music.audiobooks.add_item_to_library(
         Audiobook(
             item_id="0",
@@ -488,14 +478,43 @@ async def test_audiobook_merge_keeps_per_user_resume_state(mass: MusicAssistant)
         seconds_played=30,
         user_initiated=True,
     )
+    for timestamp, (item_id, provider) in enumerate(
+        (
+            (target.item_id, "library"),
+            (source.item_id, "library"),
+            ("source-book", "source_instance"),
+        )
+    ):
+        await mass.music.database.insert(
+            DB_TABLE_LISTENING_SESSIONS,
+            {
+                "item_id": item_id,
+                "provider": provider,
+                "media_type": MediaType.AUDIOBOOK.value,
+                "userid": MERGE_USER,
+                "queue_id": "queue_1",
+                "timestamp": timestamp,
+                "seconds": 60,
+                "name": "Book",
+            },
+        )
 
-    with patch.object(
-        mass.music.audiobooks,
-        "_set_playlog",
-        wraps=mass.music.audiobooks._set_playlog,
-    ) as set_playlog:
+    with (
+        patch.object(
+            mass.music.audiobooks,
+            "_set_playlog",
+            wraps=mass.music.audiobooks._set_playlog,
+        ) as set_playlog,
+        _as_user(User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER)),
+    ):
         await mass.music.audiobooks.merge_library_items(target.item_id, source.item_id)
+        listened = await mass.statistics.get_listening_time(
+            period="all_time", group_by="item", media_type=MediaType.AUDIOBOOK
+        )
 
+    assert [(entry.item.item_id, entry.minutes) for entry in listened if entry.item] == [
+        (target.item_id, 3.0)
+    ]
     assert isinstance(set_playlog, AsyncMock)
     set_playlog.assert_not_awaited()
     playlog = await mass.music.database.get_row(

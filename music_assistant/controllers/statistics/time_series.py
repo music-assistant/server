@@ -58,6 +58,8 @@ HOUR_BUCKET_SCAN_STEP = timedelta(minutes=15)
 # Longer than any daylight-saving shift (Antarctica/Troll moves two hours), taken off in UTC
 # so the hour scan starts before the first bucket even when its local start is in a gap.
 HOUR_BUCKET_SCAN_MARGIN = timedelta(hours=3)
+# the media types whose wall-clock listening time is recorded; an episode counts for its podcast
+LISTENED_MEDIA_TYPES = (MediaType.AUDIOBOOK, MediaType.PODCAST)
 
 
 class TimeSeriesMixin(_StatisticsBase):
@@ -105,8 +107,9 @@ class TimeSeriesMixin(_StatisticsBase):
         """
         Get the seconds spent listening over time (time series data).
 
-        Counts wall-clock playback through Music Assistant, each listening session in the
-        bucket it started in. The series is complete, like `plays_over_time`.
+        Counts wall-clock playback of audiobooks and podcasts through Music Assistant, each
+        listening session in the bucket it started in. The series is complete, like
+        `plays_over_time`.
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param granularity: Time bucket size - 'hour', 'day', 'week', 'month'.
@@ -114,8 +117,10 @@ class TimeSeriesMixin(_StatisticsBase):
         :param users: User ids or usernames whose listening is combined; defaults to the
             current user.
         :param all_users: Combine the listening of every user, instead of the given users.
-        :param media_type: Only count this media type; all media types when omitted.
+        :param media_type: Only count 'audiobook' or 'podcast'; both when omitted.
         """
+        if media_type not in (None, *LISTENED_MEDIA_TYPES):
+            raise InvalidDataError("media_type must be 'audiobook' or 'podcast'")
         if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
         return await self._get_time_series(
@@ -208,7 +213,8 @@ class TimeSeriesMixin(_StatisticsBase):
         Artist and genre time is estimated from the stored durations of completed plays
         resolvable to library tracks; plays without a library mapping or known duration are
         omitted, and genre grouping also requires library genre mappings. Item, author and
-        narrator time is the measured wall-clock playback through Music Assistant; author and
+        narrator time is the measured wall-clock playback of audiobooks and podcasts (an
+        episode counts for its podcast) through Music Assistant; author and
         narrator time only counts audiobooks in the library. All but genre results carry the
         item in `item`, so same-named ones stay separate; genre results have no `item`.
 
@@ -219,7 +225,7 @@ class TimeSeriesMixin(_StatisticsBase):
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         :param users: User ids or usernames whose plays are combined; defaults to the current user.
         :param all_users: Combine the plays of every user, instead of the given users.
-        :param media_type: The media type to list, required for and only used by 'item'.
+        :param media_type: 'audiobook' or 'podcast', required for and only used by 'item'.
         """
         if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
@@ -228,8 +234,13 @@ class TimeSeriesMixin(_StatisticsBase):
             raise InvalidDataError(
                 "group_by must be 'artist', 'genre', 'item', 'author' or 'narrator'"
             )
-        if (group_by == "item") != (media_type is not None):
-            raise InvalidDataError("media_type is required for and only used by group_by 'item'")
+        if group_by == "item":
+            if media_type not in LISTENED_MEDIA_TYPES:
+                raise InvalidDataError(
+                    "group_by 'item' requires media_type 'audiobook' or 'podcast'"
+                )
+        elif media_type is not None:
+            raise InvalidDataError("media_type is only used by group_by 'item'")
         if group_by in ("author", "narrator"):
             media_type = MediaType.AUDIOBOOK
 

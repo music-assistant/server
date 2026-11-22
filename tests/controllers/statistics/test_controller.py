@@ -1723,7 +1723,7 @@ async def test_listening_time_over_time_sums_session_seconds(
         (
             ("library", "book_1", MediaType.AUDIOBOOK, "2026-10-28T23:30:00", 1800),
             ("library", "book_1", MediaType.AUDIOBOOK, "2026-10-29T10:00:00", 600),
-            ("library", "track_1", MediaType.TRACK, "2026-10-29T11:00:00", 200),
+            ("library", "podcast_1", MediaType.PODCAST, "2026-10-29T11:00:00", 200),
         ),
     )
 
@@ -1734,13 +1734,15 @@ async def test_listening_time_over_time_sums_session_seconds(
         everything = await mass.statistics.get_listening_time_over_time(
             period="all_time", timezone=timezone
         )
+        with pytest.raises(InvalidDataError):
+            await mass.statistics.get_listening_time_over_time(media_type=MediaType.TRACK)
 
     assert [(point.timestamp, point.value) for point in books] == expected_books
     assert [(point.timestamp, point.value) for point in everything] == expected_all
 
 
 async def test_listening_time_groups_session_seconds_by_item(mass: MusicAssistant) -> None:
-    """Item listening time sums the sessions of one media type per item."""
+    """Item listening time sums the sessions of audiobooks or podcasts per item."""
     user = await mass.webserver.auth.create_user("statistics-listening-items")
     await _insert_listening_sessions(
         mass,
@@ -1749,7 +1751,7 @@ async def test_listening_time_groups_session_seconds_by_item(mass: MusicAssistan
             ("library", "book_1", MediaType.AUDIOBOOK, "2026-10-28T10:00:00", 1200),
             ("library", "book_1", MediaType.AUDIOBOOK, "2026-10-29T10:00:00", 600),
             ("library", "book_2", MediaType.AUDIOBOOK, "2026-10-29T11:00:00", 600),
-            ("library", "track_1", MediaType.TRACK, "2026-10-29T12:00:00", 6000),
+            ("library", "podcast_1", MediaType.PODCAST, "2026-10-29T12:00:00", 6000),
         ),
     )
 
@@ -1757,8 +1759,11 @@ async def test_listening_time_groups_session_seconds_by_item(mass: MusicAssistan
         results = await mass.statistics.get_listening_time(
             period="all_time", group_by="item", media_type=MediaType.AUDIOBOOK
         )
-        with pytest.raises(InvalidDataError):
-            await mass.statistics.get_listening_time(period="all_time", group_by="item")
+        for media_type in (None, MediaType.TRACK):
+            with pytest.raises(InvalidDataError):
+                await mass.statistics.get_listening_time(
+                    period="all_time", group_by="item", media_type=media_type
+                )
         for group_by in ("artist", "author"):
             with pytest.raises(InvalidDataError):
                 await mass.statistics.get_listening_time(

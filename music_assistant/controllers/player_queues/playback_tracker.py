@@ -33,6 +33,7 @@ from music_assistant_models.media_items import (
     Audiobook,
     ItemMapping,
     MediaItemType,
+    Podcast,
     PodcastEpisode,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
@@ -780,31 +781,42 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         self.mark_ended(queue.queue_id)
 
     def _update_listening_session(self, queue: PlayerQueue) -> None:
-        """Record the wall-clock time the current item plays for the queue's user."""
+        """Record the wall-clock time an audiobook or podcast plays for the queue's user."""
         queue_data = self._queue_data[queue.queue_id]
         now = time.time()
-        playing_item = queue.current_item if queue.state == PlaybackState.PLAYING else None
+        # an offline player can keep reporting that it plays
+        playing_item = (
+            queue.current_item if queue.state == PlaybackState.PLAYING and queue.available else None
+        )
+        media_item = playing_item.media_item if playing_item else None
+        listened_item: Audiobook | Podcast | ItemMapping | None = None
+        if isinstance(media_item, Audiobook):
+            listened_item = media_item
+        elif isinstance(media_item, PodcastEpisode):
+            # episodes count for their podcast, so the episodes played in a row form one session
+            listened_item = media_item.podcast
         if session := queue_data.listening_session:
-            ended = playing_item is None or playing_item.queue_item_id != session.queue_item_id
-            session.seconds += min(now - session.last_seen_at, MAX_LISTENING_GAP_SECONDS)
+            ended = listened_item is None or listened_item.uri != session.listened_item.uri
+            # a clock set back takes no time off
+            session.seconds += max(0, min(now - session.last_seen_at, MAX_LISTENING_GAP_SECONDS))
             session.last_seen_at = now
             if ended or now - session.last_written_at >= PLAYBACK_REPORT_INTERVAL_SECONDS:
                 session.last_written_at = now
-                listened_item = session.media_item
+                credited_item = session.listened_item
                 self.mass.create_task(
                     self.mass.music.database.upsert(
                         DB_TABLE_LISTENING_SESSIONS,
                         {
-                            "item_id": listened_item.item_id,
-                            "provider": listened_item.provider,
-                            "media_type": listened_item.media_type.value,
+                            "item_id": credited_item.item_id,
+                            "provider": credited_item.provider,
+                            "media_type": credited_item.media_type.value,
                             "userid": session.userid,
                             "queue_id": queue.queue_id,
                             "timestamp": session.started_at,
                             "seconds": int(session.seconds),
-                            "name": listened_item.name,
-                            "image": serialize_to_json(listened_item.image.to_dict())
-                            if listened_item.image
+                            "name": credited_item.name,
+                            "image": serialize_to_json(credited_item.image.to_dict())
+                            if credited_item.image
                             else None,
                         },
                     )
@@ -814,15 +826,13 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if (
             queue_data.listening_session is None
             and playing_item
-            and (media_item := playing_item.media_item)
-            and media_item.media_type not in (MediaType.SOUND_EFFECT, MediaType.AUDIO_SOURCE)
+            and listened_item
             and queue_data.userid
             # a player can name an item it never received audio for
             and playing_item.queue_item_id in queue_data.served_item_ids
         ):
             queue_data.listening_session = ListeningSession(
-                queue_item_id=playing_item.queue_item_id,
-                media_item=media_item,
+                listened_item=listened_item,
                 userid=queue_data.userid,
                 started_at=now,
                 last_seen_at=now,
