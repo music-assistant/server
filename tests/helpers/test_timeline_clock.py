@@ -488,6 +488,26 @@ async def test_keeper_ignores_a_stored_rate_it_cannot_use(stored: Any) -> None:
     assert mass.timeline_clock.rate_ppb == 0
 
 
+async def test_keeper_shows_its_rates_in_the_diagnostics() -> None:
+    """The diagnostics show the rate the timeline runs on, the stored rate and the estimate."""
+    keeper, mass, _ = _keeper(estimate=None)
+    mass.timeline_clock.add_rate_listener(pinned=lambda: True)
+    keeper.start()
+    name, section = mass.diagnostics.register_section.call_args.args
+    assert name == "core.timeline_clock"
+    assert section() == {"active_rate_ppb": 0, "stored_rate_ppb": None, "estimated_rate_ppb": None}
+
+    cast("MagicMock", keeper._estimator).rate_ppb = 857_000
+    keeper._update_rate()
+
+    # measured and stored, but held back by what runs on the timeline
+    assert section() == {
+        "active_rate_ppb": 0,
+        "stored_rate_ppb": 857_000,
+        "estimated_rate_ppb": 857_000,
+    }
+
+
 async def test_keeper_samples_both_clocks_every_ten_seconds() -> None:
     """Each round reads the raw clock and CLOCK_MONOTONIC and then looks at the estimate."""
     keeper, _, _ = _keeper()

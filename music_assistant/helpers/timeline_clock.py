@@ -15,6 +15,7 @@ from music_assistant.constants import CONF_TIMELINE_RATE_PPB, MASS_LOGGER_NAME
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.timeline_clock")
@@ -216,12 +217,13 @@ class TimelineRateKeeper:
         self._beyond_bound_warned = False
 
     def start(self) -> None:
-        """Put the timeline on the stored rate and start measuring."""
+        """Put the timeline on the stored rate, start measuring and add the rates to diagnostics."""
         stored_ppb = self.mass.config.get(CONF_TIMELINE_RATE_PPB, 0)
         if isinstance(stored_ppb, int) and stored_ppb and abs(stored_ppb) <= MAX_RATE_PPB:
             self._stored_ppb = stored_ppb
             self.mass.timeline_clock.set_rate(stored_ppb)
             _log_rate(stored_ppb)
+        self.mass.diagnostics.register_section("core.timeline_clock", self._get_diagnostics)
         self.mass.create_task(self._measure(), task_name="timeline_rate_keeper")
 
     async def _measure(self) -> None:
@@ -256,6 +258,14 @@ class TimelineRateKeeper:
             return
         clock.set_rate(rate_ppb)
         _log_rate(rate_ppb)
+
+    def _get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return the rate corrections of the timeline, in ppb, for the diagnostics report."""
+        return {
+            "active_rate_ppb": self.mass.timeline_clock.rate_ppb,
+            "stored_rate_ppb": self.mass.config.get(CONF_TIMELINE_RATE_PPB),
+            "estimated_rate_ppb": self._estimator.rate_ppb,
+        }
 
 
 def _log_rate(rate_ppb: int) -> None:
