@@ -229,17 +229,21 @@ async def test_a_fully_refused_request_leaves_the_queue_with_its_user(
 
 
 @pytest.mark.parametrize(
-    ("option", "expected_userids", "expected_owner"),
+    ("option", "ended", "expected_userids", "expected_owner"),
     [
-        (QueueOption.ADD, {"t1": USER_ID, "t3": OTHER_USER_ID}, USER_ID),
-        (QueueOption.NEXT, {"t1": USER_ID, "t3": OTHER_USER_ID}, USER_ID),
-        (QueueOption.REPLACE, {"t3": OTHER_USER_ID}, OTHER_USER_ID),
+        (QueueOption.ADD, False, {"t1": USER_ID, "t3": OTHER_USER_ID}, USER_ID),
+        (QueueOption.NEXT, False, {"t1": USER_ID, "t3": OTHER_USER_ID}, USER_ID),
+        (QueueOption.REPLACE, False, {"t3": OTHER_USER_ID}, OTHER_USER_ID),
+        # an ended queue continues on ADD, anything else starts it afresh
+        (QueueOption.ADD, True, {"t1": USER_ID, "t3": OTHER_USER_ID}, USER_ID),
+        (QueueOption.NEXT, True, {"t3": OTHER_USER_ID}, OTHER_USER_ID),
     ],
 )
 @patch(GET_CURRENT_USER)
 async def test_each_item_plays_for_whom_enqueued_it(
     mock_get_user: Mock,
     option: QueueOption,
+    ended: bool,
     expected_userids: dict[str, str],
     expected_owner: str,
 ) -> None:
@@ -248,6 +252,7 @@ async def test_each_item_plays_for_whom_enqueued_it(
     ctrl = _controller()
     _set_sources(ctrl)
     await ctrl.play_media("q1", _track("t1", OWN_INSTANCE, OWN_INSTANCE), QueueOption.REPLACE)
+    ctrl._queue_data["q1"].queue.ended = ended
 
     mock_get_user.return_value = User(
         user_id=OTHER_USER_ID, username=OTHER_USER_ID, role=UserRole.USER

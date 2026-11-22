@@ -1218,8 +1218,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             raise last_item_error
 
         # something the caller asked for made it through: replacing what the queue plays (or
-        # starting it) makes it theirs, adding to someone else's queue does not
-        if replace_sources or not queue_data.items:
+        # starting it afresh, as anything but ADD does on an ended queue) makes it theirs,
+        # adding to someone else's queue does not
+        starts_fresh = not queue_data.items or (queue.ended and option != QueueOption.ADD)
+        if replace_sources or starts_fresh:
             queue_data.userid = playback_userid
 
         if queue.is_dynamic:
