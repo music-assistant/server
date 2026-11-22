@@ -180,7 +180,9 @@ class StreamManager:
 
         stream_details.stream_metadata_update_callback = partial(
             self.now_playing.update_station,
-            NowPlaying(fallback=stream_details.stream_metadata, album=full_station_name(station)),
+            NowPlaying(
+                fallback=stream_details.stream_metadata, album=full_station_name(station=station)
+            ),
         )
         stream_details.stream_metadata_update_interval = Constants.NOW_PLAYING_REFRESH_TIME
         return stream_details
@@ -235,7 +237,7 @@ class StreamManager:
             return stream_details
         stream_details.stream_metadata_update_callback = partial(
             self.now_playing.update_live_programme,
-            NowPlaying(fallback=None, album=full_station_name(station)),
+            NowPlaying(fallback=None, album=full_station_name(station=station)),
             programme_id,
             programme,
         )
