@@ -122,6 +122,35 @@ async def test_playback_of_music_assistant_names_the_queue_of_the_player(
     assert player._attr_active_source == "pl_living"
 
 
+async def test_input_without_metadata_drops_the_previous_media(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An input that reports no metadata shows none, not what the net source played before."""
+    player = network.player("A___main")
+    device = player.physical_device.device
+    device.data.zones["main"].input = "server"
+    device.data.netusb_track = "Queue Song"
+    device.data.netusb_artist = "Queue Artist"
+    device.data.netusb_album = "Queue Album"
+    device.data.netusb_play_time_updated = None
+    device.media_image_url = "http://ma:8097/image.jpg"
+    player.upnp_update_helper = UpnpUpdateHelper(
+        last_poll=time.time(), controlled_by_mass=False, current_uri=None
+    )
+    monkeypatch.setattr(player, "update_state", MagicMock())
+    await player.set_dynamic_attributes()
+
+    device.data.zones["main"].input = "audio1"
+    await player.set_dynamic_attributes()
+
+    assert player.current_media is not None
+    assert player.current_media.uri == "A___main_audio1"
+    assert player.current_media.title is None
+    assert player.current_media.artist is None
+    assert player.current_media.album is None
+    assert player.current_media.image_url is None
+
+
 async def test_end_of_track_advances_the_queue_of_the_player(network: MusicCastNetwork) -> None:
     """A receiver that went idle at the end of a track advances the queue of its player."""
     player = network.player("A___main")
