@@ -260,7 +260,7 @@ async def test_get_report(mass: MusicAssistant) -> None:
     except RuntimeError:
         logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
-    assert report["schema_version"] == 8
+    assert report["schema_version"] == 9
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
     assert report["system"]["unsupported_install"] is True
@@ -286,6 +286,12 @@ async def test_get_report(mass: MusicAssistant) -> None:
     assert "by_status" in report["sections"]["core.tasks"]
     assert "db_size_mb" in report["sections"]["core.cache"]
     assert "mount_backends" in report["sections"]["core.storage"]
+    # a fresh server has no rate correction for its timeline clock, and no estimate yet
+    assert report["sections"]["core.timeline_clock"] == {
+        "active_rate_ppb": 0,
+        "stored_rate_ppb": None,
+        "estimated_rate_ppb": None,
+    }
     # log tail is opt-in
     assert "log_tail" not in report
     report_with_tail = await mass.diagnostics.get_report(include_log_tail=True)
