@@ -65,6 +65,7 @@ from music_assistant.models.player import PlayerSource
 from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.providers.sonos.const import (
     AMP_MODEL,
+    AUDIO_IN_SERVICE,
     CONF_SHOW_DEVICE_SETTINGS,
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
@@ -75,6 +76,7 @@ from music_assistant.providers.sonos.const import (
     PLAYBACK_STATE_MAP,
     PLAYER_SOURCE_MAP,
     PREVIOUS_ITEMS,
+    RENDERING_CONTROL_SERVICE,
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
     SOURCE_LINE_IN_OF,
@@ -242,16 +244,16 @@ class SonosPlayer(PlayerProtocol):
         self._own_airplay_session = False
         # the other speakers of this speaker's set, as last reported to the players controller
         self._reported_bonded_ids: set[str] = set()
-        # the line-in this speaker loaded last, None for its own: Sonos does not report
-        # whose line-in plays
-        self._loaded_line_in: str | None = None
+        # whether something is connected to the line-in, None until the speaker reported it
+        self._line_in_connected: bool | None = None
 
     @property
     def source_list(self) -> list[PlayerSource]:
         """
-        Return this player's sources, with the line-in of every speaker of its household.
+        Return this player's sources, with the line-in of the speakers of its household.
 
-        A service we did not map is listed only while it plays.
+        A service we did not map is listed only while it plays, and so is the line-in of
+        another speaker that has nothing connected to it.
         """
         # the entry of such a service can outlive the source it stands for: once a paused
         # session is given up on, the speaker keeps reporting it and rebuilds the entry
@@ -559,7 +561,7 @@ class SonosPlayer(PlayerProtocol):
         """Follow (renew) the speaker's events, and poll the options they do not cover."""
         if not self.connected:
             return
-        await self.upnp.follow(self._on_rendering_change)
+        await self.upnp.follow(self._on_upnp_change, self._event_services)
         if not self.upnp.follows:
             await self._update_options()
         elif polled := [option for option in self._offered_options if option.polled]:
@@ -827,11 +829,10 @@ class SonosPlayer(PlayerProtocol):
         self._forget_queue()
         self._announcement_media = None
         if device_id := _line_in_device_id(source):
-            own = device_id == self.protocol_id
-            # set before loading: the speaker may report the line-in before the command returns
-            self._loaded_line_in = None if own else source
+            # the speaker's own line-in is the one it loads by default
             await self.group_controller.load_line_in(
-                device_id=None if own else device_id, play_on_completion=True
+                device_id=None if device_id == self.protocol_id else device_id,
+                play_on_completion=True,
             )
         elif source == SOURCE_TV:
             await self.client.player.load_home_theater_playback()
@@ -1357,15 +1358,10 @@ class SonosPlayer(PlayerProtocol):
         elif playing and not was_playing:
             # an AirPlay sender of its own, such as a phone, started playing on the speaker
             self._own_airplay_session = False
-        if (
-            container_type != ContainerType.LINEIN
-            and self._attr_active_source == self._loaded_line_in
-        ):
-            # the line-in we loaded stopped playing: one the speaker reports later is its own
-            self._loaded_line_in = None
         if container_type == ContainerType.LINEIN:
-            # a member plays the line-in its coordinator loaded
-            self._attr_active_source = (group_parent or self)._playing_line_in()
+            # Sonos names the speaker whose line-in plays; a member reads it from the group of
+            # its coordinator
+            self._attr_active_source = _playing_line_in(container)
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
             self._attr_active_source = SOURCE_TV
         elif container_type == ContainerType.AIRPLAY:
@@ -2489,39 +2485,79 @@ class SonosPlayer(PlayerProtocol):
             task_id=f"sonos_options_{self.protocol_id}",
         )
 
-    def _on_rendering_change(self, changes: dict[str, str]) -> None:
+    def _on_upnp_change(self, changes: dict[str, str]) -> None:
+        if (line_in_connected := changes.get("LineInConnected")) is not None:
+            self._on_line_in_connected(line_in_connected == "1")
         if self.connected and not OPTION_EVENT_VARIABLES.isdisjoint(changes):
             self._schedule_options_read()
 
-    def _playing_line_in(self) -> str:
-        """Return the source id of the line-in the speaker plays when it reports one."""
-        return self._loaded_line_in or f"{SOURCE_LINE_IN_OF}{self.protocol_id}"
+    def _on_line_in_connected(self, connected: bool) -> None:
+        if connected == self._line_in_connected:
+            return
+        self._line_in_connected = connected
+        # the other speakers list this line-in only while something is connected to it
+        for speaker in self._household_speakers():
+            if speaker is not self:
+                speaker.update_state()
 
-    def _household_line_ins(self) -> list[PlayerSource]:
-        """Return the line-in of every speaker of the household that has one, its own first."""
+    @property
+    def _has_line_in(self) -> bool:
+        return SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]
+
+    @property
+    def _event_services(self) -> tuple[str, ...]:
+        if self._has_line_in:
+            return (RENDERING_CONTROL_SERVICE, AUDIO_IN_SERVICE)
+        return (RENDERING_CONTROL_SERVICE,)
+
+    def _household_speakers(self) -> list[SonosPlayer]:
+        """Return the speakers of this speaker's household, itself included."""
         household_id = self.discovery_info.get("householdId")
         protocols = cast("list[SonosPlayer]", self.provider.protocols)
-        speakers = [
-            self,
-            *sorted((x for x in protocols if x is not self), key=lambda x: x.display_name),
-        ]
+        return [x for x in protocols if x.discovery_info.get("householdId") == household_id]
+
+    def _household_line_ins(self) -> list[PlayerSource]:
+        """
+        Return the line-in of the speakers of the household, its own first.
+
+        The line-in of another speaker is listed while something is connected to it, which is
+        not known before that speaker reported it, or while it plays here.
+        """
+        others = (x for x in self._household_speakers() if x is not self)
         return [
             replace(
                 PLAYER_SOURCE_MAP[SOURCE_LINE_IN],
-                id=f"{SOURCE_LINE_IN_OF}{speaker.protocol_id}",
+                id=_line_in_source_id(speaker.protocol_id),
                 owner_player_id=None if speaker is self else speaker.protocol_id,
             )
-            for speaker in speakers
-            if speaker.discovery_info.get("householdId") == household_id
-            and SonosCapability.LINE_IN in speaker.discovery_info["device"]["capabilities"]
+            for speaker in (self, *sorted(others, key=lambda x: x.display_name))
+            if speaker._has_line_in
+            and (
+                speaker is self
+                or speaker._line_in_connected
+                or _line_in_source_id(speaker.protocol_id) == self._attr_active_source
+            )
         ]
 
 
+def _line_in_source_id(device_id: str) -> str:
+    """Return the source id of the line-in of a speaker."""
+    return f"{SOURCE_LINE_IN_OF}{device_id}"
+
+
 def _line_in_device_id(source_id: str) -> str | None:
-    """Return the speaker whose line-in a source id names, None for the speaker's own."""
+    """Return the speaker whose line-in a source id names, None for another source."""
     if source_id.startswith(SOURCE_LINE_IN_OF):
         return source_id.removeprefix(SOURCE_LINE_IN_OF)
     return None
+
+
+def _playing_line_in(container: Container | None) -> str:
+    """Return the source id of the line-in a group plays, by the speaker Sonos names for it."""
+    # aiosonos does not declare the field yet
+    device_id = cast("dict[str, Any]", container or {}).get("lineInSource")
+    # without it, the line-in of no speaker in particular
+    return _line_in_source_id(device_id) if device_id else SOURCE_LINE_IN
 
 
 def _is_wakeable(discovery_info: SonosDiscoveryInfo) -> bool:
