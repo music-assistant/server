@@ -1039,6 +1039,22 @@ async def test_withdrawing_the_service_says_goodbye_once(
     assert daemon.mdns_info is None
 
 
+async def test_stopping_a_receiver_withdraws_its_service(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """A stop withdraws the service, also when it cuts the runner's own teardown short."""
+    prov, proc, aiozc = mdns_receiver
+    daemon = prov._daemons["p1"]
+    await prov._publish_mdns_service(daemon, proc, _SERVICE)
+    # a runner cancelled while closing its process never reaches its own withdrawal
+    daemon.runner_task = asyncio.ensure_future(asyncio.sleep(10))
+
+    await AirPlayReceiverProvider._stop_receiver(prov, daemon)
+
+    aiozc.async_unregister_service.assert_awaited_once()
+    assert daemon.mdns_info is None
+
+
 async def test_the_goodbye_follows_the_announcements_in_flight(
     mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
 ) -> None:

@@ -619,6 +619,10 @@ class AirPlayReceiverProvider(PluginProvider):
                 await daemon.runner_task
             daemon.runner_task = None
 
+        # the runner withdraws the service when its process exits, but a stop that lands
+        # while the runner already closes the process cuts that teardown short
+        await self._unpublish_mdns_service(daemon)
+
         # Reset the shairport process reference
         daemon.shairport_proc = None
         daemon.started.clear()
