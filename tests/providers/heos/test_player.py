@@ -10,13 +10,15 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.config_entries import PlayerConfig
+from music_assistant_models.enums import MediaType, PlaybackState, ProtocolRole
 from music_assistant_models.player import PlayerSource
 from pyheos import PlayState as HeosPlayState
 from pyheos import const as heos_const
 
-from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.player import HeosPlayer
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 HIRES_SAMPLE_RATES = [
     (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
@@ -627,3 +629,141 @@ async def test_an_input_of_a_renamed_device_is_still_found() -> None:
 
     assert protocol._attr_active_source == DEN_LINE_IN
     assert [x.name for x in protocol._attr_source_list if x.id == DEN_LINE_IN] == ["Line In 1"]
+
+
+def _attached_to_a_player(protocol: HeosPlayer) -> Player:
+    """
+    Attach Kitchen to a player of its own, which played its Music Assistant queue last.
+
+    Den has a player too, so its inputs keep their owner on Kitchen.
+    """
+    mass = mock_player_mass()
+    protocol.mass = mass
+    attach_mock(MockProvider("heos", mass=mass), str(DEN_ID), "Den")
+    player = Player(
+        mass,
+        "pl_kitchen",
+        PlayerConfig(values={}, provider="heos", player_id="pl_kitchen", default_name="Kitchen"),
+    )
+    mass.players._players[player.player_id] = player
+    mass.players._protocols[protocol.protocol_id] = protocol
+    player.set_initialized()
+    player.add_protocol(protocol, ProtocolRole.NATIVE)
+    protocol.set_player(player)
+    player.set_active_mass_source(player.player_id)
+    return player
+
+
+@pytest.mark.parametrize(
+    ("station", "expected"),
+    [("Kitchen - Line In 1", KITCHEN_LINE_IN), ("Den - Line In 1", DEN_LINE_IN)],
+    ids=["own_input", "input_of_another_device"],
+)
+async def test_an_input_started_from_the_heos_app_takes_over_the_ma_queue(
+    station: str, expected: str
+) -> None:
+    """After Kitchen played its Music Assistant queue, the HEOS app starts an input on it."""
+    protocol = _kitchen_with_den()
+    await protocol.build_source_list()
+    player = _attached_to_a_player(protocol)
+    protocol._attr_active_source = protocol.protocol_id
+    player.update_state(signal_event=False)
+    while_queue_played = player.active_source
+
+    cast("MagicMock", protocol._device).now_playing_media = _aux_input_now_playing(station)
+    protocol._update_player_state()
+    protocol._update_player_current_media()
+    player.update_state(signal_event=False)
+
+    assert while_queue_played == player.player_id
+    assert player.active_source == expected
+
+
+async def test_a_local_music_report_does_not_take_over_the_ma_queue() -> None:
+    """A local music source stays distrusted: Music Assistant's own stream is reported as one."""
+    protocol = _kitchen_with_den()
+    local_music = str(heos_const.MUSIC_SOURCE_LOCAL_MUSIC)
+    cast("Any", protocol.provider).music_source_list = [
+        PlayerSource(id=local_music, name="Local Music", can_play_pause=True)
+    ]
+    await protocol.build_source_list()
+    player = _attached_to_a_player(protocol)
+
+    protocol._attr_active_source = local_music
+    protocol._attr_playback_state = PlaybackState.PLAYING
+    player.update_state(signal_event=False)
+
+    assert player.active_source == player.player_id
+
+
+def _kitchen_with_a_namesake(
+    namesake_inputs: list[tuple[str, str]], own_input_name: str = "Line In 1"
+) -> HeosPlayer:
+    """Return Kitchen (device 1) and its line-in, in a HEOS system with a second Kitchen (2)."""
+    protocol = _kitchen_with_den()
+    provider = cast("Any", protocol.provider)
+    provider.input_source_list = [
+        SimpleNamespace(
+            source_id=1, media_id=heos_const.INPUT_LINE_IN_1, name=f"Kitchen - {own_input_name}"
+        ),
+        *(
+            SimpleNamespace(source_id=2, media_id=media_id, name=f"Kitchen - {name}")
+            for media_id, name in namesake_inputs
+        ),
+    ]
+    provider.input_device_names = {1: "Kitchen", 2: "Kitchen"}
+    cast("Any", protocol._heos).players = {
+        1: SimpleNamespace(name="Kitchen"),
+        2: SimpleNamespace(name="Kitchen"),
+    }
+    return protocol
+
+
+@pytest.mark.parametrize(
+    ("namesake_inputs", "own_input_name", "media_id", "station", "expected"),
+    [
+        (
+            [(heos_const.INPUT_LINE_IN_1, "Line In 1")],
+            "Line In 1",
+            heos_const.INPUT_LINE_IN_1,
+            "Kitchen - Line In 1",
+            KITCHEN_LINE_IN,
+        ),
+        (
+            [(heos_const.INPUT_OPTICAL_IN_1, "Optical In 1")],
+            "Line In 1",
+            heos_const.INPUT_OPTICAL_IN_1,
+            "Kitchen - Optical In 1",
+            f"{heos_const.INPUT_OPTICAL_IN_1}@2",
+        ),
+        (
+            [(heos_const.INPUT_AUX_IN_1, "Phono")],
+            "Phono",
+            heos_const.INPUT_AUX_IN_1,
+            "Kitchen - Phono",
+            f"{heos_const.INPUT_AUX_IN_1}@2",
+        ),
+    ],
+    ids=["same_input_on_both", "input_of_the_namesake_only", "same_name_other_input"],
+)
+def test_an_input_of_devices_with_the_same_name_is_found_by_the_input_too(
+    namesake_inputs: list[tuple[str, str]],
+    own_input_name: str,
+    media_id: str,
+    station: str,
+    expected: str,
+) -> None:
+    """
+    Two devices are named Kitchen, so the station alone does not tell whose input plays.
+
+    An input only one of them has is still found, also when an input of the other has the same
+    name; one both have is reported as the device's own, the owner left out.
+    """
+    now_playing = _aux_input_now_playing(station)
+    now_playing.media_id = media_id
+    protocol = _kitchen_with_a_namesake(namesake_inputs, own_input_name)
+    cast("MagicMock", protocol._device).now_playing_media = now_playing
+
+    protocol._update_player_current_media()
+
+    assert protocol._attr_active_source == expected
