@@ -33,11 +33,14 @@ def _client(*, encrypted: bool = True, connected: bool = True) -> SendspinClient
 
 
 def _make_provider(
-    mass: MagicMock, mac_client: SendspinClient | None = None, allow_unencrypted: bool = True
+    mass: MagicMock,
+    mac_client: SendspinClient | None = None,
+    allow_unencrypted: bool = True,
+    stored_player_id: str = MAC_PLAYER_ID,
 ) -> SendspinProvider:
     stored_mac_player = {"provider": "sendspin", "enabled": True}
     mass.config.get_raw_player_config_value.side_effect = lambda player_id, key, default=None: (
-        stored_mac_player.get(key, default) if player_id == MAC_PLAYER_ID else default
+        stored_mac_player.get(key, default) if player_id == stored_player_id else default
     )
     mass.players.unregister = AsyncMock()
     provider = SendspinProvider.__new__(SendspinProvider)
@@ -63,6 +66,21 @@ async def test_encrypted_client_takes_over_its_mac_player() -> None:
     assert taken_over == MAC_PLAYER_ID
     mass.players.unregister.assert_awaited_once_with(MAC_PLAYER_ID)
     mass.players.carry_over_player_config.assert_called_once_with(MAC_PLAYER_ID, NEW_CLIENT_ID)
+
+
+async def test_encrypted_client_takes_over_its_lowercase_mac_player() -> None:
+    """A legacy client that used its MAC address in lowercase as id keeps its player too."""
+    mass = MagicMock()
+    lowercase_mac_player_id = MAC_PLAYER_ID.lower()
+    provider = _make_provider(mass, stored_player_id=lowercase_mac_player_id)
+
+    taken_over = await provider._take_over_mac_player(NEW_CLIENT_ID, _client())
+
+    assert taken_over == lowercase_mac_player_id
+    mass.players.unregister.assert_awaited_once_with(lowercase_mac_player_id)
+    mass.players.carry_over_player_config.assert_called_once_with(
+        lowercase_mac_player_id, NEW_CLIENT_ID
+    )
 
 
 async def test_unencrypted_client_does_not_take_over() -> None:
