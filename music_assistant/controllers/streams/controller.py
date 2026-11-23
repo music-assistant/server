@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
@@ -1593,7 +1594,7 @@ class StreamsController(CoreController):
             if not serving:
                 await self._release_unstarted_audio_source(session, playback_session_id)
 
-    async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
+    async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: C901, PLR0912, PLR0915
         """Stream Queue Flow audio to player."""
         self._log_request(request)
         # what a stream request asks of a provider is playback
@@ -1720,6 +1721,29 @@ class StreamsController(CoreController):
         # the desired output format for the player including any player specific filter params
         # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
         self.logger.debug("Start serving Queue flow audio stream for %s", queue.display_name)
+        # DEBUG BUILD support#6831: stream setup and per-second throughput
+        throughput: _FlowThroughputLog | None = None
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(
+                "[6831] Flow stream setup for %s: start item %s (seek %ss), pcm %s, output %s, "
+                "icy %s (preference %s, Icy-MetaData header %r), fixed content length %s "
+                "(content_length %s), Range %r, User-Agent %r",
+                player.display_name,
+                start_queue_item.name,
+                start_queue_item.streamdetails.seek_position
+                if start_queue_item.streamdetails
+                else None,
+                flow_pcm_format.output_format_str,
+                output_format.output_format_str,
+                enable_icy,
+                icy_preference,
+                request.headers.get("Icy-MetaData"),
+                fixed_content_length,
+                resp.content_length,
+                request.headers.get("Range"),
+                request.headers.get("User-Agent"),
+            )
+            throughput = _FlowThroughputLog(self.logger, player.display_name, flow_pcm_format)
 
         # Mark this player as actively streaming so audio analysis yields CPU to playback
         # for the duration of the flow stream (see audio_analysis.playback_active).
@@ -1734,6 +1758,8 @@ class StreamsController(CoreController):
         )
         if mix_overlay:
             flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)
+        if throughput:
+            flow_stream = throughput.count_pcm(flow_stream)
         audio_bytes = get_ffmpeg_stream(
             audio_input=flow_stream,
             input_format=flow_pcm_format,
@@ -1758,6 +1784,8 @@ class StreamsController(CoreController):
             bytes_sent += len(data)
             self._flow_bytes_sent[player_id] = (request.path, bytes_sent)
             await resp.write(data)
+            if throughput:
+                throughput.on_write(len(data))
 
         client_disconnected = False
         # same registry as the single-item route: a forced-flow player (overlay)
@@ -1816,6 +1844,8 @@ class StreamsController(CoreController):
             await audio_bytes.aclose()
         finally:
             self._active_output_streams -= 1
+            if throughput:
+                throughput.finish(client_disconnected)
             if entries := self._open_item_streams.get(queue_id):
                 with suppress(ValueError):
                     entries.remove(stream_entry)
@@ -3117,3 +3147,69 @@ def _root_cause(err: BaseException) -> BaseException:
         if str(err):
             deepest = err
     return deepest
+
+
+class _FlowThroughputLog:
+    """DEBUG BUILD support#6831: log what the flow stream feeds and writes per second."""
+
+    def __init__(self, logger: logging.Logger, player_name: str, pcm_format: AudioFormat) -> None:
+        """Initialize the throughput log."""
+        self._logger = logger
+        self._player_name = player_name
+        self._pcm_sample_size = pcm_format.pcm_sample_size
+        self._started = self._window_start = self._last_write = time.monotonic()
+        self._window_bytes = self._window_writes = 0
+        self._window_pcm = self._total_pcm = self._total_bytes = 0
+        self._window_max_gap = 0.0
+
+    async def count_pcm(self, stream: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
+        """Pass on the PCM stream fed to the encoder while counting it."""
+        async for chunk in stream:
+            self._window_pcm += len(chunk)
+            self._total_pcm += len(chunk)
+            yield chunk
+
+    def on_write(self, size: int) -> None:
+        """Record a write to the player and log the window once it spans a second."""
+        now = time.monotonic()
+        self._window_max_gap = max(self._window_max_gap, now - self._last_write)
+        self._last_write = now
+        self._window_bytes += size
+        self._window_writes += 1
+        self._total_bytes += size
+        if now - self._window_start >= 1:
+            self._log_window(now)
+
+    def finish(self, client_disconnected: bool) -> None:
+        """Log the totals when the flow stream ends."""
+        now = time.monotonic()
+        self._log_window(now)
+        self._logger.debug(
+            "[6831] Flow stream to %s ended after %.1fs (client disconnected: %s): "
+            "%d bytes out, %.1fs audio in, last write %.1fs ago",
+            self._player_name,
+            now - self._started,
+            client_disconnected,
+            self._total_bytes,
+            self._total_pcm / self._pcm_sample_size,
+            now - self._last_write,
+        )
+
+    def _log_window(self, now: float) -> None:
+        """Log the current window and start a new one."""
+        self._logger.debug(
+            "[6831] Flow %s t=%.1fs: %d bytes out in %d writes over %.2fs (max gap %d ms), "
+            "%.2fs audio in; total %d bytes out, %.1fs audio in",
+            self._player_name,
+            now - self._started,
+            self._window_bytes,
+            self._window_writes,
+            now - self._window_start,
+            self._window_max_gap * 1000,
+            self._window_pcm / self._pcm_sample_size,
+            self._total_bytes,
+            self._total_pcm / self._pcm_sample_size,
+        )
+        self._window_start = now
+        self._window_bytes = self._window_writes = self._window_pcm = 0
+        self._window_max_gap = 0.0

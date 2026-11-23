@@ -14,7 +14,7 @@ from music_assistant_models.player import PlayerSource
 from pyheos import Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
 from zeroconf import ServiceStateChange
 
-from music_assistant.constants import CONF_IP_ADDRESS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_IP_ADDRESS
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.heos.constants import HEOS_PASSIVE_SOURCES
@@ -82,8 +82,11 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        # DEBUG BUILD support#6831: the raw HEOS commands, results and errors (pyheos) and
+        # the group start timeouts (players controller) are only wanted with debug logging
+        if self.logger.isEnabledFor(logging.DEBUG):
             logging.getLogger("pyheos").setLevel(logging.DEBUG)
+            self.mass.players.logger.setLevel(logging.DEBUG)
         else:
             logging.getLogger("pyheos").setLevel(self.logger.level + 10)
 
@@ -289,7 +292,7 @@ class HeosPlayerProvider(PlayerProvider):
     async def _handle_controller_event(
         self, event: str, result: PlayerUpdateResult | None = None
     ) -> None:
-        self.logger.debug("Controller event received: %s", event)
+        self.logger.debug("Controller event received: %s (result: %s)", event, result)
 
         if event == const.EVENT_GROUPS_CHANGED:
             for player in self.protocols:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from copy import copy
 from typing import TYPE_CHECKING, cast
 
@@ -21,7 +22,7 @@ from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, HeosError, const
 from pyheos import PlayState as HeosPlayState
 
-from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, VERBOSE_LOG_LEVEL
+from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
@@ -185,6 +186,12 @@ class HeosPlayer(PlayerProtocol):
             ]
         else:
             self._attr_group_members.clear()
+        self.logger.debug(
+            "[6831] [%s] Group list rebuilt: group_id=%s members=%s",
+            self._device.name,
+            self._device.group_id,
+            self._attr_group_members,
+        )
 
         self.update_state()
 
@@ -213,16 +220,30 @@ class HeosPlayer(PlayerProtocol):
 
     async def _player_event_received(self, event: str) -> None:
         """Handle player device events."""
-        self.logger.log(
-            (
-                VERBOSE_LOG_LEVEL
-                if event == const.EVENT_PLAYER_NOW_PLAYING_PROGRESS
-                else logging.DEBUG
-            ),
-            "[%s] Event received: %s",
-            self._device.name,
-            event,
-        )
+        # DEBUG BUILD support#6831: every event with what the device reports at that moment
+        if self.logger.isEnabledFor(logging.DEBUG):
+            now_playing = self._device.now_playing_media
+            self.logger.debug(
+                "[6831] [%s] Event %s: state=%s position=%s/%s ms (updated %s) source=%s "
+                "media_id=%s queue_id=%s song=%r error=%r | ma_controls=%s starting=%s "
+                "stream_started=%s awaiting_restart_stop=%s group_id=%s",
+                self._device.name,
+                event,
+                self._device.state,
+                now_playing.current_position,
+                now_playing.duration,
+                now_playing.current_position_updated,
+                now_playing.source_id,
+                now_playing.media_id,
+                now_playing.queue_id,
+                now_playing.song,
+                self._device.playback_error,
+                self._ma_controls_playback,
+                self._ma_playback_starting,
+                self._ma_stream_started,
+                self._ma_awaiting_restart_stop,
+                self._device.group_id,
+            )
         match event:
             case const.EVENT_PLAYER_STATE_CHANGED:
                 self._update_player_state()
@@ -267,6 +288,17 @@ class HeosPlayer(PlayerProtocol):
         playback_state = HEOS_PLAY_STATE_TO_PLAYBACK_STATE.get(
             self._device.state, PlaybackState.UNKNOWN
         )
+        if playback_state != self._attr_playback_state:
+            self.logger.debug(
+                "[6831] [%s] HEOS state %s maps to %s (was %s)%s",
+                self._device.name,
+                self._device.state,
+                playback_state,
+                self._attr_playback_state,
+                " - held while MA playback starts"
+                if self._ma_playback_starting and playback_state == PlaybackState.IDLE
+                else "",
+            )
         if self._ma_playback_starting and not self._ma_stream_started:
             # A play reported before the restart stop is still the previous stream
             if self._device.state == HeosPlayState.STOP:
@@ -388,15 +420,24 @@ class HeosPlayer(PlayerProtocol):
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
+        self.logger.debug(
+            "[6831] [%s] PLAY command (state: %s)", self._device.name, self._device.state
+        )
         await self._device.play()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
+        self.logger.debug(
+            "[6831] [%s] STOP command (state: %s)", self._device.name, self._device.state
+        )
         self._cancel_ma_playback_transition()
         await self._device.stop()
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
+        self.logger.debug(
+            "[6831] [%s] PAUSE command (state: %s)", self._device.name, self._device.state
+        )
         await self._device.pause()
 
     async def next_track(self) -> None:
@@ -424,14 +465,34 @@ class HeosPlayer(PlayerProtocol):
         self._ma_awaiting_restart_stop = self._device.state == HeosPlayState.PLAY
         self._update_player_playing_progress()
         self._ma_controls_playback = True
+        self.logger.debug(
+            "[6831] [%s] play_url %s (state before: %s, position %s ms)",
+            self._device.name,
+            url,
+            self._device.state,
+            self._device.now_playing_media.current_position,
+        )
+        play_url_start = time.monotonic()
         try:
             await self._device.play_url(url)
         except HeosError as err:
+            self.logger.debug(
+                "[6831] [%s] play_url failed after %.2fs: %r",
+                self._device.name,
+                time.monotonic() - play_url_start,
+                err,
+            )
             self._cancel_ma_playback_transition()
             self._ma_controls_playback = False
             self._queue_cleanup_pending = False
             raise PlayerCommandFailed("Failed to start playback.") from err
 
+        self.logger.debug(
+            "[6831] [%s] play_url accepted after %.2fs (state now: %s)",
+            self._device.name,
+            time.monotonic() - play_url_start,
+            self._device.state,
+        )
         self._attr_current_media = media
         self._attr_active_source = self.protocol_id
         self._queue_cleanup_pending = True
@@ -547,6 +608,7 @@ class HeosPlayer(PlayerProtocol):
         for removed_player_id in player_ids_to_remove or []:
             members.remove(removed_player_id)
 
+        self.logger.debug("[6831] [%s] Set group members: %s", self._device.name, members)
         if len(members) <= 1:
             await self._heos.remove_group(self._device.player_id)
         else:
@@ -580,6 +642,14 @@ class HeosPlayer(PlayerProtocol):
 
     def _finish_ma_playback_transition(self, wait_for_play: bool = True) -> None:
         """Apply the latest HEOS state after MA playback starts."""
+        self.logger.debug(
+            "[6831] [%s] Playback transition timer fired (wait_for_play=%s, state: %s, "
+            "stream_started: %s)",
+            self._device.name,
+            wait_for_play,
+            self._device.state,
+            self._ma_stream_started,
+        )
         if wait_for_play and self._device.state == HeosPlayState.STOP:
             self.mass.call_later(
                 PLAYBACK_TRANSITION_STOP_GRACE,
