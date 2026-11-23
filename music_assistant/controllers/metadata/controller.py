@@ -8,7 +8,8 @@ import random
 import sqlite3
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
+from copy import copy
+from dataclasses import dataclass, replace
 from time import time
 from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, uuid5
@@ -29,7 +30,7 @@ from music_assistant_models.enums import (
     SortField,
 )
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant_models.media_items import Album, Artist, BrowseFolder, Track
+from music_assistant_models.media_items import Album, Artist, BrowseFolder, MediaItemMetadata, Track
 
 from music_assistant.constants import (
     CONF_LANGUAGE,
@@ -503,8 +504,9 @@ class MetaDataController(
         track: Track,
     ) -> tuple[str | None, str | None]:
         """Look up (lyrics, lrc_lyrics) for the given track."""
-        if track.metadata and track.metadata.lyrics:
-            return track.metadata.lyrics, track.metadata.lrc_lyrics
+        has_lrc, lyrics = self._select_track_lyrics(track.metadata, (None, None))
+        if has_lrc:
+            return lyrics
 
         if track.provider == "library":
             # the stored item is refreshed, never the caller's copy of it; the refresh fills
@@ -512,12 +514,29 @@ class MetaDataController(
             track = await self.mass.music.tracks.get(
                 track.item_id, "library", allow_update_metadata=False
             )
+            _, lyrics = self._select_track_lyrics(track.metadata, (None, None))
+            if lyrics[0] or lyrics[1]:
+                for mapping in track.provider_mappings:
+                    source = self.mass.get_provider(
+                        mapping.provider_instance, provider_type=MusicProvider
+                    )
+                    if source and not source.is_streaming_provider:
+                        return lyrics
             with system_auth_context():
                 await self._update_track_metadata(track, force_refresh=False)
-            return track.metadata.lyrics, track.metadata.lrc_lyrics
+            _, lyrics = self._select_track_lyrics(track.metadata, (None, None))
+            return lyrics
 
         # prefer lyrics from the track's own provider
+        full_track = track
         track_provider = self.mass.music.get_visible_provider(track.provider)
+        if (
+            isinstance(track_provider, MusicProvider)
+            and not track_provider.is_streaming_provider
+            and lyrics[0]
+        ):
+            # lyrics from the user's own files are the final word
+            return lyrics
         if (
             isinstance(track_provider, MusicProvider)
             and ProviderFeature.LYRICS in track_provider.supported_features
@@ -525,15 +544,18 @@ class MetaDataController(
             full_track = await self.mass.music.tracks.get_provider_item(
                 track.item_id, track.provider
             )
-            if full_track.metadata and full_track.metadata.lyrics:
-                return full_track.metadata.lyrics, full_track.metadata.lrc_lyrics
+            has_lrc, lyrics = self._select_track_lyrics(full_track.metadata, lyrics)
+            if has_lrc or (not track_provider.is_streaming_provider and lyrics[0]):
+                return lyrics
 
         # fallback to other metadata providers
         for provider in self.providers:
             if ProviderFeature.LYRICS not in provider.supported_features:
                 continue
             try:
-                metadata = await provider.get_track_metadata(track)
+                lookup_track = copy(full_track)
+                lookup_track.metadata = replace(full_track.metadata, lyrics=lyrics[0])
+                metadata = await provider.get_track_metadata(lookup_track)
             except Exception as err:
                 # a provider failure must not abort the lookup — skip to the next provider
                 self.logger.warning(
@@ -544,9 +566,10 @@ class MetaDataController(
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
                 continue
-            if metadata and (metadata.lyrics or metadata.lrc_lyrics):
-                return metadata.lyrics, metadata.lrc_lyrics
-        return None, None
+            has_lrc, lyrics = self._select_track_lyrics(metadata, lyrics)
+            if has_lrc:
+                return lyrics
+        return lyrics
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
@@ -1121,6 +1144,18 @@ class MetaDataController(
             )
             report_current_task_failure(message)
             self.logger.warning(message)
+
+    @staticmethod
+    def _select_track_lyrics(
+        candidate: MediaItemMetadata | None,
+        fallback: tuple[str | None, str | None],
+    ) -> tuple[bool, tuple[str | None, str | None]]:
+        """Select the first plain lyrics and report whether synchronized lyrics were found."""
+        if candidate is None:
+            return False, fallback
+        lyrics = fallback[0] or candidate.lyrics or None
+        lrc_lyrics = candidate.lrc_lyrics or extract_lrc_lyrics(candidate.lyrics)
+        return bool(lrc_lyrics), (lyrics, lrc_lyrics)
 
 
 def _duplicate_album_sibling_guard() -> str:

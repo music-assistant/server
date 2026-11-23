@@ -103,6 +103,7 @@ _LOCAL_METADATA, _LOCAL_MUSIC, _MUSIC_SERVICE, _ONLINE_METADATA = range(4)
 _ARTIST_FIELDS = ("style", "mood", "life_span", "artist_entity_type", "label")
 _ALBUM_FIELDS = ("review", "label", "release_date", "copyright", "explicit", "style", "mood")
 _TRACK_FIELDS = ("copyright", "explicit", "grouping", "release_date", "style", "mood")
+_LYRICS_ONLY = {ProviderFeature.TRACK_METADATA, ProviderFeature.LYRICS}
 
 
 class MetadataEnrichmentMixin:
@@ -577,6 +578,7 @@ class MetadataEnrichmentMixin:
         self.logger.debug("Updating metadata for Track %s", track.name)
         sources: list[tuple[int, MediaItemMetadata]] = []
         source_missing = False
+        local_source_has_lyrics = False
 
         prev_lyrics = (track.metadata.lyrics, track.metadata.lrc_lyrics)
         if force_refresh:
@@ -610,6 +612,9 @@ class MetadataEnrichmentMixin:
                 # a provider miss hands back the stored library item, which is not fresh
                 if prov_item.provider != "library":
                     sources.append((_music_source_rank(prov), prov_item.metadata))
+                    local_source_has_lyrics |= not prov.is_streaming_provider and bool(
+                        prov_item.metadata.lyrics or prov_item.metadata.lrc_lyrics
+                    )
                 track.metadata.update(_without_description(prov_item.metadata))
                 # a provider's full track carries the ISRCs its album listing may leave out
                 for id_type, value in prov_item.external_ids:
@@ -631,6 +636,8 @@ class MetadataEnrichmentMixin:
         if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
+                    continue
+                if local_source_has_lyrics and provider.supported_features <= _LYRICS_ONLY:
                     continue
 
                 try:
@@ -656,6 +663,8 @@ class MetadataEnrichmentMixin:
                     )
                     continue
                 if metadata:
+                    if local_source_has_lyrics:
+                        metadata = replace(metadata, lyrics=None, lrc_lyrics=None)
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     sources.append((_metadata_source_rank(provider), metadata))

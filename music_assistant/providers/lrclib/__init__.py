@@ -80,9 +80,9 @@ class LrclibProvider(MetadataProvider):
 
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve synchronized lyrics for a track."""
-        if track.metadata and (track.metadata.lyrics or track.metadata.lrc_lyrics):
+        if track.metadata and track.metadata.lrc_lyrics:
             self.logger.debug(
-                "Lyrics already exist for %s, skipping LRCLIB lookup for this track.",
+                "Synchronized lyrics already exist for %s, skipping LRCLIB lookup for this track.",
                 track.name,
             )
             return None
