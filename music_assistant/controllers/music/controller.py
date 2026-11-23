@@ -1904,6 +1904,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     translation_owner=self.translation_owner,
                 )
             full_item = await self.get_item_by_uri(item)
+        elif item.media_type in NON_LIBRARY_MEDIA_TYPES:
+            # refused below, so there is no need to ask its provider for it
+            full_item = item
         # A manual URL track or radio of the builtin provider is used as provided,
         # to preserve custom modifications (name, images, etc.) that are not stored yet.
         # Anything else is fetched fresh to ensure data validity

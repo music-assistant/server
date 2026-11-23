@@ -11,6 +11,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import Radio, SearchResults, SoundEffect, Track
@@ -202,16 +203,19 @@ async def test_add_to_favorites_rejects_podcast_episode() -> None:
 
 
 async def test_add_to_library_rejects_podcast_episode() -> None:
-    """An episode is refused as a library item, as only its podcast is stored."""
+    """An episode is refused as a library item, without asking its provider for it."""
     controller = MusicController.__new__(MusicController)
     controller.mass = MagicMock()
     episode = MagicMock(media_type=MediaType.PODCAST_EPISODE)
-    controller.get_item = AsyncMock(return_value=episode)  # type: ignore[method-assign]
+    controller.get_item = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ProviderUnavailableError("offline")
+    )
     with pytest.raises(
         UnsupportedFeaturedException, match="podcast_episode items can not be library items"
     ) as err:
         await controller.add_item_to_library(episode)
     assert err.value.translation_key == "item_type_not_library_item"
+    controller.get_item.assert_not_awaited()
 
 
 async def test_add_to_favorites_rejects_podcast_episode_uri() -> None:
