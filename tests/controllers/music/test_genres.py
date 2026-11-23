@@ -8,11 +8,9 @@ temporary directory.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 from collections.abc import AsyncGenerator
 from functools import partial
-from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -36,13 +34,13 @@ from music_assistant_models.media_items import (
     Audiobook,
     Genre,
     GenreSummary,
+    MediaItemImage,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
     Track,
 )
 from music_assistant_models.unique_list import UniqueList
-from PIL import Image as PILImage
 
 from music_assistant.constants import (
     CUSTOM_IMAGES_DIRNAME,
@@ -63,6 +61,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from tests.controllers.music.helpers import png_base64
 
 GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
 # the user whose likes the favorite tests below check
@@ -3377,13 +3376,6 @@ class TestGenreIconMetadata:
 # ===================================================================
 
 
-def _png_base64() -> str:
-    """Return a minimal valid PNG as base64 string."""
-    buf = BytesIO()
-    PILImage.new("RGB", (4, 4), "red").save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode()
-
-
 async def _default_genre_id(mass: MusicAssistant, translation_key: str) -> int:
     """Return the library id of a seeded default (music) genre by translation key."""
     row = await mass.music.database.get_row(DB_TABLE_GENRES, {"translation_key": translation_key})
@@ -3399,22 +3391,84 @@ class TestCustomGenreImages:
     ) -> None:
         """A custom image overrides the builtin icon and lands on disk."""
         genre_id = await _default_genre_id(mass, "blues")
-        updated = await genre_ctrl.set_item_image(genre_id, _png_base64())
+        updated = await genre_ctrl.set_image(genre_id, png_base64())
         assert updated.image is not None
         assert updated.image.path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/genre.{genre_id}.")
         assert updated.image.path.endswith(".png")
         assert updated.image.provider == "builtin"
         assert (Path(mass.storage_path) / updated.image.path).is_file()
 
+    async def test_set_image_unknown_genre_leaves_no_file(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """An unknown genre id raises and leaves no file behind."""
+        images_dir = Path(mass.storage_path) / CUSTOM_IMAGES_DIRNAME
+        files_before = set(images_dir.glob("*")) if images_dir.exists() else set()
+        with pytest.raises(MediaNotFoundError):
+            await genre_ctrl.set_image(999999, png_base64())
+        files_after = set(images_dir.glob("*")) if images_dir.exists() else set()
+        assert files_after == files_before
+
+    async def test_set_image_replaces_previous_custom_image(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Replacing a custom image deletes the previous file from disk."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Replaced Image Genre"))
+        first = await genre_ctrl.set_image(genre.item_id, png_base64())
+        assert first.image is not None
+        old_file = Path(mass.storage_path) / first.image.path
+        assert old_file.is_file()
+        second = await genre_ctrl.set_image(genre.item_id, png_base64())
+        assert second.image is not None
+        assert second.image.path != first.image.path
+        assert not old_file.exists()
+        assert (Path(mass.storage_path) / second.image.path).is_file()
+
+    async def test_set_image_keeps_concurrent_metadata_change(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A metadata change made while the upload is being stored is not overwritten."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Concurrent Genre"))
+        store_custom_image = mass.metadata.store_custom_image
+
+        async def _store_during_update(data: str, name_prefix: str) -> MediaItemImage:
+            await mass.music.database.update(
+                DB_TABLE_GENRES,
+                {"item_id": int(genre.item_id)},
+                {"metadata": json.dumps({"copyright": "changed meanwhile"})},
+            )
+            return await store_custom_image(data, name_prefix)
+
+        with patch.object(mass.metadata, "store_custom_image", _store_during_update):
+            updated = await genre_ctrl.set_image(genre.item_id, png_base64())
+        assert updated.metadata.copyright == "changed meanwhile"
+        assert updated.image is not None
+
+    async def test_set_image_keeps_other_image_types(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Only thumbs are replaced; images of other types are untouched."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Fanart Genre"))
+        fanart = MediaItemImage(type=ImageType.FANART, path="genres/fanart.jpg", provider="test--1")
+        await mass.music.database.update(
+            DB_TABLE_GENRES,
+            {"item_id": int(genre.item_id)},
+            {"metadata": json.dumps({"images": [fanart.to_dict()]})},
+        )
+        updated = await genre_ctrl.set_image(genre.item_id, png_base64())
+        images = {img.type: img.path for img in updated.metadata.images or []}
+        assert images[ImageType.FANART] == "genres/fanart.jpg"
+        assert images[ImageType.THUMB].startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
+
     async def test_remove_restores_builtin_icon(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
         """Removing the custom image brings the builtin icon back and deletes the file."""
         genre_id = await _default_genre_id(mass, "jazz")
-        updated = await genre_ctrl.set_item_image(genre_id, _png_base64())
+        updated = await genre_ctrl.set_image(genre_id, png_base64())
         assert updated.image is not None
         custom_path = updated.image.path
-        restored = await genre_ctrl.remove_item_image(genre_id)
+        restored = await genre_ctrl.remove_image(genre_id)
         assert restored.image is not None
         assert restored.image.path == "genres/jazz.svg"
         assert not (Path(mass.storage_path) / custom_path).exists()
@@ -3424,19 +3478,30 @@ class TestCustomGenreImages:
     ) -> None:
         """A user-created genre has no default icon to restore."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("My Very Own Genre"))
-        updated = await genre_ctrl.set_item_image(genre.item_id, _png_base64())
+        updated = await genre_ctrl.set_image(genre.item_id, png_base64())
         assert updated.image is not None
         custom_path = updated.image.path
-        removed = await genre_ctrl.remove_item_image(genre.item_id)
+        removed = await genre_ctrl.remove_image(genre.item_id)
         assert removed.image is None
         assert not (Path(mass.storage_path) / custom_path).exists()
+
+    async def test_remove_image_without_custom_image_is_noop(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Removing when no custom image exists changes nothing and signals nothing."""
+        genre_id = await _default_genre_id(mass, "pop")
+        before = await genre_ctrl.get_library_item(genre_id)
+        with patch.object(mass, "signal_event") as signal_event:
+            after = await genre_ctrl.remove_image(genre_id)
+        signal_event.assert_not_called()
+        assert after.image == before.image
 
     async def test_partial_restore_keeps_custom_icon(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
         """restore_default_genres (partial) never clobbers a custom image."""
         genre_id = await _default_genre_id(mass, "rock")
-        updated = await genre_ctrl.set_item_image(genre_id, _png_base64())
+        updated = await genre_ctrl.set_image(genre_id, png_base64())
         assert updated.image is not None
         custom_path = updated.image.path
         await genre_ctrl.restore_default_genres(full_restore=False)
@@ -3444,41 +3509,12 @@ class TestCustomGenreImages:
         assert after.image is not None
         assert after.image.path == custom_path
 
-    async def test_custom_fanart_does_not_block_icon_refresh(
-        self, mass: MusicAssistant, genre_ctrl: GenreController
-    ) -> None:
-        """A custom fanart neither blocks the builtin thumb refresh nor gets dropped by it."""
-        genre_id = await _default_genre_id(mass, "funk")
-        await genre_ctrl.set_item_image(genre_id, _png_base64(), image_type=ImageType.FANART)
-        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
-        assert row is not None
-        metadata = json.loads(row["metadata"])
-        thumb = next(img for img in metadata["images"] if img["type"] == ImageType.THUMB.value)
-        builtin_path = thumb["path"]
-        thumb["path"] = "genres/stale.svg"
-        await mass.music.database.update(
-            DB_TABLE_GENRES, {"item_id": genre_id}, {"metadata": json.dumps(metadata)}
-        )
-        await genre_ctrl.restore_default_genres(full_restore=False)
-        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
-        assert row is not None
-        images = json.loads(row["metadata"])["images"]
-        assert any(
-            img["type"] == ImageType.THUMB.value and img["path"] == builtin_path for img in images
-        )
-        assert any(
-            img["type"] == ImageType.FANART.value
-            and img["path"].startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
-            for img in images
-        )
-        await genre_ctrl.remove_item_image(genre_id, ImageType.FANART)
-
     async def test_full_restore_deletes_custom_image_file(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
         """A full restore wipes the genres and cleans up their custom image files."""
         genre_id = await _default_genre_id(mass, "soul")
-        updated = await genre_ctrl.set_item_image(genre_id, _png_base64())
+        updated = await genre_ctrl.set_image(genre_id, png_base64())
         assert updated.image is not None
         custom_file = Path(mass.storage_path) / updated.image.path
         assert custom_file.is_file()
@@ -3490,7 +3526,7 @@ class TestCustomGenreImages:
     ) -> None:
         """Deleting an empty non-default genre during stale cleanup removes its custom image."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Doomed Genre"))
-        updated = await genre_ctrl.set_item_image(genre.item_id, _png_base64())
+        updated = await genre_ctrl.set_image(genre.item_id, png_base64())
         assert updated.image is not None
         custom_file = Path(mass.storage_path) / updated.image.path
         assert custom_file.is_file()
@@ -3500,12 +3536,35 @@ class TestCustomGenreImages:
         )
         assert not custom_file.exists()
 
+    async def test_hard_delete_removes_custom_image_file(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A hard delete (exclude_globally=False) removes the custom image file."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Hard Deleted Genre"))
+        updated = await genre_ctrl.set_image(genre.item_id, png_base64())
+        assert updated.image is not None
+        custom_file = Path(mass.storage_path) / updated.image.path
+        await genre_ctrl.remove_item_from_library(genre.item_id, exclude_globally=False)
+        assert not custom_file.exists()
+
+    async def test_merge_genres_removes_source_custom_image_file(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """merge_genres hard-deletes the source, taking its custom image file along."""
+        target = await genre_ctrl.add_item_to_library(_make_genre("Image Merge Target"))
+        source = await genre_ctrl.add_item_to_library(_make_genre("Image Merge Source"))
+        updated = await genre_ctrl.set_image(source.item_id, png_base64())
+        assert updated.image is not None
+        custom_file = Path(mass.storage_path) / updated.image.path
+        await genre_ctrl.merge_genres([source.item_id], target.item_id)
+        assert not custom_file.exists()
+
     async def test_soft_delete_keeps_custom_image(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
         """A soft-deleted genre keeps its custom image and gets it back on re-add."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Comeback Genre"))
-        updated = await genre_ctrl.set_item_image(genre.item_id, _png_base64())
+        updated = await genre_ctrl.set_image(genre.item_id, png_base64())
         assert updated.image is not None
         custom_path = updated.image.path
         await genre_ctrl.remove_item_from_library(genre.item_id)
@@ -3513,15 +3572,6 @@ class TestCustomGenreImages:
         restored = await genre_ctrl.add_item_to_library(_make_genre("Comeback Genre"))
         assert restored.image is not None
         assert restored.image.path == custom_path
-
-    async def test_image_commands_registered_for_genres_only(
-        self, mass: MusicAssistant, genre_ctrl: GenreController
-    ) -> None:
-        """Only genres expose the custom image API commands."""
-        assert "music/genres/set_image" in mass.command_handlers
-        assert "music/genres/remove_image" in mass.command_handlers
-        assert "music/tracks/set_image" not in mass.command_handlers
-        assert "music/albums/remove_image" not in mass.command_handlers
 
 
 def _genre_album(name: str, genres: set[str]) -> Album:

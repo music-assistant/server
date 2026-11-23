@@ -153,10 +153,10 @@ class GenreController(MediaControllerBase[Genre]):
 
         # register extra api handlers
         self.mass.register_api_command(
-            "music/genres/set_image", self.set_item_image, required_scope=Scope.LIBRARY_MANAGE
+            "music/genres/set_image", self.set_image, required_scope=Scope.LIBRARY_MANAGE
         )
         self.mass.register_api_command(
-            "music/genres/remove_image", self.remove_item_image, required_scope=Scope.LIBRARY_MANAGE
+            "music/genres/remove_image", self.remove_image, required_scope=Scope.LIBRARY_MANAGE
         )
         self.mass.register_api_command(
             "music/genres/add_alias", self.add_alias, required_scope=Scope.LIBRARY_MANAGE
@@ -738,19 +738,19 @@ class GenreController(MediaControllerBase[Genre]):
         if full_restore:
             self.logger.warning("Performing FULL restore - deleting all existing genres")
             # the table wipe below would orphan any user-uploaded custom images,
-            # so delete their files (and cached variants) first
+            # so remember which ones to delete afterwards
             rows = await self.mass.music.database.get_rows_from_query(
                 f"SELECT metadata FROM {DB_TABLE_GENRES} "
                 f"WHERE metadata LIKE '%{CUSTOM_IMAGES_DIRNAME}/%'",
                 limit=0,
             )
-            await self._delete_custom_images_of_rows(rows)
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_MAPPING)
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION)
             await self.mass.music.database.delete(
                 DB_TABLE_MEDIA_PROGRESS, {"media_type": MediaType.GENRE.value}
             )
             await self.mass.music.database.delete(DB_TABLE_GENRES)
+            await self._delete_custom_images_of_rows(rows)
 
         taxonomies = DEFAULT_GENRE_TAXONOMIES
         if not full_restore and content_type is not None and content_type != "all":
@@ -796,15 +796,66 @@ class GenreController(MediaControllerBase[Genre]):
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, {"genre_id": db_id}
         )
+        # Fetch the item while it is still visible (base_query hides is_excluded=1 rows).
+        library_item = await self.get_library_item(db_id)
         if exclude_globally:
-            # Fetch the item while it is still visible (base_query hides is_excluded=1 rows).
-            library_item = await self.get_library_item(db_id)
             await self.mass.music.database.update(
                 DB_TABLE_GENRES, {"item_id": db_id}, {"is_excluded": 1}
             )
             self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
         else:
             await super().remove_item_from_library(item_id, recursive)
+            for image in library_item.metadata.images or []:
+                await self.mass.metadata.delete_custom_image(image)
+
+    async def set_image(self, item_id: str | int, data: str) -> Genre:
+        """
+        Set a custom thumb image for a genre from base64 encoded image data.
+
+        Replaces any existing thumb of the genre. PNG, JPEG, WebP, GIF or BMP is accepted.
+
+        :param item_id: The library (database) id of the genre.
+        :param data: Base64 encoded image bytes, optionally as a data-URL.
+        """
+        db_id = int(item_id)
+        # an unknown genre must not leave a stored file behind
+        await self.get_library_item(db_id)
+        new_image = await self.mass.metadata.store_custom_image(data, f"genre.{db_id}")
+        # storing takes a while, so only read the metadata we write back once it is done
+        genre = await self.get_library_item(db_id)
+        old_thumbs = [img for img in genre.metadata.images or [] if img.type == ImageType.THUMB]
+        await self._replace_thumbs(genre, [new_image])
+        for old_thumb in old_thumbs:
+            await self.mass.metadata.delete_custom_image(old_thumb)
+        updated = await self.get_library_item(db_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
+        return updated
+
+    async def remove_image(self, item_id: str | int) -> Genre:
+        """
+        Remove the custom thumb image of a genre.
+
+        Restores the builtin genre icon when one exists. A no-op when the genre has no
+        custom thumb.
+
+        :param item_id: The library (database) id of the genre.
+        """
+        db_id = int(item_id)
+        genre = await self.get_library_item(db_id)
+        custom_thumbs = [
+            img
+            for img in genre.metadata.images or []
+            if img.type == ImageType.THUMB and self.mass.metadata.is_custom_image(img)
+        ]
+        if not custom_thumbs:
+            return genre
+        icon_metadata = self._get_genre_icon_metadata(genre.translation_key, genre.content_type)
+        await self._replace_thumbs(genre, list(icon_metadata.images or []) if icon_metadata else [])
+        for custom_thumb in custom_thumbs:
+            await self.mass.metadata.delete_custom_image(custom_thumb)
+        updated = await self.get_library_item(db_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
+        return updated
 
     async def add_alias(self, genre_id: str | int, alias: str) -> Genre:
         """
@@ -1287,15 +1338,22 @@ class GenreController(MediaControllerBase[Genre]):
             "last_scan_mapped": self._last_scan_mapped,
         }
 
-    def _get_default_images(
-        self, item: Genre, image_type: ImageType
-    ) -> UniqueList[MediaItemImage] | None:
-        """Return the builtin genre icon (if any) as the default thumb image."""
-        if image_type != ImageType.THUMB:
-            return None
-        if metadata := self._get_genre_icon_metadata(item.translation_key, item.content_type):
-            return metadata.images
-        return None
+    async def _replace_thumbs(self, genre: Genre, thumbs: list[MediaItemImage]) -> None:
+        """Persist the genre's metadata with its thumb images replaced by the given ones."""
+        genre.metadata.images = (
+            UniqueList(
+                [
+                    *(img for img in genre.metadata.images or [] if img.type != ImageType.THUMB),
+                    *thumbs,
+                ]
+            )
+            or None
+        )
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": int(genre.item_id)},
+            {"metadata": serialize_to_json(genre.metadata)},
+        )
 
     def _listing_query_parts(
         self,
@@ -1761,8 +1819,8 @@ class GenreController(MediaControllerBase[Genre]):
             f"AND metadata LIKE '%{CUSTOM_IMAGES_DIRNAME}/%'",
             limit=0,
         )
-        await self._delete_custom_images_of_rows(rows)
         await db.delete_where_query(DB_TABLE_GENRES, empty_genres_where)
+        await self._delete_custom_images_of_rows(rows)
         genres_deleted = genres_before - await db.get_count(DB_TABLE_GENRES)
         if genres_deleted:
             self.logger.info("Genre scan: deleted %d empty non-default genres", genres_deleted)
@@ -2033,20 +2091,13 @@ class GenreController(MediaControllerBase[Genre]):
                     await self._ensure_aliases(genre_id, all_aliases)
                     if icon_metadata is not None:
                         current_md = json.loads(rows[0]["metadata"]) if rows[0]["metadata"] else {}
-                        current_images = current_md.get("images") or []
-                        custom_images = [
-                            img
-                            for img in current_images
-                            if (img.get("path") or "").startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
-                        ]
+                        current_images = current_md.get("images")
+                        fresh_images = icon_metadata.to_dict().get("images")
                         # never clobber a user-uploaded custom thumb with the builtin icon
                         has_custom_thumb = any(
-                            img.get("type") == ImageType.THUMB.value for img in custom_images
+                            self.mass.metadata.is_custom_image(MediaItemImage.from_dict(img))
+                            for img in current_images or []
                         )
-                        fresh_images = [
-                            *(icon_metadata.to_dict().get("images") or []),
-                            *custom_images,
-                        ]
                         if not has_custom_thumb and current_images != fresh_images:
                             current_md["images"] = fresh_images
                             await self.mass.music.database.update(
@@ -2387,13 +2438,7 @@ class GenreController(MediaControllerBase[Genre]):
         for row in rows:
             metadata = json.loads(row["metadata"]) if row["metadata"] else {}
             for img in metadata.get("images") or []:
-                img_path = img.get("path") or ""
-                if not img_path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/"):
-                    continue
-                await self.mass.metadata.invalidate_image_cache(
-                    img.get("provider") or "builtin", img_path
-                )
-                await self._delete_custom_image_file(img_path)
+                await self.mass.metadata.delete_custom_image(MediaItemImage.from_dict(img))
 
     def _parse_summary_row(
         self, db_row: Mapping[str, Any], hidden_sources: set[str]
