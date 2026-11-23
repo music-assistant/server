@@ -187,6 +187,44 @@ async def test_add_to_library_rejects_sound_effect() -> None:
         await controller.add_item_to_library(_sound_effect())
 
 
+async def test_add_to_favorites_rejects_podcast_episode() -> None:
+    """An episode is refused as a favorite, as it is never stored in the library."""
+    controller = MusicController.__new__(MusicController)
+    controller.mass = MagicMock()
+    controller.get_item = AsyncMock()  # type: ignore[method-assign]
+    episode = MagicMock(media_type=MediaType.PODCAST_EPISODE)
+    with pytest.raises(
+        UnsupportedFeaturedException, match="podcast_episode items can not be favorites"
+    ) as err:
+        await controller.add_item_to_favorites(episode)
+    assert err.value.translation_key == "item_type_not_favorite"
+    controller.get_item.assert_not_awaited()
+
+
+async def test_add_to_library_rejects_podcast_episode() -> None:
+    """An episode is refused as a library item, as only its podcast is stored."""
+    controller = MusicController.__new__(MusicController)
+    controller.mass = MagicMock()
+    episode = MagicMock(media_type=MediaType.PODCAST_EPISODE)
+    controller.get_item = AsyncMock(return_value=episode)  # type: ignore[method-assign]
+    with pytest.raises(
+        UnsupportedFeaturedException, match="podcast_episode items can not be library items"
+    ) as err:
+        await controller.add_item_to_library(episode)
+    assert err.value.translation_key == "item_type_not_library_item"
+
+
+async def test_add_to_favorites_rejects_podcast_episode_uri() -> None:
+    """An episode given by its uri is refused before anything is looked up."""
+    controller = MusicController.__new__(MusicController)
+    controller.mass = MagicMock()
+    controller.get_item_by_uri = AsyncMock()  # type: ignore[method-assign]
+    with pytest.raises(UnsupportedFeaturedException, match="can not be favorites") as err:
+        await controller.add_item_to_favorites("itunes_podcasts://podcast_episode/episode-1")
+    assert err.value.translation_key == "item_type_not_favorite"
+    controller.get_item_by_uri.assert_not_awaited()
+
+
 async def test_add_to_favorites_rejects_stale_sound_effect_uri() -> None:
     """A stale sound-effect URI (provider unloaded) raises the honest error."""
     controller = MusicController.__new__(MusicController)
