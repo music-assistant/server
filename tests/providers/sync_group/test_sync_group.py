@@ -41,6 +41,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
+from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -1335,6 +1336,117 @@ class TestFormationAndACommandOnItsLeader:
         assert list(results) == [None, None]
         players._handle_select_source.assert_awaited_once()
         assert not players._lock_holders
+
+
+def _group_with_the_line_in_of_its_leader(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    playing: bool = False,
+    sources: list[PlayerSource] | None = None,
+) -> tuple[PlayerController, SyncGroupPlayer, Player]:
+    """
+    Build a sync group formed around speaker L, which has a line-in, on a real players controller.
+
+    :param playing: The group plays its own queue on L.
+    :param sources: The sources the speaker of L lists, by default its own line-in only.
+    :return: The controller, the group and speaker L.
+    """
+    players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+    native = _protocol(leader, "sonos")
+    native._attr_source_list = sources or [
+        PlayerSource(id="line_in", name="Line-in", is_input=True)
+    ]
+    native.select_source = AsyncMock()  # type: ignore[method-assign]
+    native.stop = AsyncMock()  # type: ignore[method-assign]
+    group.sync_leader = leader
+    if playing:
+        native._attr_playback_state = PlaybackState.PLAYING
+        native._attr_active_source = _group_id(group)
+        group._attr_playback_state = PlaybackState.PLAYING
+        group._attr_active_source = _group_id(group)
+    for player in (group.player, leader, member):
+        assert player is not None
+        player.refresh_state(signal_event=False)
+    return players, group, leader
+
+
+def _source_menu(group: SyncGroupPlayer) -> list[tuple[str, str, str | None]]:
+    """Return the inputs in the source menu of a group: id, name and the player of each."""
+    assert group.player is not None
+    return [(x.id, x.name, x.owner_player_id) for x in group.player.source_list if x.is_input]
+
+
+async def _live_sources(
+    players: PlayerController, group: SyncGroupPlayer
+) -> list[tuple[str, str, str | None]]:
+    """Return the live sources listed for a group: id, name and the player of each."""
+    music = MusicController.__new__(MusicController)
+    music.mass = players.mass
+    return [(x.id, x.name, x.owner_player_id) for x in await music.live_sources(_group_id(group))]
+
+
+class TestTheLineInOfTheLeaderOnItsGroup:
+    """A group offers the line-in of its sync leader as the leader's, and plays it there."""
+
+    async def test_the_group_lists_the_line_in_as_the_one_of_its_leader(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        The group names the leader for its line-in, not the group.
+
+        The source menu of the group shows the name of the leader after it; the list of live
+        sources gives the plain name, with the leader as the player it belongs to.
+        """
+        players, group, _leader = _group_with_the_line_in_of_its_leader(monkeypatch)
+
+        assert _source_menu(group) == [("line_in", "Line-in (L)", "L")]
+        assert await _live_sources(players, group) == [("line_in", "Line-in", "L")]
+
+    async def test_the_line_ins_of_a_sonos_household_keep_their_speakers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        The leader's own line-in belongs to the leader on the group, another speaker's to that one.
+
+        A Sonos speaker lists the line-in of each speaker of its household under that speaker's
+        id: its own without a player, another one with the protocol of that speaker.
+        """
+        players, group, _leader = _group_with_the_line_in_of_its_leader(
+            monkeypatch,
+            sources=[
+                PlayerSource(id="line_in@sonos_L", name="Line-in", is_input=True),
+                PlayerSource(
+                    id="line_in@sonos_B", name="Line-in", is_input=True, owner_player_id="sonos_B"
+                ),
+            ],
+        )
+
+        assert _source_menu(group) == [
+            ("line_in@sonos_L", "Line-in (L)", "L"),
+            ("line_in@sonos_B", "Line-in (B)", "B"),
+        ]
+        assert await _live_sources(players, group) == [
+            ("line_in@sonos_L", "Line-in", "L"),
+            ("line_in@sonos_B", "Line-in", "B"),
+        ]
+
+    @pytest.mark.parametrize("playing", [False, True])
+    async def test_selecting_it_switches_the_leader_and_keeps_the_group(
+        self, monkeypatch: pytest.MonkeyPatch, playing: bool
+    ) -> None:
+        """
+        The leader stops what it plays and switches to its line-in; the group stays formed.
+
+        The group is not stopped first: that would dissolve it, and release its members.
+        """
+        players, group, leader = _group_with_the_line_in_of_its_leader(monkeypatch, playing=playing)
+        native = _protocol(leader, "sonos")
+
+        await players.select_source(_group_id(group), "line_in")
+
+        assert group.sync_leader is leader
+        cast("AsyncMock", native.select_source).assert_awaited_once_with("line_in")
+        assert cast("AsyncMock", native.stop).await_count == int(playing)
 
 
 def _queue_resume_plays(players: PlayerController) -> None:
@@ -3167,6 +3279,47 @@ class TestLeaderTransportForwarding:
         mass.players._handle_cmd_play.assert_not_awaited()
         mass.players.cmd_resume.assert_awaited_once()
         assert mass.players.cmd_resume.await_args.args[0] == _group_id(sgp)
+
+    def test_an_input_of_the_leader_belongs_to_the_leader(self) -> None:
+        """
+        The group lists an input of the leader's device as the leader's.
+
+        An input of another player keeps that player, and a source that is no input names none.
+        """
+        sgp, leader, _mass = self._make_group_with_leader()
+        _protocol(leader, "sonos")._attr_source_list = [
+            PlayerSource(id="line_in", name="Line-in", is_input=True),
+            PlayerSource(id="line_in@den", name="Line-in", is_input=True, owner_player_id="den"),
+            PlayerSource(id="spotify", name="Spotify", passive=True),
+        ]
+
+        assert [(x.id, x.owner_player_id) for x in sgp.source_list] == [
+            ("line_in", leader.player_id),
+            ("line_in@den", "den"),
+            ("spotify", None),
+        ]
+
+    async def test_a_source_selected_on_the_group_is_selected_on_the_leader(self) -> None:
+        """The leader switches to the source, under its own playback lock."""
+        sgp, leader, mass = self._make_group_with_leader()
+        mass.players._handle_select_source = AsyncMock()
+
+        await sgp.select_source("line_in")
+
+        mass.players.get_player_lock.assert_called_once_with(
+            leader.player_id, PlayerLockPurpose.PLAYBACK
+        )
+        mass.players._handle_select_source.assert_awaited_once_with(leader.player_id, "line_in")
+
+    async def test_a_group_that_is_not_formed_selects_no_source(self) -> None:
+        """Without a sync leader the group has no sources to select."""
+        mass = _make_mock_mass()
+        mass.players._handle_select_source = AsyncMock()
+        sgp = _make_sync_group(mass)
+
+        with pytest.raises(PlayerCommandFailed):
+            await sgp.select_source("line_in")
+        mass.players._handle_select_source.assert_not_awaited()
 
 
 def _recording_wait(order: list[str]) -> MagicMock:

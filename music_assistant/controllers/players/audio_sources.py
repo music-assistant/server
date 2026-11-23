@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
     ProviderFeature,
     ProviderType,
     RepeatMode,
@@ -1006,7 +1007,15 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
         # check if player is already playing and source is different
         # in that case we need to stop the player first
         prev_source = player.active_source
-        if prev_source and source != prev_source:
+        # but a group hands a source of a member to that member, which stops itself: a stop of
+        # the group could end the group
+        own_protocol = player.own_protocol
+        handed_over = (
+            own_protocol is not None
+            and own_protocol.role == ProtocolRole.VIRTUAL
+            and any(x.id == source for x in own_protocol.source_list)
+        )
+        if prev_source and source != prev_source and not handed_over:
             with suppress(PlayerCommandFailed, RuntimeError):
                 # just try to stop (regardless of state) and let it settle, so the
                 # new source does not race the teardown. A player that already
