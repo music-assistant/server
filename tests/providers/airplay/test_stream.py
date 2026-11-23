@@ -3399,7 +3399,10 @@ async def test_unexpected_death_of_leader_schedules_rejoin_to_members() -> None:
     # the controller transfers the leadership of the player, so it gets the player id
     stream._leave_group.assert_called_once_with(player.player, "plplayera0001")  # type: ignore[attr-defined]
     player.provider.mass.players.cmd_ungroup.assert_not_called()
-    player.schedule_group_rejoin.assert_called_once_with(["child1", "child2"])
+    # it leads its members until the controller is done with it
+    player.schedule_group_rejoin.assert_called_once_with(
+        ["child1", "child2"], after=player.provider.mass.create_task.return_value
+    )
     # the controller sets the leader's final state (transfer or dissolve)
     player.set_state_from_stream.assert_not_called()
 

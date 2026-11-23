@@ -470,10 +470,14 @@ class AirPlayPlayer(PlayerProtocol):
         # dropped from the session (write failures) or never make it in (a refused
         # late join) while still being listed as part of the group, and without a
         # session there is nobody to render with at all
-        if session := self.session:
+        if session := self.session or self._lost_session:
             # a speaker of a set is in the session for its set
             return list(
-                dict.fromkeys(owner.protocol_id for x in session.sync_clients if (owner := x.owner))
+                dict.fromkeys(
+                    owner.protocol_id
+                    for x in session.sync_clients
+                    if x.stream and x.stream.running and (owner := x.owner)
+                )
             )
         return []
 
@@ -948,11 +952,11 @@ class AirPlayPlayer(PlayerProtocol):
                         for member_id in self._attr_group_members
                         if member_id != self.protocol_id and member_id not in player_ids_to_remove
                     ]
-                    if stream_session and remaining_members:
+                    if remaining_members and (session := stream_session or self._lost_session):
                         # Members stay behind: remove only this leader client,
                         # the session continues for the remaining players
                         for endpoint in self.session_endpoints:
-                            await stream_session.remove_client(
+                            await session.remove_client(
                                 endpoint, reason="leader removed from group"
                             )
                     elif stream_session:
@@ -1297,7 +1301,9 @@ class AirPlayPlayer(PlayerProtocol):
             self.protocol_id, permanent=True
         )
 
-    def schedule_group_rejoin(self, candidate_ids: list[str]) -> None:
+    def schedule_group_rejoin(
+        self, candidate_ids: list[str], after: asyncio.Task[None] | None = None
+    ) -> None:
         """
         Schedule a bounded automatic re-join of this player to its still-active group.
 
@@ -1313,6 +1319,7 @@ class AirPlayPlayer(PlayerProtocol):
         :param candidate_ids: Protocol ids of the AirPlay players that led or shared
             the group at the moment the stream was lost, used to resolve the re-join
             target (the leadership may transfer while the backoff runs).
+        :param after: Task that has to be done before the attempts start.
         """
         self.cancel_group_rejoin()
         if self.player is not None and self.player.offline_by_power_control:
@@ -1321,7 +1328,7 @@ class AirPlayPlayer(PlayerProtocol):
             "Scheduling automatic re-join of %s to its group after unexpected stream loss",
             self.display_name,
         )
-        self._rejoin_task = self.mass.create_task(self._group_rejoin_attempts(candidate_ids))
+        self._rejoin_task = self.mass.create_task(self._group_rejoin_attempts(candidate_ids, after))
 
     def cancel_group_rejoin(self) -> None:
         """Cancel any pending automatic group re-join attempts for this player."""
@@ -1724,6 +1731,18 @@ class AirPlayPlayer(PlayerProtocol):
             output_players=sync_clients,
         )
 
+    @property
+    def _lost_session(self) -> AirPlayStreamSession | None:
+        """Return the session that still counts this player in after its own stream was lost."""
+        for endpoint in self.session_endpoints:
+            if (
+                endpoint.stream
+                and (session := endpoint.stream.session)
+                and endpoint in session.sync_clients
+            ):
+                return session
+        return None
+
     def _get_sync_clients(self) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""
         sync_clients: list[AirPlayPlayer] = []
@@ -1735,8 +1754,12 @@ class AirPlayPlayer(PlayerProtocol):
                 sync_clients.append(client)
         return sync_clients
 
-    async def _group_rejoin_attempts(self, candidate_ids: list[str]) -> None:
+    async def _group_rejoin_attempts(
+        self, candidate_ids: list[str], after: asyncio.Task[None] | None = None
+    ) -> None:
         """Re-join this player to its group's live session after a bounded backoff."""
+        if after is not None:
+            await asyncio.wait([after])
         max_attempts = len(AIRPLAY_REJOIN_ATTEMPT_DELAYS)
         for attempt, delay in enumerate(AIRPLAY_REJOIN_ATTEMPT_DELAYS, start=1):
             await asyncio.sleep(delay)

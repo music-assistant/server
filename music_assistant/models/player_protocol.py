@@ -1180,6 +1180,18 @@ class PlayerProtocol(ABC):
         # default implementation will simply trigger an update for the state of the player
         self._trigger_player_update()
 
+    async def on_session_leader_lost(self, leader: PlayerProtocol) -> bool:
+        """
+        Handle callback when the leader of the session of this group player lost its stream.
+
+        Runs under the playback locks of the group player and of the player of the leader.
+
+        :param leader: The protocol that lost its stream.
+        :return: Whether the session plays on, led by another member.
+        """
+        # optional callback for group players that can hand their session over
+        return False
+
     def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:  # noqa: B027
         """
         Handle callback when a stream request addressed by queue position was served.

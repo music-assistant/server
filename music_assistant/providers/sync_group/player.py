@@ -813,6 +813,27 @@ class SyncGroupPlayer(PlayerProtocol):
         if not self.is_dynamic and self.sync_leader is not None:
             self._schedule_rejoin_missing_members()
 
+    async def on_session_leader_lost(self, leader: PlayerProtocol) -> bool:
+        """
+        Handle callback when the leader of the session of this group player lost its stream.
+
+        Its player stays a member of the group.
+
+        :param leader: The protocol that lost its stream.
+        :return: Whether the session plays on, led by another member.
+        """
+        if (
+            (sync_leader := self.sync_leader) is None
+            or self._active_session_protocol() is not leader
+            or leader.provider.domain not in PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH
+            or self.playback_state != PlaybackState.PLAYING
+            or not await self._hand_over_lost_session(sync_leader, leader)
+        ):
+            return False
+        # it plays nothing until it is back, so its volume is its own again
+        self.mass.players.schedule_active_output_protocol_clear(sync_leader)
+        return True
+
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
         self._cancel_idle_grace_timer()
@@ -1592,12 +1613,7 @@ class SyncGroupPlayer(PlayerProtocol):
             )
             return
 
-        self.sync_leader = new_leader
-        # Ensure the new leader is first in the members list
-        self._attr_group_members = [
-            new_leader.player_id,
-            *[x for x in self._attr_group_members if x != new_leader.player_id],
-        ]
+        new_target = await self._lead_session(new_leader, session_domain)
         self.logger.info(
             "Dynamic leader switch complete: %s is now leader of group %s",
             new_leader.name,
@@ -1610,7 +1626,6 @@ class SyncGroupPlayer(PlayerProtocol):
         # - the new leader (a player whose protocol is in the session)
         # So we can talk to the protocols directly and skip the controller's
         # protocol-translation overhead in cmd_set_members.
-        new_target = self._resolve_session_target(new_leader, session_domain)
         remaining_protocol_ids: list[str] = []
         for member_id in self._attr_group_members:
             if member_id == new_leader.player_id:
@@ -1635,6 +1650,102 @@ class SyncGroupPlayer(PlayerProtocol):
             await new_target.set_members(player_ids_to_add=remaining_protocol_ids)
 
         self.update_state()
+
+    async def _hand_over_lost_session(self, old_leader: Player, session: PlayerProtocol) -> bool:
+        """
+        Hand the live session over to a member it still feeds, after its leader lost its stream.
+
+        Without such a member the group keeps the leader it has.
+
+        :param old_leader: The sync leader, which stays a member.
+        :param session: The protocol of the leader, which lost its stream.
+        :return: Whether the session was handed over.
+        """
+        domain = session.provider.domain
+        # a set that lost one of its speakers is still fed on the others
+        live_ids = [x for x in session.live_session_members if x != session.protocol_id]
+        self._align_members_with_session(session)
+        target = await self._elect_live_leader(old_leader, live_ids, domain)
+        if target is None:
+            return False
+        # last in line to lead again
+        self._attr_group_members.sort(key=lambda x: x == old_leader.player_id)
+        await session.set_members(player_ids_to_remove=[session.protocol_id])
+        # that can take a while, and what cost the leader its stream may have hit more members:
+        # go by who is fed now, and leave the others to their own return
+        live_ids = self._still_live(live_ids)
+        if target.protocol_id not in live_ids:
+            if target.player is not None:
+                self.mass.players.schedule_active_output_protocol_clear(target.player)
+            target = await self._elect_live_leader(old_leader, live_ids, domain)
+            if target is None:
+                return False
+        if remaining_ids := [x for x in live_ids if x != target.protocol_id]:
+            await target.set_members(player_ids_to_add=remaining_ids)
+        self.logger.info(
+            "Dynamic leader switch: %s lost its stream, remaining members of group %s "
+            "keep playing, led by %s",
+            old_leader.name,
+            self.display_name,
+            target.display_name,
+        )
+        self._update_attributes()
+        self.update_state()
+        return True
+
+    async def _elect_live_leader(
+        self, old_leader: Player, live_ids: list[str], domain: str
+    ) -> PlayerProtocol | None:
+        """
+        Make a member that the live session feeds the sync leader.
+
+        :param old_leader: The player that leads the group without such a member.
+        :param live_ids: Ids of the protocols the session feeds.
+        :param domain: The protocol domain of the session.
+        :return: The protocol of the new leader in the session, if there is a new leader.
+        """
+        live_member_ids = self._to_player_ids(live_ids)
+        self.sync_leader = None
+        new_leader = self._select_sync_leader(
+            preferred_protocol_domain=domain, preferred_member_ids=live_member_ids
+        )
+        if new_leader is None or new_leader.player_id not in live_member_ids:
+            self.sync_leader = old_leader
+            return None
+        return await self._lead_session(new_leader, domain)
+
+    async def _lead_session(self, leader: Player, domain: str | None) -> PlayerProtocol | None:
+        """
+        Make a member of the live session the sync leader.
+
+        :param leader: The member.
+        :param domain: The protocol domain of the session.
+        :return: The protocol of the member that takes part in the session, if any.
+        """
+        self.sync_leader = leader
+        # Ensure the new leader is first in the members list
+        self._attr_group_members = [
+            leader.player_id,
+            *[x for x in self._attr_group_members if x != leader.player_id],
+        ]
+        target = self._resolve_session_target(leader, domain)
+        if target is not None and leader.resolve_output_protocol() is not target:
+            # a member that was put back into the session does not have it as its output
+            await self.mass.players._activate_output_protocol(leader, target.protocol_id)
+        return target
+
+    def _still_live(self, protocol_ids: list[str]) -> list[str]:
+        """
+        Return the ids of the protocols the live session feeds by now.
+
+        :param protocol_ids: Ids of the protocols it fed before.
+        """
+        for protocol_id in protocol_ids:
+            if (protocol := self.mass.players.get_protocol(protocol_id)) and protocol_id in (
+                live_ids := protocol.live_session_members
+            ):
+                return live_ids
+        return []
 
     def _schedule_idle_grace_timer(self) -> None:
         """Schedule a debounced dissolve after the leader becomes idle."""
