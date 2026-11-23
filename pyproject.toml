@@ -28,7 +28,7 @@ dependencies = [
   "hass-client==1.4.1",
   "mashumaro==3.22",
   "music-assistant-models==1.1.249",
-  "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.378/music_assistant_frontend-2.17.378-py3-none-any.whl#sha256=86be0a6d375292873d034dfe9bb577f0bdcd7af35fd9898b8ee4b5e263669328",
+  "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.379/music_assistant_frontend-2.17.379-py3-none-any.whl#sha256=561765d356d964f15373d54e199df8f15e0ec5723704049975aba7ea8d25bccd",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==13.0.0",
