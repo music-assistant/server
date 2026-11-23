@@ -2269,6 +2269,18 @@ plays on all three once they have started up.
 - End-to-end: **possible with** a power control the lab can switch and can make refuse.
 - Proven by: `test_group_power_on.py::test_a_group_none_of_whose_members_can_play_fails_and_waits_for_them_at_its_next_start`
 
+### GROUP-66 · A sync group plays on once its silent old leader lets a member go
+
+Downstairs plays with Kitchen leading over AirPlay, and Office following Kitchen on their own
+protocol. Kitchen leaves the group and answers no group command for 36 s, after which its device
+lets Office go: Downstairs then plays on, on Office. When Office leaves the group during the wait,
+it leaves at once, and nothing plays later.
+
+- End-to-end: **no**: the device has to be silent for that long.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_plays_on_once_its_silent_old_leader_lets_the_member_go`
+  - `test_grouping.py::test_a_member_taken_out_while_its_silent_old_leader_holds_it_does_not_start`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered

@@ -51,7 +51,10 @@ from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import PlayerProtocol
-from music_assistant.providers.sync_group.constants import REFORM_DEBOUNCE_SECONDS
+from music_assistant.providers.sync_group.constants import (
+    REFORM_DEBOUNCE_SECONDS,
+    STUCK_MEMBER_TIMEOUT,
+)
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 from tests.common import (
     MockProtocol,
@@ -3243,6 +3246,30 @@ class TestWaitMemberUnsynced:
         mass.players._handle_set_members.assert_awaited_once_with(
             old_leader, player_ids_to_remove=["m1"]
         )
+
+    async def test_a_member_whose_release_failed_is_still_waited_for(self) -> None:
+        """A leader that does not answer the release can let its member go later."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_member(mass, "m1")
+        member.state.synced_to = "old_leader"
+        _make_member(mass, "old_leader")
+        mass.players._handle_set_members = AsyncMock(side_effect=TimeoutError)
+        waits: list[float] = []
+
+        @asynccontextmanager
+        async def _wait(*_args: Any, timeout: float, **_kwargs: Any) -> AsyncIterator[None]:
+            yield
+            waits.append(timeout)
+            if timeout == STUCK_MEMBER_TIMEOUT:
+                member.state.synced_to = None
+
+        mass.players.wait_for_player_update = MagicMock(side_effect=_wait)
+
+        assert await sgp._wait_member_unsynced("m1") is True
+
+        mass.players._handle_set_members.assert_awaited_once()
+        assert waits == [5.0, STUCK_MEMBER_TIMEOUT]
 
     @pytest.mark.parametrize("parent_registered", [True, False])
     async def test_member_leaves_on_its_own_when_stale_parent_is_offline(
