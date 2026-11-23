@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from types import TracebackType
-from typing import Self
-from unittest.mock import MagicMock
+from typing import Any, Self
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from yarl import URL
@@ -93,3 +93,23 @@ class TestGetHlsSubstream:
         )
         substream = await controller.get_hls_substream("https://radio.example.com/master.m3u8")
         assert substream.path == "https://forwarded.example.com/high.m3u8"
+
+
+@pytest.mark.asyncio
+async def test_hls_radio_title_and_artist_are_decoded() -> None:
+    """Entity-encoded EXTINF fields reach the player metadata decoded."""
+    controller = StreamsAudio(MagicMock())
+    playlist = '#EXTM3U\n#EXTINF:4,title="I&apos;m Losing You",artist="John Lennon"\nseg.aac\n'
+    response = MagicMock()
+    response.__aenter__.return_value.text = AsyncMock(return_value=playlist)
+    http_session: Any = controller.mass.http_session_no_ssl
+    http_session.get = MagicMock(return_value=response)
+    update = MagicMock()
+    controller._update_radio_stream_metadata = update  # type: ignore[method-assign]
+    details = MagicMock(data={"hls_media_playlist_url": "https://a.example"}, stream_title=None)
+
+    await controller._update_hls_radio_metadata(details, 0)
+
+    assert details.stream_title == "John Lennon - I'm Losing You"
+    assert update.call_args.kwargs["title"] == "I'm Losing You"
+    assert update.call_args.kwargs["artist"] == "John Lennon"

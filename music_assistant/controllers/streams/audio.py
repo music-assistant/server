@@ -9,6 +9,7 @@ that do not need controller interaction live in helpers/audio.py.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import re
@@ -4378,9 +4379,9 @@ class StreamsAudio:
         self, streamdetails: StreamDetails, metadata: dict[str, str]
     ) -> None:
         """Handle metadata extracted from a chained Ogg stream."""
-        title = metadata.get("title", "")
-        artist = metadata.get("artist", "")
-        album = metadata.get("album", "")
+        title = html.unescape(metadata.get("title", ""))
+        artist = html.unescape(metadata.get("artist", ""))
+        album = html.unescape(metadata.get("album", ""))
         if not artist and " - " in title:
             artist, title = title.split(" - ", 1)
         if not (title or artist):
@@ -4464,6 +4465,7 @@ class StreamsAudio:
         except UnicodeDecodeError:
             # fallback to iso-8859-1
             stream_title = stream_title_re.group(1).decode("iso-8859-1", errors="replace")
+        stream_title = html.unescape(stream_title)
 
         cleaned_stream_title = clean_stream_title(stream_title)
 
@@ -4933,8 +4935,8 @@ class StreamsAudio:
                     metadata = parse_extinf_metadata(line)
 
                     # Build stream title from title and artist
-                    title = metadata.get("title", "")
-                    artist = metadata.get("artist", "")
+                    title = html.unescape(metadata.get("title", ""))
+                    artist = html.unescape(metadata.get("artist", ""))
                     image_url = (
                         metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
                     )
