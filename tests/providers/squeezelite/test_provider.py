@@ -86,8 +86,59 @@ def test_a_client_without_a_bridge_reports_its_own_position() -> None:
     """The position in the track is left to a client that has no Sendspin bridge."""
     provider = MagicMock()
     provider.bridge_manager.get_bridge.return_value = None
+    provider.slimproto.get_player.return_value = None
 
     assert SqueezelitePlayerProvider._lookup_elapsed(provider, "other") is None
+
+
+def _elapsed_provider(
+    *,
+    metadata: dict[str, object] | None = None,
+    queue_item_id: str = "qi1",
+    bridge_position: float | None = None,
+) -> MagicMock:
+    provider = MagicMock()
+    provider.bridge_manager.get_bridge.return_value = (
+        MagicMock(position_in_track=bridge_position) if bridge_position is not None else None
+    )
+    media = MagicMock(
+        metadata={"source_id": "q1", "queue_item_id": "qi1"} if metadata is None else metadata
+    )
+    provider.slimproto.get_player.return_value = MagicMock(current_media=media)
+    provider.mass.player_queues.get.return_value = MagicMock(
+        current_item=MagicMock(queue_item_id=queue_item_id), corrected_elapsed_time=107.5
+    )
+    return provider
+
+
+def test_the_position_reported_is_the_one_in_the_track_of_the_queue() -> None:
+    """After a seek the player counts from the new stream; the queue has the track's position."""
+    provider = _elapsed_provider()
+    assert SqueezelitePlayerProvider._lookup_elapsed(provider, "p1") == 107.5
+    provider.mass.player_queues.get.assert_called_once_with("q1")
+
+
+def test_the_sendspin_bridge_position_comes_first() -> None:
+    """A player that plays for its Sendspin bridge reports the bridge's position."""
+    provider = _elapsed_provider(bridge_position=12.0)
+    assert SqueezelitePlayerProvider._lookup_elapsed(provider, "p1") == 12.0
+    provider.mass.player_queues.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("metadata", "queue_item_id"),
+    [
+        ({}, "qi1"),  # not a stream of a queue, such as an announcement
+        ({"source_id": "q1", "queue_item_id": "qi1"}, "qi2"),  # the queue moved on
+    ],
+    ids=["no_queue_item", "other_track"],
+)
+def test_the_players_own_position_is_used_without_a_matching_queue_track(
+    metadata: dict[str, object], queue_item_id: str
+) -> None:
+    """None leaves the position to the player's own elapsed time."""
+    provider = _elapsed_provider(metadata=metadata, queue_item_id=queue_item_id)
+    assert SqueezelitePlayerProvider._lookup_elapsed(provider, "p1") is None
 
 
 async def test_the_cli_reports_the_name_and_position_music_assistant_shows() -> None:
