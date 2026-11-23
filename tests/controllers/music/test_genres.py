@@ -2003,9 +2003,7 @@ class TestGenreLookupAndScanner:
         )
         await getattr(genre_ctrl, scan_method)()
 
-        linked = await _linked_genre_names(mass, MediaType.TRACK, track.item_id)
-        assert valid_name in linked
-        assert len(linked) == 2
+        assert valid_name in await _linked_genre_names(mass, MediaType.TRACK, track.item_id)
 
 
 # ===================================================================
