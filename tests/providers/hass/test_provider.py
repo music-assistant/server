@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from math import ceil
@@ -147,6 +147,7 @@ class _HomeAssistantClient:
         connect_error: Exception | None = None,
         block_registry: bool = False,
         tts_languages: dict[str, list[str]] | None = None,
+        stateless_entities: Iterable[str] = (),
     ) -> None:
         self.connected = False
         self.disconnected = False
@@ -167,6 +168,8 @@ class _HomeAssistantClient:
         self.active_event_subscriptions = 0
         # compressed states keyed by entity_id, as delivered over the websocket
         self.compressed_states = {state["entity_id"]: _compressed(state) for state in states}
+        # entities in the registry that Home Assistant has no state for (yet)
+        self.stateless_entities = set(stateless_entities)
         # entities Home Assistant reports as disabled, so leaves out of the registry listing
         self.disabled_entities: set[str] = set()
         # devices as returned in full by the device registry listing
@@ -300,7 +303,10 @@ class _HomeAssistantClient:
                 "entity_categories": {},
                 "entities": [
                     {"ei": entity_id, "pl": "test"}
-                    for entity_id in self.compressed_states
+                    for entity_id in (
+                        *self.compressed_states,
+                        *(self.stateless_entities - self.compressed_states.keys()),
+                    )
                     if entity_id not in self.disabled_entities
                 ],
             }
@@ -332,6 +338,7 @@ class _HomeAssistantClient:
 async def _start_provider(
     states: list[dict[str, Any]],
     tts_languages: dict[str, list[str]] | None = None,
+    stateless_entities: Iterable[str] = (),
     /,
     **config_values: Any,
 ) -> AsyncIterator[tuple[HomeAssistantProvider, _HomeAssistantClient]]:
@@ -340,9 +347,12 @@ async def _start_provider(
 
     :param states: The entity states Home Assistant reports.
     :param tts_languages: The supported languages per tts entity, for tts/engine/list.
+    :param stateless_entities: The registered entities without a state.
     :param config_values: Provider config values overriding the test defaults.
     """
-    hass = _HomeAssistantClient(states, tts_languages=tts_languages)
+    hass = _HomeAssistantClient(
+        states, tts_languages=tts_languages, stateless_entities=stateless_entities
+    )
     mass = _mass()
     manifest = MagicMock()
     manifest.domain = "hass"
@@ -428,9 +438,10 @@ async def test_feature_resolution_starts_listener_first() -> None:
     ]
 
     async with _start_provider(states) as (provider, hass):
-        assert hass.calls[:4] == [
+        assert hass.calls[:5] == [
             "connect",
             "start_listening",
+            "subscribe_events",
             "subscribe_events",
             REGISTRY_LIST_COMMAND,
         ]
@@ -459,7 +470,9 @@ async def test_feature_resolution_failure_cleans_up_connection() -> None:
         "connect",
         "start_listening",
         "subscribe_events",
+        "subscribe_events",
         REGISTRY_LIST_COMMAND,
+        "unsubscribe_events",
         "unsubscribe_events",
         "disconnect",
     ]
@@ -1400,6 +1413,30 @@ async def test_refresh_tracks_engines_and_features_in_both_directions() -> None:
         assert len(_providers_updated_events(provider)) == 2
 
 
+async def test_engine_that_gets_its_state_while_home_assistant_starts_is_listed() -> None:
+    """Pick up a registered feature entity that has no state yet when the provider starts."""
+    async with _start_provider([_state("tts.only", "Only")], None, ["ai_task.late"]) as (
+        provider,
+        hass,
+    ):
+        await provider.loaded_in_mass()
+        cast("MagicMock", provider.mass).signal_event.reset_mock()
+        assert await provider.get_ai_engines() == []
+
+        # an entity that is already registered gets its state without a registry update
+        hass.compressed_states["ai_task.late"] = _compressed(_state("ai_task.late", "Late"))
+        with patch("music_assistant.providers.hass.ENGINE_REFRESH_DEBOUNCE", 0):
+            hass.fire_event("core_config_updated", {})
+            assert provider._engine_refresh_task is not None
+            async with asyncio.timeout(1):
+                await provider._engine_refresh_task
+
+        assert [engine.id for engine in await provider.get_ai_engines()] == ["ai_task.late"]
+        assert [engine.id for engine in await provider.get_tts_engines()] == ["tts.only"]
+        assert ProviderFeature.AI_QUERY in provider.supported_features
+        assert len(_providers_updated_events(provider)) == 1
+
+
 async def test_registry_update_of_another_domain_is_ignored() -> None:
     """Ignore registry updates for entities that cannot back a feature."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
@@ -1774,15 +1811,23 @@ async def test_registry_entries_of_nothing_skips_the_round_trip() -> None:
         assert hass.calls == calls_before
 
 
-async def test_entity_registry_subscription_is_replaced() -> None:
-    """Replace the entity registry subscription instead of stacking a second one."""
+@pytest.mark.parametrize(
+    ("event_type", "subscribe"),
+    [
+        ("entity_registry_updated", "_subscribe_entity_registry"),
+        ("core_config_updated", "_subscribe_core_config"),
+    ],
+)
+async def test_event_subscription_is_replaced(event_type: str, subscribe: str) -> None:
+    """Replace an event subscription instead of stacking a second one."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
-        assert hass.active_event_subscriptions == 1
-        assert hass.event_subscriptions[0][0] == "entity_registry_updated"
+        assert hass.active_event_subscriptions == 2
+        assert [subscribed for subscribed, _ in hass.event_subscriptions].count(event_type) == 1
 
-        await provider._subscribe_entity_registry()
+        await getattr(provider, subscribe)()
 
-        assert hass.active_event_subscriptions == 1
+        assert hass.active_event_subscriptions == 2
+        assert hass.event_subscriptions[-1][0] == event_type
         assert hass.calls[-2:] == ["unsubscribe_events", "subscribe_events"]
 
         await provider.unload()
