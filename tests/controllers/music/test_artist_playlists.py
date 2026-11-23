@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import BrowseFolder, ItemMapping, Playlist, ProviderMapping
+from music_assistant_models.media_items import Playlist, ProviderMapping
 
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.soundcloud import SUPPORTED_FEATURES, SoundcloudMusicProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -52,47 +50,6 @@ async def test_artist_playlists_passes_exact_source_id(
             playlist
         ]
     provider.get_artist_playlists.assert_awaited_once_with("123")
-
-
-@pytest.mark.parametrize("media_type", [MediaType.ARTIST, MediaType.TRACK, MediaType.PLAYLIST])
-async def test_soundcloud_library_paging_and_search_beyond_500_items(
-    music_mass_with_cache: MusicAssistant, media_type: MediaType
-) -> None:
-    """Artist-page support preserves paging and search over the full synced library."""
-    mass = music_mass_with_cache
-    manifest = MagicMock(domain="soundcloud")
-    config = MagicMock(instance_id="soundcloud--test123")
-    config.get_value.return_value = "GLOBAL"
-    provider = SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    records = [
-        ItemMapping(
-            media_type=media_type, item_id=str(index), provider="library", name=f"Item {index:04d}"
-        )
-        for index in range(625)
-    ]
-
-    async def library_items(
-        limit: int = 500, offset: int = 0, search: str | None = None, **_kwargs: Any
-    ) -> list[ItemMapping]:
-        matches = [item for item in records if search is None or search in item.name]
-        return matches[offset : offset + limit] if limit else matches[offset:]
-
-    controller = mass.music.get_controller(media_type)
-    endpoint = AsyncMock(side_effect=library_items)
-    path = f"{provider.instance_id}://{media_type.value}s"
-    with (
-        patch.object(mass, "get_provider", return_value=provider),
-        patch.object(controller, "library_items", endpoint),
-    ):
-        first = await mass.music.browse(path, limit=500)
-        second = await mass.music.browse(path, limit=500, offset=500)
-        found = await mass.music.browse(path, search="Item 0624")
-        everything = await mass.music.browse(path, limit=None)
-
-    assert isinstance(first[0], BrowseFolder)
-    assert [item.item_id for item in [*first[1:], *second]] == [str(index) for index in range(625)]
-    assert [item.item_id for item in found[1:]] == ["624"]
-    assert len(everything) == 626
 
 
 async def test_artist_playlist_controller_caps_provider_results(

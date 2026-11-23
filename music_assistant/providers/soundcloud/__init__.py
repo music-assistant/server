@@ -63,8 +63,6 @@ TOKEN_URL = "https://secure.soundcloud.com/oauth/token"  # noqa: S105 - endpoint
 TOKEN_REFRESH_BUFFER = 300
 TOKEN_REFRESH_RETRY_DELAY = 60
 
-ARTIST_PLAYLISTS_LIMIT = 100
-
 # Soundcloud documents no rate limit for its web api, so stay at a conservative pace
 API_RATE_LIMIT = 4
 API_RATE_PERIOD = 1
@@ -394,14 +392,11 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Return up to 100 public playlists created by this SoundCloud user."""
         if not prov_artist_id.isascii() or not prov_artist_id.isdecimal():
             raise InvalidDataError("Invalid SoundCloud user ID")
-        response = await self._soundcloud.get_playlists_from_user(
-            prov_artist_id, ARTIST_PLAYLISTS_LIMIT
-        )
-        if not isinstance(response, dict) or not isinstance(response.get("collection"), list):
-            raise MediaNotFoundError("SoundCloud playlists could not be loaded")
+        response = await self._soundcloud.get_playlists_from_user(prov_artist_id, USER_SETS_LIMIT)
+        items = _browse_collection(response, f"playlists of user {prov_artist_id}")
         playlists = []
         seen: set[str] = set()
-        for item in response["collection"][:ARTIST_PLAYLISTS_LIMIT]:
+        for item in items[:USER_SETS_LIMIT]:
             if (
                 not isinstance(item, dict)
                 or item.get("kind") != "playlist"

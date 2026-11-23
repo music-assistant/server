@@ -17,7 +17,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Playlist
 
 from music_assistant.providers.soundcloud import (
-    ARTIST_PLAYLISTS_LIMIT,
+    USER_SETS_LIMIT,
     SoundcloudMusicProvider,
 )
 from tests.common import use_real_create_task
@@ -66,7 +66,7 @@ async def test_artist_playlists(public_provider: SoundcloudMusicProvider) -> Non
     assert next(iter(playlist.provider_mappings)).provider_instance == public_provider.instance_id
     assert next(iter(playlist.provider_mappings)).url == _playlist()["permalink_url"]
     public_provider._soundcloud.get_playlists_from_user.assert_awaited_once_with(
-        "123", ARTIST_PLAYLISTS_LIMIT
+        "123", USER_SETS_LIMIT
     )
     public_provider._soundcloud.get_playlist_details.assert_not_awaited()
     public_provider._soundcloud.get_track_details.assert_not_awaited()
@@ -104,9 +104,9 @@ async def test_bounded_request(public_provider: SoundcloudMusicProvider) -> None
         "collection": [_playlist(id=index + 1) for index in range(120)],
         "next_href": "https://api-v2.soundcloud.com/users/123/playlists_without_albums?offset=100",
     }
-    assert len(await public_provider.get_artist_playlists("123")) == ARTIST_PLAYLISTS_LIMIT
+    assert len(await public_provider.get_artist_playlists("123")) == USER_SETS_LIMIT
     public_provider._soundcloud.get_playlists_from_user.assert_awaited_once_with(
-        "123", ARTIST_PLAYLISTS_LIMIT
+        "123", USER_SETS_LIMIT
     )
 
 
@@ -116,36 +116,53 @@ async def test_cached(public_provider: SoundcloudMusicProvider) -> None:
     await asyncio.sleep(0)
     assert await public_provider.get_artist_playlists("123") == first
     public_provider._soundcloud.get_playlists_from_user.assert_awaited_once_with(
-        "123", ARTIST_PLAYLISTS_LIMIT
+        "123", USER_SETS_LIMIT
     )
 
 
 async def test_bad_response(public_provider: SoundcloudMusicProvider) -> None:
     """An API error is not cached as an empty playlist collection."""
     public_provider._soundcloud.get_playlists_from_user.return_value = {"error": "failed"}
-    with pytest.raises(MediaNotFoundError):
+    with pytest.raises(InvalidDataError, match="failed"):
         await public_provider.get_artist_playlists("123")
 
 
 @pytest.mark.parametrize(
-    "response",
+    ("response", "error", "message"),
     [
-        {"errors": [{"error_message": "401 - Unauthorized"}]},
-        {"errors": [{"error_message": "403 - Forbidden"}]},
-        {"errors": [{"error_message": "503 - Service Unavailable"}]},
-        {"collection": None},
-        [],
-        None,
+        (
+            {"errors": [{"error_message": "401 - Unauthorized"}]},
+            InvalidDataError,
+            "401 - Unauthorized",
+        ),
+        (
+            {"errors": [{"error_message": "403 - Forbidden"}]},
+            InvalidDataError,
+            "403 - Forbidden",
+        ),
+        (
+            {"errors": [{"error_message": "503 - Service Unavailable"}]},
+            InvalidDataError,
+            "503 - Service Unavailable",
+        ),
+        (
+            {"errors": [{"error_message": "404 - Not Found"}]},
+            MediaNotFoundError,
+            "Soundcloud has no playlists of user 123",
+        ),
+        ({"collection": None}, InvalidDataError, "collection"),
+        ([], InvalidDataError, r"\[\]"),
+        (None, InvalidDataError, "None"),
     ],
 )
 async def test_failed_listing_recovers_without_cached_empty_result(
-    public_provider: SoundcloudMusicProvider, response: Any
+    public_provider: SoundcloudMusicProvider, response: Any, error: type[Exception], message: str
 ) -> None:
     """An invalid response never poisons the next successful artist-page request."""
     endpoint = public_provider._soundcloud.get_playlists_from_user
     endpoint.side_effect = [response, {"collection": [_playlist()]}]
 
-    with pytest.raises(MediaNotFoundError):
+    with pytest.raises(error, match=message):
         await public_provider.get_artist_playlists("123")
     cast("AsyncMock", public_provider.mass.cache.set).assert_not_awaited()
     assert len(await public_provider.get_artist_playlists("123")) == 1
