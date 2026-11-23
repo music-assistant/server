@@ -7,10 +7,11 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import IdentifierType
-from music_assistant_models.errors import InsufficientPermissions
+from music_assistant_models.errors import InsufficientPermissions, PlayerCommandFailed
 from music_assistant_models.media_items import (
     BrowseFolder,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
 )
@@ -21,6 +22,8 @@ from music_assistant.providers.fastmcp_server.target_filters import (
     filter_collection_result,
     target_rule,
 )
+from tests.common import as_user
+from tests.controllers.music.test_live_sources import LINE_IN, SPOTIFY, _Home
 from tests.scenarios.harness import Scenario
 
 _NOT_PERMITTED = r"^Command target is not permitted for the current user$"
@@ -464,6 +467,107 @@ def test_the_live_sources_folder_is_open_to_a_filtered_user() -> None:
 
     enforce_target_filters(MagicMock(), _user(), "music/browse", {"path": "live_sources://"})
     assert filter_collection_result(_user(), "music/browse", [folder]) == [folder]
+
+
+async def test_the_live_sources_folder_follows_the_players_of_the_user() -> None:
+    """
+    A user limited to some music sources gets the live sources of their players.
+
+    The core leaves out the sources of a player the user may not use; one of no player stays.
+    """
+    home = _Home()
+
+    with as_user(["kitchen"]):
+        listing = await home.music.browse(path="live_sources://")
+
+    result = filter_collection_result(_user(), "music/browse", listing)
+
+    assert [x.name for x in result] == ["..", "Spotify Connect (Kitchen)", "VBAN Receiver"]
+
+
+def test_a_live_source_starts_on_a_player_of_the_user() -> None:
+    """A user limited to some music sources starts a live source by its uri or as listed."""
+    for media in (SPOTIFY.uri, [SPOTIFY.uri], SPOTIFY.to_dict()):
+        enforce_target_filters(
+            MagicMock(),
+            _user(),
+            "player_queues/play_media",
+            {"queue_id": "kitchen", "media": media},
+        )
+
+    for target in (
+        {"queue_id": "living_room", "media": SPOTIFY.uri},
+        # only the uri of a live source makes one, whatever media type is claimed
+        {
+            "queue_id": "kitchen",
+            "media": {"media_type": "audio_source", "uri": "qobuz--other://track/1"},
+        },
+    ):
+        with pytest.raises(InsufficientPermissions, match=_NOT_PERMITTED):
+            enforce_target_filters(MagicMock(), _user(), "player_queues/play_media", target)
+
+
+async def test_a_live_source_of_a_player_outside_the_player_filter_stays_refused() -> None:
+    """The core refuses the line-in of Living Room to a user limited to Kitchen."""
+    home = _Home()
+    enforce_target_filters(
+        MagicMock(),
+        _user(),
+        "player_queues/play_media",
+        {"queue_id": "kitchen", "media": LINE_IN.uri},
+    )
+
+    with (
+        as_user(["kitchen"]),
+        pytest.raises(PlayerCommandFailed, match="is an invalid source for player Kitchen"),
+    ):
+        await home.players.select_source("kitchen", LINE_IN.uri)
+
+
+def test_discover_folders_pass_and_their_items_follow_the_provider_filter() -> None:
+    """
+    A user limited to some music sources browses Discover as the core lists it.
+
+    The core lists the Discover folders of the user's sources only, also those of a provider
+    that is no music source such as the library rows; the items in a row are filtered.
+    """
+    for path in ("discover://", "discover://recommendations", "discover://spotify--user/new"):
+        enforce_target_filters(MagicMock(), _user(), "music/browse", {"path": path})
+    folders = [
+        BrowseFolder(
+            item_id="spotify--user",
+            provider="spotify",
+            path="discover://spotify--user",
+            name="Spotify",
+        ),
+        BrowseFolder(
+            item_id="recommendations",
+            provider="recommendations",
+            path="discover://recommendations",
+            name="Library Recommendations",
+        ),
+        RecommendationFolder(
+            item_id="new",
+            provider="spotify--user",
+            path="discover://spotify--user/new",
+            name="New releases",
+        ),
+    ]
+    back = BrowseFolder(
+        item_id="back", provider="discover", path="discover://spotify--user", name=".."
+    )
+    allowed = SimpleNamespace(
+        provider_mappings=(SimpleNamespace(provider_instance="spotify--user"),)
+    )
+    blocked = SimpleNamespace(
+        provider_mappings=(SimpleNamespace(provider_instance="qobuz--other"),)
+    )
+
+    assert filter_collection_result(_user(), "music/browse", folders) == folders
+    assert filter_collection_result(_user(), "music/browse", [back, allowed, blocked]) == [
+        back,
+        allowed,
+    ]
 
 
 async def _kitchen_and_den(scenario: Scenario) -> tuple[str, str]:
