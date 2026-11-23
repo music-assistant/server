@@ -13,15 +13,23 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlayerType, ProtocolRole, ProviderFeature
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    PlayerType,
+    ProtocolRole,
+    ProviderFeature,
+)
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.media_items import AudioSource, ProviderMapping
+from music_assistant_models.player import PlayerSource
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.models.player import Player
 from music_assistant.models.plugin import PluginProvider
-from tests.common import MockProvider, attach_mock, mock_player_mass
+from tests.common import MockProvider, as_user, attach_mock, mock_player_mass
 
 
 def _source(provider: str, item_id: str, name: str, owner: str | None) -> AudioSource:
@@ -455,3 +463,123 @@ async def test_a_selected_source_plays_with_its_own_name() -> None:
 
     assert resolved is not None
     assert resolved[0].name == "Line-in"
+
+
+# the line-in of Living Room's speaker as Kitchen's speaker lists it, by the protocol id
+LINE_IN_OF_LIVING_ROOM = PlayerSource(
+    id="line_in@lr", name="Line-in", is_input=True, owner_player_id="proto_living_room"
+)
+
+
+@pytest.mark.parametrize(
+    ("shown_on", "expected"),
+    [("living_room", "Line-in"), ("kitchen", "Line-in (Living Room)")],
+    ids=["own_player", "other_player"],
+)
+def test_an_input_of_another_player_is_named_by_the_same_rule(shown_on: str, expected: str) -> None:
+    """An entry of a source list that names its player is named like a live source."""
+    home = _Home()
+
+    assert home.controller.get_audio_source_owner(LINE_IN_OF_LIVING_ROOM) is home.living_room
+    assert home.controller.get_audio_source_name(LINE_IN_OF_LIVING_ROOM, shown_on) == expected
+
+
+def test_a_player_lists_an_input_of_another_player_with_that_player() -> None:
+    """
+    Kitchen lists the line-in of Living Room's speaker with Living Room after it, as an input.
+
+    The id stays the one the speaker selects it by, and the entry names Living Room by its
+    player id. Its own line-in keeps its name.
+    """
+    home = _Home()
+    protocol = home.kitchen.own_protocol
+    assert protocol is not None
+    own_line_in = PlayerSource(id="line_in", name="Line-in", is_input=True)
+    protocol._attr_source_list = [own_line_in, LINE_IN_OF_LIVING_ROOM]
+
+    home.refresh()
+
+    entries = [x for x in home.kitchen.source_list if x.id.startswith("line_in")]
+    assert [(x.id, x.name, x.is_input, x.owner_player_id) for x in entries] == [
+        ("line_in", "Line-in", True, None),
+        ("line_in@lr", "Line-in (Living Room)", True, "living_room"),
+    ]
+    # what the speaker lists is left as it is
+    assert protocol._attr_source_list == [own_line_in, LINE_IN_OF_LIVING_ROOM]
+    assert LINE_IN_OF_LIVING_ROOM.name == "Line-in"
+
+
+def test_an_input_of_a_player_music_assistant_does_not_have_is_left_out() -> None:
+    """An input that names no player Music Assistant has, such as a disabled one, is not listed."""
+    home = _Home()
+    protocol = home.kitchen.own_protocol
+    assert protocol is not None
+    protocol._attr_source_list = [replace(LINE_IN_OF_LIVING_ROOM, owner_player_id="proto_gone")]
+
+    home.refresh()
+
+    assert not [x for x in home.kitchen.source_list if x.id == LINE_IN_OF_LIVING_ROOM.id]
+
+
+@pytest.mark.parametrize(
+    ("player_filter", "allowed"),
+    [(["kitchen"], False), (["kitchen", "living_room"], True), ([], True)],
+    ids=["kitchen_only", "both_players", "unrestricted"],
+)
+async def test_an_input_of_another_player_needs_access_to_that_player(
+    player_filter: list[str], allowed: bool
+) -> None:
+    """
+    Selecting Living Room's line-in on Kitchen needs access to Living Room as well.
+
+    A user who may only use Kitchen is refused before anything happens to Kitchen.
+    """
+    home = _Home()
+    protocol = home.kitchen.own_protocol
+    assert protocol is not None
+    protocol._attr_source_list = [LINE_IN_OF_LIVING_ROOM]
+    home.refresh()
+    home.controller._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+    drop_pending_step = home.mass.player_queues._drop_pending_step
+
+    with as_user(player_filter):
+        if allowed:
+            await home.controller.select_source("kitchen", LINE_IN_OF_LIVING_ROOM.id)
+        else:
+            with pytest.raises(InsufficientPermissions):
+                await home.controller.select_source("kitchen", LINE_IN_OF_LIVING_ROOM.id)
+
+    if allowed:
+        home.controller._handle_select_source.assert_awaited_once_with(
+            "kitchen", LINE_IN_OF_LIVING_ROOM.id
+        )
+    else:
+        home.controller._handle_select_source.assert_not_awaited()
+        drop_pending_step.assert_not_called()
+
+
+def test_a_member_finds_the_input_its_leader_plays_by_the_same_id() -> None:
+    """
+    Living Room follows Kitchen, which plays Living Room's line-in, so both rooms hear it.
+
+    Living Room takes the source of Kitchen and lists it by the same id, by its name alone;
+    Kitchen lists it with Living Room after it.
+    """
+    home = _Home()
+    living_room = home.living_room.own_protocol
+    kitchen = home.kitchen.own_protocol
+    assert living_room is not None
+    assert kitchen is not None
+    living_room._attr_source_list = [replace(LINE_IN_OF_LIVING_ROOM, owner_player_id=None)]
+    kitchen._attr_source_list = [LINE_IN_OF_LIVING_ROOM]
+    kitchen._attr_group_members = ["proto_kitchen", "proto_living_room"]
+    kitchen._attr_active_source = LINE_IN_OF_LIVING_ROOM.id
+    kitchen._attr_playback_state = PlaybackState.PLAYING
+
+    home.kitchen.refresh_state(signal_event=False)
+    home.living_room.refresh_state(signal_event=False)
+
+    assert home.living_room.synced_to == "kitchen"
+    for player, name in ((home.kitchen, "Line-in (Living Room)"), (home.living_room, "Line-in")):
+        assert player.active_source == LINE_IN_OF_LIVING_ROOM.id
+        assert [x.name for x in player.source_list if x.id == player.active_source] == [name]

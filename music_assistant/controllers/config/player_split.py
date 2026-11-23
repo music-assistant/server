@@ -172,7 +172,7 @@ def remove_player_records_of_older_versions(data: dict[str, Any]) -> bool:
     Those are the records of its protocol players and universal players, whose devices are
     found again, and of browser and app players without the session-only marker, which are
     kept and marked when the user customised them. A player that a protocol belongs to is
-    never removed.
+    never removed. A kept browser or app player without the defaults of its client gets them.
 
     :param data: The persistent settings data.
     """
@@ -197,6 +197,7 @@ def remove_player_records_of_older_versions(data: dict[str, Any]) -> bool:
         if isinstance(record, dict) and CONF_CREATED_AT in _values(record)
     }
     deleted, marked = _migrate_session_only_players(data, owners | created_here)
+    completed = _store_missing_session_only_defaults(players, created_here)
     removed += deleted
     for player_id in removed:
         LOGGER.info("Removed the stored player %s, which an older version stored", player_id)
@@ -206,7 +207,7 @@ def remove_player_records_of_older_versions(data: dict[str, Any]) -> bool:
             "after the player settings were migrated",
             len(removed),
         )
-    return bool(removed or marked)
+    return bool(removed or marked or completed)
 
 
 def _domain(record: dict[str, Any]) -> str:
@@ -271,9 +272,9 @@ def _migrate_session_only_players(
     Those are the Sendspin players that are no protocol of a device: browser and app
     players, virtual players, displays, visualizers, lights and sources. One the user
     customised is kept and marked, with the defaults its client gives it when the record
-    tells its kind; of the others only the player record is deleted: they come back by
-    themselves, with the same id, when they connect. Returns the ids of the deleted and
-    of the marked players.
+    tells its kind (a record without a type is one of a browser or app player); of the
+    others only the player record is deleted: they come back by themselves, with the same
+    id, when they connect. Returns the ids of the deleted and of the marked players.
 
     :param data: The persistent settings data.
     :param left_alone: Ids of the players that are no candidates.
@@ -296,9 +297,7 @@ def _migrate_session_only_players(
                 if not isinstance(record.get("values"), dict):
                     record["values"] = {}
                 record["values"][CONF_SESSION_ONLY] = True
-                # it is listed before its client connects, as its client has it
-                if defaults := SESSION_ONLY_DEFAULTS.get(str(record.get("player_type"))):
-                    record["values"].setdefault(CONF_PROTOCOL_DEFAULTS, dict(defaults))
+                _store_session_only_defaults(record)
                 marked.append(player_id)
             else:
                 del players[player_id]
@@ -306,6 +305,48 @@ def _migrate_session_only_players(
         except Exception:
             LOGGER.exception("Could not migrate the stored player %s, skipping it", player_id)
     return deleted, marked
+
+
+def _store_session_only_defaults(record: dict[str, Any]) -> bool:
+    """
+    Store the defaults its client gives a kept player in its record; return True if stored.
+
+    Nothing is stored for a kind of client this version does not know, or when the record
+    holds defaults already. A record without a type is one of a browser or app player.
+
+    :param record: The stored record of the player, whose values are a mapping.
+    """
+    # an older version stored no type for a player
+    kind = str(record.get("player_type") or PlayerType.PLAYER.value)
+    defaults = SESSION_ONLY_DEFAULTS.get(kind)
+    if defaults is None or CONF_PROTOCOL_DEFAULTS in record["values"]:
+        return False
+    # it is listed before its client connects, as its client has it
+    record["values"][CONF_PROTOCOL_DEFAULTS] = dict(defaults)
+    return True
+
+
+def _store_missing_session_only_defaults(players: dict[str, Any], left_alone: set[str]) -> bool:
+    """
+    Store the defaults of its client in each kept session-only player without them.
+
+    Without them the player is listed as shown and exposed to Home Assistant while its client
+    is away. Returns True if any record changed.
+
+    :param players: The stored player records, by player id.
+    :param left_alone: Ids of the players that are no candidates.
+    """
+    changed = False
+    for player_id, record in players.items():
+        if (
+            player_id not in left_alone
+            and isinstance(record, dict)
+            and _domain(record) == "sendspin"
+            and _values(record).get(CONF_SESSION_ONLY)
+            and _store_session_only_defaults(record)
+        ):
+            changed = True
+    return changed
 
 
 def _is_customised(data: dict[str, Any], player_id: str, record: dict[str, Any]) -> bool:

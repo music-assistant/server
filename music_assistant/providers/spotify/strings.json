@@ -127,6 +127,14 @@
       },
       "genres_and_moods": {
         "name": "Genres & Moods"
+      },
+      "recently_played": {
+        "name": "Recently Played"
+      }
+    },
+    "recommendations": {
+      "recently_played": {
+        "name": "Recently played on Spotify"
       }
     },
     "playlist": {

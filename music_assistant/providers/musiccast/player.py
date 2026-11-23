@@ -404,6 +404,7 @@ class MusicCastPlayer(PlayerProtocol):
                     artist=_server.media_artist,
                     album=_server.media_album_name,
                     image_url=_server.media_image_url,
+                    clear_all=True,
                 )
         else:
             self.set_current_media(
@@ -412,6 +413,7 @@ class MusicCastPlayer(PlayerProtocol):
                 artist=self.zone_device.media_artist,
                 album=self.zone_device.media_album_name,
                 image_url=self.zone_device.media_image_url,
+                clear_all=True,
             )
 
         # SOURCE

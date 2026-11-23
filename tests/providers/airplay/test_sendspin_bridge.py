@@ -26,7 +26,8 @@ tests are deterministic and independent of the host wall-clock:
   superseded-task fallback, and the supersession handling that keeps a stale
   start from spawning a process or touching the stream a newer one owns;
 * the recovery from a transport lost mid-stream: the dead CLI is released and
-  re-anchored on the group's live timeline. Every give-up then takes the speaker
+  re-anchored on the group's live timeline, starting on the audio the bridge still
+  holds from where a late joiner starts. Every give-up then takes the speaker
   out of the Sendspin session, so the player stops reporting playback nobody can
   hear, and a bounded re-join brings back one that was only briefly away.
 """
@@ -95,6 +96,9 @@ UNIX_NOW_S = 1_784_000_000.0  # fixed unix wall-clock reading for the tests
 UNIX_NOW_MS = int(UNIX_NOW_S * 1000)
 COLD_LEAD_MS = BRIDGE_COLD_START_LEAD_MS
 WARM_LEAD_MS = BRIDGE_WARM_START_LEAD_MS
+# How far ahead of what the group plays Sendspin delivers audio: the buffer of its producer
+# (_PRODUCER_BUFFER_LIMIT_US of the Sendspin provider).
+SENDSPIN_BUFFER_US = 30_000_000
 # Patched with zero delays so the re-join backoff runs instantly while the
 # attempt-count and give-up logic around it stays real.
 _NO_REJOIN_DELAYS = "music_assistant.providers.airplay.sendspin_bridge.BRIDGE_REJOIN_ATTEMPT_DELAYS"
@@ -2442,13 +2446,66 @@ def _make_anchored_bridge(
     stream = _make_kept_stream(
         running=running, ended_cleanly=ended_cleanly, receiver_closed=receiver_closed
     )
-    _transport(bridge)._airplay_stream = stream
-    bridge.airplay_player.stream = stream
-    _transport(bridge)._airplay_stream_start_task = _make_completed_start_task()
-    _transport(bridge)._started = True
-    _transport(bridge)._anchor_settled = True
-    _transport(bridge)._drop_until_us = SENDSPIN_EPOCH_US
+    _play_anchored(_transport(bridge), stream)
     return bridge, stream
+
+
+def _play_anchored(transport: _BridgeTransport, stream: MagicMock) -> None:
+    """
+    Model a transport whose start finished and that plays a stream anchored at the epoch.
+
+    :param transport: The transport to model.
+    :param stream: The stream it plays.
+    """
+    transport._airplay_stream = stream
+    transport.endpoint.stream = stream
+    transport._airplay_stream_start_task = _make_completed_start_task()
+    transport._started = True
+    transport._anchor_settled = True
+    transport._drop_until_us = SENDSPIN_EPOCH_US
+
+
+def _deliver_chunks(bridge: SendspinAirPlayBridge, start_us: int, end_us: int) -> list[AudioChunk]:
+    """
+    Deliver contiguous chunks from one instant of the Sendspin timeline on; return them.
+
+    :param bridge: The bridge to deliver them to.
+    :param start_us: The instant the first chunk plays at.
+    :param end_us: The instant before which the last chunk starts.
+    """
+    chunks = [_pcm_chunk(timestamp_us) for timestamp_us in range(start_us, end_us, 100_000)]
+    for chunk in chunks:
+        bridge._on_audio_chunk(chunk)
+    return chunks
+
+
+def test_a_lost_transport_starts_again_on_the_audio_the_bridge_holds() -> None:
+    """
+    A transport that died mid-stream starts again where a late joiner starts.
+
+    Sendspin delivers up to its whole buffer ahead of what the group plays, so started
+    on the chunk that exposes the loss the speaker would stay silent that long. The
+    chunks before that one were delivered already, and the bridge still holds them.
+    """
+    bridge, stream = _make_anchored_bridge(running=True)
+    # on a grid that straddles the instant a late joiner starts at
+    delivered = _deliver_chunks(
+        bridge, SENDSPIN_EPOCH_US + 50_000, SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US
+    )
+    stream.running = False
+    exposing = _pcm_chunk(delivered[-1].timestamp_us + 100_000)
+
+    with patch.object(_transport(bridge), "_start_protocol_from_chunk", MagicMock()) as start:
+        bridge._on_audio_chunk(exposing)
+
+    start.assert_called_once_with()
+    join_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    kept = [chunk for chunk in delivered if chunk.timestamp_us + chunk.duration_us > join_us]
+    # provisionally anchored on the first chunk that still plays at the join instant
+    assert kept[0].timestamp_us < join_us
+    assert _transport(bridge)._drop_until_us == kept[0].timestamp_us
+    # held from there through the chunk that exposed the loss, each once and in order
+    assert list(_transport(bridge)._held_chunks) == [*kept, exposing]
 
 
 def test_lost_transport_rearms_a_cold_start_on_the_current_chunk() -> None:
@@ -2456,11 +2513,14 @@ def test_lost_transport_rearms_a_cold_start_on_the_current_chunk() -> None:
     A transport that died mid-stream is released and re-anchored on the live timeline.
 
     The CLI accepts and discards writes once its process is gone, so the loss is
-    only visible on the stream itself. The chunk that exposes it is also the one
-    the fresh transport anchors to, which is where the group is playing now.
+    only visible on the stream itself. A live source keeps the bridge supplied only
+    about a second ahead, short of where a late joiner starts, so the chunk that
+    exposes the loss is the one the fresh transport anchors to.
     """
-    bridge, dead_stream = _make_anchored_bridge(running=False)
-    chunk_ts = SENDSPIN_EPOCH_US + 30_000_000
+    bridge, dead_stream = _make_anchored_bridge(running=True)
+    _deliver_chunks(bridge, SENDSPIN_EPOCH_US, SENDSPIN_EPOCH_US + 1_000_000)
+    dead_stream.running = False
+    chunk_ts = SENDSPIN_EPOCH_US + 1_000_000
 
     bridge._on_audio_chunk(_pcm_chunk(chunk_ts))
 
@@ -2471,10 +2531,61 @@ def test_lost_transport_rearms_a_cold_start_on_the_current_chunk() -> None:
     assert dead_stream.superseded is True
     assert _transport(bridge)._started is False
     assert _transport(bridge)._anchor_settled is False
-    # a fresh start is armed and anchored where the group is playing right now
+    # a fresh start is armed and anchored on the chunk that exposed the loss
     assert _transport(bridge)._drop_until_us == chunk_ts
     # the chunk is held until the new anchor is acked, not placed against the dead one
     assert len(_transport(bridge)._held_chunks) == 1
+
+
+def test_the_bridge_keeps_the_audio_its_group_has_yet_to_play() -> None:
+    """A delivered chunk is kept until the group played it out, then dropped as the next comes."""
+    bridge, _ = _make_anchored_bridge(running=True)
+    delivered = _deliver_chunks(bridge, SENDSPIN_EPOCH_US, SENDSPIN_EPOCH_US + 1_000_000)
+    assert list(bridge._unplayed) == delivered
+    # the group played the first three chunks out, the third one just now
+    cast("ManualClock", bridge.sendspin_server.clock).advance_us(300_000)
+    later = _pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000)
+
+    bridge._on_audio_chunk(later)
+
+    assert list(bridge._unplayed) == [*delivered[3:], later]
+
+
+def test_a_new_sendspin_stream_starts_on_its_own_first_chunk() -> None:
+    """
+    A new Sendspin stream keeps none of the audio of the stream before it.
+
+    A seek or a next track starts a new stream, scheduled on the instants the stream
+    before it was scheduled on as well.
+    """
+    bridge, _ = _make_anchored_bridge(running=True)
+    _deliver_chunks(bridge, SENDSPIN_EPOCH_US, SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US)
+
+    bridge._on_bridge_stream_start()
+
+    assert not bridge._unplayed
+    first = _pcm_chunk(SENDSPIN_EPOCH_US + 250_000)
+    with patch.object(_transport(bridge), "_start_protocol_from_chunk", MagicMock()):
+        bridge._on_audio_chunk(first)
+    assert _transport(bridge)._drop_until_us == first.timestamp_us
+    assert list(bridge._unplayed) == [first]
+
+
+@pytest.mark.parametrize("stop", ["stream_end", "release", "stop"])
+async def test_a_bridge_that_stops_streaming_keeps_no_audio(stop: str) -> None:
+    """A bridge lets go of the audio it kept for its stream once it stops streaming."""
+    bridge, _ = _make_anchored_bridge(running=True)
+    _deliver_chunks(bridge, SENDSPIN_EPOCH_US, SENDSPIN_EPOCH_US + 1_000_000)
+    assert bridge._unplayed
+
+    if stop == "stream_end":
+        bridge._on_bridge_stream_end()
+    elif stop == "release":
+        bridge._release_streaming()
+    else:
+        await bridge._stop_streaming()
+
+    assert not bridge._unplayed
 
 
 def test_lost_transport_and_its_writer_are_torn_down() -> None:
@@ -2524,9 +2635,9 @@ def test_unanchored_transport_is_not_treated_as_a_loss() -> None:
     """
     A stream that never anchored is the start's to report, not a mid-stream loss.
 
-    Recovery re-joins the group where the current chunk sits, which only means
-    anything once an anchor existed. A start that finished without one has
-    already taken the bridge out of streaming through its own failure path.
+    Recovery re-joins the group where it plays, which only means anything once
+    an anchor existed. A start that finished without one has already taken the
+    bridge out of streaming through its own failure path.
     """
     bridge, stopped_stream = _make_anchored_bridge(running=False)
     start_task = _transport(bridge)._airplay_stream_start_task
@@ -4313,6 +4424,7 @@ def test_the_apple_tv_of_a_room_that_fails_is_added_once_more_then_left_out() ->
     silent = bridge._transports[apple_tv.protocol_id]
     silent._airplay_stream_start_task = _make_completed_start_task(failed=True)
     speaker._airplay_stream_start_task = MagicMock()
+    speaker._drop_until_us = SENDSPIN_EPOCH_US
     _anchor_started(speaker)
     monotonic = "music_assistant.providers.airplay.sendspin_bridge.time.monotonic"
 
@@ -4354,6 +4466,33 @@ def test_a_speaker_of_a_room_that_sets_up_again_gives_the_apple_tv_its_retry_bac
     assert speaker._recover_transport() is True
 
     assert silent.retried is False
+
+
+def test_a_homepod_that_lost_its_transport_starts_again_while_the_other_one_plays_on() -> None:
+    """A HomePod whose transport died starts again on its own: the other one of its room plays on."""
+    bridge, homepods, _ = _make_room_bridge(speakers=2, homepods_only=True)
+    # the HomePod that loses its transport takes each chunk first
+    lost, playing = (bridge._transports[homepod.protocol_id] for homepod in homepods)
+    lost_stream, playing_stream = _make_kept_stream(), _make_kept_stream()
+    _play_anchored(lost, lost_stream)
+    _play_anchored(playing, playing_stream)
+    playing_start = playing._airplay_stream_start_task
+    _deliver_chunks(bridge, SENDSPIN_EPOCH_US, SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US)
+    lost_stream.running = False
+    exposing = _pcm_chunk(SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US)
+
+    with patch.object(_BridgeTransport, "_start_protocol_from_chunk", MagicMock()):
+        bridge._on_audio_chunk(exposing)
+
+    assert lost._airplay_stream is None
+    assert lost.starting is True
+    assert playing._airplay_stream is playing_stream
+    assert playing._airplay_stream_start_task is playing_start
+    assert playing.anchored is True
+    assert playing._drop_until_us == SENDSPIN_EPOCH_US
+    # it took the chunk that exposed the loss as well
+    played_us = exposing.timestamp_us + exposing.duration_us - SENDSPIN_EPOCH_US
+    assert playing._queued_frames == round(played_us * BRIDGE_SAMPLE_RATE / 1_000_000)
 
 
 @pytest.mark.parametrize(
@@ -4433,6 +4572,88 @@ def _homepod_back(bridge: SendspinAirPlayBridge, homepods: list[MagicMock]) -> _
     apple_tv.endpoints = homepods
     bridge.update_endpoints()
     return bridge._transports[homepods[1].protocol_id]
+
+
+def test_a_homepod_back_while_its_room_plays_starts_where_the_room_plays() -> None:
+    """
+    A HomePod that comes back while its room plays starts on the audio the bridge holds.
+
+    The next chunk Sendspin delivers sits up to its whole buffer ahead of what the room
+    plays, so started on it the HomePod would stay silent that long.
+    """
+    bridge, homepods, _ = _make_room_bridge(speakers=2, homepods_only=True)
+    for homepod in homepods:
+        _play_anchored(bridge._transports[homepod.protocol_id], _make_kept_stream())
+    # on a grid that straddles the instant a late joiner starts at
+    delivered = _deliver_chunks(
+        bridge, SENDSPIN_EPOCH_US + 50_000, SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US
+    )
+
+    with patch.object(_BridgeTransport, "_start_protocol_from_chunk", MagicMock()):
+        back = _homepod_back(bridge, homepods)
+        # set off at once, without waiting for a chunk
+        assert back.starting is True
+        cast("MagicMock", back._airplay_stream_start_task).done.return_value = False
+        following = _pcm_chunk(delivered[-1].timestamp_us + 100_000)
+        bridge._on_audio_chunk(following)
+
+    join_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    kept = [chunk for chunk in delivered if chunk.timestamp_us + chunk.duration_us > join_us]
+    assert back.joining_late is True
+    assert back._drop_until_us == kept[0].timestamp_us
+    # the chunk Sendspin delivers next follows them, and none is held twice
+    assert list(back._held_chunks) == [*kept, following]
+
+
+def test_a_homepod_back_after_sendspin_cleared_the_stream_starts_on_what_follows() -> None:
+    """
+    A HomePod that comes back after Sendspin cleared the stream starts on none of the cleared audio.
+
+    A seek or a track change can clear the audio delivered so far while the stream goes on, and
+    the room will not play what the bridge held of it.
+    """
+    bridge, homepods, _ = _make_room_bridge(speakers=2, homepods_only=True)
+    for homepod in homepods:
+        _play_anchored(bridge._transports[homepod.protocol_id], _make_kept_stream())
+    _deliver_chunks(bridge, SENDSPIN_EPOCH_US, SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US)
+
+    bridge._on_bridge_stream_clear()
+
+    assert not bridge._unplayed
+    with patch.object(_BridgeTransport, "_start_protocol_from_chunk", MagicMock()):
+        back = _homepod_back(bridge, homepods)
+    # armed for the next chunk Sendspin delivers, as at the start of a stream
+    assert back.starting is False
+    assert not back._held_chunks
+
+
+def test_an_apple_tv_back_while_its_room_plays_starts_where_its_speakers_play() -> None:
+    """
+    The Apple TV added back to a room that plays starts on none of the audio the bridge holds.
+
+    As at the start of a stream it starts once its speakers play, where they play then: its
+    session resets when its SETUP precedes the one of a speaker.
+    """
+    bridge, (homepod,), apple_tv = _make_room_bridge()
+    _play_anchored(bridge._transports[homepod.protocol_id], _make_kept_stream())
+    # the room plays on its HomePod only for a while
+    apple_tv.silent_member = None
+    bridge.update_endpoints()
+    _deliver_chunks(bridge, SENDSPIN_EPOCH_US, SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US)
+    apple_tv.silent_member = apple_tv
+
+    with patch.object(_BridgeTransport, "_start_protocol_from_chunk", MagicMock()):
+        bridge.update_endpoints()
+        silent = bridge._transports[apple_tv.protocol_id]
+        assert _starting(silent) is False
+        assert not silent._held_chunks
+        following = _pcm_chunk(SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US)
+        bridge._on_audio_chunk(following)
+
+    assert _starting(silent) is True
+    # anchored where its speaker plays now
+    assert silent._drop_until_us == SENDSPIN_EPOCH_US
+    assert list(silent._held_chunks) == [following]
 
 
 def test_a_homepod_back_while_its_room_plays_that_cannot_join_is_left_out() -> None:

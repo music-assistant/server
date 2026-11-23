@@ -1734,6 +1734,10 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
             return bridge.stop_streaming()
         return False
 
+    def has_stream(self) -> bool:
+        """Return whether any bridge has a stream on its player."""
+        return any(bridge.owns_stream for bridge in self._bridges.values())
+
     def get_start_offset_us(self, protocol_id: str) -> int:
         """
         Return how much later than told a player starts its stream, in microseconds.

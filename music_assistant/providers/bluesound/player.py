@@ -62,7 +62,8 @@ class BluesoundPlayer(PlayerProtocol):
         self.ip_address = ip_address
         self.connected: bool = True
         self.client = BluosPlayer(self.ip_address, self.port, self.mass.http_session)
-        self.sync_status: SyncStatus
+        # None until the player first answers a status call
+        self.sync_status: SyncStatus | None = None
         self.status: Status
         self.poll_state = POLL_STATE_STATIC
         self.dynamic_poll_count: int = 0
@@ -269,7 +270,7 @@ class BluesoundPlayer(PlayerProtocol):
 
     async def ungroup(self) -> None:
         """Handle UNGROUP command for BluOS player."""
-        if not (leader := self.sync_status.leader):
+        if not self.sync_status or not (leader := self.sync_status.leader):
             return
         provider = cast("BluesoundPlayerProvider", self.provider)
         if (leader_player_id := provider.player_map.get((leader.ip, leader.port))) and (
@@ -497,7 +498,12 @@ class BluesoundPlayer(PlayerProtocol):
                 can_next_previous=False,
             )
 
-        presets = await self.client.presets(timeout=timeout)
+        try:
+            presets = await self.client.presets(timeout=timeout)
+        except PlayerUnexpectedResponseError as err:
+            # the secondary of a stereo pair answers with an empty body
+            self.logger.debug("Could not read the presets of %s: %s", self.name, err)
+            presets = []
         inputs = await self.client.inputs(timeout=timeout)
         inputs_as_sources = [_input_to_ma_source(bluos_input) for bluos_input in inputs]
         self._input_source_ids = {
@@ -524,8 +530,7 @@ class BluesoundPlayer(PlayerProtocol):
         this should return None.
         If it is part of a (permanent) group, this should also return None.
         """
-        if self.sync_status.leader:
-            leader = self.sync_status.leader
+        if self.sync_status and (leader := self.sync_status.leader):
             return cast("BluesoundPlayerProvider", self.provider).player_map.get(
                 (leader.ip, leader.port), None
             )

@@ -68,9 +68,9 @@ from .constants import (
 from .control_player import AirPlayControlPlayer
 from .dashboard import AirPlayDashboards
 from .helpers import (
-    CLI_CLOCK_OFFSET_NS,
     SetKind,
     SetMembership,
+    cli_clock_args,
     convert_airplay_volume,
     get_cli_binary,
     get_model_info,
@@ -129,6 +129,8 @@ class AirPlayProvider(PlayerProvider):
     _ptp_daemon_warn_window_start: float | None = None
     _ptp_daemon_warns_in_window: int = 0
     _ptp_daemon_warns_suppressed: int = 0
+    _unsub_timeline_rate: Callable[[], None] | None = None
+    _ptp_daemon_restart_task: asyncio.Task[None] | None = None
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
@@ -218,16 +220,20 @@ class AirPlayProvider(PlayerProvider):
         )
         if player_id is None:
             return
+        # Some receivers echo play (or play/pause) as confirmation of a command from MA,
+        # also while MA's own stream to them is still starting.
+        stream = player.stream
+        stream_starting = stream is not None and stream.running and stream.start_pending
         match command:
             case AirPlayRemoteCommand.PLAY:
-                # Some receivers echo play as confirmation of a command from MA.
-                if player.playback_state != PlaybackState.PLAYING:
+                if player.playback_state != PlaybackState.PLAYING and not stream_starting:
                     self.mass.create_task(self.mass.players.cmd_play(player_id))
             case AirPlayRemoteCommand.PAUSE:
                 if player.playback_state == PlaybackState.PLAYING:
                     self.mass.create_task(self.mass.players.cmd_pause(player_id))
             case AirPlayRemoteCommand.PLAY_PAUSE:
-                self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
+                if not stream_starting:
+                    self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
             case AirPlayRemoteCommand.NEXT:
                 self.mass.create_task(self.mass.players.cmd_next_track(player_id))
             case AirPlayRemoteCommand.PREVIOUS:
@@ -374,6 +380,11 @@ class AirPlayProvider(PlayerProvider):
         # AirPlay 2 streams attach to it (--ptp-shared) so multi-room sync groups
         # lock to a single grandmaster while UDP 319/320 is bound only once.
         await self._start_ptp_daemon()
+        # The daemon is restarted on a new rate of the timeline; a stream cannot
+        # follow one, so the rate waits until none runs.
+        self._unsub_timeline_rate = self.mass.timeline_clock.add_rate_listener(
+            self._on_timeline_rate_changed, pinned=self._has_running_streams
+        )
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -465,10 +476,16 @@ class AirPlayProvider(PlayerProvider):
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
             await bridge_manager.close()
+        if self._unsub_timeline_rate is not None:
+            self._unsub_timeline_rate()
+            self._unsub_timeline_rate = None
         # terminate the shared PTP clock daemon
         self._ptp_daemon_stop_requested = True
         if self._ptp_daemon_ready is not None:
             self._ptp_daemon_ready.clear()
+        if (restart_task := self._ptp_daemon_restart_task) is not None:
+            # it stops at the flag, and closes a daemon it spawned meanwhile
+            await asyncio.wait([restart_task])
         ptp_stdout_task = self._ptp_daemon_stdout_task
         if ptp_stdout_task and not ptp_stdout_task.done():
             ptp_stdout_task.cancel()
@@ -1267,17 +1284,14 @@ class AirPlayProvider(PlayerProvider):
         # Advertise the same grandmaster identity as the per-stream sessions
         # (which derive their PTP clock id from --dacp), so receivers see one
         # consistent clock whether the daemon or an in-process engine serves it.
-        args = [
-            cli_binary,
-            "--ptp-daemon",
-            "--dacp",
-            self.dacp_id,
-            "--clock-offset-ns",
-            str(CLI_CLOCK_OFFSET_NS),
-        ]
+        args = [cli_binary, "--ptp-daemon", "--dacp", self.dacp_id]
         if_arg = await self.mass.streams.get_source_ip()
         if if_arg:
             args += ["--if", if_arg]
+        # Read after the last await before the spawn. A new rate while the daemon spawns
+        # finds no daemon to restart, so the timeline is checked again once it runs.
+        clock_args = cli_clock_args(self.mass.timeline_clock)
+        args += clock_args
         # The daemon runs quiet by default: its per-packet PTP tracing
         # (Announce/Sync/Delay_Req, ~10 lines/s) needs BOTH verbose logging and
         # the dedicated opt-in, so ordinary verbose sessions are not flooded
@@ -1299,11 +1313,17 @@ class AirPlayProvider(PlayerProvider):
             self._ptp_daemon_ready.clear()
         self._reset_ptp_daemon_warn_budget()
         await daemon.start()
+        if self._ptp_daemon_stop_requested:
+            # the provider was unloaded while the daemon spawned
+            await daemon.close()
+            return
         self._ptp_daemon = daemon
         self._ptp_daemon_started = time.monotonic()
         daemon.attach_stderr_reader(self.mass.create_task(self._ptp_daemon_stderr_reader(daemon)))
         self._ptp_daemon_stdout_task = self.mass.create_task(self._ptp_daemon_stdout_reader(daemon))
         self.mass.create_task(self._ptp_daemon_monitor(daemon))
+        if cli_clock_args(self.mass.timeline_clock) != clock_args:
+            await self._restart_ptp_daemon()
 
     async def _ptp_daemon_stderr_reader(self, daemon: AsyncProcess) -> None:
         """Forward PTP daemon stderr output to the debug log."""
@@ -1432,6 +1452,34 @@ class AirPlayProvider(PlayerProvider):
             "PTP clock daemon stopped again (exit code %s) - giving up. "
             "PTP timing is degraded until the provider is reloaded.",
             returncode,
+        )
+
+    def _on_timeline_rate_changed(self) -> None:
+        """Put the shared PTP clock daemon on the new rate of the timeline."""
+        self._ptp_daemon_restart_task = self.mass.create_task(self._restart_ptp_daemon())
+
+    async def _restart_ptp_daemon(self) -> None:
+        """Restart a running shared PTP clock daemon, so it runs on the current timeline."""
+        if (daemon := self._ptp_daemon) is None or self._ptp_daemon_stop_requested:
+            return
+        # Detached first, so its monitor takes this exit for a wanted one, and with
+        # readiness dropped, so no stream attaches to it on its way out.
+        self._ptp_daemon = None
+        if self._ptp_daemon_ready is not None:
+            self._ptp_daemon_ready.clear()
+        if (stdout_task := self._ptp_daemon_stdout_task) and not stdout_task.done():
+            stdout_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await stdout_task
+        await daemon.close()
+        if not self._ptp_daemon_stop_requested:
+            await self._start_ptp_daemon()
+
+    def _has_running_streams(self) -> bool:
+        """Return whether a cliairplay stream process runs."""
+        return any(
+            player.stream is not None and player.stream.running
+            for player in [*self.get_players(), *self._speakers.values()]
         )
 
     async def _handle_dacp_request(  # noqa: C901, PLR0912, PLR0915

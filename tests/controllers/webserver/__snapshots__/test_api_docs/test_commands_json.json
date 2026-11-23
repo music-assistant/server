@@ -1,0 +1,149 @@
+[
+  {
+    "authenticated": true,
+    "category": "Config",
+    "command": "config/set_option",
+    "description": "Store an option.",
+    "parameters": [
+      {
+        "description": "The key of the option.",
+        "name": "key",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "The value to store.",
+        "name": "value",
+        "required": true,
+        "type": "boolean | number | integer | string | Array of number | Array of integer | Array of string | Array of boolean"
+      },
+      {
+        "description": "Extra options.",
+        "name": "options",
+        "required": false,
+        "type": "object with string keys and Any values"
+      }
+    ],
+    "required_scope": "*",
+    "return_type": "null",
+    "summary": "Store an option."
+  },
+  {
+    "authenticated": false,
+    "category": "General",
+    "command": "ping",
+    "description": "",
+    "parameters": [],
+    "required_scope": null,
+    "return_type": "Array of str, int",
+    "summary": ""
+  },
+  {
+    "authenticated": false,
+    "category": "General",
+    "command": "stats",
+    "description": "Return counters by name.",
+    "parameters": [],
+    "required_scope": null,
+    "return_type": "object with string keys and integer | number values",
+    "summary": "Return counters by name."
+  },
+  {
+    "authenticated": true,
+    "category": "Widgets",
+    "command": "widgets/find",
+    "description": "Return the widget or part behind a uri.",
+    "parameters": [
+      {
+        "description": "",
+        "name": "uri",
+        "required": true,
+        "type": "string"
+      }
+    ],
+    "required_scope": null,
+    "return_type": "Widget | Part",
+    "summary": "Return the widget or part behind a uri."
+  },
+  {
+    "authenticated": true,
+    "category": "Widgets",
+    "command": "widgets/get",
+    "description": "Return a widget.\n\nThe widget is looked up in the library first.",
+    "parameters": [
+      {
+        "description": "The id of the widget.",
+        "name": "widget_id",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Whether stale details are acceptable.",
+        "name": "lazy",
+        "required": false,
+        "type": "boolean"
+      }
+    ],
+    "required_scope": null,
+    "return_type": "Widget",
+    "summary": "Return a widget."
+  },
+  {
+    "authenticated": true,
+    "category": "Widgets",
+    "command": "widgets/list",
+    "description": "Return the widgets of a colour.",
+    "parameters": [
+      {
+        "description": "",
+        "name": "colour",
+        "required": false,
+        "type": "Colour"
+      },
+      {
+        "description": "",
+        "name": "limit",
+        "required": false,
+        "type": "integer"
+      },
+      {
+        "description": "",
+        "name": "ids",
+        "required": false,
+        "type": "Array of string"
+      },
+      {
+        "description": "",
+        "name": "size",
+        "required": false,
+        "type": "Literal['small', 'large']"
+      }
+    ],
+    "required_scope": "library.read",
+    "return_type": "Array of Widget",
+    "summary": "Return the widgets of a colour."
+  },
+  {
+    "authenticated": true,
+    "category": "Widgets",
+    "command": "widgets/parts",
+    "description": "Yield the parts of a widget.",
+    "parameters": [
+      {
+        "description": "",
+        "name": "widget",
+        "required": true,
+        "type": "Widget"
+      },
+      {
+        "description": "Optional user_id or username of the user to execute this command on behalf of. Requires the users.impersonate scope when targeting another user, who must hold the command's required scope as well.",
+        "name": "user",
+        "required": false,
+        "type": "string"
+      }
+    ],
+    "required_scope": null,
+    "return_type": "AsyncGenerator[Part]",
+    "summary": "Yield the parts of a widget."
+  }
+]

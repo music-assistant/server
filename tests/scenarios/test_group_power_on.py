@@ -871,32 +871,41 @@ async def test_a_resume_of_a_group_that_still_reads_as_playing_waits_for_its_mem
     await _stop(scenario, group_id)
 
 
-async def test_a_universal_group_that_started_without_a_member_waits_for_them_at_its_next_start(
-    scenario: Scenario,
+@pytest.mark.parametrize("group", GROUPS)
+async def test_a_group_none_of_whose_members_can_play_fails_and_waits_for_them_at_its_next_start(
+    scenario: Scenario, group: str
 ) -> None:
     """
-    A universal group that started on no member waits for its members when it is played again.
+    A play of a group none of whose members can play fails, and the next play waits for them.
 
-    Kitchen, Office and Den are switched off and their plugs do not answer: the play starts
-    on no member, and the group reads as playing all the same. The plugs work again and the
-    user plays another track: the plugs are switched on, and the group plays on all three
-    once they have started up.
+    Kitchen, Office and Den are switched off and their plugs do not answer: the play fails, and
+    Downstairs and its queue stay idle with all three as members. The plugs work again and the
+    user plays another track: the plugs are switched on, and the group plays on all three once
+    they have started up.
     """
-    group_id, speakers, player_ids = await _downstairs(
-        scenario, "universal group", "Kitchen", "Office", "Den"
-    )
+    group_id, speakers, player_ids = await _downstairs(scenario, group, "Kitchen", "Office", "Den")
     plugs = [await _switch_off(scenario, speaker) for speaker in speakers]
     controls = [scenario.mass.players.get_player_control(plug.control_id) for plug in plugs]
     power_ons = [control.power_on for control in controls if control is not None]
     for plug in plugs:
         _refuse_to_switch_on(scenario, plug)
-    await scenario.play(group_id)
+    _expect_the_form_without(scenario, group)
+
+    play = await _play(scenario, group_id)
+    with pytest.raises((PlayerUnavailableError, PlayerCommandFailed)):
+        await play
+    await scenario.idle()
+
+    assert [_starts(speaker) for speaker in speakers] == [0, 0, 0]
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+    assert list(_state(scenario, group_id).group_members) == player_ids
+    queue = scenario.queue(group_id)
+    assert queue is not None
+    assert queue.state == PlaybackState.IDLE
+
     for control, power_on in zip(controls, power_ons, strict=True):
         assert control is not None
         control.power_on = power_on
-    assert [_starts(speaker) for speaker in speakers] == [0, 0, 0]
-    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
-
     play = await scenario.command(scenario.mass.player_queues.play_media(group_id, OTHER_TRACK_URI))
     await scenario.advance(1)
 
@@ -909,7 +918,6 @@ async def test_a_universal_group_that_started_without_a_member_waits_for_them_at
     await scenario.idle()
 
     assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
-    assert [_starts(speaker) for speaker in speakers] == [1, 1, 1]
     await _stop(scenario, group_id)
 
 

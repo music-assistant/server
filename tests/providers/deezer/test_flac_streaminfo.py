@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import AudioError
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.deezer.helpers import parse_flac_streaminfo
 from music_assistant.providers.deezer.streaming import DeezerStreamingManager
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 def _flac_header(sample_rate: int, bit_depth: int, channels: int, block_type: int = 0) -> bytes:
@@ -158,3 +164,31 @@ async def test_mp3_audiobook_reports_its_bit_rate(monkeypatch: pytest.MonkeyPatc
     details = await streaming.get_stream_details("1", MediaType.AUDIOBOOK)
 
     assert details.audio_format.bit_rate == 320
+
+
+async def test_audiobook_allows_bigger_flac_blocks_in_later_chapters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The header ffmpeg reads first allows any block size, so later chapters can use bigger."""
+    streaming, _provider = _streaming(monkeypatch, "FLAC", b"")
+    header = bytearray(_flac_header(44100, 16, 2))
+    header[10:12] = (4096).to_bytes(2, "big")
+
+    async def _chapter(_details: StreamDetails, _seek: int) -> AsyncGenerator[bytes]:
+        yield bytes(header)
+        yield b"frames"
+
+    monkeypatch.setattr(streaming, "_stream_encrypted_track", _chapter)
+    details = StreamDetails(
+        provider="deezer--test",
+        item_id="1",
+        audio_format=AudioFormat(content_type=ContentType.FLAC),
+        media_type=MediaType.AUDIOBOOK,
+        data={"chapter_ids": ["1", "2"], "chapter_durations_ms": [36000, 121000]},
+    )
+
+    chunks = [chunk async for chunk in streaming.get_audio_stream(details)]
+
+    first_header = bytearray(header)
+    first_header[10:12] = b"\xff\xff"
+    assert chunks == [bytes(first_header), b"frames", bytes(header), b"frames"]

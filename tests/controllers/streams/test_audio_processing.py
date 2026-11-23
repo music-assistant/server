@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+import cmath
+import math
+from collections.abc import AsyncGenerator, Sequence
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, cast
@@ -48,6 +50,12 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import (
+    CONF_CROSSOVER_FREQUENCY,
+    CONF_HIGH_PASS_MAIN_SPEAKERS,
+    CONF_SUBWOOFER_LEVEL,
+    CONF_SUBWOOFER_OWN_CROSSOVER,
+)
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import (
     AudioOutputPlan,
@@ -295,6 +303,36 @@ def test_float_headroom_alone_does_not_break_the_bit_perfect_claim() -> None:
 
     chain = cast("AudioProcessingChain", streamdetails.audio_processing)
     assert chain.outputs[0].fidelity.bit_perfect is True
+
+
+@pytest.mark.parametrize("alters_audio", [False, True])
+def test_an_output_with_a_hidden_transform_is_not_bit_perfect(alters_audio: bool) -> None:
+    """An output whose plan alters the samples with a transform it does not list is not bit perfect."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    streamdetails.audio_format = _format(ContentType.FLAC, 44100, 24)
+    headroom = _format(ContentType.PCM_F32LE, 44100, 32)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=headroom,
+        pcm_format=headroom,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = headroom
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 44100, 24)
+    lossless_plan.alters_audio = alters_audio
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.outputs[0].fidelity.bit_perfect is not alters_audio
 
 
 def test_shared_output_destinations_are_registered_atomically() -> None:
@@ -1017,6 +1055,259 @@ def test_player_output_plan_plays_the_channel_of_a_speaker(
     assert plan.filter_params == ["volume=-2.0dB", pan]
     assert plan.dsp_config_id == "set-1"
     assert plan.output_details.source_channel is None
+    assert not plan.alters_audio
+
+
+MONO_SUM = "pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"
+LOW_PASS_80 = "low-pass 80 Hz Q 0.707"
+HIGH_PASS_80 = "high-pass 80 Hz Q 0.707"
+
+
+def _set_mass(values: dict[str, Any], *, input_gain: float = 0.0) -> MagicMock:
+    """
+    Return a mocked server whose multi-channel player stores these settings.
+
+    :param values: The stored values of the protocol of the player, by key.
+    :param input_gain: The input gain of the DSP of the player, which is off without one.
+    """
+    mass = MagicMock()
+    mass.players.get_output_protocol.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(
+        enabled=bool(input_gain), input_gain=input_gain
+    )
+    mass.config.get_protocol_value.side_effect = lambda _id, key, default=None: values.get(
+        key, default
+    )
+    return mass
+
+
+def _biquad(param: str | ComplexFilter) -> dict[str, float] | None:
+    """Return the coefficients of a biquad filter, None for another filter."""
+    if not isinstance(param, str) or not param.startswith("biquad="):
+        return None
+    pairs = (part.split("=") for part in param.removeprefix("biquad=").split(":"))
+    return {name: float(value) for name, value in pairs}
+
+
+def _describe(params: Sequence[str | ComplexFilter], sample_rate: int) -> list[str | ComplexFilter]:
+    """
+    Return the filters, with each biquad told by its kind, corner frequency and Q.
+
+    :param params: The filter params of an output plan.
+    :param sample_rate: The sample rate the filters run at.
+    """
+    described: list[str | ComplexFilter] = []
+    for param in params:
+        if (c := _biquad(param)) is None:
+            described.append(param)
+            continue
+        w_0 = math.acos(-c["a1"] / 2)
+        q = math.sin(w_0) / (2 * (c["a0"] - 1))
+        kind = "high-pass" if c["b1"] < 0 else "low-pass"
+        described.append(f"{kind} {w_0 * sample_rate / (2 * math.pi):.0f} Hz Q {q:.3f}")
+    return described
+
+
+def _response(params: Sequence[str | ComplexFilter], sample_rate: int, frequency: float) -> complex:
+    """Return the complex response of the biquads among the filters at a frequency."""
+    z_1 = cmath.exp(-2j * math.pi * frequency / sample_rate)
+    response = complex(1)
+    for param in params:
+        if (c := _biquad(param)) is not None:
+            response *= (c["b0"] + c["b1"] * z_1 + c["b2"] * z_1**2) / (
+                c["a0"] + c["a1"] * z_1 + c["a2"] * z_1**2
+            )
+    return response
+
+
+def _db(value: complex) -> float:
+    """Return the level of a response in dB."""
+    return 20 * math.log10(abs(value))
+
+
+@pytest.mark.parametrize(
+    ("channel", "with_subwoofer", "values", "filters"),
+    [
+        pytest.param(
+            SpeakerChannel.LFE, True, {}, [MONO_SUM, LOW_PASS_80, LOW_PASS_80], id="subwoofer"
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_SUBWOOFER_LEVEL: -3},
+            [MONO_SUM, LOW_PASS_80, LOW_PASS_80, "volume=-3dB"],
+            id="subwoofer at its own level",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_SUBWOOFER_LEVEL: 6},
+            [MONO_SUM, LOW_PASS_80, LOW_PASS_80],
+            id="subwoofer at a stored level above 0 dB",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_CROSSOVER_FREQUENCY: 120},
+            [MONO_SUM, "low-pass 120 Hz Q 0.707", "low-pass 120 Hz Q 0.707"],
+            id="subwoofer at another crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_SUBWOOFER_OWN_CROSSOVER: True, CONF_SUBWOOFER_LEVEL: -4},
+            [MONO_SUM, "volume=-4dB"],
+            id="subwoofer with its own crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False},
+            [MONO_SUM, LOW_PASS_80],
+            id="subwoofer next to main speakers at full range",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {},
+            ["pan=stereo|c0=FL|c1=FL", HIGH_PASS_80, HIGH_PASS_80],
+            id="main speaker",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {CONF_SUBWOOFER_OWN_CROSSOVER: True, CONF_CROSSOVER_FREQUENCY: 150},
+            ["pan=stereo|c0=FL|c1=FL", "high-pass 150 Hz Q 0.707", "high-pass 150 Hz Q 0.707"],
+            id="main speaker next to a subwoofer with its own crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False},
+            ["pan=stereo|c0=FL|c1=FL"],
+            id="main speaker at full range",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False, CONF_SUBWOOFER_OWN_CROSSOVER: True},
+            ["pan=stereo|c0=FL|c1=FL"],
+            id="main speaker at full range next to a subwoofer with its own crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            False,
+            {},
+            ["pan=stereo|c0=FL|c1=FL"],
+            id="main speaker while the subwoofer is away",
+        ),
+        pytest.param(
+            None,
+            True,
+            {},
+            [HIGH_PASS_80, HIGH_PASS_80],
+            id="main speaker that plays every channel",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_CENTER,
+            True,
+            {},
+            [MONO_SUM, HIGH_PASS_80, HIGH_PASS_80],
+            id="center speaker",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_CENTER,
+            False,
+            {},
+            [MONO_SUM],
+            id="center speaker while the subwoofer is away",
+        ),
+    ],
+)
+def test_player_output_plan_splits_the_bass_between_a_subwoofer_and_the_main_speakers(
+    channel: SpeakerChannel | None,
+    with_subwoofer: bool,
+    values: dict[str, Any],
+    filters: list[str],
+) -> None:
+    """
+    The subwoofer of a multi-channel player plays the bass, and its main speakers the rest.
+
+    The DSP of the player runs first. The subwoofer gets the mono sum, low-passed at the
+    crossover unless it has a crossover of its own, at its own level. A main speaker is
+    high-passed at the crossover while the subwoofer plays, unless the user lets it play the
+    full range. The crossover is no filter the user set, so it is not reported as one, but it
+    alters the audio of the player: every speaker reports that, also one it leaves as it is.
+    The mono sum is reported as one.
+    """
+    audio = StreamsAudio(cast("Any", _set_mass(values, input_gain=-2.0)))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=channel, with_subwoofer=with_subwoofer
+    )
+
+    assert _describe(plan.filter_params, 48000) == ["volume=-2.0dB", *filters]
+    assert plan.output_details.dsp.filters == []
+    assert plan.output_details.source_channel == (AudioChannel.ALL if MONO_SUM in filters else None)
+    splits_bass = (channel == SpeakerChannel.LFE or with_subwoofer) and (
+        values.get(CONF_HIGH_PASS_MAIN_SPEAKERS, True)
+        or not values.get(CONF_SUBWOOFER_OWN_CROSSOVER, False)
+        or values.get(CONF_SUBWOOFER_LEVEL, 0) < 0
+    )
+    assert plan.alters_audio == splits_bass
+
+
+@pytest.mark.parametrize("sample_rate", [44100, 48000, 96000, 192000])
+def test_the_crossover_of_a_subwoofer_and_its_main_speakers_sums_flat(sample_rate: int) -> None:
+    """
+    The low-pass of the subwoofer and the high-pass of the main speakers add up to a flat level.
+
+    Each is 6 dB down at the crossover; an octave away from it, on its own side, each is more
+    than 24 dB down.
+    """
+    audio = StreamsAudio(cast("Any", _set_mass({})))
+    audio_format = _format(ContentType.PCM_F32LE, sample_rate, 32)
+
+    subwoofer = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=SpeakerChannel.LFE, with_subwoofer=True
+    ).filter_params
+    main = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=SpeakerChannel.FRONT_LEFT, with_subwoofer=True
+    ).filter_params
+
+    for frequency in (20, 30, 40, 60, 80, 100, 120, 160, 200, 300, 440, 1000):
+        summed = _response(subwoofer, sample_rate, frequency) + _response(
+            main, sample_rate, frequency
+        )
+        assert _db(summed) == pytest.approx(0.0, abs=0.01), frequency
+    assert _db(_response(subwoofer, sample_rate, 80)) == pytest.approx(-6.02, abs=0.05)
+    assert _db(_response(main, sample_rate, 80)) == pytest.approx(-6.02, abs=0.05)
+    assert _db(_response(subwoofer, sample_rate, 160)) < -24
+    assert _db(_response(main, sample_rate, 40)) < -24
+    assert _db(_response(subwoofer, sample_rate, 440)) < -55
+    assert _db(_response(subwoofer, sample_rate, 20)) == pytest.approx(0.0, abs=0.05)
+    assert _db(_response(main, sample_rate, 1000)) == pytest.approx(0.0, abs=0.05)
+
+
+def test_a_subwoofer_next_to_main_speakers_at_full_range_leaves_no_dip_at_the_crossover() -> None:
+    """
+    With main speakers that play the full range, the subwoofer adds bass without a dip.
+
+    Its gentler low-pass is 3 dB down at the crossover, and is still well down an octave
+    above it.
+    """
+    audio = StreamsAudio(cast("Any", _set_mass({CONF_HIGH_PASS_MAIN_SPEAKERS: False})))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    subwoofer = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=SpeakerChannel.LFE, with_subwoofer=True
+    ).filter_params
+
+    assert _db(_response(subwoofer, 48000, 80)) == pytest.approx(-3.01, abs=0.05)
+    assert _db(_response(subwoofer, 48000, 440)) < -29
+    assert _db(1 + _response(subwoofer, 48000, 80)) == pytest.approx(1.76, abs=0.05)
+    assert min(_db(1 + _response(subwoofer, 48000, f)) for f in range(20, 1001, 5)) > -2
 
 
 def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:

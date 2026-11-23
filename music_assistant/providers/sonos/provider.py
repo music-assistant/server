@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
+from aiosonos.const import LOCAL_API_PORT
 from aiosonos.exceptions import CannotConnect, ConnectionFailed
 from aiosonos.utils import get_discovery_info
 from music_assistant_models.enums import EventType, IdentifierType
@@ -26,7 +27,7 @@ from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
 from .cloud_queue import SonosCloudQueue
-from .helpers import get_primary_ip_address
+from .helpers import get_primary_ip_address, get_upnp_port
 from .player import SonosPlayer
 from .upnp import SonosUpnp
 
@@ -235,8 +236,12 @@ class SonosPlayerProvider(PlayerProvider):
         address = get_primary_ip_address(info)
         if address is None:
             return
+        api_port = info.port or LOCAL_API_PORT
+        upnp_port = get_upnp_port(info)
         try:
-            discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, address)
+            discovery_info = await get_discovery_info(
+                self.mass.http_session_no_ssl, address, api_port
+            )
         except ClientError as err:
             self.logger.debug("Ignoring %s in discovery as it is not reachable: %s", name, str(err))
             return
@@ -247,8 +252,25 @@ class SonosPlayerProvider(PlayerProvider):
                 "Ignoring %s in discovery as it is a passive satellite.", display_name
             )
             return
-        self.logger.debug("Discovered Sonos device %s on %s", name, address)
-        sonos_player = SonosPlayer(self, protocol_id, discovery_info=discovery_info)
+        device = discovery_info["device"]
+        self.logger.debug(
+            "Discovered Sonos device %s on %s (api port %s, upnp port %s, "
+            "device id %s, primary device id %s, serial number %s)",
+            name,
+            address,
+            api_port,
+            upnp_port,
+            device.get("deviceId"),
+            device.get("primaryDeviceId"),
+            device.get("serialNumber"),
+        )
+        sonos_player = SonosPlayer(
+            self,
+            protocol_id,
+            discovery_info=discovery_info,
+            api_port=api_port,
+            upnp_port=upnp_port,
+        )
         sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         await sonos_player.setup()
 

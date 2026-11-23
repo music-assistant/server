@@ -57,7 +57,11 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
+from music_assistant.controllers.music.constants import (
+    MATCH_REFERENCE_LIMIT,
+    MATCH_SEARCH_LIMIT,
+    SIMILAR_ITEMS_LIMIT,
+)
 from music_assistant.controllers.music.helpers import (
     metadata_for_update,
     provider_mappings_for_update,
@@ -1635,7 +1639,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self.logger.debug("Trying to match artist %s on provider %s", db_artist.name, provider.name)
         # try to get a match with some reference tracks of this artist
         ref_tracks = await self.mass.music.artists.tracks(db_artist.item_id, db_artist.provider)
-        if len(ref_tracks) < 10:
+        if len(ref_tracks) < MATCH_REFERENCE_LIMIT:
             # fetch reference tracks from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
                 mapped_provider = self.mass.music.get_visible_provider(
@@ -1649,9 +1653,11 @@ class ArtistsController(MediaControllerBase[Artist]):
                     ref_tracks += await self.mass.music.artists.top_tracks(
                         provider_mapping.item_id, provider_mapping.provider_instance
                     )
-        for ref_track in ref_tracks:
+        for ref_track in ref_tracks[:MATCH_REFERENCE_LIMIT]:
             search_str = f"{db_artist.name} - {ref_track.name}"
-            search_results = await self.mass.music.tracks.search(search_str, provider.domain)
+            search_results = await self.mass.music.tracks.search(
+                search_str, provider.domain, limit=MATCH_SEARCH_LIMIT
+            )
             for search_result_item in search_results:
                 # the reference track must corroborate the candidate, not merely share its title
                 if not compare_track(ref_track, search_result_item, strict=False):
@@ -1664,7 +1670,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                         return matches
         # try to get a match with some reference albums of this artist
         ref_albums = await self.mass.music.artists.albums(db_artist.item_id, db_artist.provider)
-        if len(ref_albums) < 10:
+        if len(ref_albums) < MATCH_REFERENCE_LIMIT:
             # fetch reference albums from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
                 if not self.mass.music.get_visible_provider(provider_mapping.provider_instance):
@@ -1673,13 +1679,16 @@ class ArtistsController(MediaControllerBase[Artist]):
                     ref_albums += await self.mass.music.artists.albums(
                         provider_mapping.item_id, provider_mapping.provider_instance
                     )
-        for ref_album in ref_albums:
-            if ref_album.album_type == AlbumType.COMPILATION:
-                continue
-            if not ref_album.artists:
-                continue
+        ref_albums = [
+            album
+            for album in ref_albums
+            if album.album_type != AlbumType.COMPILATION and album.artists
+        ]
+        for ref_album in ref_albums[:MATCH_REFERENCE_LIMIT]:
             search_str = f"{db_artist.name} - {ref_album.name}"
-            search_result_albums = await self.mass.music.albums.search(search_str, provider.domain)
+            search_result_albums = await self.mass.music.albums.search(
+                search_str, provider.domain, limit=MATCH_SEARCH_LIMIT
+            )
             for search_result_album in search_result_albums:
                 # only the album's identity matters here: a different edition is still the
                 # same record by the same artist, so the credits below decide the match

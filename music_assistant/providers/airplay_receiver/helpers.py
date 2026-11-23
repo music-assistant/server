@@ -2,43 +2,56 @@
 
 from __future__ import annotations
 
-import os
-import platform
+import re
 import shutil
 
 from music_assistant.helpers.process import check_output
 
+# the first release that hands its mDNS service over through the metadata pipe
+MIN_SHAIRPORT_SYNC_VERSION = (5, 6, 3)
+
 
 async def get_shairport_sync_binary() -> str:
-    """Find the shairport-sync binary (bundled or system-installed)."""
+    """
+    Return the path of the installed shairport-sync binary.
 
-    async def check_shairport_sync(shairport_path: str) -> str | None:
-        """Check if shairport-sync binary is valid."""
-        try:
-            returncode, _ = await check_output(shairport_path, "--version")
-            if returncode == 0:
-                return shairport_path
-            return None
-        except OSError:
-            return None
+    :raises RuntimeError: When shairport-sync is not installed, too old, built for AirPlay 2,
+        or built without the pipe backend or metadata support.
+    """
+    min_version = ".".join(str(part) for part in MIN_SHAIRPORT_SYNC_VERSION)
+    if not (binary := shutil.which("shairport-sync")):
+        msg = f"shairport-sync is not installed: the AirPlay Receiver needs version {min_version}+."
+        raise RuntimeError(msg)
+    try:
+        returncode, output = await check_output(binary, "--version")
+    except OSError as err:
+        raise RuntimeError(f"Unable to run shairport-sync: {err}") from err
+    version = output.decode(errors="ignore").strip()
+    if returncode != 0 or not _is_supported_version(version):
+        msg = (
+            f"shairport-sync {version} can not be used: the AirPlay Receiver needs a classic "
+            f"AirPlay build (not AirPlay 2) of version {min_version}+, with the pipe backend "
+            "and metadata support."
+        )
+        raise RuntimeError(msg)
+    return binary
 
-    # First, check if bundled binary exists
-    base_path = os.path.join(os.path.dirname(__file__), "bin")
-    system = platform.system().lower().replace("darwin", "macos")
-    architecture = platform.machine().lower()
 
-    if shairport_binary := await check_shairport_sync(
-        os.path.join(base_path, f"shairport-sync-{system}-{architecture}")
-    ):
-        return shairport_binary
+def _is_supported_version(version: str) -> bool:
+    """
+    Return whether a shairport-sync build can run the receivers.
 
-    # If no bundled binary, check system PATH
-    if system_binary := shutil.which("shairport-sync"):
-        if shairport_binary := await check_shairport_sync(system_binary):
-            return shairport_binary
-
-    msg = (
-        f"Unable to locate shairport-sync for {system}/{architecture}. "
-        "Please install shairport-sync on your system or provide a bundled binary."
+    :param version: The version string the binary prints, e.g.
+        "5.6.3-FFmpeg-OpenSSL-stdout-pipe-metadata-sysconfdir:/etc".
+    """
+    if not (match := re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", version)):
+        return False
+    release = tuple(int(part or 0) for part in match.groups())
+    # the receivers need the audio pipe backend and metadata; an AirPlay 2 build pipes
+    # 48 kHz 32-bit audio and may advertise a second service
+    capabilities = set(version.split("-"))
+    return (
+        release >= MIN_SHAIRPORT_SYNC_VERSION
+        and {"pipe", "metadata"} <= capabilities
+        and "AirPlay2" not in capabilities
     )
-    raise RuntimeError(msg)

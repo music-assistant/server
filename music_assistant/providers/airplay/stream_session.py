@@ -404,6 +404,7 @@ class AirPlayStreamSession:
                     player.protocol_id,
                 )
                 return False
+            stream.start_pending = False
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=stream)
         # a parked session has no live timeline; the resume re-anchors it
         self.seconds_streamed = 0
@@ -665,7 +666,9 @@ class AirPlayStreamSession:
                     # the real content on the instant the group plays it, which
                     # dropping the missing head would not.
                     missing = keep_bytes - len(servable)
-                    lead = self.seconds_streamed - (cli_clock_time() - effective_start_time)
+                    lead = self.seconds_streamed - (
+                        cli_clock_time(self.mass.timeline_clock) - effective_start_time
+                    )
                     if committed:
                         # One ring's worth is already far past any real
                         # shortfall, so it bounds what an implausible ack (one
@@ -717,7 +720,7 @@ class AirPlayStreamSession:
                 skip += (frame_size - first_abs % frame_size) % frame_size
             return anchor_at, due, prime_slice, skip
 
-        now = cli_clock_time()
+        now = cli_clock_time(self.mass.timeline_clock)
         clock_out = ready_at_unix_ms / 1000 - now
         if readiness is ClockReadiness.PROJECTED and clock_out <= 0:
             clock_note = _CLOCK_LOCKED_NOTE.format(ago=abs(clock_out))
@@ -815,11 +818,12 @@ class AirPlayStreamSession:
                     skip_bytes / pcm_sample_size,
                     self.seconds_streamed,
                     fed_pos_due,
-                    start_at - cli_clock_time(),
+                    start_at - cli_clock_time(self.mass.timeline_clock),
                     int(acked_at * 1000) - start_unix_ms,
                     min_headroom,
                     self.effective_start_time - self.start_time,
-                    self.seconds_streamed - (cli_clock_time() - self.effective_start_time),
+                    self.seconds_streamed
+                    - (cli_clock_time(self.mass.timeline_clock) - self.effective_start_time),
                     self._peak_lead_seconds,
                     self._pcm_buffer_max / pcm_sample_size,
                 )
@@ -860,7 +864,7 @@ class AirPlayStreamSession:
         self.prov.logger.debug(
             "Late joiner %s: started after %.2fs",
             airplay_player.protocol_id,
-            cli_clock_time() - now,
+            cli_clock_time(self.mass.timeline_clock) - now,
         )
         if airplay_player.renders_audio:
             self._join_silent_members(joined=airplay_player)
@@ -909,7 +913,7 @@ class AirPlayStreamSession:
         """
         if self.start_time <= 0:
             return  # not anchored yet, so there is no audible position to measure against
-        now = cli_clock_time()
+        now = cli_clock_time(self.mass.timeline_clock)
         if now < self.effective_start_time:
             # Still inside the start lead: everything fed is ahead of an anchor
             # that has not arrived, which would read as a lead seconds larger
@@ -1340,7 +1344,7 @@ class AirPlayStreamSession:
             # Cold group start: cover the members' receiver-side clock
             # acquisition (see AIRPLAY_COLD_GROUP_START_LEAD_MS).
             lead_ms = AIRPLAY_COLD_GROUP_START_LEAD_MS
-        anchor = int(cli_clock_time() * 1000) + lead_ms
+        anchor = int(cli_clock_time(self.mass.timeline_clock) * 1000) + lead_ms
         if ready_at_unix_ms:
             anchor = max(anchor, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
         if not warm:
@@ -1361,7 +1365,9 @@ class AirPlayStreamSession:
         if member_requirement > 0:
             anchor = max(
                 anchor,
-                int(cli_clock_time() * 1000) + member_requirement + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+                int(cli_clock_time(self.mass.timeline_clock) * 1000)
+                + member_requirement
+                + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
             )
         for player in audible:
             stream = player.stream
@@ -1483,11 +1489,15 @@ class AirPlayStreamSession:
         # a member already sent, so anchor everyone far enough out that nothing
         # has left before the slowest member accepts, then command the real
         # instant, which the members' fresh clock readiness must still allow.
-        seat_unix_ms = int(cli_clock_time() * 1000) + AIRPLAY_ANCHOR_SEAT_LEAD_MS
+        seat_unix_ms = (
+            int(cli_clock_time(self.mass.timeline_clock) * 1000) + AIRPLAY_ANCHOR_SEAT_LEAD_MS
+        )
         async with asyncio.TaskGroup() as task_group:
             for stream in streams:
                 task_group.create_task(stream.start(seat_unix_ms, position_ms))
-        floor_unix_ms = int(cli_clock_time() * 1000) + AIRPLAY_GROUP_START_LEAD_MS
+        floor_unix_ms = (
+            int(cli_clock_time(self.mass.timeline_clock) * 1000) + AIRPLAY_GROUP_START_LEAD_MS
+        )
         if ready_at_unix_ms := await self._wait_members_clock_ready():
             floor_unix_ms = max(floor_unix_ms, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
         return max(start_unix_ms, floor_unix_ms)
