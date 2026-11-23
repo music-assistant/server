@@ -2006,9 +2006,17 @@ class SendspinProvider(PlayerProvider):
         mac_address = info.device_info.mac_address if info.device_info else None
         if not mac_address or not is_valid_mac_address(mac_address):
             return None
-        mac_player_id = mac_address.upper()
         config = self.mass.config
-        if config.get_raw_player_config_value(mac_player_id, "provider") != self.instance_id:
+        # legacy clients used their MAC address as id in either case
+        mac_player_id = next(
+            (
+                player_id
+                for player_id in (mac_address.upper(), mac_address.lower())
+                if config.get_raw_player_config_value(player_id, "provider") == self.instance_id
+            ),
+            None,
+        )
+        if mac_player_id is None:
             return None
         if not config.get_raw_player_config_value(mac_player_id, CONF_ENABLED, True):
             return None
