@@ -2991,11 +2991,57 @@ async def test_only_a_room_in_the_leaders_zone_is_taken_out_of_it() -> None:
     for player in players.values():
         player._provider = provider
     provider._group_changes = 0
-    provider.drop_room = AsyncMock()  # type: ignore[method-assign]
+
+    async def drop(_room: str) -> None:
+        _host_mock(provider).get_zones.return_value = [["Bar"], ["Kitchen"]]
+
+    provider.drop_room = AsyncMock(side_effect=drop)  # type: ignore[method-assign]
     _host_mock(provider).zone_udn.return_value = "uuid:zone"
     with patch.object(bar, "update_state"):
         await bar.set_members(player_ids_to_remove=[sofa.protocol_id, kitchen.protocol_id])
     provider.drop_room.assert_awaited_once_with("Sofa")
+
+
+async def test_a_room_taken_out_is_waited_for_until_the_host_lists_it_out() -> None:
+    """Ungrouping returns once the host lists the room out, so the next command finds it gone."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    bar, sofa = players["Bar"], players["Sofa"]
+    bar._attr_group_members = [bar.protocol_id, sofa.protocol_id]
+    provider._group_changes = 0
+    provider.drop_room = AsyncMock()  # type: ignore[method-assign]
+    _host_mock(provider).zone_udn.return_value = "uuid:zone"
+    # the host still lists the old zone on the first looks after the drop
+    _host_mock(provider).get_zones.side_effect = [
+        [["Bar", "Sofa"]],
+        [["Bar", "Sofa"]],
+        [["Bar", "Sofa"]],
+        [["Bar"]],
+    ]
+    with (
+        patch.object(bar, "update_state"),
+        patch.object(sofa, "update_state"),
+        patch("music_assistant.providers.raumfeld.player.ZONE_WAIT_INTERVAL", 0),
+    ):
+        await bar.set_members(player_ids_to_remove=[sofa.protocol_id])
+    provider.drop_room.assert_awaited_once_with("Sofa")
+    assert _host_mock(provider).get_zones.call_count == 4
+    assert bar._attr_group_members == []
+
+
+async def test_a_room_the_host_keeps_in_the_zone_fails_the_ungroup() -> None:
+    """A room the host does not take out fails the group change, rather than silently."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    bar, sofa = players["Bar"], players["Sofa"]
+    bar._attr_group_members = [bar.protocol_id, sofa.protocol_id]
+    provider._group_changes = 0
+    provider.drop_room = AsyncMock()  # type: ignore[method-assign]
+    _host_mock(provider).zone_udn.return_value = "uuid:zone"
+    with (
+        patch("music_assistant.providers.raumfeld.player.ZONE_WAIT_TIMEOUT", 0),
+        pytest.raises(PlayerCommandFailed, match="did not take Sofa out of the zone of Bar"),
+    ):
+        await bar.set_members(player_ids_to_remove=[sofa.protocol_id])
+    assert bar._attr_group_members == [bar.protocol_id, sofa.protocol_id]
 
 
 def _versioned_provider() -> RaumfeldPlayerProvider:
