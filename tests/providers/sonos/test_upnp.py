@@ -1,4 +1,4 @@
-"""Tests for the UPnP of Sonos speakers: action calls and RenderingControl events."""
+"""Tests for the UPnP of Sonos speakers: action calls and the events of their services."""
 
 from __future__ import annotations
 
@@ -16,15 +16,19 @@ from async_upnp_client.const import HttpRequest
 from async_upnp_client.exceptions import UpnpError
 
 from music_assistant.providers.sonos.const import (
+    AUDIO_IN_SERVICE,
     EVENTS_PATH,
     OPTIONS_EVENTS_POLL_INTERVAL,
     OPTIONS_POLL_INTERVAL,
+    RENDERING_CONTROL_SERVICE,
     UPNP_TIMEOUT_LIMIT,
 )
 from music_assistant.providers.sonos.upnp import SonosSpeakerUpnp, SonosUpnp
 from tests.providers.sonos.test_player import _bind_player
 
-# a Sonos ZonePlayer keeps RenderingControl in its embedded MediaRenderer device
+_RENDERING = (RENDERING_CONTROL_SERVICE,)
+
+# a Sonos ZonePlayer keeps AudioIn itself and RenderingControl in its embedded MediaRenderer
 _DESCRIPTION = """<?xml version="1.0"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
  <specVersion><major>1</major><minor>0</minor></specVersion>
@@ -34,7 +38,15 @@ _DESCRIPTION = """<?xml version="1.0"?>
   <manufacturer>Sonos, Inc.</manufacturer>
   <modelName>Sonos Ray</modelName>
   <UDN>uuid:RINCON_1</UDN>
-  <serviceList/>
+  <serviceList>
+   <service>
+    <serviceType>urn:schemas-upnp-org:service:AudioIn:1</serviceType>
+    <serviceId>urn:upnp-org:serviceId:AudioIn</serviceId>
+    <SCPDURL>/xml/AudioIn1.xml</SCPDURL>
+    <controlURL>/AudioIn/Control</controlURL>
+    <eventSubURL>/AudioIn/Event</eventSubURL>
+   </service>
+  </serviceList>
   <deviceList>
    <device>
     <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
@@ -81,6 +93,16 @@ _SCPD = """<?xml version="1.0"?>
  </serviceStateTable>
 </scpd>"""
 
+_AUDIO_IN_SCPD = """<?xml version="1.0"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+ <specVersion><major>1</major><minor>0</minor></specVersion>
+ <actionList/>
+ <serviceStateTable>
+  <stateVariable sendEvents="yes"><name>AudioInputName</name><dataType>string</dataType></stateVariable>
+  <stateVariable sendEvents="yes"><name>LineInConnected</name><dataType>boolean</dataType></stateVariable>
+ </serviceStateTable>
+</scpd>"""
+
 _GET_BASS_REPLY = (
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
     '<u:GetBassResponse xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1">'
@@ -99,6 +121,13 @@ _EVENT = (
     "</LastChange></e:property></e:propertyset>"
 )
 
+_AUDIO_IN_EVENT = (
+    '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">'
+    "<e:property><AudioInputName>Turntable</AudioInputName></e:property>"
+    "<e:property><LineInConnected>1</LineInConnected></e:property>"
+    "</e:propertyset>"
+)
+
 
 @dataclass
 class FakeSpeaker:
@@ -109,6 +138,7 @@ class FakeSpeaker:
     subscribe_status: int = 200
     methods: list[str] = field(default_factory=list)
     callbacks: list[str] = field(default_factory=list)
+    subscribed: list[str] = field(default_factory=list)
     soap_bodies: list[str] = field(default_factory=list)
 
     @property
@@ -123,15 +153,19 @@ class FakeSpeaker:
             return web.Response(text=_DESCRIPTION, content_type="text/xml")
         if request.path == "/xml/RenderingControl1.xml":
             return web.Response(text=_SCPD, content_type="text/xml")
+        if request.path == "/xml/AudioIn1.xml":
+            return web.Response(text=_AUDIO_IN_SCPD, content_type="text/xml")
         self.methods.append(request.method)
         if request.method == "POST":
             self.soap_bodies.append(await request.text())
             return web.Response(text=_GET_BASS_REPLY, content_type="text/xml")
         if request.method == "SUBSCRIBE":
             self.callbacks.append(request.headers.get("CALLBACK", ""))
+            self.subscribed.append(request.path)
             if self.subscribe_status != 200:
                 return web.Response(status=self.subscribe_status)
-            return web.Response(headers={"SID": "uuid:sid-1", "TIMEOUT": "Second-1800"})
+            sid = "uuid:sid-audio-in" if request.path == "/AudioIn/Event" else "uuid:sid-1"
+            return web.Response(headers={"SID": sid, "TIMEOUT": "Second-1800"})
         return web.Response()
 
 
@@ -153,14 +187,14 @@ async def speaker() -> AsyncIterator[FakeSpeaker]:
     await server.close()
 
 
-async def _notify(upnp: SonosSpeakerUpnp) -> None:
+async def _notify(upnp: SonosSpeakerUpnp, body: str = _EVENT, sid: str = "uuid:sid-1") -> None:
     """Deliver an event as the speaker would."""
     await upnp._upnp.event_handler.handle_notify(
         HttpRequest(
             "NOTIFY",
             f"http://192.168.1.10:8097{EVENTS_PATH}",
-            {"NT": "upnp:event", "NTS": "upnp:propchange", "SID": "uuid:sid-1"},
-            _EVENT,
+            {"NT": "upnp:event", "NTS": "upnp:propchange", "SID": sid},
+            body,
         )
     )
 
@@ -188,7 +222,7 @@ async def test_requests_stop_after_timeouts_in_a_row(speaker: FakeSpeaker) -> No
                 await upnp.rendering_control("GetBass")
         with pytest.raises(UpnpError):
             await upnp.rendering_control("GetBass")
-        await upnp.follow(MagicMock())
+        await upnp.follow(MagicMock(), _RENDERING)
         answers_before_reset = upnp.answers
         upnp.reset_timeouts()
 
@@ -202,7 +236,7 @@ async def test_a_speaker_is_followed_once_its_first_event_came_in(speaker: FakeS
     """The events go to MA's stream server; an event names the channel volumes apart."""
     on_change = MagicMock()
 
-    await speaker.speaker.follow(on_change)
+    await speaker.speaker.follow(on_change, _RENDERING)
     # subscribed, but nothing came in yet: events may not reach MA at all
     followed_before_event = speaker.speaker.follows
     await _notify(speaker.speaker)
@@ -219,26 +253,26 @@ async def test_a_refused_or_lost_subscription_is_made_again(speaker: FakeSpeaker
     """A refused subscribe or renewal leaves the speaker unfollowed until the next follow."""
     upnp = speaker.speaker
     speaker.subscribe_status = 500
-    await upnp.follow(MagicMock())
-    refused_subscription = upnp._events_service
+    await upnp.follow(MagicMock(), _RENDERING)
+    refused_subscription = upnp._subscriptions.get(RENDERING_CONTROL_SERVICE)
 
     speaker.subscribe_status = 200
-    await upnp.follow(MagicMock())
+    await upnp.follow(MagicMock(), _RENDERING)
     await _notify(upnp)
     followed_after_retry = upnp.follows
-    upnp._renew_at = 0.0
+    upnp._subscriptions[RENDERING_CONTROL_SERVICE].renew_at = 0.0
     speaker.subscribe_status = 412
-    await upnp.follow(MagicMock())
+    await upnp.follow(MagicMock(), _RENDERING)
 
     assert refused_subscription is None
     assert followed_after_retry
     assert not upnp.follows
-    assert upnp._events_service is None
+    assert RENDERING_CONTROL_SERVICE not in upnp._subscriptions
 
 
 async def test_unfollow_ends_the_subscription(speaker: FakeSpeaker) -> None:
     """Unfollowing unsubscribes; closing takes the event route off MA's stream server."""
-    await speaker.speaker.follow(MagicMock())
+    await speaker.speaker.follow(MagicMock(), _RENDERING)
 
     await speaker.speaker.unfollow()
     speaker.speaker._upnp.close()
@@ -247,9 +281,33 @@ async def test_unfollow_ends_the_subscription(speaker: FakeSpeaker) -> None:
     speaker.mass.streams.register_dynamic_route.return_value.assert_called_once_with()
 
 
+async def test_the_line_in_events_come_in_with_their_variables(speaker: FakeSpeaker) -> None:
+    """
+    AudioIn is followed next to RenderingControl, and its variables come as they are.
+
+    Only the RenderingControl events tell that the options follow events; unfollowing ends both.
+    """
+    on_change = MagicMock()
+
+    await speaker.speaker.follow(on_change, (RENDERING_CONTROL_SERVICE, AUDIO_IN_SERVICE))
+    await _notify(speaker.speaker, _AUDIO_IN_EVENT, "uuid:sid-audio-in")
+    followed_after_line_in_event = speaker.speaker.follows
+    await speaker.speaker.unfollow()
+
+    assert speaker.subscribed == ["/MediaRenderer/RenderingControl/Event", "/AudioIn/Event"]
+    on_change.assert_called_once_with({"AudioInputName": "Turntable", "LineInConnected": "1"})
+    assert not followed_after_line_in_event
+    assert speaker.methods.count("UNSUBSCRIBE") == 2
+
+
 @pytest.mark.parametrize(
     ("changes", "read"),
-    [({"Bass": "3"}, True), ({"Volume_LF": "90"}, True), ({"Volume": "40", "Mute": "0"}, False)],
+    [
+        ({"Bass": "3"}, True),
+        ({"Volume_LF": "90"}, True),
+        ({"Volume": "40", "Mute": "0"}, False),
+        ({"LineInConnected": "1"}, False),
+    ],
 )
 def test_an_option_event_reads_the_options(changes: dict[str, str], read: bool) -> None:
     """Only a change of an option's state variable schedules a (debounced) read."""
@@ -257,7 +315,7 @@ def test_an_option_event_reads_the_options(changes: dict[str, str], read: bool) 
     player, _ = _bind_player(mass)
     player.connected = True
 
-    player._on_rendering_change(changes)
+    player._on_upnp_change(changes)
 
     assert mass.call_later.called is read
 

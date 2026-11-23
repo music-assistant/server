@@ -344,6 +344,7 @@ def use_player_registry(mass: MagicMock | MusicAssistant) -> MagicMock:
         "iter_protocols",
         "get_audio_source_owner",
         "get_audio_source_name",
+        "may_use_audio_source",
     ):
         setattr(players, lookup, MethodType(getattr(PlayerController, lookup), players))
     players.get_audio_source_session = MagicMock(return_value=None)

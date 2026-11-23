@@ -1146,52 +1146,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # action of the queue still plays its track and keeps it
             self._end_stream_slot_reservations(queue_id)
 
-        def _is_paused(player: Player) -> bool:
-            # a player that cannot pause stops instead, and its queue stays halted by the pause
-            return player.playback_state == PlaybackState.PAUSED or (
-                player.playback_state == PlaybackState.IDLE
-                and (queue_data := self._queue_data.get(queue_id)) is not None
-                and queue_data.halted_by_command
-            )
-
-        async def _watch_pause(player: Player) -> None:
-            count = 0
-            # wait for pause
-            while count < 5 and player.playback_state == PlaybackState.PLAYING:
-                count += 1
-                await asyncio.sleep(1)
-            # wait for unpause
-            if not _is_paused(player):
-                return
-            count = 0
-            pause_timeout = self._get_pause_timeout()
-            while _is_paused(player):
-                if self.mass.players._has_waiting_start(player):
-                    # a start that waits for players to start up is about to play: the
-                    # stop below would call it off, so the timeout counts from its end
-                    count = 0
-                elif count >= pause_timeout:
-                    break
-                else:
-                    count += 1
-                await asyncio.sleep(1)
-            # if player is still paused when the limit is reached, send stop
-            if player.playback_state == PlaybackState.PAUSED:
-                await self.stop(queue_id)
-            elif _is_paused(player):
-                # the queue stopped at the pause already, only its sleep timer is left to end
-                self._clear_sleep_timer(queue_id)
-
         # we auto stop a player from paused when its paused for the configured pause timeout
         if (
             queue_active
             and (queue_player := self.mass.players.get_player(queue_id))
             and not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         ):
-            self.mass.create_task(
-                _watch_pause(queue_player),
-                task_name=f"watch_pause_{queue_player.player_id}",
-            )
+            self._start_pause_watch(queue_id, queue_player)
 
     @api_command(
         "player_queues/play_pause",
@@ -1767,7 +1728,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # ignore updates from the player during this time
             return
         # queue is active and preflight checks passed, update the queue details
+        was_playing = queue.state == PlaybackState.PLAYING
         self._update_queue_from_player(player)
+        queue_data = self._queue_data[queue_id]
+        if (
+            was_playing
+            and queue.state == PlaybackState.PAUSED
+            # paused on the stream of this queue, not on another source of the player
+            and player.active_source == queue_id
+            and queue_data.session_id is not None
+        ):
+            if not queue_data.halted_by_command:
+                # paused at the device itself: a stop at the pause timeout resumes from here,
+                # not from where an earlier pause command left the queue
+                queue.resume_pos = int(self._last_played_position(queue))
+            self._start_pause_watch(queue_id, player)
 
     def on_player_unpaused(self, queue_id: str) -> None:
         """
@@ -3540,6 +3515,70 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # the range is only enforced by the frontend, an API client can store any value
         min_timeout, max_timeout = PAUSE_TIMEOUT_RANGE
         return min(max(int(pause_timeout), min_timeout), max_timeout)
+
+    def _start_pause_watch(self, queue_id: str, player: Player) -> None:
+        """
+        Stop the queue once its player stays paused for the pause timeout.
+
+        Does nothing while the queue has a watcher already.
+
+        :param queue_id: The queue the player plays.
+        :param player: The player that pauses.
+        """
+        task_id = f"watch_pause_{queue_id}"
+        self.mass.create_task(
+            self._watch_pause(queue_id, player), task_id=task_id, task_name=task_id
+        )
+
+    async def _watch_pause(self, queue_id: str, player: Player) -> None:
+        """
+        Wait for the player to pause and stop the queue when the pause outlasts the pause timeout.
+
+        Returns once the player plays again or another source takes it over, or after the stop.
+
+        :param queue_id: The queue the player plays.
+        :param player: The player that pauses.
+        """
+
+        def _is_paused() -> bool:
+            if player.active_source not in (queue_id, None):
+                # another source took the player over, its pause is not the queue's to end
+                return False
+            # a player that cannot pause stops instead, and its queue stays halted by the pause
+            return player.playback_state == PlaybackState.PAUSED or (
+                player.playback_state == PlaybackState.IDLE
+                and (queue_data := self._queue_data.get(queue_id)) is not None
+                and queue_data.halted_by_command
+            )
+
+        count = 0
+        # wait for pause
+        while count < 5 and player.playback_state == PlaybackState.PLAYING:
+            count += 1
+            await asyncio.sleep(1)
+        # wait for unpause
+        if not _is_paused():
+            return
+        count = 0
+        pause_timeout = self._get_pause_timeout()
+        while _is_paused():
+            if self.mass.players._has_waiting_start(player):
+                # a start that waits for players to start up is about to play: the
+                # stop below would call it off, so the timeout counts from its end
+                count = 0
+            elif count >= pause_timeout:
+                break
+            else:
+                count += 1
+            await asyncio.sleep(1)
+        if not _is_paused():
+            return
+        # if player is still paused when the limit is reached, send stop
+        if player.playback_state == PlaybackState.PAUSED:
+            await self.stop(queue_id)
+        else:
+            # the queue stopped at the pause already, only its sleep timer is left to end
+            self._clear_sleep_timer(queue_id)
 
     def _resync_position(self, queue_id: str) -> None:
         """

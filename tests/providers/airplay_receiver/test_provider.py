@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import shlex
-from dataclasses import dataclass
+import re
+from collections.abc import Iterator
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,6 +16,7 @@ from music_assistant_models.enums import ContentType, EventType, MediaType, Play
 from music_assistant_models.errors import AudioError, PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import AudioFormat
+from zeroconf import NonUniqueNameException
 
 from music_assistant.helpers.player import PlayerAvailabilityTracker
 from music_assistant.models.player import Player
@@ -22,6 +24,7 @@ from music_assistant.providers.airplay_receiver import (
     AirPlayReceiverProvider,
     airplay_receiver_ports,
 )
+from music_assistant.providers.airplay_receiver.metadata import MdnsService
 
 # --- Port derivation -----------------------------------------------------------
 
@@ -804,7 +807,6 @@ async def test_receiver_config_starts_at_the_volume_of_the_player(tmp_path: Path
     player = MagicMock(spec=Player)
     player.volume_level = 40
     prov.mass.players.get_player.return_value = player
-    prov._get_mdns_interface_line = AsyncMock(return_value="")  # type: ignore[method-assign]
     daemon = MagicMock(
         player_id="pl0123456789ab",
         airplay_name="Player A",
@@ -822,6 +824,40 @@ async def test_receiver_config_starts_at_the_volume_of_the_player(tmp_path: Path
     assert "default_airplay_volume = -18.0;" in config
 
 
+async def test_receiver_config_hands_the_mdns_service_over(tmp_path: Path) -> None:
+    """shairport-sync advertises nothing itself: the provider publishes its service."""
+    prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
+    prov.mass = MagicMock()
+    prov.mass.players.get_player.return_value = None
+    daemon = MagicMock(
+        player_id="pl0123456789ab",
+        airplay_name="Player A",
+        port=7000,
+        config_file=str(tmp_path / "shairport.conf"),
+    )
+    daemon.metadata_pipe.path = str(tmp_path / "metadata")
+    daemon.audio_pipe.path = str(tmp_path / "audio")
+
+    await prov._create_config_file(daemon)
+
+    config = (tmp_path / "shairport.conf").read_text(encoding="utf-8")
+    general_section = config.split("metadata =", 1)[0]
+    assert '\tmdns_backend = "metadata";\n};' in general_section
+    # every placeholder of the template is filled in
+    assert not re.search(r"\{[A-Z_]+\}", config)
+
+
+# --- mDNS publishing -------------------------------------------------------------
+
+_PROVIDER = "music_assistant.providers.airplay_receiver.provider"
+
+_SERVICE = MdnsService(
+    service_type="_raop._tcp",
+    name="0A1B2C3D4E5F@Kitchen | Music Assistant",
+    port=7000,
+    txt={"am": "ShairportSync", "sf": "0x4"},
+)
+
 # a host with a LAN interface, a second LAN interface, a Docker bridge and a VPN tunnel
 _HOST_ADAPTERS = [
     ifaddr.Adapter("lo", "lo", [ifaddr.IP("127.0.0.1", 8, "lo")]),
@@ -836,64 +872,210 @@ _HOST_ADAPTERS = [
 ]
 
 
-def _interface_line_provider(bind_ip: str | None, publish_ip: str) -> AirPlayReceiverProvider:
+@pytest.fixture
+def mdns_receiver() -> Iterator[tuple[AirPlayReceiverProvider, MagicMock, MagicMock]]:
     """
-    Build a bare provider, without registered players, whose stream server has the given IPs.
+    Yield a provider whose receiver's shairport-sync runs, with a mocked zeroconf.
 
-    :param bind_ip: The explicitly configured bind IP, or None when it binds all interfaces.
-    :param publish_ip: The stream server's publish IP.
+    Yields the provider, the running shairport-sync process and the zeroconf mock, on a host
+    with the interfaces of _HOST_ADAPTERS.
     """
-    prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
-    prov.logger = MagicMock()
-    prov.mass = mass = MagicMock()
-    mass.streams.get_source_ip = AsyncMock(return_value=bind_ip)
-    mass.streams.publish_ip = publish_ip
-    mass.players.get_player.return_value = None
-    return prov
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen"})
+    mocks.mass.server_id = "0123456789abcdef0123456789abcdef"
+    mocks.mass.streams.get_source_ip = AsyncMock(return_value=None)
+    mocks.mass.streams.publish_ip = "192.168.1.10"
+    aiozc = mocks.mass.discovery.aiozc
+    for method in ("async_register_service", "async_update_service", "async_unregister_service"):
+        # zeroconf hands back the broadcast of the announcements (or goodbyes) to await
+        setattr(aiozc, method, AsyncMock(side_effect=lambda *_args, **_kwargs: asyncio.sleep(0)))
+    proc = MagicMock(closed=False)
+    prov._daemons["p1"].shairport_proc = proc
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=_HOST_ADAPTERS):
+        yield prov, proc, aiozc
+
+
+async def test_the_handed_over_mdns_service_is_published(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """The service shairport-sync hands over is announced with its records."""
+    prov, _proc, aiozc = mdns_receiver
+    daemon = prov._daemons["p1"]
+
+    prov._on_metadata_update(daemon, {"mdns_service": _SERVICE})
+
+    async with asyncio.timeout(2):
+        while not aiozc.async_register_service.await_count:
+            await asyncio.sleep(0.01)
+    info = aiozc.async_register_service.await_args.args[0]
+    assert info.name == "0A1B2C3D4E5F@Kitchen | Music Assistant._raop._tcp.local."
+    assert (info.port, info.parsed_addresses()) == (7000, ["192.168.1.10"])
+    assert info.decoded_properties == {"am": "ShairportSync", "sf": "0x4"}
+    assert info.server == "ma-airplay-receiver-01234567.local."
+    # no probing: a restart re-registers the name right after the previous goodbye
+    assert aiozc.async_register_service.await_args.kwargs == {"cooperating_responders": True}
 
 
 @pytest.mark.parametrize(
     ("bind_ip", "publish_ip", "expected"),
     [
-        pytest.param(
-            None, "192.168.1.10", '\tinterface = "eth0";\n', id="publish-ip-when-binding-all"
-        ),
-        pytest.param(None, "2001:DB8::10", '\tinterface = "eth0";\n', id="ipv6-publish-ip"),
-        pytest.param(
-            "192.168.2.10", "192.168.1.10", '\tinterface = "eth1";\n', id="explicit-bind-ip"
-        ),
+        pytest.param(None, "192.168.1.10", ["192.168.1.10"], id="publish-ip-when-binding-all"),
+        pytest.param(None, "2001:DB8::10", ["2001:db8::10"], id="ipv6-publish-ip"),
+        pytest.param("192.168.2.10", "192.168.1.10", ["192.168.2.10"], id="explicit-bind-ip"),
         # e.g. a port-forwarded address configured as publish IP
-        pytest.param(None, "203.0.113.5", "", id="publish-ip-not-on-this-host"),
+        pytest.param(
+            None, "203.0.113.5", ["192.168.1.10", "192.168.2.10"], id="publish-ip-not-on-this-host"
+        ),
     ],
 )
-async def test_mdns_interface_follows_the_address_music_assistant_is_reached_on(
-    bind_ip: str | None, publish_ip: str, expected: str
+async def test_the_service_is_announced_on_the_address_music_assistant_is_reached_on(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+    bind_ip: str | None,
+    publish_ip: str,
+    expected: list[str],
 ) -> None:
-    """The receiver's mDNS records stay on the interface holding the bind or publish IP."""
-    prov = _interface_line_provider(bind_ip, publish_ip)
+    """Senders learn the bind or publish IP, or this host's LAN addresses when it is not local."""
+    prov, proc, aiozc = mdns_receiver
+    streams = cast("MagicMock", prov.mass).streams
+    streams.get_source_ip = AsyncMock(return_value=bind_ip)
+    streams.publish_ip = publish_ip
+    lan_addresses = AsyncMock(return_value=("192.168.1.10", "192.168.2.10"))
 
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=_HOST_ADAPTERS):
-        assert await prov._get_mdns_interface_line() == expected
+    with patch(f"{_PROVIDER}.get_publish_ip_candidates", lan_addresses):
+        await prov._publish_mdns_service(prov._daemons["p1"], proc, _SERVICE)
+
+    assert aiozc.async_register_service.await_args.args[0].parsed_addresses() == expected
 
 
-async def test_receiver_config_pins_mdns_to_the_publish_interface(tmp_path: Path) -> None:
-    """The interface directive lands in the general section of the receiver's config."""
-    prov = _interface_line_provider(None, "192.168.1.10")
-    daemon = MagicMock(
-        player_id="pl0123456789ab",
-        airplay_name="Player A",
-        port=7000,
-        config_file=str(tmp_path / "shairport.conf"),
+async def test_a_new_hand_over_refreshes_the_published_service(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """shairport-sync hands its service over again when its TXT records change."""
+    prov, proc, aiozc = mdns_receiver
+    daemon = prov._daemons["p1"]
+    await prov._publish_mdns_service(daemon, proc, _SERVICE)
+
+    session_active = replace(_SERVICE, txt={"am": "ShairportSync", "sf": "0x20004"})
+    await prov._publish_mdns_service(daemon, proc, session_active)
+
+    aiozc.async_register_service.assert_awaited_once()
+    assert aiozc.async_update_service.await_args.args[0].decoded_properties["sf"] == "0x20004"
+
+
+@pytest.mark.parametrize("ended", ["exited", "replaced"])
+async def test_a_hand_over_from_a_process_that_is_gone_is_not_published(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock], ended: str
+) -> None:
+    """A hand-over handled after its process exited, or was restarted, announces nothing."""
+    prov, proc, aiozc = mdns_receiver
+    daemon = prov._daemons["p1"]
+    if ended == "exited":
+        proc.closed = True
+    else:
+        daemon.shairport_proc = MagicMock(closed=False)
+
+    await prov._publish_mdns_service(daemon, proc, _SERVICE)
+
+    aiozc.async_register_service.assert_not_awaited()
+    assert daemon.mdns_info is None
+
+
+async def test_dots_in_the_receiver_name_stay_within_its_dns_label(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """A dot would split the instance name in two labels: a look-alike takes its place."""
+    prov, proc, aiozc = mdns_receiver
+    service = replace(_SERVICE, name="0A1B2C3D4E5F@Living Rm. Speaker 2.0")
+
+    await prov._publish_mdns_service(prov._daemons["p1"], proc, service)
+
+    name = aiozc.async_register_service.await_args.args[0].name
+    assert name == "0A1B2C3D4E5F@Living Rm\u2024 Speaker 2\u20240._raop._tcp.local."
+
+
+async def test_a_long_receiver_name_is_cut_to_a_single_dns_label(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """A name over the 63-byte DNS label limit is shortened instead of not announced."""
+    prov, proc, aiozc = mdns_receiver
+    long_name = "0A1B2C3D4E5F@Woonkamer Sonos Arc Ultra (links) | Music Assistant"
+    service = replace(_SERVICE, name=long_name)
+
+    await prov._publish_mdns_service(prov._daemons["p1"], proc, service)
+
+    instance = aiozc.async_register_service.await_args.args[0].name.removesuffix(
+        "._raop._tcp.local."
     )
-    daemon.metadata_pipe.path = str(tmp_path / "metadata")
-    daemon.audio_pipe.path = str(tmp_path / "audio")
+    assert len(instance.encode()) == 63
+    assert service.name.startswith(instance)
 
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=_HOST_ADAPTERS):
-        await prov._create_config_file(daemon)
 
-    config = (tmp_path / "shairport.conf").read_text(encoding="utf-8")
-    general_section = config.split("metadata =", 1)[0]
-    assert '\tinterface = "eth0";\n};' in general_section
+async def test_a_failed_announcement_leaves_the_receiver_running(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """A service that cannot be announced is logged, not raised."""
+    prov, proc, aiozc = mdns_receiver
+    aiozc.async_register_service.side_effect = NonUniqueNameException
+    daemon = prov._daemons["p1"]
+
+    await prov._publish_mdns_service(daemon, proc, _SERVICE)
+
+    assert daemon.mdns_info is None
+    cast("MagicMock", prov.logger).warning.assert_called_once()
+
+
+async def test_withdrawing_the_service_says_goodbye_once(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """The published service is withdrawn once, however often the receiver stops."""
+    prov, proc, aiozc = mdns_receiver
+    daemon = prov._daemons["p1"]
+    await prov._publish_mdns_service(daemon, proc, _SERVICE)
+    info = daemon.mdns_info
+
+    await prov._unpublish_mdns_service(daemon)
+    await prov._unpublish_mdns_service(daemon)
+
+    aiozc.async_unregister_service.assert_awaited_once_with(info)
+    assert daemon.mdns_info is None
+
+
+async def test_stopping_a_receiver_withdraws_its_service(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """A stop withdraws the service, also when it cuts the runner's own teardown short."""
+    prov, proc, aiozc = mdns_receiver
+    daemon = prov._daemons["p1"]
+    await prov._publish_mdns_service(daemon, proc, _SERVICE)
+    # a runner cancelled while closing its process never reaches its own withdrawal
+    daemon.runner_task = asyncio.ensure_future(asyncio.sleep(10))
+
+    await AirPlayReceiverProvider._stop_receiver(prov, daemon)
+
+    aiozc.async_unregister_service.assert_awaited_once()
+    assert daemon.mdns_info is None
+
+
+async def test_the_goodbye_follows_the_announcements_in_flight(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """A receiver stopped while it is announced says goodbye once the announcements are out."""
+    prov, proc, aiozc = mdns_receiver
+    daemon = prov._daemons["p1"]
+    announced = asyncio.Event()
+    aiozc.async_register_service.side_effect = lambda *_args, **_kwargs: announced.wait()
+    publishing = asyncio.ensure_future(prov._publish_mdns_service(daemon, proc, _SERVICE))
+    async with asyncio.timeout(2):
+        while not aiozc.async_register_service.await_count:
+            await asyncio.sleep(0.01)
+
+    withdrawing = asyncio.ensure_future(prov._unpublish_mdns_service(daemon))
+    await asyncio.sleep(0.05)
+    aiozc.async_unregister_service.assert_not_awaited()
+
+    announced.set()
+    await asyncio.gather(publishing, withdrawing)
+    aiozc.async_unregister_service.assert_awaited_once()
+    assert daemon.mdns_info is None
 
 
 def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
@@ -980,33 +1162,3 @@ def test_receiver_of_a_merged_player_keeps_the_port_and_pipes_of_its_stored_id()
         "AirPlay Receiver",
         "p_old",
     )
-
-
-async def test_session_hooks_reach_a_metadata_pipe_whose_path_has_spaces(tmp_path: Path) -> None:
-    """A runtime dir under a cache path with spaces still gets the play start and end markers."""
-    runtime_path = tmp_path / "cache with spaces" / "runtime"
-    runtime_path.mkdir(parents=True)
-    prov, mocks = _reconcile_provider(("p1",), {})
-    mocks.mass.runtime_path = str(runtime_path)
-    prov.config.instance_id = "airplay_receiver"
-    prov.config.name = "AirPlay Receiver"
-    prov.manifest = MagicMock(domain="airplay_receiver")
-    prov._ports = {"p1": 7000}
-    prov._audio_format = AudioFormat(content_type=ContentType.ALAC)
-    prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
-    prov._get_mdns_interface_line = AsyncMock(return_value="")  # type: ignore[method-assign]
-    AirPlayReceiverProvider._start_receiver(
-        prov, "p1", MagicMock(player_id="p1"), "Player A | Music Assistant"
-    )
-    daemon = prov._daemons["p1"]
-
-    await AirPlayReceiverProvider._create_config_file(prov, daemon)
-
-    config = Path(daemon.config_file).read_text(encoding="utf-8")
-    for hook in ("run_this_before_entering_active_state", "run_this_after_exiting_active_state"):
-        line = next(ln for ln in config.splitlines() if ln.strip().startswith(hook))
-        libconfig_value = line.split("=", 1)[1].strip().removesuffix(";")
-        # shairport-sync splits the command like a shell (popt) and runs `sh -c <script>`
-        command = libconfig_value[1:-1].replace('\\"', '"')
-        script = shlex.split(command)[2]
-        assert shlex.split(script)[-1] == daemon.metadata_pipe.path

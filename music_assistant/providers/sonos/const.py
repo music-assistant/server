@@ -28,6 +28,9 @@ PLAYER_FEATURES_BASE = {
 }
 
 SOURCE_LINE_IN = "line_in"
+# the line-in of a speaker of the household, followed by the id of that speaker: one id on
+# every speaker, so a group member that follows its coordinator finds it in its own list
+SOURCE_LINE_IN_OF = f"{SOURCE_LINE_IN}@"
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"
@@ -130,6 +133,7 @@ UPNP_TIMEOUT = 10
 RENDERING_CONTROL_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
 DEVICE_PROPERTIES_SERVICE = "urn:schemas-upnp-org:service:DeviceProperties:1"
 HT_CONTROL_SERVICE = "urn:schemas-upnp-org:service:HTControl:1"
+AUDIO_IN_SERVICE = "urn:schemas-upnp-org:service:AudioIn:1"
 
 
 class EqType(StrEnum):
@@ -154,7 +158,8 @@ class IrRepeaterState(StrEnum):
     DISABLED = "Disabled"
 
 
-# UPnP RenderingControl events, received on the stream server
+# UPnP events (RenderingControl, and AudioIn of a speaker with a line-in), received on the
+# stream server
 EVENTS_PATH = "/sonos/notify"
 # seconds a subscription is asked for; it is renewed halfway, by the poll
 EVENT_SUBSCRIPTION_TIMEOUT = 1800

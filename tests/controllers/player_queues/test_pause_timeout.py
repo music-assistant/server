@@ -36,6 +36,7 @@ def _setup(pause_timeout: Any = None) -> tuple[PlayerQueuesController, MagicMock
     player.offline_by_power_control = False
     player.extra_data = {}
     player.playback_state = PlaybackState.PLAYING
+    player.active_source = QUEUE_ID
     mass.players.get_player = MagicMock(return_value=player)
     mass.players._has_waiting_start = MagicMock(return_value=False)
 

@@ -17,6 +17,8 @@ Developer docs
 
       export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib:/usr/local/lib:/usr/lib"
 
+* shairport-sync 5.6.3 or newer (a classic AirPlay build), also at OS level. Install it if you want to run the `airplay_receiver` plugin. On macOS, run `brew install shairport-sync`. Distribution packages are often older or built for AirPlay 2; [the plugin's README](music_assistant/providers/airplay_receiver/bin/README.md) explains how to build it.
+
 We recommend developing on a (recent) macOS or Linux machine.
 It is recommended to use Visual Studio Code as your IDE, since launch files to start Music Assistant are provided as part of the repository. Furthermore, the current code base is not verified to work on a native Windows machine. If you would like to develop on a Windows machine, install [WSL2](https://code.visualstudio.com/blogs/2019/09/03/wsl2) to increase your swag-level 🤘.
 

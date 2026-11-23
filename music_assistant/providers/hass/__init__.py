@@ -193,6 +193,7 @@ class HomeAssistantProvider(PluginProvider):
     _player_controls: dict[str, PlayerControl] | None = None
     _unsubscribe_controls: Callable[[], None] | None = None
     _unsubscribe_entity_registry: Callable[[], None] | None = None
+    _unsubscribe_core_config: Callable[[], None] | None = None
     _engine_refresh_task: asyncio.Task[None] | None = None
     _ai_engines: list[AIEngine]
     _image_engines: list[ImageEngine]
@@ -268,7 +269,7 @@ class HomeAssistantProvider(PluginProvider):
 
         return (*base_entries, *_control_config_entries())
 
-    async def handle_async_init(self) -> None:
+    async def handle_async_init(self) -> None:  # noqa: PLR0915
         """Handle async initialization of the plugin."""
         if self._listen_task and not self._listen_task.done():
             msg = "Home Assistant listener is already running"
@@ -311,10 +312,11 @@ class HomeAssistantProvider(PluginProvider):
             raise
         self._listen_task = self.mass.create_task(self._hass_listener())
         try:
-            # the registry subscription must be live before the first registry read, so no
-            # registry change can slip through unnoticed; _disconnect_hass tears the
-            # subscription down again on the failure paths below
+            # the subscriptions must be live before the first registry read, so no change
+            # can slip through unnoticed; _disconnect_hass tears them down again on the
+            # failure paths below
             await self._subscribe_entity_registry()
+            await self._subscribe_core_config()
             await self._resolve_startup_features()
         except asyncio.CancelledError:
             await self._cleanup_failed_init()
@@ -1191,6 +1193,9 @@ class HomeAssistantProvider(PluginProvider):
         if unsubscribe := self._unsubscribe_entity_registry:
             self._unsubscribe_entity_registry = None
             unsubscribe()
+        if unsubscribe := self._unsubscribe_core_config:
+            self._unsubscribe_core_config = None
+            unsubscribe()
         if refresh_task := self._engine_refresh_task:
             self._engine_refresh_task = None
             refresh_task.cancel()
@@ -1333,6 +1338,24 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = data.get("entity_id", "")
         if not entity_id.startswith(FEATURE_DOMAIN_PREFIXES):
             return
+        self._schedule_engine_refresh()
+
+    async def _subscribe_core_config(self) -> None:
+        """Watch the Home Assistant core config to learn that Home Assistant has started."""
+        # register for core config updates, replacing any earlier subscription
+        if unsubscribe := self._unsubscribe_core_config:
+            self._unsubscribe_core_config = None
+            unsubscribe()
+        # an already registered entity gets its state during the startup of Home Assistant
+        # without a registry update. Home Assistant ends its startup with a core config update,
+        # once every registered entity has a state; its homeassistant_started event is only
+        # available to administrators
+        self._unsubscribe_core_config = await self.hass.subscribe_events(
+            self._on_core_config_update, "core_config_updated"
+        )
+
+    def _on_core_config_update(self, _event: Event) -> None:
+        """Handle a core config update event."""
         self._schedule_engine_refresh()
 
     def _schedule_engine_refresh(self) -> None:

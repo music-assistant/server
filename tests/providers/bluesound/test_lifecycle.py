@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import IdentifierType, ProtocolRole
+from pyblu.errors import PlayerUnreachableError
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENABLE_ICY_METADATA, MAIN_ZONE
@@ -167,6 +168,33 @@ async def test_a_new_zone_keeps_its_settings_on_its_own_record(scenario: Scenari
     protocol = await _register_zone(scenario, SECOND_ZONE_ID, "Speaker B")
     assert _player_id(protocol) == player_id
     assert protocol.get_config_value(CONF_ENABLE_ICY_METADATA) == "basic"
+
+
+async def test_a_device_that_misses_its_first_status_is_added_as_unavailable(
+    scenario: Scenario,
+) -> None:
+    """A device that does not answer its first status call still gets a player, unavailable."""
+    provider: Any = await scenario.add_provider("bluesound")
+    discovery_info: BluesoundDiscoveryInfo = {
+        "_objectType": "",
+        "ip_address": IP_ADDRESS,
+        "port": "11000",
+        "mac": MAC_ADDRESS,
+        "model": "NAD C658",
+    }
+    protocol = BluesoundPlayer(
+        provider, MAIN_ZONE_ID, discovery_info, "Speaker A", IP_ADDRESS, 11000
+    )
+    protocol._attr_needs_poll = False
+
+    with patch.object(
+        protocol.client, "status", AsyncMock(side_effect=PlayerUnreachableError("timeout"))
+    ):
+        await protocol.setup()
+        await scenario.settle()
+
+    assert protocol.player is not None
+    assert not protocol.available
 
 
 async def test_discovery_builds_nothing_for_a_device_the_server_does_not_want() -> None:
