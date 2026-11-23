@@ -507,6 +507,7 @@ def test_get_zeroconf_args_dual_stack_ipv4_fallback(platform: str) -> None:
     with (
         patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
         patch("music_assistant.helpers.util.sys.platform", platform),
+        patch("music_assistant.helpers.util._get_source_ip", return_value="192.168.1.10"),
     ):
         result = util.get_zeroconf_args(use_all_interfaces=False)
     assert result["ip_version"] == IPVersion.V4Only
@@ -518,7 +519,10 @@ def test_get_zeroconf_args_ipv4_only() -> None:
     adapters = [
         _make_mock_adapter("eth0", ["192.168.1.10"]),
     ]
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util._get_source_ip", return_value="192.168.1.10"),
+    ):
         result = util.get_zeroconf_args(use_all_interfaces=False)
     assert result["ip_version"] == IPVersion.V4Only
     assert result["interfaces"] == InterfaceChoice.Default
@@ -583,7 +587,10 @@ def test_get_zeroconf_args_counts_interfaces_not_addresses() -> None:
     adapters = [
         _make_mock_adapter("eth0", ["192.168.1.10", "192.168.1.11"]),
     ]
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util._get_source_ip", return_value="192.168.1.10"),
+    ):
         result = util.get_zeroconf_args(use_all_interfaces=False)
     assert result == {"ip_version": IPVersion.V4Only, "interfaces": InterfaceChoice.Default}
 
@@ -601,9 +608,27 @@ def test_get_zeroconf_args_virtual_interfaces_do_not_count() -> None:
     with (
         patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
         patch("music_assistant.helpers.util.sys.platform", "linux"),
+        patch("music_assistant.helpers.util._get_source_ip", return_value="192.168.1.10"),
     ):
         result = util.get_zeroconf_args(use_all_interfaces=False)
     assert result == {"ip_version": IPVersion.V4Only, "interfaces": InterfaceChoice.Default}
+
+
+@pytest.mark.parametrize("multicast_source_ip", ["10.6.0.2", ""])
+def test_get_zeroconf_args_mdns_not_routed_to_the_local_network(multicast_source_ip: str) -> None:
+    """A single local network is listed explicitly when mDNS is not routed to it."""
+    adapters = [
+        _make_mock_adapter("eth0", ["192.168.1.10"]),
+        # a full-tunnel VPN that takes the route of the mDNS group
+        _make_mock_adapter("wg0", ["10.6.0.2"], [("fd00:6::2", 0, 3)]),
+    ]
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", "linux"),
+        patch("music_assistant.helpers.util._get_source_ip", return_value=multicast_source_ip),
+    ):
+        result = util.get_zeroconf_args(use_all_interfaces=False)
+    assert result == {"ip_version": IPVersion.V4Only, "interfaces": ["192.168.1.10"]}
 
 
 def test_get_zeroconf_args_dual_stack_leaves_out_virtual_interfaces() -> None:

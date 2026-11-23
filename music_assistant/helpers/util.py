@@ -1316,28 +1316,7 @@ async def get_source_ip_for_target(target_ip: str) -> str:
 
     :param target_ip: IP address of the device the traffic is meant for.
     """
-
-    def _routing_lookup() -> str:
-        try:
-            is_ipv6_target = ip_address(target_ip).version == 6
-        except ValueError:
-            is_ipv6_target = False
-        route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
-        route_target: tuple[str, int] | tuple[str, int, int, int] = (
-            (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
-        )
-        with socket.socket(route_family, socket.SOCK_DGRAM) as _sock:
-            try:
-                _sock.settimeout(1.0)
-                _sock.connect(route_target)
-                routed_ip = str(_sock.getsockname()[0])
-                if routed_ip and routed_ip not in WILDCARD_BIND_IPS:
-                    return routed_ip
-            except OSError:
-                pass
-        return ""
-
-    return await asyncio.to_thread(_routing_lookup)
+    return await asyncio.to_thread(_get_source_ip, target_ip)
 
 
 async def get_ip_pton(ip_string: str) -> bytes:
@@ -1765,9 +1744,12 @@ def get_zeroconf_args(
         # a dual-stack macOS/FreeBSD host runs IPv4-only: leave out its IPv6 addresses,
         # which zeroconf can not join then
         interface_ips = [ip for ip in interface_ips if ":" not in ip]
-        if not use_all_interfaces and len(ipv4_interfaces) <= 1:
-            # one network: let the OS pick the interface (the default route), which unlike
-            # an explicit address survives an address change
+        if not use_all_interfaces and (
+            not ipv4_interfaces
+            or (len(ipv4_interfaces) == 1 and _get_source_ip("224.0.0.251") in interface_ips)
+        ):
+            # one network that mDNS (224.0.0.251) is routed to, not e.g. a full-tunnel VPN:
+            # let the OS pick it, which unlike an explicit address survives an address change
             return {"ip_version": ip_version, "interfaces": InterfaceChoice.Default}
     if interface_ips:
         return {"ip_version": ip_version, "interfaces": interface_ips}
@@ -2406,3 +2388,25 @@ def _on_mac_lookup_done(ip_address: str, lookup: asyncio.Future[str | None]) -> 
     _PENDING_MAC_LOOKUPS.pop(ip_address, None)
     if not lookup.cancelled():
         lookup.exception()
+
+
+def _get_source_ip(target_ip: str) -> str:
+    """Return the local address the routing table would egress to the target from, or empty."""
+    try:
+        is_ipv6_target = ip_address(target_ip).version == 6
+    except ValueError:
+        is_ipv6_target = False
+    route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
+    route_target: tuple[str, int] | tuple[str, int, int, int] = (
+        (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
+    )
+    with socket.socket(route_family, socket.SOCK_DGRAM) as _sock:
+        try:
+            _sock.settimeout(1.0)
+            _sock.connect(route_target)
+            routed_ip = str(_sock.getsockname()[0])
+            if routed_ip and routed_ip not in WILDCARD_BIND_IPS:
+                return routed_ip
+        except OSError:
+            pass
+    return ""
