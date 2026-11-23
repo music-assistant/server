@@ -4,9 +4,8 @@ import logging
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
-from auntie_sounds import LoginFailedError, SoundsClient, exceptions
+from auntie_sounds import SCHEDULE_TIMEZONE, LoginFailedError, SoundsClient, exceptions
 from auntie_sounds.content import MAX_PODCAST_EPISODES
 from auntie_sounds.models import (
     EpisodeTypes,
@@ -49,11 +48,12 @@ from music_assistant.helpers import datetime
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor, ConversionError
-from music_assistant.providers.bbc_sounds.browse import BrowseManager
+from music_assistant.providers.bbc_sounds.browse import BrowseManager, broadcast_time_cache_key
 from music_assistant.providers.bbc_sounds.constants import Constants
 from music_assistant.providers.bbc_sounds.live_rewind import (
     LiveProgrammeId,
 )
+from music_assistant.providers.bbc_sounds.naming import TitleParts
 from music_assistant.providers.bbc_sounds.now_playing import NowPlayingManager
 from music_assistant.providers.bbc_sounds.streaming import StreamManager
 
@@ -117,14 +117,13 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         """Close the provider's session and, on removal, delete its stored cookies."""
         self.logger.debug("Closing BBC Sounds provider session...")
         try:
-            client = getattr(self, "client", None)
+            client: SoundsClient | None = getattr(self, "client", None)
             if client:
                 await client.close()
             # If the provider has been removed, clean up the cookie jar
             if client and is_removed:
-                jar = client.cookie_path
-                jar.unlink(missing_ok=True)
-                jar.with_name(f"{jar.name}.owner").unlink(missing_ok=True)
+                client.delete_stored_cookies()
+                self.logger.debug("Deleted any stored cookies.")
         finally:
             await super().unload(is_removed)
 
@@ -174,7 +173,9 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             for episode in podcast_episodes:
                 try:
                     this_episode = await self.adaptor.new_object(
-                        source_obj=episode, force_type=PodcastEpisode
+                        source_obj=episode,
+                        force_type=PodcastEpisode,
+                        title_parts=TitleParts.PODCAST,
                     )
                     if this_episode and isinstance(this_episode, PodcastEpisode):
                         yield this_episode
@@ -313,6 +314,36 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             return await super().handle_menu_action(action_id, uri, player_id)
         return await self._listen_from_start(uri, player_id)
 
+    async def live_programme(self, programme_id: LiveProgrammeId) -> ScheduleItem | RadioShow:
+        """
+        Find a programme played from the live stream in its station's schedule.
+
+        :param programme_id: The programme's broadcast slot.
+        """
+        episode_date = (
+            datetime.from_utc_timestamp(programme_id.start)
+            .astimezone(SCHEDULE_TIMEZONE)
+            .date()
+            .isoformat()
+        )
+        schedule = await self.client.schedules.get_schedule(
+            station_id=programme_id.station_id, date=episode_date
+        )
+        # a programme that has aired is listed as a RadioShow rather than a ScheduleItem
+        for item in schedule.sub_items if schedule and schedule.sub_items else []:
+            # Match on start time too, as pid can be rebroadcast at different times,
+            # albeit unlikely to be twice in the same day
+            if (
+                isinstance(item, (ScheduleItem, RadioShow))
+                and item.item_id == programme_id.pid
+                and item.start is not None
+                and int(item.start.timestamp()) == programme_id.start
+            ):
+                return item
+        raise MediaNotFoundError(
+            f"Programme {programme_id.pid} not found in the {episode_date} schedule"
+        )
+
     async def _listen_from_start(
         self, uri: str, player_id: str | None
     ) -> ConfigActionResult | None:
@@ -361,29 +392,11 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     @use_cache(expiration=Constants.SHORT_EXPIRATION)
     async def _get_live_programme_episode(self, programme_id: LiveProgrammeId) -> PodcastEpisode:
         """Get the episode of a programme that is (or was) played from the live stream."""
-        episode_date = (
-            datetime.from_utc_timestamp(programme_id.start)
-            .astimezone(ZoneInfo(Constants.SCHEDULE_TIMEZONE))
-            .date()
-            .isoformat()
-        )
-        schedule = await self.client.schedules.get_schedule(
-            station_id=programme_id.station_id, date=episode_date
-        )
-        # a programme that has aired is listed as a RadioShow rather than a ScheduleItem
-        for item in schedule.sub_items if schedule and schedule.sub_items else []:
-            if isinstance(item, (ScheduleItem, RadioShow)) and item.item_id == programme_id.pid:
-                return await self.adaptor.new_live_programme(item)
-        raise MediaNotFoundError(
-            f"Programme {programme_id.pid} not found in the {episode_date} schedule"
-        )
+        return await self.adaptor.new_live_programme(await self.live_programme(programme_id))
 
-    @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
+    @use_cache(expiration=Constants.DEFAULT_EXPIRATION, cache_checksum="v2")
     async def _get_on_demand_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get the details of an on-demand podcast episode or radio show by id."""
-        # If we are requesting a previously-aired radio show, we lose access to the
-        # schedule time. The best we can find out from the API is original release
-        # date, so the stream title loses access to the air date
         self.logger.debug("Getting podcast episode for %s", prov_episode_id)
         episode = await self.client.content.get_by_pid(prov_episode_id)
         # This can return a mixture of episode/clip types
@@ -391,6 +404,16 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             raise UnplayableMediaError(
                 f"Unexpected type {type(episode).__name__} for episode {prov_episode_id}"
             )
+        # A previously-aired radio show fetched by its pid has no schedule time, only its
+        # release date, so use the broadcast time kept when its schedule was browsed
+        if isinstance(episode, RadioShow) and not episode.start:
+            broadcast_time = await self.mass.cache.get(
+                key=broadcast_time_cache_key(prov_episode_id), provider=self.domain
+            )
+            if broadcast_time:
+                episode.start, episode.end = (
+                    datetime.from_iso_string(time) if time else None for time in broadcast_time
+                )
         ma_episode = await self.adaptor.new_object(episode, force_type=PodcastEpisode)
         if not ma_episode:
             raise MediaNotFoundError(f"Podcast episode {prov_episode_id} not found")

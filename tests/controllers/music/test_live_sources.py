@@ -242,6 +242,64 @@ async def test_a_restricted_user_keeps_the_sources_of_their_own_client_player() 
     assert living_room == _entries(LINE_IN_ENTRY, VBAN_ENTRY, TV_ENTRY)
 
 
+# Kitchen's speaker offers the line-in of Living Room's speaker, as speakers of one system do
+LINE_IN_OF_LIVING_ROOM = PlayerSource(
+    id="line_in@lr", name="Line-in", is_input=True, owner_player_id="proto_living_room"
+)
+LINE_IN_OF_LIVING_ROOM_ENTRY: Entry = ("line_in@lr", "Line-in", "living_room", True)
+
+
+def _kitchen_offers_the_line_in_of_living_room(home: _Home) -> None:
+    """Let Kitchen's speaker list the line-in of Living Room's speaker next to its own."""
+    kitchen = home.players.get_player("kitchen")
+    assert kitchen is not None
+    assert kitchen.own_protocol is not None
+    kitchen.own_protocol._attr_source_list = [
+        PlayerSource(id="line_in", name="Line-in", is_input=True),
+        LINE_IN_OF_LIVING_ROOM,
+    ]
+    home.refresh()
+
+
+async def test_an_input_of_another_player_carries_its_own_name_and_that_player() -> None:
+    """
+    Kitchen lists the line-in of Living Room by its own name, with Living Room as its player.
+
+    Kitchen's source list names it with Living Room after it; the list shows Living Room on a
+    line of its own.
+    """
+    home = _Home()
+    _kitchen_offers_the_line_in_of_living_room(home)
+    kitchen = home.players.get_player("kitchen")
+    assert kitchen is not None
+
+    assert [x.name for x in kitchen.source_list if x.id == "line_in@lr"] == [
+        "Line-in (Living Room)"
+    ]
+    assert await home.live_sources("kitchen") == _entries(
+        LINE_IN_ENTRY,
+        RECORD_PLAYER_ENTRY,
+        SPOTIFY_ENTRY,
+        VBAN_ENTRY,
+        KITCHEN_LINE_IN_ENTRY,
+        LINE_IN_OF_LIVING_ROOM_ENTRY,
+    )
+
+
+async def test_a_restricted_user_gets_no_input_of_a_player_they_may_not_use() -> None:
+    """A user who may use Kitchen but not Living Room does not get Living Room's line-in there."""
+    home = _Home()
+    _kitchen_offers_the_line_in_of_living_room(home)
+
+    with as_user(["kitchen"]):
+        kitchen_only = await home.live_sources("kitchen")
+    with as_user(["kitchen", "living_room"]):
+        both = await home.live_sources("kitchen")
+
+    assert kitchen_only == _entries(SPOTIFY_ENTRY, VBAN_ENTRY, KITCHEN_LINE_IN_ENTRY)
+    assert LINE_IN_OF_LIVING_ROOM_ENTRY in both
+
+
 async def test_the_browse_folder_names_each_source_for_outside_a_player() -> None:
     """The folder holds the live sources of the list, each named with the player it belongs to."""
     home = _Home()

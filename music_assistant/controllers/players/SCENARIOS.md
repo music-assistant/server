@@ -2386,12 +2386,14 @@ for ended after 5 s as any other.
 ### PAUSE-3 · A paused queue that is stopped at the pause timeout is not ended
 
 A speaker with a pause of its own is paused 5 s into the last track of its queue and stays
-paused. After the pause timeout of 30 s the server stops it. The queue is idle on that track at
-5 s, and a resume plays the track on from there.
+paused. After the pause timeout of 30 s the server stops it, once. The queue is idle on that
+track at 5 s, and a resume plays the track on from there.
 
 - End-to-end: **possible with** a player of the lab that has a pause of its own and plays in flow
   mode, paused for longer than the pause timeout.
-- Proven by: `test_paused_queue.py::test_a_paused_queue_that_is_stopped_at_the_pause_timeout_is_not_ended`
+- Proven by:
+  - `test_paused_queue.py::test_a_paused_queue_that_is_stopped_at_the_pause_timeout_is_not_ended`
+  - `test_paused_queue.py::test_a_pause_command_is_watched_once`
 
 ### PAUSE-4 · A play that starts as an ended queue is settled plays
 
@@ -2520,3 +2522,21 @@ leaves the queue as it is: on its last track, not ended.
 - End-to-end: **no**: it needs a command that hangs for two minutes.
 - Proven by:
   `test_stopped_queue.py::test_a_queue_that_played_out_on_a_player_that_stays_busy_keeps_its_place`
+
+### PAUSE-14 · A queue paused at its speaker is stopped at the pause timeout
+
+A speaker with a pause of its own plays its queue and is paused 5 s in at the device itself, by
+its own app or a remote. After the pause timeout of 30 s the server stops it, as it stops a queue
+paused through the server, and a resume plays the track on from where it was paused. That is
+also so when the queue was paused through the server and played on at the device before. A queue
+that plays on at the device within the pause timeout is not stopped. Neither is another source,
+such as Spotify, that took the speaker over, before or during the pause, and is paused there.
+
+- End-to-end: **possible with** a player of the lab that has a pause of its own and can be paused
+  at the device, paused for longer than the pause timeout.
+- Proven by:
+  - `test_paused_queue.py::test_a_pause_at_the_speaker_stops_its_queue_at_the_pause_timeout`
+  - `test_paused_queue.py::test_a_queue_stopped_after_a_pause_at_the_speaker_resumes_from_that_pause`
+  - `test_paused_queue.py::test_a_queue_played_on_at_the_speaker_within_the_pause_timeout_is_not_stopped`
+  - `test_paused_queue.py::test_another_source_paused_at_the_speaker_is_not_stopped`
+  - `test_paused_queue.py::test_a_source_that_takes_over_a_paused_speaker_is_not_stopped`

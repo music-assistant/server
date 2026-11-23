@@ -1,7 +1,6 @@
 """Browse- and menu-related code for the BBC Sounds provider."""
 
 from collections.abc import Sequence
-from datetime import date
 from typing import TYPE_CHECKING
 
 from auntie_sounds.models import (
@@ -38,7 +37,13 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers import datetime
 from music_assistant.providers.bbc_sounds.constants import Constants, ValidMenuIDs
-from music_assistant.providers.bbc_sounds.now_playing import live_station_to_metadata
+from music_assistant.providers.bbc_sounds.naming import (
+    TitleParts,
+    full_station_name,
+    schedule_date_title,
+    station_name,
+    station_programme_title,
+)
 
 if TYPE_CHECKING:
     from music_assistant.providers.bbc_sounds.provider import BBCSoundsProvider
@@ -47,23 +52,9 @@ if TYPE_CHECKING:
 _STATION_DATE_MENUS = (ValidMenuIDs.SCHEDULES, ValidMenuIDs.STATIONS)
 
 
-def _ordinal(day: int) -> str:
-    """Return the English ordinal suffix for a day of the month."""
-    if 4 <= day <= 20 or 24 <= day <= 30:
-        return "th"
-    return ("st", "nd", "rd")[day % 10 - 1]  # codespell:ignore
-
-
-def _schedule_date_title(day: date, today: date) -> str:
-    """Return a folder name for a schedule date, e.g. "Today" or "Sunday 8th November"."""
-    match (day - today).days:
-        case 0:
-            return "Today"
-        case -1:
-            return "Yesterday"
-        case 1:
-            return "Tomorrow"
-    return f"{day:%A} {day.day}{_ordinal(day.day)} {day:%B}"
+def broadcast_time_cache_key(pid: str) -> str:
+    """Return the cache key for when a programme in a station schedule was broadcast."""
+    return f"broadcast_time_{pid}"
 
 
 class BrowseManager:
@@ -238,7 +229,9 @@ class BrowseManager:
             return [
                 obj
                 for obj in [
-                    await self._render_browse_item(item) for item in playlist_contents if item
+                    await self._render_browse_item(item, title_parts=TitleParts.PLAYLIST)
+                    for item in playlist_contents
+                    if item
                 ]
                 if obj
             ]
@@ -248,8 +241,11 @@ class BrowseManager:
         self,
         item: SoundsTypes,
         path_parts: list[str] | None = None,
+        title_parts: TitleParts = TitleParts.LISTING,
     ) -> BrowseFolder | Track | Podcast | PodcastEpisode | RecommendationFolder | Radio | None:
-        new_item = await self.provider.adaptor.new_object(item, path_parts=path_parts)
+        new_item = await self.provider.adaptor.new_object(
+            item, path_parts=path_parts, title_parts=title_parts
+        )
         if isinstance(
             new_item,
             (BrowseFolder | Track | Podcast | PodcastEpisode | RecommendationFolder | Radio),
@@ -286,7 +282,7 @@ class BrowseManager:
         today = dates[0]
         item_list: list[MediaItemType | ItemMapping | BrowseFolder] = []
         for day in dates:
-            folder = MenuItem(id=day.isoformat(), title=_schedule_date_title(day, today))
+            folder = MenuItem(id=day.isoformat(), title=schedule_date_title(day, today))
             if new_folder := await self._render_browse_item(folder, path_parts=path_parts):
                 item_list.append(new_folder)
         return item_list
@@ -351,11 +347,7 @@ class BrowseManager:
                     BrowseFolder(
                         item_id=station.id,
                         path=f"{path}/{station.id}",
-                        name=(
-                            station.network.short_title
-                            if station.network and station.network.short_title
-                            else "Unknown station"
-                        ),
+                        name=station_name(station),
                         provider=self.instance_id,
                         image=MediaItemImage(
                             type=ImageType.THUMB,
@@ -406,11 +398,6 @@ class BrowseManager:
                 ]
             )
 
-        def _get_station_title(station: LiveStation | Station) -> str:
-            if isinstance(station, LiveStation):
-                return str(station.network.short_title) if station.network else "Unknown Station"
-            return station.title or station.id
-
         for station in await self.provider.client.stations.get_stations(
             include_local_stations=include_local,
             include_national_stations=include_national,
@@ -422,13 +409,12 @@ class BrowseManager:
                 and (isinstance(station, LiveStation) or not station.international)
             ):
                 # A plain Station has no programme, so its titles and synopses are empty
-                station_info = (
-                    live_station_to_metadata(station)
+                description = (
+                    station_programme_title(station)
                     if show_current_programme and isinstance(station, LiveStation)
                     else None
                 )
-                description = station_info.title if station_info else None
-                display_name = _get_station_title(station)
+                display_name = full_station_name(station=station)
                 metadata = MediaItemMetadata(
                     description=description,
                     images=(
@@ -447,7 +433,7 @@ class BrowseManager:
                     ),
                 )
             elif isinstance(station, Station) and station.international:
-                display_name = station.title if station.title is not None else station.id
+                display_name = full_station_name(station=station)
                 metadata = MediaItemMetadata(description=station.description)
             else:
                 continue
@@ -514,7 +500,17 @@ class BrowseManager:
         items = []
         if schedule and schedule.sub_items:
             for folder in schedule.sub_items:
-                new_folder = await self._render_browse_item(folder, path_parts=path_parts)
+                # Fetching a show by its pid loses its broadcast time, so keep it for playback
+                if isinstance(folder, RadioShow) and folder.pid and folder.start:
+                    await self.mass.cache.set(
+                        key=broadcast_time_cache_key(folder.pid),
+                        data=[folder.start.isoformat(), folder.end and folder.end.isoformat()],
+                        provider=self.domain,
+                        expiration=Constants.DEFAULT_EXPIRATION,
+                    )
+                new_folder = await self._render_browse_item(
+                    folder, path_parts=path_parts, title_parts=TitleParts.SCHEDULE
+                )
                 if new_folder:
                     items.append(new_folder)
         return items

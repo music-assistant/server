@@ -8,5 +8,5 @@
   "documentation": "https://music-assistant.io/player-support/raumfeld/",
   "multi_instance": false,
   "builtin": false,
-  "stage": "experimental"
+  "stage": "beta"
 }

@@ -196,7 +196,7 @@ class DBNDownBeatTracker:
             idx = 0
             for interval in unique_intervals:
                 firsts.append(offset + idx)
-                idx += interval
+                idx += int(interval)
                 lasts.append(offset + idx - 1)
             first_states_per_beat.append(np.array(firsts, dtype=np.int32))
             last_states_per_beat.append(np.array(lasts, dtype=np.int32))

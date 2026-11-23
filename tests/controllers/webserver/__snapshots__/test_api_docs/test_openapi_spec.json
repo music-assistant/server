@@ -1,0 +1,652 @@
+{
+  "components": {
+    "schemas": {
+      "Any": {
+        "properties": {},
+        "type": "object"
+      },
+      "AsyncGenerator": {
+        "properties": {},
+        "type": "object"
+      },
+      "Colour": {
+        "description": "Enum: Colour. Possible values: red, blue",
+        "enum": [
+          "red",
+          "blue"
+        ],
+        "type": "string"
+      },
+      "ConfigValueType": {
+        "description": "Type alias for configuration value types. Can be boolean, number, integer, string, array of number, array of integer, array of string, array of boolean, or null.",
+        "oneOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "items": {
+              "type": "boolean"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "Part": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "weight": {
+            "default": null,
+            "nullable": true,
+            "type": "number"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Widget": {
+        "properties": {
+          "colour": {
+            "$ref": "#/components/schemas/Colour"
+          },
+          "count": {
+            "default": 0,
+            "type": "integer"
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/Widget",
+            "default": null,
+            "nullable": true
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/Part"
+            },
+            "type": "array"
+          },
+          "size": {
+            "default": "small",
+            "enum": [
+              "small",
+              "large"
+            ],
+            "type": "string"
+          },
+          "widget_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "widget_id",
+          "colour"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "Access token obtained from /auth/login or /auth/setup",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "contact": {
+      "name": "Music Assistant",
+      "url": "https://music-assistant.io"
+    },
+    "description": "Music Assistant API provides control over your music library, players, and playback.\n\nThis specification documents the API structure and data models. For a complete list of available commands with examples, see the Commands Reference page.",
+    "title": "Music Assistant API",
+    "version": "2.99.0"
+  },
+  "openapi": "3.0.0",
+  "paths": {
+    "/api": {
+      "post": {
+        "description": "Execute any Music Assistant API command.\n\nSee the **Commands Reference** page for a complete list of available commands with examples.",
+        "operationId": "execute_command",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "get_players": {
+                  "summary": "Get all players",
+                  "value": {
+                    "args": {},
+                    "command": "players/all"
+                  }
+                },
+                "play_media": {
+                  "summary": "Play media on a player",
+                  "value": {
+                    "args": {
+                      "player_id": "player123"
+                    },
+                    "command": "players/cmd/play"
+                  }
+                }
+              },
+              "schema": {
+                "properties": {
+                  "args": {
+                    "additionalProperties": true,
+                    "description": "Command arguments (varies by command)",
+                    "example": {},
+                    "type": "object"
+                  },
+                  "command": {
+                    "description": "The command to execute (e.g., 'players/all')",
+                    "example": "players/all",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "command"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Command result (varies by command)"
+                }
+              }
+            },
+            "description": "Successful command execution"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "description": "Structured details of the error, if it has any",
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "details": {
+                      "type": "string"
+                    },
+                    "error_code": {
+                      "type": "integer"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request - invalid command or parameters, or the command was refused"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "description": "Structured details of the error, if it has any",
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "details": {
+                      "type": "string"
+                    },
+                    "error_code": {
+                      "type": "integer"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unauthorized - authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "description": "Structured details of the error, if it has any",
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "details": {
+                      "type": "string"
+                    },
+                    "error_code": {
+                      "type": "integer"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Forbidden - insufficient permissions"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "description": "Structured details of the error, if it has any",
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "details": {
+                      "type": "string"
+                    },
+                    "error_code": {
+                      "type": "integer"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not found - the player or media item does not exist"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "description": "Structured details of the error, if it has any",
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "details": {
+                      "type": "string"
+                    },
+                    "error_code": {
+                      "type": "integer"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict - another stream or player holds what the command needs"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "description": "Structured details of the error, if it has any",
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "details": {
+                      "type": "string"
+                    },
+                    "error_code": {
+                      "type": "integer"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limited - see the Retry-After header when present"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "description": "Structured details of the error, if it has any",
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "details": {
+                      "type": "string"
+                    },
+                    "error_code": {
+                      "type": "integer"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal server error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "description": "Structured details of the error, if it has any",
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "details": {
+                      "type": "string"
+                    },
+                    "error_code": {
+                      "type": "integer"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad gateway - a service or the audio processing failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "description": "Structured details of the error, if it has any",
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "details": {
+                      "type": "string"
+                    },
+                    "error_code": {
+                      "type": "integer"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Service unavailable - a provider or resource is temporarily unavailable, see the Retry-After header when present"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Execute API command"
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "description": "Login with username and password to obtain an access token.",
+        "operationId": "auth_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "credentials": {
+                    "description": "Provider-specific credentials",
+                    "properties": {
+                      "password": {
+                        "type": "string"
+                      },
+                      "username": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "provider_id": {
+                    "description": "Auth provider ID (defaults to 'builtin')",
+                    "example": "builtin",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "token": {
+                      "type": "string"
+                    },
+                    "user": {
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Login successful"
+          },
+          "400": {
+            "description": "Invalid credentials"
+          }
+        },
+        "summary": "Authenticate with credentials",
+        "tags": [
+          "Authentication"
+        ]
+      }
+    },
+    "/auth/providers": {
+      "get": {
+        "description": "Returns list of configured authentication providers.",
+        "operationId": "auth_providers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "providers": {
+                      "items": {
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "List of auth providers"
+          }
+        },
+        "summary": "Get available auth providers",
+        "tags": [
+          "Authentication"
+        ]
+      }
+    },
+    "/info": {
+      "get": {
+        "description": "Returns server information including schema version and authentication status.",
+        "operationId": "get_info",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "homeassistant_addon": {
+                      "type": "boolean"
+                    },
+                    "onboard_done": {
+                      "type": "boolean"
+                    },
+                    "schema_version": {
+                      "type": "integer"
+                    },
+                    "server_version": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Server information"
+          }
+        },
+        "summary": "Get server info",
+        "tags": [
+          "Server"
+        ]
+      }
+    },
+    "/setup": {
+      "post": {
+        "description": "Handle initial setup of the Music Assistant server including creating the first admin user. Only accessible when no users exist.",
+        "operationId": "setup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "display_name": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "username",
+                  "password"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "token": {
+                      "type": "string"
+                    },
+                    "user": {
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Setup completed successfully"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "409": {
+            "description": "Setup already completed"
+          }
+        },
+        "summary": "Initial server setup",
+        "tags": [
+          "Server"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Music Assistant Server",
+      "url": "http://192.0.2.10:8095"
+    }
+  ]
+}

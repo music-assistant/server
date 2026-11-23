@@ -130,31 +130,25 @@ RUN PYAV_VERSION=$(python -c "import json; reqs=json.load(open('/tmp/sendspin_ma
 
 ##################################################################################################
 
-# Build shairport-sync (airplay receiver provider) from source against this image's
-# libraries, using the same configuration as music_assistant/providers/airplay_receiver/bin/build_binaries.sh:
-# tinysvcmdns as embedded mDNS backend (no avahi), stdout/pipe outputs and metadata support.
-FROM python:${PYTHON_VERSION}-slim-trixie AS shairport-builder
+# Build shairport-sync (airplay receiver provider) from source on top of the FFmpeg build,
+# so its ALAC decoder links against the FFmpeg libraries this image ships: classic AirPlay
+# with stdout/pipe outputs and a metadata pipe. It needs no mDNS daemon: it hands its
+# service to the provider over the metadata pipe, and the provider publishes it.
+FROM ffmpeg-builder AS shairport-builder
 
+# the FFmpeg build already provides the compiler, git, pkg-config and OpenSSL
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
     autoconf \
     automake \
     libtool \
-    pkg-config \
     libconfig-dev \
     libpopt-dev \
-    libssl-dev \
-    libdbus-1-dev \
-    libglib2.0-dev \
-    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Version and its commit SHA are the single source of truth (also read by
-# build_binaries.sh). Tags are mutable, so the fetched tag is verified against the
-# pinned SHA. Bump both when changing the version.
-ARG SHAIRPORT_VERSION=4.3.7
-ARG SHAIRPORT_SHA=0b1c4391ffd398e7b145eb4b98416261380adeea
+# Tags are mutable, so the fetched tag is verified against the pinned SHA. Bump both when
+# changing the version.
+ARG SHAIRPORT_VERSION=5.6.3
+ARG SHAIRPORT_SHA=7ce90d89529dd760488f20592a7cbff626672f6c
 RUN set -x \
     && git init /tmp/shairport-sync \
     && cd /tmp/shairport-sync \
@@ -162,13 +156,17 @@ RUN set -x \
     && git fetch --depth 1 origin refs/tags/${SHAIRPORT_VERSION} \
     && git checkout FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${SHAIRPORT_SHA}" \
+    # without git metadata the binary reports its release version (checked by the
+    # provider) instead of the commit hash, as the shallow fetch carries no tags
+    && rm -rf .git \
     && autoreconf -fi \
     && ./configure \
         --with-pipe \
         --with-metadata \
+        --with-metadata-pipe \
+        --with-ffmpeg \
         --without-avahi \
         --without-dns-sd \
-        --with-tinysvcmdns \
         --with-ssl=openssl \
         --with-stdout \
         --sysconfdir=/etc \
@@ -322,8 +320,9 @@ COPY --from=shairport-builder /usr/local/bin/shairport-sync /usr/local/bin/
 # Copy pre-built PyAV wheel for use by downstream images
 COPY --from=pyav-builder /wheels/ /usr/local/share/pyav-wheels/
 
-# Verify FFmpeg and the custom PyAV wheel with all codec runtime libraries available.
-RUN ldconfig && ffmpeg -version && ffprobe -version \
+# Verify FFmpeg, shairport-sync and the custom PyAV wheel with all codec runtime libraries
+# available.
+RUN ldconfig && ffmpeg -version && ffprobe -version && shairport-sync --version \
     && python -m pip install --no-cache-dir --no-index --no-deps \
         --target /tmp/pyav-check /usr/local/share/pyav-wheels/av*.whl \
     && PYTHONPATH=/tmp/pyav-check python -c "import av; print(av.library_versions)" \

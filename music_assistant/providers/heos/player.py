@@ -32,11 +32,13 @@ from .constants import (
     HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
     HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
     HEOS_TUNER_INPUTS,
+    INPUT_OF_DEVICE_SEPARATOR,
     NON_HIRES_HEOS_MODELS,
     PLAYBACK_TRANSITION_STOP_GRACE,
 )
 
 if TYPE_CHECKING:
+    from pyheos import HeosNowPlayingMedia, MediaItem
     from pyheos import HeosPlayer as PyHeosPlayer
 
     from music_assistant.models.player import Player
@@ -75,6 +77,12 @@ class HeosPlayer(PlayerProtocol):
     def native_grouping_requires_own_stream(self) -> bool:
         """Return True: HEOS can not pass an AirPlay input on to its group members."""
         return True
+
+    @property
+    def trusts_reported_source(self) -> bool:
+        """Return whether a source the device lists counts as a takeover: an input only."""
+        # a local music source can be Music Assistant's own stream, which HEOS reports as one
+        return self._device.now_playing_media.source_id == const.MUSIC_SOURCE_AUX_INPUT
 
     def __init__(self, provider: HeosPlayerProvider, device: PyHeosPlayer) -> None:
         """Initialize the Player."""
@@ -181,20 +189,22 @@ class HeosPlayer(PlayerProtocol):
         self.update_state()
 
     async def build_source_list(self) -> None:
-        """Build source list based on music source list, combined with player specific inputs."""
+        """
+        Build source list based on music source list, combined with player specific inputs.
+
+        The inputs of the other devices are listed too, as the device plays them from there.
+        """
         prov = cast("HeosPlayerProvider", self.provider)
         self._attr_source_list = prov.music_source_list[:]  # copy so we can modify
 
-        for input_source in prov.input_source_list:
-            # Only add input sources that belong to this player
-            if str(input_source.source_id) != self.protocol_id or input_source.media_id is None:
-                continue
-
+        for input_source in self._listed_inputs():
+            own = str(input_source.source_id) == self.protocol_id
             self._attr_source_list.append(
                 PlayerSource(
-                    id=input_source.media_id,
-                    name=input_source.name,
+                    id=_input_id(input_source),
+                    name=self._input_name(input_source),
                     is_input=input_source.media_id not in HEOS_TUNER_INPUTS,
+                    owner_player_id=None if own else str(input_source.source_id),
                     can_play_pause=True,
                 )
             )
@@ -305,7 +315,7 @@ class HeosPlayer(PlayerProtocol):
             )
 
             if now_playing.source_id == const.MUSIC_SOURCE_AUX_INPUT:
-                self._attr_active_source = str(now_playing.media_id)
+                self._attr_active_source = self._playing_input_id(now_playing)
             else:
                 self._attr_active_source = str(now_playing.source_id)
 
@@ -549,7 +559,12 @@ class HeosPlayer(PlayerProtocol):
         self._cancel_ma_playback_transition()
         self._ma_controls_playback = False
         self._queue_cleanup_pending = False
-        await self._device.play_input_source(source)
+        input_id, _, device_id = source.partition(INPUT_OF_DEVICE_SEPARATOR)
+        if device_id and device_id != self.protocol_id:
+            # an input of another device plays from that device
+            await self._device.play_input_source(input_id, int(device_id))
+        else:
+            await self._device.play_input_source(input_id)
 
     def _end_queue_cleanup(self) -> None:
         """Stop cleaning up the device's queue: the MA playback of a detached protocol ended."""
@@ -577,3 +592,53 @@ class HeosPlayer(PlayerProtocol):
         self._update_player_state()
         self._update_player_current_media()
         self.update_state()
+
+    def _listed_inputs(self) -> list[MediaItem]:
+        """Return the inputs the device lists: its own, then those of the other devices."""
+        prov = cast("HeosPlayerProvider", self.provider)
+        own_inputs = [
+            input_source
+            for input_source in prov.input_source_list
+            if str(input_source.source_id) == self.protocol_id and input_source.media_id
+        ]
+        return [*own_inputs, *self._inputs_of_other_devices()]
+
+    def _inputs_of_other_devices(self) -> list[MediaItem]:
+        """Return the inputs of the other devices, a radio built into one left out."""
+        prov = cast("HeosPlayerProvider", self.provider)
+        return [
+            input_source
+            for input_source in prov.input_source_list
+            if input_source.media_id is not None
+            and input_source.media_id not in HEOS_TUNER_INPUTS
+            and str(input_source.source_id) != self.protocol_id
+        ]
+
+    def _input_name(self, input_source: MediaItem) -> str:
+        """Return the name of an input without the name of the device it belongs to."""
+        # HEOS names an input "<device name> - <input name>", by the name of the device at the
+        # time the inputs were read
+        prov = cast("HeosPlayerProvider", self.provider)
+        if device_name := prov.input_device_names.get(input_source.source_id):
+            return input_source.name.removeprefix(f"{device_name} - ")
+        return input_source.name
+
+    def _playing_input_id(self, now_playing: HeosNowPlayingMedia) -> str:
+        """Return the source id of the input that plays, the device's own when it is unclear."""
+        # HEOS reports the input as the station, named after its device by the current name,
+        # which two devices can share
+        matches = [
+            input_source
+            for input_source in self._listed_inputs()
+            if input_source.media_id == now_playing.media_id
+            and (device := self._heos.players.get(input_source.source_id)) is not None
+            and now_playing.station == f"{device.name} - {self._input_name(input_source)}"
+        ]
+        if len(matches) == 1:
+            return _input_id(matches[0])
+        return f"{now_playing.media_id}{INPUT_OF_DEVICE_SEPARATOR}{self.protocol_id}"
+
+
+def _input_id(input_source: MediaItem) -> str:
+    """Return the source id of an input, the same on every device."""
+    return f"{input_source.media_id}{INPUT_OF_DEVICE_SEPARATOR}{input_source.source_id}"

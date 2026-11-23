@@ -22,7 +22,7 @@ import asyncio
 import builtins
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
 from music_assistant_models.config_entries import ConfigValueType
@@ -2408,6 +2408,7 @@ class Player:
             if own_protocol is not None
             else _absent_protocol_snapshot(self.player_id, self._missing_provider_reason())
         )
+        own.source_list = self._name_inputs_of_other_players(own.source_list)
         peers: dict[str, PeerSnapshot] = {}
         linked, active_protocol, foreign_app = self._collect_protocols(
             peers, probe_synced_to=not own.synced_to
@@ -2665,6 +2666,28 @@ class Player:
             for source in sources
             if source.uri
         }
+
+    def _name_inputs_of_other_players(self, sources: list[PlayerSource]) -> list[PlayerSource]:
+        """
+        Return the sources of the device, an input of another player named as shown on this one.
+
+        Such an input names its player by the id the provider knows it by. It is left out when
+        that names no player Music Assistant has, such as a disabled one.
+        """
+        players = self.mass.players
+        named: list[PlayerSource] = []
+        for source in sources:
+            if source.owner_player_id is None:
+                named.append(source)
+            elif owner := players.get_audio_source_owner(source):
+                named.append(
+                    replace(
+                        source,
+                        name=players.get_audio_source_name(source, self.player_id),
+                        owner_player_id=owner.player_id,
+                    )
+                )
+        return named
 
     def _collect_peer(
         self,
