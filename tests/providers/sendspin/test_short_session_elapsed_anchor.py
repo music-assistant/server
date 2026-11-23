@@ -50,6 +50,7 @@ def _short_session(monkeypatch: pytest.MonkeyPatch) -> SendspinPlaybackSession:
     session._item_starts = []
     session._next_media = None
     session._next_media_ready = asyncio.Event()
+    session._replacement = None
 
     async def audio_source() -> AsyncIterator[bytes]:
         # 2s of silence: well inside the 30s producer buffer
