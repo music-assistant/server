@@ -215,9 +215,11 @@ class SonosPlayer(PlayerProtocol):
         self._marked_asleep = False
         # the connection followed a sleep; the speaker then restores its session paused
         self._woken_from_sleep = False
-        # the MA queue the loaded cloud queue serves, and the version the speaker
-        # compares against to decide whether its cached copy is still valid
+        # the MA queue the loaded cloud queue serves, the playback session of it that was
+        # loaded, and the version the speaker compares against to decide whether its cached
+        # copy is still valid
         self.cloud_queue_id: str | None = None
+        self._loaded_session_id: str | None = None
         self.cloud_queue_version: float = time.time()
         # advanced on every play_media: item ids are served suffixed with it, so a
         # reload of the item the speaker is already playing gets a fresh identity.
@@ -797,6 +799,7 @@ class SonosPlayer(PlayerProtocol):
             self._queue_session_id = None
             self._flow_queue_id = None
             self.cloud_queue_id = media.source_id
+            self._loaded_session_id = media.queue_session_id
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.protocol_id}/v2.3/"
             try:
                 await self.group_controller.play_cloud_queue(
@@ -865,6 +868,7 @@ class SonosPlayer(PlayerProtocol):
         """
         if media.source_id:
             self.cloud_queue_id = media.source_id
+            self._loaded_session_id = media.queue_session_id
         await self.refresh_cloud_queue()
 
     def wire_item_id(self, queue_item_id: str | None, generation: int | None = None) -> str | None:
@@ -2065,6 +2069,11 @@ class SonosPlayer(PlayerProtocol):
     ) -> PlayerMedia:
         """Return the media for a queue item, with a position-based stream URL for this player."""
         media = await self.mass.player_queues.player_media_from_queue_item(queue_item)
+        # a start moves the queue to a new session before the speaker gets to load it, and the
+        # speaker acts on no load while an item it fetched waits for audio (the started track
+        # can hold the only stream slot). Under the session it loaded the stream server refuses
+        # such a fetch right away.
+        media.queue_session_id = self._loaded_session_id
         media.uri = await self.mass.streams.resolve_stream_url(
             self.protocol_id, media, queue_index=queue_index
         )
