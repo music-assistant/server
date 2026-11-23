@@ -5708,9 +5708,9 @@ class StreamsAudio:
         self, streamdetails: StreamDetails, metadata: dict[str, str]
     ) -> None:
         """Handle metadata extracted from a chained Ogg stream."""
-        title = metadata.get("title", "")
-        artist = metadata.get("artist", "")
-        album = metadata.get("album", "")
+        title = html.unescape(metadata.get("title", ""))
+        artist = html.unescape(metadata.get("artist", ""))
+        album = html.unescape(metadata.get("album", ""))
         if not artist and " - " in title:
             artist, title = title.split(" - ", 1)
         if not (title or artist):
@@ -5727,9 +5727,9 @@ class StreamsAudio:
             streamdetails.stream_title = cleaned_title
             self._update_radio_stream_metadata(
                 streamdetails,
-                artist=html.unescape(artist) or None,
-                title=html.unescape(title) or cleaned_title,
-                album=html.unescape(album) or None,
+                artist=artist or None,
+                title=title or cleaned_title,
+                album=album or None,
             )
 
     def _record_inband_stream_title(self, streamdetails: StreamDetails, cleaned_title: str) -> bool:
@@ -5794,6 +5794,7 @@ class StreamsAudio:
         except UnicodeDecodeError:
             # fallback to iso-8859-1
             stream_title = stream_title_re.group(1).decode("iso-8859-1", errors="replace")
+        stream_title = html.unescape(stream_title)
 
         cleaned_stream_title = clean_stream_title(stream_title)
 
@@ -6320,8 +6321,8 @@ class StreamsAudio:
             metadata = parse_extinf_metadata(line)
 
             # Build stream title from title and artist
-            title = metadata.get("title", "")
-            artist = metadata.get("artist", "")
+            title = html.unescape(metadata.get("title", ""))
+            artist = html.unescape(metadata.get("artist", ""))
             image_url = metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
             if not artist and " - " in title:
                 artist, title = title.split(" - ", 1)
@@ -6345,8 +6346,8 @@ class StreamsAudio:
                     streamdetails.stream_title = cleaned_title
                     self._update_radio_stream_metadata(
                         streamdetails,
-                        artist=html.unescape(artist) or None,
-                        title=html.unescape(title) or cleaned_title,
+                        artist=artist or None,
+                        title=title or cleaned_title,
                         image_url=image_url,
                     )
 

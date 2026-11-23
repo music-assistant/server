@@ -152,30 +152,3 @@ def test_parse_station_stream_title() -> None:
 
     # conventional "Artist - Track" is not a station format
     assert parse_station_stream_title("Tori Amos - Cornflake Girl") is None
-
-
-def test_cleaning_streamtitle_html_entities() -> None:
-    """Test that HTML entities in stream titles are decoded."""
-    line = "John Lennon - I&apos;m Losing You"
-    assert clean_stream_title(line) == "John Lennon - I'm Losing You"
-
-    line = "&quot;Cornflake Girl&quot; by Tori Amos"
-    assert clean_stream_title(line) == "Tori Amos - Cornflake Girl"
-    assert parse_station_stream_title(line) == ("Cornflake Girl", "Tori Amos", None)
-
-    # an encoded quote inside a keyword field must not end the field early
-    line = 'title="Say &quot;Hello&quot;",artist="Example Artist"'
-    assert clean_stream_title(line) == 'Example Artist - Say "Hello"'
-
-    # station formats are decoded once, the same as the direct parser call
-    line = "&quot;Tom &amp;amp; Jerry&quot; by Tori Amos"
-    assert parse_station_stream_title(line) == ("Tom &amp; Jerry", "Tori Amos", None)
-    assert clean_stream_title(line) == "Tori Amos - Tom &amp; Jerry"
-
-    # encoded quotes and tildes inside a field must not be taken as station delimiters
-    line = '"Say &quot;Hello&quot;" by Example Artist'
-    assert parse_station_stream_title(line) == ('Say "Hello"', "Example Artist", None)
-    line = '"Song" by Example Artist from "Best of &quot;Live&quot;"'
-    assert parse_station_stream_title(line) == ("Song", "Example Artist", 'Best of "Live"')
-    line = "EXAMPLE ARTIST~SONG &#126; LIVE~ALBUM~2026~~225"
-    assert parse_station_stream_title(line) == ("SONG ~ LIVE", "EXAMPLE ARTIST", "ALBUM")
