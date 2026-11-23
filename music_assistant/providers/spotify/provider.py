@@ -47,6 +47,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
     UniqueList,
@@ -102,6 +103,7 @@ from .constants import (
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
     CREDENTIALS_FILE,
+    GLOBAL_SEARCH_LIMIT,
     GLOBAL_SEARCH_TIMEOUT,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
     SOLOIST_DATA_DIR_NAME,
@@ -459,7 +461,7 @@ class SpotifyProvider(MusicProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
-        Browse Spotify items, including curated sections (new releases, genres & moods).
+        Browse Spotify items, including curated sections (new releases, genres & moods, recently played).
 
         :param path: The path to browse (e.g. provider_id:// or provider_id://new-releases).
         """
@@ -476,6 +478,9 @@ class SpotifyProvider(MusicProvider):
 
         if subpath == "categories":
             return await self._get_categories(locale)
+
+        if subpath == "recently-played":
+            return await self._get_recently_played()
 
         # For root path, add curated folders on top of standard library folders.
         # At the root the path always ends in "://", so curated paths can be appended directly.
@@ -497,11 +502,43 @@ class SpotifyProvider(MusicProvider):
                     translation_key="genres_and_moods",
                     is_playable=False,
                 ),
+                BrowseFolder(
+                    item_id="recently-played",
+                    provider=self.instance_id,
+                    path=f"{path}recently-played",
+                    name="Recently Played",
+                    translation_key="recently_played",
+                    is_playable=True,
+                ),
             ]
             standard = await super().browse(path)
             return [*curated, *standard]
 
         return await super().browse(path)
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get Spotify's recommendation row descriptors without fetching items."""
+        return [
+            RecommendationFolder(
+                item_id="recently_played",
+                provider=self.instance_id,
+                name="Recently played on Spotify",
+                translation_key="recently_played",
+                icon="mdi-history",
+            )
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single Spotify recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == "recently_played":
+            return UniqueList(await self._get_recently_played())
+        return UniqueList()
 
     @use_cache(cache_checksum="global_session_v1")
     async def search(
@@ -519,6 +556,8 @@ class SpotifyProvider(MusicProvider):
             return searchresult
 
         search_query = search_query.replace("'", "")
+        if not self.dev_session_active:
+            limit = min(limit, GLOBAL_SEARCH_LIMIT)
         searches: list[tuple[list[MediaType], bool]] = [(media_types, False)]
         if self.dev_session_active and MediaType.PLAYLIST in media_types:
             # Spotify returns the playlists a developer app may not access (its own
@@ -1314,24 +1353,25 @@ class SpotifyProvider(MusicProvider):
         limit: int,
         searchresult: SearchResults,
         use_global_session: bool,
+        offset: int = 0,
     ) -> None:
         """
         Page through Spotify search results for the given media types.
 
         :param search_query: Search query.
         :param media_types: The media types to search for.
-        :param limit: Number of items to return per media type.
+        :param limit: Number of results per media type to page up to, those before offset included.
         :param searchresult: The search result to add the found items to.
         :param use_global_session: Force use of global session (for features not available on dev).
+        :param offset: Index of the first result to fetch.
         """
         searchtype = self._build_search_types(media_types)
         if not searchtype:
             return
 
-        offset = 0
         page_limit = min(limit, 10)
 
-        while True:
+        while offset < limit:
             api_result = await self._get_data(
                 "search",
                 q=search_query,
@@ -1343,13 +1383,14 @@ class SpotifyProvider(MusicProvider):
             items_received = self._process_search_results(api_result, searchresult)
 
             offset += page_limit
-            if offset >= limit or items_received < page_limit:
+            if items_received < page_limit:
                 break
 
     async def _search_playlists_on_global_session(
         self, search_query: str, limit: int, searchresult: SearchResults
     ) -> None:
         """Search playlists on the global session, topped up by the dev session if it fails."""
+        limit = min(limit, GLOBAL_SEARCH_LIMIT)
         global_result = SearchResults()
         try:
             async with asyncio.timeout(GLOBAL_SEARCH_TIMEOUT):
@@ -1358,10 +1399,15 @@ class SpotifyProvider(MusicProvider):
                 )
         except RetriesExhausted, TimeoutError:
             self.logger.debug("Global session is slow or rate limited, topping up on the dev one")
-            if (missing := limit - len(UniqueList(global_result.playlists))) > 0:
-                await self._search_pages(
-                    search_query, [MediaType.PLAYLIST], missing, global_result, False
-                )
+            # continue after the playlists the global session did return
+            await self._search_pages(
+                search_query,
+                [MediaType.PLAYLIST],
+                limit,
+                global_result,
+                False,
+                offset=len(global_result.playlists),
+            )
         searchresult.playlists = UniqueList(global_result.playlists)[:limit]
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
@@ -1592,6 +1638,30 @@ class SpotifyProvider(MusicProvider):
             for item in result.get("playlists", {}).get("items", [])
             if item and item.get("id") and item.get("name")
         ]
+
+    @use_cache(300)
+    async def _get_recently_played(self) -> list[Track]:
+        """Get the user's recently played tracks from Spotify without mutating the playlog."""
+        try:
+            result = await self._get_data("me/player/recently-played", limit=50)
+        except MediaNotFoundError:
+            return []
+        tracks: list[Track] = []
+        seen_ids: set[str] = set()
+        for entry in result.get("items") or []:
+            if not isinstance(entry, dict):
+                continue
+            track_obj = entry.get("track")
+            if (
+                not isinstance(track_obj, dict)
+                or not (track_id := track_obj.get("id"))
+                or track_obj.get("is_local")
+                or track_id in seen_ids
+            ):
+                continue
+            seen_ids.add(track_id)
+            tracks.append(parse_track(track_obj, self))
+        return tracks
 
     async def _get_liked_songs_playlist(self) -> Playlist:
         if self._sp_user is None:

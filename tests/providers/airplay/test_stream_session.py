@@ -12,6 +12,7 @@ import pytest
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
+from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ANCHOR_SEAT_LEAD_MS,
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -70,6 +71,8 @@ def _make_session(
     :param seconds_streamed: How many seconds of audio have been streamed.
     """
     prov = MagicMock()
+    # a fresh clock reads as wall-clock time on the cliairplay timeline
+    prov.mass.timeline_clock = TimelineClock()
 
     pcm_format = MagicMock()
     pcm_format.pcm_sample_size = PCM_SAMPLE_SIZE
@@ -397,7 +400,7 @@ async def _start_group(
         patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
         patch(
             "music_assistant.providers.airplay.stream_session.cli_clock_time",
-            side_effect=lambda: clock[0],
+            side_effect=lambda _clock: clock[0],
         ),
     ):
         await session.start(MagicMock())

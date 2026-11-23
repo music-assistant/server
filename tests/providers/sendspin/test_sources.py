@@ -160,6 +160,26 @@ async def test_audio_sources_follow_role_activation() -> None:
     assert listed[0].allow_audio_analysis is True
 
 
+async def test_a_client_of_a_disabled_player_offers_no_input() -> None:
+    """
+    A connected client and an approved held input are not offered while their player is disabled.
+
+    The server sets nothing up for such a client, so its input would belong to no player.
+    """
+    sources = await make_sources(
+        [
+            _FakeClient("enabled", name="Turntable"),
+            _FakeClient("disabled", name="Aux", has_player_role=True),
+            _FakeClient("held", held=True),
+        ]
+    )
+    get_server_api(sources).pairing_store.paired.add("held")
+    get_players(sources).disabled.update({"disabled", "held"})
+
+    assert [s.item_id for s in await sources.get_audio_sources()] == ["enabled"]
+    assert sources.get_player_input_sources("disabled") == []
+
+
 async def test_analysis_follows_the_setting_of_the_device() -> None:
     """The user disables analysis per device, such as for a microphone; the default allows it."""
     sources = await make_sources([_FakeClient("client-1", name="Cast Pro", has_player_role=True)])
@@ -983,6 +1003,19 @@ async def test_autostart_plays_on_the_player_of_a_device_first_seen_now(
     assert get_queues(sources).played == [
         ("pl0123456789ab", "sendspin://audio_source/client-1", QueueOption.PLAY)
     ]
+
+
+@pytest.mark.usefixtures("fast_autostart")
+async def test_a_client_of_a_disabled_player_never_autostarts(fake_client: _FakeClient) -> None:
+    """A signal on a client whose player is disabled starts nothing on its autostart target."""
+    sources = await make_sources([fake_client])
+    attach_client(sources, "client-2", "kitchen")
+    get_config(sources).values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "kitchen"
+    get_players(sources).disabled.add("client-1")
+    fake_client.emit(_signal(SignalState.ABSENT))
+    fake_client.emit(_signal(SignalState.PRESENT))
+    await _settle()
+    assert get_queues(sources).played == []
 
 
 @pytest.mark.usefixtures("fast_autostart")

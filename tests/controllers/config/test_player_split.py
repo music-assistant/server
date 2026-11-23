@@ -821,7 +821,15 @@ def _without_values(record: dict[str, Any]) -> dict[str, Any]:
         (_record("ss_unknown", SENDSPIN, "unknown", name="Gadget"), {"session_only": True}),
         (
             {**_record("ss_untyped", SENDSPIN, name="Tablet"), "player_type": None},
-            {"session_only": True},
+            {"session_only": True, **WEB_DEFAULTS},
+        ),
+        (
+            {
+                k: v
+                for k, v in _record("ss_no_type", SENDSPIN, name="Tablet").items()
+                if k != "player_type"
+            },
+            {"session_only": True, **WEB_DEFAULTS},
         ),
         (
             _without_values(_record("ss_bare", SENDSPIN, name="Tablet")),
@@ -853,6 +861,7 @@ def _without_values(record: dict[str, Any]) -> dict[str, Any]:
         "light",
         "unknown",
         "untyped",
+        "no_type_key",
         "no_values",
         "garbled",
         "stored",
@@ -1070,6 +1079,38 @@ def test_records_an_older_version_stored_for_a_split_config_are_removed() -> Non
         assert remove_player_records_of_older_versions(again) is False
     assert again == data
     assert records == []
+
+
+def test_a_kept_browser_player_of_a_split_config_gets_the_defaults_of_its_client() -> None:
+    """
+    A browser player the split kept without the defaults of its client gets them once.
+
+    Its record has no type, and its own protocol names it as its player. A player that holds
+    defaults, of a kind this version does not know, or that this version created stays as is.
+    """
+    data = _split_settings()
+    untyped = _record("ss_untyped", SENDSPIN, name="Tablet", values={"session_only": True})
+    del untyped["player_type"]
+    data[CONF_PLAYERS]["ss_untyped"] = untyped
+    data[CONF_PLAYER_PROTOCOLS]["ss_untyped"] = _protocol_record(
+        "ss_untyped", SENDSPIN, "ss_untyped", role="native"
+    )
+    data[CONF_PLAYERS]["ss_stored"] = _record(
+        "ss_stored",
+        SENDSPIN,
+        name="Tablet",
+        values={"session_only": True, "protocol_defaults": {"hidden_by_default": False}},
+    )
+    data[CONF_PLAYERS]["ss_unknown"] = _record(
+        "ss_unknown", SENDSPIN, "unknown", name="Gadget", values={"session_only": True}
+    )
+    expected = deepcopy(data)
+    expected[CONF_PLAYERS]["ss_untyped"]["values"] |= WEB_DEFAULTS
+
+    assert remove_player_records_of_older_versions(data) is True
+    assert data == expected
+    assert remove_player_records_of_older_versions(data) is False
+    assert data == expected
 
 
 @pytest.mark.parametrize(

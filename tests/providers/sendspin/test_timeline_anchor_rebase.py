@@ -33,7 +33,7 @@ _FRAME_SIZE = 4 * 2
 _CHUNK_BYTES = b"\x00" * (round(_CHUNK_DURATION_US / 1_000_000 * _SAMPLE_RATE) * _FRAME_SIZE)
 _STALL_US = 3_000_000
 # Audio is committed this far ahead of the clock, so now_us() and the commit timestamps
-# stay on one timeline the way aiosendspin's shared RawMonotonicClock keeps them.
+# stay on one timeline the way the shared timeline clock of the server keeps them.
 _SEND_AHEAD_US = 500_000
 
 

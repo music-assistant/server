@@ -7,14 +7,12 @@ import os
 import platform
 import plistlib
 import re
-import time
 from dataclasses import dataclass
 from enum import StrEnum
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientTimeout
-from aiosendspin.clock import RawMonotonicClock
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
@@ -28,6 +26,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import PlayerConfig
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.helpers.timeline_clock import TimelineClock
     from music_assistant.mass import MusicAssistant
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,15 +40,33 @@ _CLI_BINARY_CHECK_TIMEOUT = 15.0
 # Bound the /info capability probe: it runs in the discovery path, and a receiver
 # that is slow to answer must not hold up player registration.
 _INFO_PROBE_TIMEOUT = 5.0
-_RAW_CLOCK = RawMonotonicClock()
-# Every cliairplay process gets this one offset (--clock-offset-ns), so the whole
-# group plays on Sendspin's raw clock and host clock slews and steps move nothing.
-CLI_CLOCK_OFFSET_NS: Final[int] = time.time_ns() - _RAW_CLOCK.now_us() * 1000
 
 
-def cli_clock_time() -> float:
-    """Return now on the cliairplay timeline, in unix-epoch seconds."""
-    return (_RAW_CLOCK.now_us() * 1000 + CLI_CLOCK_OFFSET_NS) / 1e9
+def cli_clock_time(clock: TimelineClock) -> float:
+    """
+    Return now on the cliairplay timeline, in unix-epoch seconds.
+
+    :param clock: The timeline clock of the server.
+    """
+    return (clock.now_ns() + clock.unix_offset_ns) / 1e9
+
+
+def cli_clock_args(clock: TimelineClock) -> list[str]:
+    """
+    Return the cliairplay arguments that put a process on the cliairplay timeline.
+
+    Every cliairplay process gets them, so the whole group plays on the timeline clock of
+    the server and host clock slews and steps move nothing. A process keeps the rate it
+    was started with.
+
+    :param clock: The timeline clock of the server.
+    """
+    return [
+        "--clock-offset-ns",
+        str(clock.offset_ns + clock.unix_offset_ns),
+        "--clock-rate-ppb",
+        str(clock.rate_ppb),
+    ]
 
 
 def get_sync_offset_ms(config: PlayerConfig) -> int:

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from music_assistant_models.enums import ChannelLayout
 from zeroconf import IPVersion
+
+from .const import UPNP_PORT
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -35,6 +38,14 @@ def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str | None:
             continue
         return str(address)
     return None
+
+
+def get_upnp_port(discovery_info: AsyncServiceInfo) -> int:
+    """Get the port of the speaker's UPnP services from zeroconf discovery info."""
+    location = discovery_info.decoded_properties.get("location")
+    if location and (port := urlparse(location).port):
+        return port
+    return UPNP_PORT
 
 
 def get_channel_layout(

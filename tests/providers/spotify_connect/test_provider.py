@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, EventType, ProviderType
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.streamdetails import StreamMetadata
 
@@ -361,6 +362,87 @@ async def test_queue_clear_survives_a_failing_release() -> None:
     await provider.on_source_released(_PLAYER_ID, "player1")
 
     deactivate.assert_awaited_once()
+
+
+def _starting_provider() -> tuple[SpotifyConnectProvider, _PlayerDaemon, AsyncMock, AsyncMock]:
+    """
+    Build a provider whose session, started from the Spotify app, plays on 'player1'.
+
+    Returns the provider, its daemon, the backend's deactivate and the queues' play_media.
+    """
+    provider, daemon, deactivate = _tethered_provider()
+    daemon.playing = True
+    daemon.audio_source = MagicMock(uri=f"spotify_connect--test://audiosource/{_PLAYER_ID}")
+    mass = cast("MagicMock", provider.mass)
+    mass.players.resolve_player_id.side_effect = lambda player_id: player_id
+    mass.player_queues.play_media = play_media = AsyncMock()
+    return provider, daemon, deactivate, play_media
+
+
+async def _start_playback(provider: SpotifyConnectProvider, daemon: _PlayerDaemon) -> None:
+    """Run the start of the session's playback on its player, without the debounce."""
+    with patch("music_assistant.providers.spotify_connect.provider.PLAY_MEDIA_DEBOUNCE_S", 0):
+        await provider._deferred_play_media_fire(daemon)
+
+
+async def test_a_start_on_an_unavailable_player_releases_the_session() -> None:
+    """
+    A speaker that is off releases the session, so the Spotify app stops showing it playing.
+
+    The release asks nothing of the unavailable player itself.
+    """
+    provider, daemon, deactivate, play_media = _starting_provider()
+    play_media.side_effect = PlayerUnavailableError("Player player1 is not available")
+
+    await _start_playback(provider, daemon)
+
+    deactivate.assert_awaited_once()
+    assert await _session_inactive(provider, daemon) == []
+
+
+async def test_a_rolled_back_start_is_released_only_once() -> None:
+    """A start that fails after the player took the source is released by its rollback only."""
+    provider, daemon, deactivate, play_media = _starting_provider()
+
+    async def _fail_after_rollback(queue_id: str, _media: str) -> None:
+        await provider.on_source_released(_PLAYER_ID, queue_id)
+        raise PlayerUnavailableError("Player player1 is not available")
+
+    play_media.side_effect = _fail_after_rollback
+
+    await _start_playback(provider, daemon)
+
+    deactivate.assert_awaited_once()
+
+
+async def test_the_pause_a_release_starts_with_does_not_cut_it_short() -> None:
+    """
+    A failed start still gives up the device when the backend pauses before doing so.
+
+    The 'paused' event answering that pause cancels the pending playback start, which is the
+    very task that releases the session.
+    """
+    provider, daemon, _, play_media = _starting_provider()
+    play_media.side_effect = PlayerUnavailableError("Player player1 is not available")
+    mass = cast("MagicMock", provider.mass)
+    mass.create_task.side_effect = asyncio.get_running_loop().create_task
+    device_given_up = asyncio.Event()
+
+    async def _pause_then_deactivate() -> None:
+        await provider._handle_backend_event(daemon, BackendEvent(type=BackendEventType.PAUSED))
+        # the pause acknowledgement
+        await asyncio.sleep(0)
+        device_given_up.set()
+
+    cast("MagicMock", daemon.backend).deactivate = _pause_then_deactivate
+    with patch("music_assistant.providers.spotify_connect.provider.PLAY_MEDIA_DEBOUNCE_S", 0):
+        provider._schedule_play_media(daemon)
+        start = daemon.pending_play_media_task
+        assert start is not None
+        with contextlib.suppress(asyncio.CancelledError):
+            await start
+
+    await asyncio.wait_for(device_given_up.wait(), timeout=1)
 
 
 async def test_a_slow_stop_after_pause_is_reported() -> None:

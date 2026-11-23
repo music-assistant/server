@@ -358,14 +358,94 @@ async def test_a_report_on_the_asked_id_resolves_to_the_item_served_there() -> N
     assert player.served_item_id("gone@0") == "track1"
 
 
-async def test_a_repeated_position_keeps_the_asked_id() -> None:
-    """Test a track repeating itself is listed again under the id the speaker asked about."""
+async def test_a_repeated_position_keeps_the_asked_id_for_its_own_round() -> None:
+    """Test the position asked about keeps the asked id, and its repeat gets an id of its own."""
     player = _make_player_on_real_queues(3, RepeatMode.ONE)
 
     window = await player.build_cloud_queue_window("gone@0")
 
-    assert window.wire_ids == ["gone@0", "gone@0"]
-    assert player._window_item_ids == {0: "gone@0"}
+    assert window.wire_ids == ["gone@0", "track0@0~r1"]
+    assert player._window_item_ids == {0: "track0@0~r1"}
+
+
+async def test_each_round_of_a_repeating_track_gets_an_id_of_its_own() -> None:
+    """
+    Test every round of a track on repeat is served under an id of its own.
+
+    Sonos wants a distinct id for every instance of a track in its queue: a round under the
+    id of the round before is not fetched cleanly, and the speaker cuts out.
+    """
+    player = _make_player_on_real_queues(1, RepeatMode.ONE)
+
+    first = await player.build_cloud_queue_window("track0@0")
+    # the speaker moved on to the repeat and asks around it
+    second = await player.build_cloud_queue_window("track0@0~r1")
+
+    assert first.wire_ids == ["track0@0", "track0@0~r1"]
+    assert second.wire_ids == ["track0@0~r1", "track0@0~r2"]
+
+
+async def test_the_rounds_of_repeat_all_agree_from_window_to_window() -> None:
+    """Test a window asked around a later round names the rounds as the window before did."""
+    player = _make_player_on_real_queues(3, RepeatMode.ALL)
+
+    before = await player.build_cloud_queue_window("track2@0")
+    # the speaker moved on to the first track of the next round
+    after = await player.build_cloud_queue_window("track0@0~r1")
+
+    assert before.wire_ids[:5] == [
+        "track1@0",
+        "track2@0",
+        "track0@0~r1",
+        "track1@0~r1",
+        "track2@0~r1",
+    ]
+    assert after.wire_ids[:4] == ["track0@0~r1", "track1@0~r1", "track2@0~r1", "track0@0~r2"]
+
+
+async def test_a_fetch_on_repeat_all_binds_the_round_the_speaker_reaches_first() -> None:
+    """
+    Test a fetch at a position a short queue on repeat lists twice binds its nearest round.
+
+    A track added behind the playing one takes the position the speaker cached the next
+    track at, and goes out under the id of that track's first round.
+    """
+    player = _make_player_on_real_queues(4, RepeatMode.ALL)
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    queue_data.queue.current_index = 1
+    await player.build_cloud_queue_window("track1@0")
+    queue_data.items.insert(2, _make_queue_item("guest"))
+    player.on_queue_position_served(2, "guest")
+
+    assert player.served_item_id("track2@0") == "guest"
+    # the speaker has not fetched the round after it yet
+    assert player.served_item_id("track2@0~r1") == "track2"
+
+
+async def test_a_fetch_on_repeat_one_binds_the_repeat() -> None:
+    """
+    Test a fetch at the position of a track on repeat binds the round after the playing one.
+
+    The speaker fetched the round it plays already: a track added before it takes its
+    position, and goes out under the id of the repeat.
+    """
+    player = _make_player_on_real_queues(3, RepeatMode.ONE)
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    queue_data.queue.current_index = 1
+    await player.build_cloud_queue_window("track1@0")
+    queue_data.items.insert(1, _make_queue_item("guest"))
+    player.on_queue_position_served(1, "guest")
+
+    assert player.served_item_id("track1@0~r1") == "guest"
+    assert player.served_item_id("track1@0") == "track1"
+
+
+def test_an_id_of_a_later_round_names_its_queue_item() -> None:
+    """Test a report on a repeat round is read as the queue item of the current load."""
+    player, _ = _make_player([_make_queue_item("track0")])
+
+    assert player.from_current_load("track0@0~r2")
+    assert player.served_item_id("track0@0~r2") == "track0"
 
 
 async def test_a_window_asked_around_an_id_of_an_earlier_load_keeps_the_ids_of_this_load() -> None:
@@ -699,7 +779,7 @@ async def test_a_track_repeating_itself_is_listed_once_more(
     window = await player.build_cloud_queue_window("track0@0")
 
     assert [x.queue_item_id for x in window.items] == ["track0", "track0"]
-    assert window.wire_ids == ["track0@0", "track0@0"]
+    assert window.wire_ids == ["track0@0", "track0@0~r1"]
     assert window.includes_end is False
 
 
@@ -724,7 +804,10 @@ async def test_a_short_queue_on_repeat_all_still_fills_the_window() -> None:
     window = await player.build_cloud_queue_window("track0@0")
 
     assert [x.queue_item_id for x in window.items] == [f"track{i % 3}" for i in range(11)]
-    assert window.wire_ids == [f"track{i % 3}@0" for i in range(11)]
+    # every pass over the queue is a round of its own
+    assert window.wire_ids == [
+        f"track{i % 3}@0~r{i // 3}" if i >= 3 else f"track{i}@0" for i in range(11)
+    ]
 
 
 async def test_a_successful_load_releases_the_replaced_sessions_streams() -> None:

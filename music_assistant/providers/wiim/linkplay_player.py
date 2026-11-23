@@ -211,6 +211,10 @@ class LinkPlayPlayer(PlayerProtocol):
         # follower gets its audio from its leader at the hardware level: the player drops
         # its active output once this control protocol reports a sync leader.
         self._attr_group_members = self._native_groups.members_of(self.protocol_id)
+        self._attr_channel_layout = self._native_groups.channel_layout_of(self.protocol_id)
+        self._attr_type = (
+            PlayerType.PLAYER if self._attr_channel_layout is None else PlayerType.MULTI_CHANNEL
+        )
         self.update_state(force_update=True)
 
     # --- Player commands ---

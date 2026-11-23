@@ -27,7 +27,7 @@ from music_assistant_models.enums import (
     RepeatMode,
     SourceControl,
 )
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError, PlayerUnavailableError
 from music_assistant_models.media_items import (
     AudioSource,
     ProviderMapping,
@@ -566,7 +566,9 @@ class SpotifyConnectProvider(PluginProvider):
         # the player we were on - which by now is playing whatever took our place.
         daemon.active_player_id = None
         try:
-            await daemon.backend.deactivate()
+            # shielded: a failed playback start releases from within its own task, which the
+            # 'paused' event of a backend that pauses before giving up the device cancels
+            await asyncio.shield(daemon.backend.deactivate())
         except Exception as err:  # noqa: BLE001 - releasing the session is best effort
             self.logger.debug("Failed to release Spotify session: %s", err)
 
@@ -1020,6 +1022,8 @@ class SpotifyConnectProvider(PluginProvider):
         """
         Trigger play_media after a short debounce.
 
+        When the player is not available, the Spotify session is released instead.
+
         The backend can emit a stale 'playing' from a dying session just before it
         reconnects; acting on it immediately would start a stream for a session
         that is about to be replaced. Debouncing — and cancelling the task on a
@@ -1043,7 +1047,19 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.active_player_id = target_player_id
         # awaited inline so the tracked deferred task covers the whole start and
         # a daemon teardown can still cancel an in-flight source selection
-        await self.mass.player_queues.play_media(target_player_id, str(daemon.audio_source.uri))
+        try:
+            await self.mass.player_queues.play_media(target_player_id, str(daemon.audio_source.uri))
+        except PlayerUnavailableError as err:
+            # the player is not available (off, and no power control woke it). The start failed
+            # before the player took the source, so no on_source_released follows: release the
+            # session here, or the Spotify app goes on showing playback on a silent speaker
+            self.logger.info(
+                "Cannot start Spotify Connect playback [%s] on player %s: %s",
+                daemon.publish_name,
+                target_player_id,
+                err,
+            )
+            await self.on_source_released(daemon.player_id, target_player_id)
 
     def _clear_active_player(self, daemon: _PlayerDaemon) -> None:
         """Clear the active player and reset playback state when a session ends."""

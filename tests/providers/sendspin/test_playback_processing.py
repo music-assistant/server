@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
+import pytest
 from music_assistant_models.audio_processing import (
     AudioDSPDetails,
     AudioOutputDetails,
@@ -18,8 +19,6 @@ from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 
 if TYPE_CHECKING:
-    import pytest
-
     from tests.scenarios.harness import Scenario
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
@@ -29,7 +28,7 @@ def _leader(**kwargs: Any) -> MagicMock:
     """Return a mocked leader whose provider holds no virtual or multi-channel players."""
     leader = MagicMock(protocol_id="leader", **kwargs)
     leader.provider.is_silent_client.return_value = False
-    leader.provider.speaker_output.side_effect = lambda client_id: (client_id, None)
+    leader.provider.speaker_output.side_effect = lambda client_id: (client_id, None, False)
     return leader
 
 
@@ -118,7 +117,9 @@ def test_a_speaker_of_a_set_plays_with_the_settings_of_the_set(
     """A speaker of a multi-channel player plays with the DSP of that player, on its channel."""
     player = _leader()
     player.provider.speaker_output.side_effect = lambda client_id: (
-        ("sendspin_mc_set", SpeakerChannel.FRONT_LEFT) if client_id == "left" else (client_id, None)
+        ("sendspin_mc_set", SpeakerChannel.FRONT_LEFT, False)
+        if client_id == "left"
+        else (client_id, None, False)
     )
     player.mass.players.get_player_by_protocol.side_effect = lambda protocol_id: (
         MagicMock(player_id="pl_set") if protocol_id == "sendspin_mc_set" else None
@@ -142,7 +143,53 @@ def test_a_speaker_of_a_set_plays_with_the_settings_of_the_set(
         pcm_format,
         handoff_format=pcm_format,
         channel=SpeakerChannel.FRONT_LEFT,
+        with_subwoofer=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("channel", "reported"),
+    [
+        pytest.param(SpeakerChannel.FRONT_LEFT, True, id="a main speaker"),
+        pytest.param(SpeakerChannel.LFE, False, id="the subwoofer"),
+    ],
+)
+def test_the_main_speakers_of_a_set_report_its_output(
+    monkeypatch: pytest.MonkeyPatch, channel: SpeakerChannel, reported: bool
+) -> None:
+    """
+    The output of a multi-channel player is reported by its main speakers alone.
+
+    A subwoofer plays along with them, so what the player shows does not depend on which of
+    its speakers was planned last.
+    """
+    player = _leader()
+    player.provider.speaker_output.side_effect = lambda _client_id: (
+        "sendspin_mc_set",
+        channel,
+        True,
+    )
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32, channels=2
+    )
+    plan = MagicMock(filter_params=[])
+    plan.output_details.player_ids = ["pl_set"]
+    player.mass.streams.audio.get_player_output_plan.return_value = plan
+    session = SendspinPlaybackSession(player)
+    session._pcm_format = pcm_format
+    session._queue_id = "pl_set"
+    session._queue_session_id = "session-1"
+    monkeypatch.setattr(session, "_get_member_output_format", lambda _player_id: pcm_format)
+
+    session._read_pipeline_config("speaker")
+
+    update_output = player.mass.streams.audio_processing.update_output
+    if reported:
+        update_output.assert_called_once_with(
+            "pl_set", plan, queue_id="pl_set", session_id="session-1"
+        )
+    else:
+        update_output.assert_not_called()
 
 
 async def test_a_bridged_member_follows_the_output_channels_of_the_output_it_rides_on(

@@ -56,6 +56,8 @@ class HeosPlayerProvider(PlayerProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._music_source_list: list[PlayerSource] = []
         self._input_source_list: list[MediaItem] = []
+        # the name HEOS puts in front of the names of the inputs of each device, by device id
+        self._input_device_names: dict[int, str] = {}
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -99,6 +101,90 @@ class HeosPlayerProvider(PlayerProvider):
 
             # Explicitly discover players now
             await self.discover_players()
+
+    @property
+    def music_source_list(self) -> list[PlayerSource]:
+        """Get mapped music source list from controller info."""
+        return self._music_source_list
+
+    @property
+    def input_source_list(self) -> list[MediaItem]:
+        """Get input list from controller info. This represents all inputs across all players."""
+        return self._input_source_list
+
+    @property
+    def input_device_names(self) -> dict[int, str]:
+        """Return the device names HEOS put in front of the names of their inputs, by device id."""
+        return self._input_device_names
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        await self._disconnect_controllers()
+
+    async def discover_players(self) -> None:
+        """Discover players for this provider."""
+        if self._controller_discovery_running or self._player_discovery_running or not self._heos:
+            return  # discovery already running or not set up
+
+        try:
+            self._player_discovery_running = True
+            self.logger.debug("Discovering HEOS players")
+            devices = await self._heos.get_players()
+            for device in devices.values():
+                protocol_id = str(device.player_id)
+                if player := cast("HeosPlayer", self.get_protocol(protocol_id)):
+                    self.logger.debug(
+                        "Updating existing HEOS player: %s (%s)", device.name, protocol_id
+                    )
+                    # Update properties such as name or availability
+                    player.set_device_info()
+                    player.update_state()
+                    continue
+
+                if not self.mass.players.wants_protocol(protocol_id):
+                    self.logger.debug("Skipping disabled player: %s (%s)", device.name, protocol_id)
+                    continue
+                self.logger.info("Discovered new HEOS player: %s (%s)", device.name, protocol_id)
+
+                heos_player = HeosPlayer(self, device)
+                await heos_player.setup()
+        finally:
+            self._player_discovery_running = False
+
+    async def on_mdns_service_state_change(
+        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+    ) -> None:
+        """Discovery via mdns."""
+        if state_change == ServiceStateChange.Removed:
+            return
+
+        if not info:
+            return
+
+        if self._heos or self._controller_discovery_running:
+            self.logger.debug("Ignoring mDNS configuration because we're already set up")
+            # We're already set up or in the process of setting up
+            return
+
+        device_ip = get_primary_ip_address_from_zeroconf(info)
+        if not device_ip:
+            self.logger.debug("Ignoring incomplete mdns discovery for HEOS player: %s", name)
+            return
+
+        self.logger.debug("Discovered HEOS device %s on %s", name, device_ip)
+
+        self._controller_discovery_running = True
+        try:
+            await self._setup_controllers(device_ip, True)
+        except SetupFailedError:
+            self.logger.error(
+                "Failed to set up HEOS controller at %s discovered via mDNS", device_ip
+            )
+            await self._disconnect_controllers()
+        finally:
+            self._controller_discovery_running = False
+
+        await self.discover_players()
 
     async def _setup_controllers(self, controller_ip: str, connect_preferred: bool = False) -> None:
         """Set up the HEOS controller."""
@@ -223,6 +309,7 @@ class HeosPlayerProvider(PlayerProvider):
         # Browse the inputs of each device separately (instead of pyheos' get_input_sources),
         # so a single unresponsive device does not block the setup of the whole provider.
         self._input_source_list = []
+        self._input_device_names = {}
         aux_sources = await self._heos.browse(const.MUSIC_SOURCE_AUX_INPUT)
         for aux_source in aux_sources.items:
             try:
@@ -236,6 +323,7 @@ class HeosPlayerProvider(PlayerProvider):
                 )
                 continue
             self._input_source_list.extend(aux_inputs.items)
+            self._input_device_names[aux_source.source_id] = aux_source.name
 
         music_sources = await self._heos.get_music_sources()
         for source_id, source in music_sources.items():
@@ -248,20 +336,6 @@ class HeosPlayerProvider(PlayerProvider):
                     can_next_previous=source_id == 1024,  # TODO: properly check
                 )
             )
-
-    @property
-    def music_source_list(self) -> list[PlayerSource]:
-        """Get mapped music source list from controller info."""
-        return self._music_source_list
-
-    @property
-    def input_source_list(self) -> list[MediaItem]:
-        """Get input list from controller info. This represents all inputs across all players."""
-        return self._input_source_list
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
-        await self._disconnect_controllers()
 
     async def _disconnect_controllers(self) -> None:
         """Disconnect HEOS controller connections."""
@@ -284,68 +358,3 @@ class HeosPlayerProvider(PlayerProvider):
             assert isinstance(player, HeosPlayer)
             player.set_device_info()
             player.update_state()
-
-    async def discover_players(self) -> None:
-        """Discover players for this provider."""
-        if self._controller_discovery_running or self._player_discovery_running or not self._heos:
-            return  # discovery already running or not set up
-
-        try:
-            self._player_discovery_running = True
-            self.logger.debug("Discovering HEOS players")
-            devices = await self._heos.get_players()
-            for device in devices.values():
-                protocol_id = str(device.player_id)
-                if player := cast("HeosPlayer", self.get_protocol(protocol_id)):
-                    self.logger.debug(
-                        "Updating existing HEOS player: %s (%s)", device.name, protocol_id
-                    )
-                    # Update properties such as name or availability
-                    player.set_device_info()
-                    player.update_state()
-                    continue
-
-                if not self.mass.players.wants_protocol(protocol_id):
-                    self.logger.debug("Skipping disabled player: %s (%s)", device.name, protocol_id)
-                    continue
-                self.logger.info("Discovered new HEOS player: %s (%s)", device.name, protocol_id)
-
-                heos_player = HeosPlayer(self, device)
-                await heos_player.setup()
-        finally:
-            self._player_discovery_running = False
-
-    async def on_mdns_service_state_change(
-        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
-    ) -> None:
-        """Discovery via mdns."""
-        if state_change == ServiceStateChange.Removed:
-            return
-
-        if not info:
-            return
-
-        if self._heos or self._controller_discovery_running:
-            self.logger.debug("Ignoring mDNS configuration because we're already set up")
-            # We're already set up or in the process of setting up
-            return
-
-        device_ip = get_primary_ip_address_from_zeroconf(info)
-        if not device_ip:
-            self.logger.debug("Ignoring incomplete mdns discovery for HEOS player: %s", name)
-            return
-
-        self.logger.debug("Discovered HEOS device %s on %s", name, device_ip)
-
-        self._controller_discovery_running = True
-        try:
-            await self._setup_controllers(device_ip, True)
-        except SetupFailedError:
-            self.logger.error(
-                "Failed to set up HEOS controller at %s discovered via mDNS", device_ip
-            )
-            await self._disconnect_controllers()
-        finally:
-            self._controller_discovery_running = False
-
-        await self.discover_players()

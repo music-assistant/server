@@ -64,6 +64,7 @@ from music_assistant_models.media_items import (
     media_from_dict,
 )
 from music_assistant_models.media_items.media_item import MediaCollection
+from music_assistant_models.player import PlayerSource
 from music_assistant_models.playlog_update import PlaylogUpdate
 
 from music_assistant.constants import (
@@ -91,6 +92,7 @@ from music_assistant.controllers.music.constants import (
     DATABASE_CLEANUP_TASK_ID,
     DB_SCHEMA_VERSION,
     INITIAL_SYNC_DELAY,
+    LIVE_SOURCES_BROWSE_SCHEME,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     RECOMMENDATIONS_BROWSE_SCHEME,
@@ -149,7 +151,6 @@ from music_assistant.controllers.tasks.context import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
-    player_access_filter,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
@@ -1092,29 +1093,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         name=prov.name,
                     )
                 )
-            # AudioSource providers surface at root like regular providers; a
-            # provider with a single user-initiable source is promoted to that
-            # source directly so it's playable in one tap.
-            for source_prov in self.mass.players.get_audio_source_providers():
-                initiable = [
-                    source
-                    for source in await self._get_provider_audio_sources(source_prov, player_id)
-                    if source.can_initiate
-                ]
-                if not initiable:
-                    continue
-                if len(initiable) == 1:
-                    root_items.append(self._client_audio_source(initiable[0]))
-                else:
-                    root_items.append(
-                        BrowseFolder(
-                            item_id="root",
-                            provider=source_prov.domain,
-                            path=f"{source_prov.instance_id}://",
-                            uri=f"{source_prov.instance_id}://",
-                            name=source_prov.name,
-                        )
+            if await self._get_live_audio_sources(player_id):
+                root_items.append(
+                    BrowseFolder(
+                        item_id="root",
+                        provider=LIVE_SOURCES_BROWSE_SCHEME,
+                        path=f"{LIVE_SOURCES_BROWSE_SCHEME}://",
+                        uri=f"{LIVE_SOURCES_BROWSE_SCHEME}://",
+                        name="Live sources",
+                        translation_key="live_sources",
                     )
+                )
             return _listed([], root_items)
 
         # provider level
@@ -1124,12 +1113,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if browse_prov and not self._apply_user_provider_filter([browse_prov]):
             raise InsufficientPermissions(f"{browse_prov.name} is not a music source of this user")
         is_recommendations = provider_instance == RECOMMENDATIONS_BROWSE_SCHEME
+        is_live_sources = provider_instance == LIVE_SOURCES_BROWSE_SCHEME
         # handle regular provider listing, always add back folder first
-        if not (browse_prov or is_recommendations) or not sub_path:
+        if not (browse_prov or is_recommendations or is_live_sources) or not sub_path:
             prepend_items.append(
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
-            if not (browse_prov or is_recommendations):
+            if not (browse_prov or is_recommendations or is_live_sources):
                 return _listed(prepend_items, [])
         else:
             if is_recommendations:
@@ -1154,6 +1144,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return _listed(
                 prepend_items,
                 await self.recommendations.browse(sub_path, random_seed=random_seed),
+            )
+        if is_live_sources:
+            return _listed(
+                prepend_items,
+                [
+                    self._client_audio_source(source)
+                    for source in await self._get_live_audio_sources(player_id)
+                ],
             )
         # AudioSource providers don't implement browse(); list their initiable sources directly
         if (
@@ -1575,6 +1573,51 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
         return [item for sublist in results_per_provider for item in sublist]
 
+    @api_command("music/live_sources", required_scope=Scope.LIBRARY_READ)
+    async def live_sources(self, player_id: str | None = None) -> list[PlayerSource]:
+        """
+        Return the live sources the calling user can start, and the inputs a player can switch to.
+
+        Each entry carries its own name and the player it belongs to, None for a source that
+        belongs to no player. A live source is listed by its uri, which plays it on any player;
+        an input by its id in the source list of the player.
+
+        :param player_id: The player to start them on: only its own sources of a provider that
+            binds them to players are listed, and the inputs it can switch to come along. None
+            for the live sources of all players.
+        """
+        entries = [
+            self._live_source_entry(source, uri)
+            for source in await self._get_live_audio_sources(player_id)
+            if (uri := source.uri)
+        ]
+        if (
+            player_id is None
+            or (player := self.mass.players.get_player(player_id)) is None
+            or not has_player_access(get_current_user(), player.player_id, player)
+            # a player synced to another plays what that player plays
+            or player.synced_to
+        ):
+            return entries
+        listed = {entry.id for entry in entries}
+        inputs = [
+            entry
+            for entry in player.source_list
+            if entry.is_input and not entry.passive and entry.id not in listed
+        ]
+        # an input of another player carries its own name, as the provider delivers it
+        own = player.own_protocol
+        names = {x.id: x.name for x in own.source_list} if own else {}
+        entries += [
+            replace(
+                entry,
+                name=names.get(entry.id, entry.name),
+                owner_player_id=entry.owner_player_id or player.player_id,
+            )
+            for entry in self._without_inaccessible_audio_sources(inputs)
+        ]
+        return entries
+
     @api_command("music/item", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def get_item(
         self,
@@ -1647,9 +1690,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Return a live audio source as its provider delivers it, with its plain name.
 
-        Only a source the calling user may use is returned: not one of a player the user
-        has no access to, nor an input of the device of such a player. A client gets the
-        source from the item commands instead, named for outside any player.
+        Only a source the calling user may use is returned: not one that belongs to a player
+        the user has no access to. A client gets the source from the item commands instead,
+        named for outside any player.
 
         :param item_id: Id of the source at its provider.
         :param provider_instance_id_or_domain: The provider that delivers it.
@@ -3159,53 +3202,50 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         page.extend(items)
         return page
 
+    async def _get_live_audio_sources(self, player_id: str | None) -> list[AudioSource]:
+        """
+        Return the live sources the calling user can start, scoped to a player when given.
+
+        :param player_id: The player to start them on, None for all players.
+        """
+        sources: list[AudioSource] = []
+        for provider in self.mass.players.get_audio_source_providers():
+            sources += [
+                source
+                for source in await self._get_provider_audio_sources(provider, player_id)
+                if source.can_initiate
+            ]
+        return sources
+
     async def _get_provider_audio_sources(
         self, provider: AudioSourceMixin, player_id: str | None
     ) -> list[AudioSource]:
         """
-        Return the AudioSources of a provider to list, scoped to a player when given.
+        Return a provider's AudioSources the calling user may use, scoped to a player when given.
 
-        Player-bound providers yield only the sources bound to the given player;
-        without a player scope all their sources bound to a player the calling
-        user may see are yielded. Player-unbound providers yield all sources, except
-        the inputs of player devices the calling user may not see.
+        Player-bound providers yield only the sources bound to the given player, or all
+        of them without a player scope. Player-unbound providers yield all sources.
         """
         # probing with the (possibly empty) scope tells bound and unbound apart:
         # a player-bound provider returns a list for any player id, unbound returns None
-        if provider.get_player_audio_sources(player_id or "") is None:
-            return self._without_hidden_player_inputs(provider, await provider.get_audio_sources())
-        # bound sources honor the calling user's player access filter, so a
-        # restricted user cannot discover sources of players hidden from them
-        current_user = get_current_user()
-        if player_id is not None:
-            if not has_player_access(
-                current_user, player_id, self.mass.players.get_player(player_id)
-            ):
-                return []
-            return provider.get_player_audio_sources(player_id) or []
-        if player_access_filter(current_user) is None:
-            return await provider.get_audio_sources()
-        sources: list[AudioSource] = []
-        for player in self.mass.players.iter_players():
-            if has_player_access(current_user, player.player_id, player):
-                sources.extend(provider.get_player_audio_sources(player.player_id) or [])
-        return sources
+        sources = provider.get_player_audio_sources(player_id or "")
+        if sources is None or player_id is None:
+            sources = await provider.get_audio_sources()
+        return self._without_inaccessible_audio_sources(sources)
 
-    def _without_hidden_player_inputs(
-        self, provider: AudioSourceMixin, sources: list[AudioSource]
-    ) -> list[AudioSource]:
-        """Return the sources without the inputs of player devices the calling user may not see."""
-        current_user = get_current_user()
-        if player_access_filter(current_user) is None:
-            return sources
-        hidden: set[str] = set()
-        for player in self.mass.players.iter_players(return_disabled=True):
-            if has_player_access(current_user, player.player_id, player):
-                continue
-            # a device's own inputs may be reported for one of its protocols
-            for device_id in {player.player_id, *player.protocol_ids}:
-                hidden.update(x.item_id for x in provider.get_player_input_sources(device_id))
-        return [x for x in sources if x.item_id not in hidden]
+    def _without_inaccessible_audio_sources[T: (AudioSource, PlayerSource)](
+        self, sources: list[T]
+    ) -> list[T]:
+        """
+        Return the sources without those of a player the calling user may not use.
+
+        :param sources: Live audio sources, or inputs a player offers from other players.
+        """
+        return [
+            source
+            for source in sources
+            if source.owner_player_id is None or self.mass.players.may_use_audio_source(source)
+        ]
 
     def _client_audio_source(self, source: AudioSource) -> AudioSource:
         """
@@ -3223,6 +3263,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             name=self.mass.players.get_audio_source_name(source),
             sort_name=None,
             owner_player_id=owner.player_id if owner else None,
+        )
+
+    def _live_source_entry(self, source: AudioSource, uri: str) -> PlayerSource:
+        """
+        Return the entry of a live source in the list of live sources.
+
+        :param source: The source as its provider delivers it.
+        :param uri: The uri of the source.
+        """
+        owner = self.mass.players.get_audio_source_owner(source)
+        return PlayerSource(
+            id=uri,
+            name=source.name,
+            # the source list of its player knows whether it is an input of that device
+            is_input=owner is not None
+            and any(entry.id == uri and entry.is_input for entry in owner.source_list),
+            owner_player_id=owner.player_id if owner else None,
+            can_play_pause=source.can_play_pause,
+            can_seek=source.can_seek,
+            can_next_previous=source.can_next_previous,
+            can_shuffle=source.can_shuffle,
+            can_repeat=source.can_repeat,
         )
 
     async def _link_genres_if_unmapped(self, item: MediaItemType) -> None:
