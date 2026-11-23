@@ -517,9 +517,11 @@ class DeezerMediaManager:
             if need_albums or find_audiobooks
             else []
         )
-        # chapters of an audiobook count as tracks on Deezer
-        check_ids = [n.id for n in album_nodes] if find_audiobooks else []
-        check_ids += [n.album.id for n in track_nodes if n.album is not None]
+        check_ids: list[str] = []
+        if find_audiobooks:
+            # chapters of an audiobook count as tracks on Deezer
+            check_ids = [n.id for n in album_nodes]
+            check_ids += [n.album.id for n in track_nodes if n.album is not None]
         audiobook_ids = (
             await self.provider.gql_client.check_audiobook_ids(list(dict.fromkeys(check_ids)))
             if check_ids
@@ -529,7 +531,7 @@ class DeezerMediaManager:
             search_results.tracks = [
                 parse_track(self.provider, n)
                 for n in track_nodes
-                if n.album is None or n.album.id not in audiobook_ids
+                if not need_audiobooks or n.album is None or n.album.id not in audiobook_ids
             ]
         if need_albums:
             search_results.albums = [
