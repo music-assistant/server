@@ -207,9 +207,6 @@ RUN set -x \
         libevent-dev \
         libjson-c5 \
         libgcrypt20 \
-        # glib is needed by the shairport-sync binary (previously pulled in only
-        # indirectly via the pipewire/pulseaudio utils)
-        libglib2.0-0 \
         # libsndfile needed for librosa audio file support (smartfades)
         libsndfile1 \
         # libchromaprint needed for AcoustID fingerprinting (acoustid_lookup)
