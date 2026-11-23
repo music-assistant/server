@@ -3707,7 +3707,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # this start leaves behind
             self.mass.streams.audio.clear_crossfade_handover(queue_id)
             # always update session id when we start a new playback session
-            queue_data.session_id = queue_data.started_session_id = shortuuid.random(length=8)
+            session_id = shortuuid.random(length=8)
+            queue_data.session_id = queue_data.started_session_id = session_id
             self.release_unneeded_audio(queue_id)
             # a stream slot that is kept for the queue on a provider it does not go on with
             # from here, as after a replace, is free to everyone again
@@ -3849,7 +3850,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 attribute_value=PlaybackState.PLAYING,
                 timeout=PLAYBACK_START_TIMEOUT,
             ):
-                await self.mass.players.play_media(queue_id, player_media)
+                try:
+                    await self.mass.players.play_media(queue_id, player_media)
+                except Exception:
+                    # a start the player refused plays nothing, so its session ends here and
+                    # the audio it prepared lets go of its source. No stop is sent: the player
+                    # has nothing of this start to stop
+                    self._end_session(queue_data, session_id)
+                    raise
                 queue.current_index = index
                 queue.current_item = queue_item
                 self.signal_update(queue_id)

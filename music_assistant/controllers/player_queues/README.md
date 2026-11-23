@@ -228,7 +228,8 @@ it computes the next index, pre-resolves that item's stream details via the Stre
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
 of this enqueue path — it is triggered by the Streams Controller near the end of the streamed track,
 via a callback into the queue controller, and always targets the item after the streamed one.
-Buffers and crossfade data are released when the queue stops or is cleared; what the queue moves
+Buffers and crossfade data are released when the queue stops or is cleared, or its player refuses
+a start; what the queue moves
 away from while it plays goes when it leaves the queue's scope (below). Every
 buffer records the session that claimed it, and a stop leaves alone only what the session playing
 *now* claimed, so playback that restarted before the stop got that far keeps its audio. Everything
