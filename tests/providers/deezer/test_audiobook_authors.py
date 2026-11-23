@@ -99,6 +99,7 @@ def test_audiobook_authors_are_artists(provider: DeezerProvider) -> None:
         duration=3600,
         publisher=None,
         is_favorite=False,
+        release_date=None,
         original_release_date=None,
     )
 

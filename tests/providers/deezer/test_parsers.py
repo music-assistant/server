@@ -111,6 +111,7 @@ def _audiobook(**details: str) -> SimpleNamespace:
         duration=3600,
         publisher=None,
         is_favorite=False,
+        release_date=details.pop("release_date", None),
         original_release_date=details.pop("original_release_date", None),
         **details,
     )
@@ -128,11 +129,26 @@ def test_audiobook_from_a_list_has_no_barcode(provider: DeezerProvider) -> None:
     assert parsed.external_ids == set()
 
 
-def test_audiobook_has_its_release_date(provider: DeezerProvider) -> None:
-    """The audiobook carries its release date."""
-    audiobook = _audiobook(original_release_date="2023-11-03T00:00:00.000Z")
-    parsed = parse_audiobook(provider, audiobook)  # type: ignore[arg-type]
-    assert parsed.metadata.release_date == datetime(2023, 11, 3, tzinfo=UTC)
+@pytest.mark.parametrize(
+    ("dates", "expected"),
+    [
+        (
+            {
+                "original_release_date": "2003-01-01T00:00:00.000Z",
+                "release_date": "2017-03-24T00:00:00.000Z",
+            },
+            datetime(2003, 1, 1, tzinfo=UTC),
+        ),
+        ({"release_date": "2017-03-24T00:00:00.000Z"}, datetime(2017, 3, 24, tzinfo=UTC)),
+    ],
+    ids=["original release", "no original release"],
+)
+def test_audiobook_has_its_release_date(
+    provider: DeezerProvider, dates: dict[str, str], expected: datetime
+) -> None:
+    """The audiobook carries its original release date, else its release date."""
+    parsed = parse_audiobook(provider, _audiobook(**dates))  # type: ignore[arg-type]
+    assert parsed.metadata.release_date == expected
 
 
 def test_audiobook_from_a_release_has_its_date_and_label(provider: DeezerProvider) -> None:
