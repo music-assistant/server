@@ -497,7 +497,12 @@ class BluesoundPlayer(PlayerProtocol):
                 can_next_previous=False,
             )
 
-        presets = await self.client.presets(timeout=timeout)
+        try:
+            presets = await self.client.presets(timeout=timeout)
+        except PlayerUnexpectedResponseError as err:
+            # the secondary of a stereo pair answers with an empty body
+            self.logger.debug("Could not read the presets of %s: %s", self.name, err)
+            presets = []
         inputs = await self.client.inputs(timeout=timeout)
         inputs_as_sources = [_input_to_ma_source(bluos_input) for bluos_input in inputs]
         self._input_source_ids = {

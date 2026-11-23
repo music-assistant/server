@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState
-from pyblu.parse import parse_inputs
+from pyblu.parse import parse_inputs, parse_presets
 
 from music_assistant.providers.bluesound.const import PLAYER_SOURCE_MAP
 from music_assistant.providers.bluesound.player import BluesoundPlayer
@@ -265,3 +265,14 @@ def test_a_playing_input_is_marked_as_input(name: str, is_input: bool) -> None:
     BluesoundPlayer._resolve_source(cast("BluesoundPlayer", fake))
 
     assert fake._attr_source_list[-1].is_input is is_input
+
+
+async def test_an_empty_preset_list_leaves_the_inputs_as_sources() -> None:
+    """The secondary of a stereo pair answers its presets with an empty body, which is no error."""
+    fake = MagicMock()
+    fake.client.presets = AsyncMock(side_effect=lambda **_: parse_presets(b""))
+    fake.client.inputs = AsyncMock(return_value=[MagicMock(url="Capture:hw:1", text="Optical")])
+
+    sources = await BluesoundPlayer._get_bluesound_sources(cast("BluesoundPlayer", fake))
+
+    assert [source.id for source in sources] == ["input-Capture:hw:1"]
