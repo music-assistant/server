@@ -30,6 +30,9 @@ NOREWIND_PLAYLIST_SUFFIX = ".norewind.m3u8"
 LIVE_EDGE_SEGMENTS = 3
 # a seek further than this past the live edge is snapped back to the live edge
 LIVE_SEEK_TOLERANCE = 60
+# playback this far behind the live edge is still shown as live, which allows for the
+# LIVE_EDGE_SEGMENTS held back and the player's own buffer
+LIVE_EDGE_TOLERANCE = 60
 # BBC HLS programme dates run this far ahead of the broadcast: the BBC Sounds player
 # starts a programme 20 seconds into the DASH timeline, which itself runs 16 seconds
 # behind the HLS dates (availabilityStartTime 1969-12-31T23:59:44Z, same segment numbers)

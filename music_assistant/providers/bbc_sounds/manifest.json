@@ -13,7 +13,7 @@
     "[auntie-sounds](https://github.com/kieranhogg/auntie-sounds)"
   ],
   "requirements": [
-    "auntie-sounds==3.1.0"
+    "auntie-sounds==3.3.2"
   ],
   "multi_instance": true,
   "menu_actions": [

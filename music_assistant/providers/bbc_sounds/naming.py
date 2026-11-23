@@ -6,6 +6,7 @@ auntie-sounds objects to Music Assistant objects, as well as multiple ways to co
 them, and also display then, requires a consistent interface for naming things.
 """
 
+import unicodedata
 from contextlib import suppress
 from datetime import date, datetime
 from enum import Flag, auto
@@ -197,7 +198,7 @@ def full_station_name(
     if (
         name.startswith(STATION_PREFIX)
         or name in UNPREFIXED_STATIONS
-        or not name.isascii()  # These titles already have the equivalent of 'BBC' in
+        or not _is_latin_script(name)  # These titles already have the equivalent of 'BBC' in
     ):
         return name
     return f"{STATION_PREFIX} {name}"
@@ -222,6 +223,10 @@ def programme_source(item: PlayableItem) -> str | None:
     ):
         return full_station_name(station_name_string=item.network.short_title)
     return None
+
+
+def _is_latin_script(name: str) -> bool:
+    return all(unicodedata.name(char, "").startswith("LATIN") for char in name if char.isalpha())
 
 
 def _ordinal(day: int) -> str:
