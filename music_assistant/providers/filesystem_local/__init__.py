@@ -700,22 +700,14 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             if force_refresh_tracks:
                 await self._drop_stale_album_artist_caches()
-            # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
-                for cue_item in (
-                    *unchanged_cue_items,
-                    *(item for item, _ in items_to_process if item.ext in CUE_EXTENSIONS),
-                ):
-                    try:
-                        cue_sheet = await self._cue.load_cue_sheet(cue_item)
-                    except InvalidDataError:
-                        continue
-                    if is_multi_file_cue(cue_sheet):
-                        # ignored, so its same-named audio file is a regular track
-                        cue_stems.discard(cue_item.absolute_path.rsplit(".", 1)[0])
-                        continue
-                    if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
-                        cue_stems.add(companion_stem)
+                await self._update_cue_stems(
+                    [
+                        *unchanged_cue_items,
+                        *(item for item, _ in items_to_process if item.ext in CUE_EXTENSIONS),
+                    ],
+                    cue_stems,
+                )
             # drop CUE companion audio: absorbed into CUE tracks and not tracked in
             # provider_mappings, so they would otherwise flag as changed every sync
             items_to_process = [
@@ -1532,6 +1524,35 @@ class LocalFileSystemProvider(MusicProvider):
                 os.close(root_fd)
 
         await asyncio.to_thread(_walk)
+
+    async def _update_cue_stems(self, cue_items: list[FileSystemItem], cue_stems: set[str]) -> None:
+        """
+        Add the audio files CUE sheets name to cue_stems and release ignored CUE sheets.
+
+        :param cue_items: Every CUE sheet found in this scan.
+        :param cue_stems: Absolute paths (without extension) of the CUE sheets in this scan,
+            updated to the audio files that must not be imported as regular tracks.
+        """
+        kept: set[str] = set()
+        ignored: set[str] = set()
+        for cue_item in cue_items:
+            own_stem = cue_item.absolute_path.rsplit(".", 1)[0]
+            try:
+                cue_sheet = await self._cue.load_cue_sheet(cue_item)
+            except InvalidDataError:
+                kept.add(own_stem)
+                continue
+            if is_multi_file_cue(cue_sheet):
+                # ignored, so its same-named audio file is a regular track
+                ignored.add(own_stem)
+                continue
+            kept.add(own_stem)
+            # a CUE may name an audio file other than its own; hide that companion too
+            if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
+                cue_stems.add(companion_stem)
+                kept.add(companion_stem)
+        # applied after every sheet is read so the result does not depend on their order
+        cue_stems.difference_update(ignored - kept)
 
     def _classify_scan_item(
         self,

@@ -337,6 +337,39 @@ class TestMultiFileCue:
         assert await provider._cue.parse_tracks(cue_item) == []
 
 
+class TestUpdateCueStems:
+    """Tests for which audio files the sync hides on behalf of CUE sheets."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("multi_file_first", [True, False])
+    async def test_ignored_cue_keeps_a_file_another_cue_absorbs(
+        self, tmp_path: Path, multi_file_first: bool
+    ) -> None:
+        """An ignored CUE does not release an audio file a supported CUE absorbs."""
+        single = _make_cue_item(
+            tmp_path, SAMPLE_CUE.replace('"album.flac"', '"Album.flac"'), name="Disc image.cue"
+        )
+        multi = _make_cue_item(tmp_path, PER_TRACK_CUE, name="Album.cue")
+        provider = _make_provider(base_path=str(tmp_path))
+        cue_items = [multi, single] if multi_file_first else [single, multi]
+        cue_stems = {str(tmp_path / "Disc image"), str(tmp_path / "Album")}
+
+        await provider._update_cue_stems(cue_items, cue_stems)
+
+        assert cue_stems == {str(tmp_path / "Disc image"), str(tmp_path / "Album")}
+
+    @pytest.mark.asyncio
+    async def test_ignored_cue_releases_its_same_named_file(self, tmp_path: Path) -> None:
+        """An ignored CUE no longer hides the audio file that shares its name."""
+        multi = _make_cue_item(tmp_path, PER_TRACK_CUE, name="12 Song to Woody.cue")
+        provider = _make_provider(base_path=str(tmp_path))
+        cue_stems = {str(tmp_path / "12 Song to Woody")}
+
+        await provider._update_cue_stems([multi], cue_stems)
+
+        assert cue_stems == set()
+
+
 class TestParseCueTracks:
     """Tests for _parse_cue_tracks end-to-end (with mocked parse_tags/parse_album)."""
 
