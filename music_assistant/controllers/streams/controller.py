@@ -1783,9 +1783,12 @@ class StreamsController(CoreController):
             # counted before the write, so a player never holds more than recorded
             bytes_sent += len(data)
             self._flow_bytes_sent[player_id] = (request.path, bytes_sent)
+            if not throughput:
+                await resp.write(data)
+                return
+            write_start = time.monotonic()
             await resp.write(data)
-            if throughput:
-                throughput.on_write(len(data))
+            throughput.on_write(len(data), time.monotonic() - write_start)
 
         client_disconnected = False
         # same registry as the single-item route: a forced-flow player (overlay)
@@ -3160,25 +3163,33 @@ class _FlowThroughputLog:
         self._started = self._window_start = self._last_write = time.monotonic()
         self._window_bytes = self._window_writes = 0
         self._window_pcm = self._total_pcm = self._total_bytes = 0
-        self._window_max_gap = 0.0
+        self._window_max_gap = self._window_max_blocked = 0.0
 
     async def count_pcm(self, stream: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
         """Pass on the PCM stream fed to the encoder while counting it."""
-        async for chunk in stream:
-            self._window_pcm += len(chunk)
-            self._total_pcm += len(chunk)
-            yield chunk
+        async with aclosing(stream):
+            async for chunk in stream:
+                self._window_pcm += len(chunk)
+                self._total_pcm += len(chunk)
+                self._maybe_log_window()
+                yield chunk
 
-    def on_write(self, size: int) -> None:
-        """Record a write to the player and log the window once it spans a second."""
+    def on_write(self, size: int, blocked: float) -> None:
+        """
+        Record a write to the player.
+
+        :param size: Bytes written.
+        :param blocked: Seconds the write waited on the player's socket.
+        """
         now = time.monotonic()
-        self._window_max_gap = max(self._window_max_gap, now - self._last_write)
+        # the gap excludes the socket wait, so it shows how long the encoder took
+        self._window_max_gap = max(self._window_max_gap, now - blocked - self._last_write)
+        self._window_max_blocked = max(self._window_max_blocked, blocked)
         self._last_write = now
         self._window_bytes += size
         self._window_writes += 1
         self._total_bytes += size
-        if now - self._window_start >= 1:
-            self._log_window(now)
+        self._maybe_log_window()
 
     def finish(self, client_disconnected: bool) -> None:
         """Log the totals when the flow stream ends."""
@@ -3195,21 +3206,30 @@ class _FlowThroughputLog:
             now - self._last_write,
         )
 
+    def _maybe_log_window(self) -> None:
+        """Log the current window once it spans a second."""
+        now = time.monotonic()
+        if now - self._window_start >= 1:
+            self._log_window(now)
+
     def _log_window(self, now: float) -> None:
         """Log the current window and start a new one."""
         self._logger.debug(
-            "[6831] Flow %s t=%.1fs: %d bytes out in %d writes over %.2fs (max gap %d ms), "
-            "%.2fs audio in; total %d bytes out, %.1fs audio in",
+            "[6831] Flow %s t=%.1fs: %d bytes out in %d writes over %.2fs (max gap %d ms, "
+            "max write blocked %d ms), %.2fs audio in; total %d bytes out, %.1fs audio in, "
+            "last write %.1fs ago",
             self._player_name,
             now - self._started,
             self._window_bytes,
             self._window_writes,
             now - self._window_start,
             self._window_max_gap * 1000,
+            self._window_max_blocked * 1000,
             self._window_pcm / self._pcm_sample_size,
             self._total_bytes,
             self._total_pcm / self._pcm_sample_size,
+            now - self._last_write,
         )
         self._window_start = now
         self._window_bytes = self._window_writes = self._window_pcm = 0
-        self._window_max_gap = 0.0
+        self._window_max_gap = self._window_max_blocked = 0.0

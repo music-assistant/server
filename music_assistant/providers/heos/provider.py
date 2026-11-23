@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
@@ -82,11 +83,14 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # DEBUG BUILD support#6831: the raw HEOS commands, results and errors (pyheos) and
-        # the group start timeouts (players controller) are only wanted with debug logging
+        # DEBUG BUILD support#6831: the raw HEOS commands, results and errors (pyheos), the
+        # group start timeouts (players) and the restarts (player queues) with debug logging
         if self.logger.isEnabledFor(logging.DEBUG):
             logging.getLogger("pyheos").setLevel(logging.DEBUG)
+            for name in ("pyheos.connection", "pyheos.heos"):
+                logging.getLogger(name).addFilter(_redact_heos_account)
             self.mass.players.logger.setLevel(logging.DEBUG)
+            self.mass.player_queues.logger.setLevel(logging.DEBUG)
         else:
             logging.getLogger("pyheos").setLevel(self.logger.level + 10)
 
@@ -361,3 +365,12 @@ class HeosPlayerProvider(PlayerProvider):
             assert isinstance(player, HeosPlayer)
             player.set_device_info()
             player.update_state()
+
+
+def _redact_heos_account(record: logging.LogRecord) -> bool:
+    """Mask the HEOS account name in raw pyheos log lines (support#6831 debug build)."""
+    message = record.getMessage()
+    if "un=" in message:
+        record.msg = re.sub(r"un=[^&'\"\s]+", "un=<redacted>", message)
+        record.args = None
+    return True
