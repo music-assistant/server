@@ -55,6 +55,7 @@ from music_assistant.controllers.music.constants import (
     DB_SCHEMA_VERSION,
 )
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
+from music_assistant.controllers.music.helpers import genre_lookup_cte
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.controllers.streams.audio_analysis_codec import encode
 from music_assistant.controllers.streams.audio_analysis_database import create_analysis_tables
@@ -499,12 +500,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         # media type using json_each to map media items directly to genres.
         # One raw_name can map to multiple genre_ids (n:n).
         if raw_name_to_genres:
-            cte_values = ", ".join(
-                f"(LOWER('{name.replace(chr(39), chr(39) + chr(39))}'), {gid})"
-                for name, gids in raw_name_to_genres.items()
-                for gid in gids
-            )
-            cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
+            cte, cte_params = genre_lookup_cte(raw_name_to_genres)
 
             for table, media_type in media_tables:
                 full_query = (
@@ -519,7 +515,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                     f"AND json_extract({table}.metadata, '$.genres') != '[]'"
                 )
                 logger.debug("Genre migration - %s query:\n%s", media_type.value, full_query)
-                await db.execute(full_query)
+                await db.execute(full_query, cte_params)
                 await db.commit()
 
     if prev_version <= 29:
