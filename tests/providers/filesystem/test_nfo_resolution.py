@@ -1376,6 +1376,37 @@ async def test_get_album_tracks_excludes_cue_companion_audio() -> None:
     assert result == [cue_track]
 
 
+async def test_get_album_tracks_keeps_the_same_named_track_of_a_multi_file_cue() -> None:
+    """A CUE with a FILE entry per track does not hide the track that shares its name."""
+    provider = _provider()
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    provider.exists = AsyncMock(return_value=True)
+    cue_item = _item("Artist/Album/01 First.cue")
+    track_item = _item("Artist/Album/01 First.flac")
+    provider._scandir = AsyncMock(return_value=[cue_item, track_item])
+    good_album = Album(
+        item_id="Artist/Album", provider=INSTANCE_ID, name="Album", provider_mappings=set()
+    )
+    good_track = MagicMock(album=good_album)
+    provider._cue.load_cue_sheet = AsyncMock(
+        return_value=MagicMock(
+            file_path="01 First.flac", file_paths=["01 First.flac", "02 Second.flac"]
+        )
+    )
+    provider._cue.parse_tracks = AsyncMock(
+        side_effect=AssertionError("a multi-file CUE sheet must not be parsed for tracks")
+    )
+    provider._parse_track = AsyncMock(return_value=good_track)
+
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await provider.get_album_tracks("Artist/Album")
+
+    assert result == [good_track]
+
+
 async def test_get_album_tracks_processes_the_companion_of_a_track_less_cue_sheet() -> None:
     """
     A CUE sheet that parses cleanly but names no tracks must not exclude its companion.
