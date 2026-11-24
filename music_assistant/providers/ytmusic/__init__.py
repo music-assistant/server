@@ -124,6 +124,7 @@ if TYPE_CHECKING:
 
 
 CONF_INCLUDE_VIDEOS = "include_videos_in_search"
+CONF_AUTHENTICATED_SEARCH = "authenticated_search"
 CONF_COOKIE = "cookie"
 CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
 CONF_STREAM_PROFILE = "stream_profile"
@@ -261,6 +262,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 default_value=STREAM_PROFILE_STABLE,
                 advanced=True,
             ),
+            ConfigEntry(
+                key=CONF_AUTHENTICATED_SEARCH,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+            ),
         )
 
     async def handle_async_init(self) -> None:
@@ -308,8 +315,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle a config update."""
         await super().update_config(config, changed_keys)
-        if f"values/{CONF_INCLUDE_VIDEOS}" in changed_keys:
-            # cached search results do not record the video preference they were made with
+        if changed_keys & {f"values/{CONF_INCLUDE_VIDEOS}", f"values/{CONF_AUTHENTICATED_SEARCH}"}:
+            # cached search results do not record the search settings they were made with
             for provider in (self.instance_id, self.mass.music.domain):
                 await self.mass.cache.delete(
                     None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=provider
@@ -346,14 +353,15 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             if media_types[0] == MediaType.RADIO:
                 # bit of an edge case but still good to handle
                 return parsed_results
-        results = await search(
-            query=search_query,
-            ytm_filter=ytm_filter,
-            limit=limit,
+        account: dict[str, Any] = (
+            {"headers": self._headers, "user": self._yt_user}
+            if self.config.get_value(CONF_AUTHENTICATED_SEARCH)
+            else {}
         )
+        results = await search(query=search_query, ytm_filter=ytm_filter, limit=limit, **account)
         if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
             # some tracks only exist as a video; interleave so videos survive the limit cut
-            videos = await search(query=search_query, ytm_filter="videos", limit=limit)
+            videos = await search(query=search_query, ytm_filter="videos", limit=limit, **account)
             results = [item for pair in zip_longest(results, videos) for item in pair if item]
             results = results[:limit]
         parsed_results = SearchResults()

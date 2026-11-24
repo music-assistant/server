@@ -456,16 +456,31 @@ async def search(
     query: str,
     ytm_filter: YTMSearchFilter | None = None,
     limit: int = 20,
+    headers: dict[str, str] | None = None,
+    user: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Async wrapper around the ytmusicapi search function."""
+    """
+    Async wrapper around the ytmusicapi search function.
+
+    :param query: Search query.
+    :param ytm_filter: Restrict the search to one result type.
+    :param limit: Maximum number of results.
+    :param headers: Account headers to search with, None to search signed out.
+    :param user: Brand account id to search as.
+    """
 
     def _search() -> list[dict[str, Any]]:
         # Always search in English: ytmusicapi (1.12.3) matches the result shelf title,
         # which YouTube returns translated, against the English filter name, so a filtered
         # search silently returns nothing in most other languages. Revisit once ytmusicapi
         # compares against the translated title.
-        # Unauthenticated on purpose: an account search lands in the user's YouTube search history.
-        results = _search_client().search(query=query, filter=ytm_filter, limit=limit)
+        # Unauthenticated by default: an account search lands in the user's YouTube search history.
+        ytm = (
+            ytmusicapi.YTMusic(auth=headers, language="en", user=user)
+            if headers
+            else _search_client()
+        )
+        results = ytm.search(query=query, filter=ytm_filter, limit=limit)
         # Sync result properties with uniformal objects
         for result in results:
             if result["resultType"] == "artist":
