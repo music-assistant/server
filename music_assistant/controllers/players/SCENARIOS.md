@@ -1866,6 +1866,16 @@ that follows switches nothing on.
   - `test_group_power_on.py::test_an_announcement_to_a_group_switches_no_member_on`
   - `test_group_power_on.py::test_an_announcement_to_a_member_switches_no_other_member_on`
 
+### GROUP-70 · An announcement to a player that leads others plays on that player alone
+
+Kitchen leads Office and plays. An announcement to Kitchen stops the group and takes Office off
+Kitchen, so only Kitchen plays the clip. Office joins Kitchen again after it, and the group plays
+on, on both.
+
+- End-to-end: **possible with** two speakers that group on their own protocol and do not announce
+  natively, and a client that sends an announcement.
+- Proven by: `test_announcements.py::test_an_announcement_to_a_leader_plays_on_the_leader_alone`
+
 ### GROUP-35 · A play, a next, a previous or a seek on a group that plays already switches no member on
 
 Downstairs plays on Kitchen and Office: Den's plug refused to switch on when it started, and
