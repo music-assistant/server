@@ -225,6 +225,8 @@ class HeosPlayerProvider(PlayerProvider):
         try:
             self._heos.add_on_controller_event(self._handle_controller_event)
             self._heos.add_on_disconnected(self._on_heos_disconnected)
+            # pyheos only refreshes loaded groups after a reconnect and then sends GROUPS_CHANGED
+            await self._heos.get_groups()
             await self._populate_sources()
         except HeosError as err:
             self.logger.error("Unexpected error setting up HEOS controller: %s", err)
