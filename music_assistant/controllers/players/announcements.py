@@ -407,6 +407,15 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # that live stream, in sync with the rest of the group) instead of a
             # second mechanism firing beside the playback.
             return announce_player
+        if (
+            (output := player.resolve_output_protocol())
+            and (underlying_id := output.underlying_protocol_id)
+            and (underlying := player.attached_protocols.get(underlying_id))
+            and PlayerFeature.PLAY_ANNOUNCEMENT in underlying.supported_features
+        ):
+            # The active output is a bridge (e.g. Sendspin over AirPlay) that streams
+            # through the output it rides on, so that output mixes the clip into it.
+            return underlying
         if player.playback_state != PlaybackState.PLAYING:
             # An idle player may announce through any audio protocol. A
             # PLAYING player deliberately gets no such fallback: routing to

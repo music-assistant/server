@@ -1229,6 +1229,33 @@ class TestNativeAnnouncementRouting:
         _refresh(group)
         return group
 
+    def _make_bridged_player(
+        self, mock_mass: MagicMock, *, own_support: bool = False, output_support: bool = True
+    ) -> tuple[PlayerController, Player, MockProtocol, AsyncMock, AsyncMock]:
+        """
+        Create a player playing through a bridge that rides on its audio protocol.
+
+        :param own_support: Whether the player's own protocol announces natively.
+        :param output_support: Whether the audio protocol the bridge rides on announces.
+        """
+        controller, player, audio, native_path, generic_path = (
+            self._make_player_with_audio_protocol(
+                mock_mass, PlaybackState.PLAYING, own_support=own_support
+            )
+        )
+        if not output_support:
+            audio._attr_supported_features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
+        bridge = _attach_audio(
+            MockProvider("sendspin", instance_id="sendspin", mass=mock_mass), player, "bridge"
+        )
+        bridge._attr_underlying_protocol_id = "audio_1"
+        bridge._attr_playback_state = PlaybackState.PLAYING
+        player.set_active_output_protocol("bridge")
+        _refresh(player)
+        # a playing player gets no idle fallback, so only the bridge's output can announce
+        assert player.playback_state == PlaybackState.PLAYING
+        return controller, player, audio, native_path, generic_path
+
     async def test_playing_player_does_not_route_to_an_idle_audio_protocol(
         self, mock_mass: MagicMock
     ) -> None:
@@ -1325,6 +1352,49 @@ class TestNativeAnnouncementRouting:
         """Without active playback the player's own announcement support wins."""
         controller, player, _audio, native_path, _generic_path = (
             self._make_player_with_audio_protocol(mock_mass, PlaybackState.IDLE, own_support=True)
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is _own(player)
+
+    async def test_bridge_announces_through_the_output_it_rides_on(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A player playing through a bridge announces through the output the bridge rides on.
+
+        E.g. a WiiM playing Sendspin over AirPlay: the AirPlay protocol mixes the clip
+        into the stream the bridge feeds it.
+        """
+        controller, _player, audio, native_path, generic_path = self._make_bridged_player(mock_mass)
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is audio
+        generic_path.assert_not_awaited()
+
+    async def test_bridge_on_an_output_that_does_not_announce_uses_the_default(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A bridge riding on an output without announcement support falls back to the default."""
+        controller, _player, _audio, native_path, generic_path = self._make_bridged_player(
+            mock_mass, output_support=False
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_not_awaited()
+        generic_path.assert_awaited_once()
+
+    async def test_own_native_support_beats_the_output_a_bridge_rides_on(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The player's own announcement handler wins over the output a bridge rides on."""
+        controller, player, _audio, native_path, _generic_path = self._make_bridged_player(
+            mock_mass, own_support=True
         )
 
         await controller.play_announcement("player_1", "http://test/announcement.mp3")

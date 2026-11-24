@@ -22,9 +22,9 @@ above it, represents its whole group, exactly like playing media to it does.
 A group-entity announcement is forwarded by the player controller to every member
 concurrently; each call arms its own member and they share one audible instant via
 the provider's announce-plan registry, so every room renders the clip in sync.
-Members of a Sendspin GROUP of bridged players each compute their own instant, so a
-group announcement there can be offset by tens of ms across rooms; cross-player
-plan sharing for that case is future work.
+A Sendspin-bridged player plays without a stream session to line up in, so it offers
+no coordinated start: a group entity with such members plays the announcement
+through its own stream instead.
 """
 
 from __future__ import annotations
@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
     from .stream import AirPlayStream
+    from .stream_session import AirPlayStreamSession
 
 
 async def play_announcement(
@@ -96,6 +97,16 @@ async def play_announcement(
         await _run_announcement(player, render, volume_level)
     finally:
         await renderer.release(render)
+
+
+def announce_session(player: AirPlayPlayer) -> AirPlayStreamSession | None:
+    """
+    Return the stream session an announcement on the player lines up in, None without one.
+
+    :param player: The player the announcement targets.
+    """
+    # a set plays in the session of its speakers
+    return player.session or (player.stream.session if player.stream else None)
 
 
 async def _run_announcement(
@@ -358,8 +369,7 @@ def _resolve_announce_instant(
     :param render_key: Identity of the announcement audio; instants are only
         ever shared between arms of the SAME announcement.
     """
-    # a set plays in the session of its speakers
-    session = player.session or (player.stream.session if player.stream else None)
+    session = announce_session(player)
     session_members = (
         [member for member in session.sync_clients if member.renders_audio] if session else members
     )
