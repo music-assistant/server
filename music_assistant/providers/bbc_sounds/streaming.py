@@ -126,7 +126,8 @@ class StreamManager:
             )
         return stream_details
 
-    @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
+    # an episode has no version pid until it is available, so don't cache a miss
+    @use_cache(expiration=Constants.DEFAULT_EXPIRATION, cache_none=False)
     async def _get_vpid(self, pid: str) -> str | None:
         """Get the version pid of an episode, which play status updates need."""
         return await self.provider.client.content.get_vpid_from_pid(pid)
