@@ -833,7 +833,6 @@ async def test_addon_images_outside_api_use_supervisor_core_address(path: str) -
         get.assert_called_once_with(
             f"http://172.30.32.1:80{path}",
             headers={},
-            allow_redirects=False,
         )
         cast("MagicMock", provider.mass.http_session.get).assert_not_called()
 
@@ -877,27 +876,8 @@ async def test_addon_image_uses_direct_https_and_ipv6() -> None:
         get.assert_called_once_with(
             "https://[::1]:8123/ai_task/image/x.png?authSig=abc",
             headers={},
-            allow_redirects=False,
         )
         cast("MagicMock", provider.mass.http_session.get).assert_not_called()
-
-
-async def test_addon_ai_image_rejects_redirects_without_exposing_signature() -> None:
-    """A signed request must not follow a redirect to another host."""
-    async with _start_provider([]) as (provider, _):
-        provider.mass.running_as_hass_addon = True
-        get = _mock_image_response(provider, [b"png"], no_ssl=True)
-        get.return_value.__aenter__.return_value.status = 302
-        with (
-            patch(
-                "music_assistant.providers.hass.supervisor_request",
-                AsyncMock(return_value={"ip_address": "172.30.32.1", "port": 80, "ssl": False}),
-            ),
-            pytest.raises(MusicAssistantError, match="redirected") as caught,
-        ):
-            await provider._fetch_image("/ai_task/image/x.png?authSig=secret")
-        assert "secret" not in str(caught.value)
-        assert get.call_args.kwargs["allow_redirects"] is False
 
 
 async def test_addon_ai_image_keeps_api_image_requests_on_supervisor() -> None:

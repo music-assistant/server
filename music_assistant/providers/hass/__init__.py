@@ -1124,16 +1124,8 @@ class HomeAssistantProvider(PluginProvider):
         # the HTTP client resolves percent-encoded dot segments, so check the decoded form
         if ".." in unquote(path.split("?", 1)[0]).split("/"):
             raise FileNotFoundError("Image not found")
-        direct = self.mass.running_as_hass_addon and not path.startswith("/api/")
         ha_url, headers, http_session = await self._get_ha_http_for(path)
-        request = (
-            http_session.get(f"{ha_url}{path}", headers=headers, allow_redirects=False)
-            if direct
-            else http_session.get(f"{ha_url}{path}", headers=headers)
-        )
-        async with request as response:
-            if direct and 300 <= response.status < 400:
-                raise MusicAssistantError("Home Assistant redirected the generated image request")
+        async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
             response.raise_for_status()
             if not response.content_type.startswith("image/"):
                 raise FileNotFoundError("Image not found")
