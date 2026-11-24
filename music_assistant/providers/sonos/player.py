@@ -67,6 +67,7 @@ from music_assistant.providers.sonos.const import (
     AMP_MODEL,
     AUDIO_IN_SERVICE,
     CONF_SHOW_DEVICE_SETTINGS,
+    DEVICE_FEATURE_PORTABLE,
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
     OPTION_EVENT_VARIABLES,
@@ -205,7 +206,11 @@ class SonosPlayer(PlayerProtocol):
         self._connect_lock = asyncio.Lock()
         mac_address = self._extract_mac_from_player_id()
         self._wol_mac = mac_address if mac_address and is_valid_mac_address(mac_address) else None
-        self._wakeable = self._wol_mac is not None and _is_wakeable(discovery_info)
+        self._wakeable = self._wol_mac is not None and _has_device_feature(
+            discovery_info, DEVICE_FEATURE_WAKEABLE
+        )
+        # a speaker on mains power can be wakeable too, but does not go to sleep
+        self._portable = _has_device_feature(discovery_info, DEVICE_FEATURE_PORTABLE)
         # a dropped connection confirmed as sleep, as opposed to a passing blip
         self._marked_asleep = False
         # the connection followed a sleep; the speaker then restores its session paused
@@ -2355,6 +2360,7 @@ class SonosPlayer(PlayerProtocol):
         """Return whether the player reports sleep as powered off, MA controlling power natively."""
         return (
             self._wakeable
+            and self._portable
             and self.player is not None
             and self.player.power_control == PLAYER_CONTROL_NATIVE
         )
@@ -2560,11 +2566,13 @@ def _playing_line_in(container: Container | None) -> str:
     return _line_in_source_id(device_id) if device_id else SOURCE_LINE_IN
 
 
-def _is_wakeable(discovery_info: SonosDiscoveryInfo) -> bool:
-    """Return whether the discovered device features advertise Wake-on-LAN support."""
+def _has_device_feature(discovery_info: SonosDiscoveryInfo, feature: str) -> bool:
+    """
+    Return whether a discovered speaker advertises a device feature.
+
+    :param discovery_info: The discovery info of the speaker.
+    :param feature: Name of the feature, as the speaker advertises it.
+    """
     # deviceFeatures is not modeled in aiosonos
     features = cast("dict[str, Any]", discovery_info["device"]).get("deviceFeatures", [])
-    return any(
-        isinstance(feature, dict) and feature.get("name") == DEVICE_FEATURE_WAKEABLE
-        for feature in features
-    )
+    return any(isinstance(x, dict) and x.get("name") == feature for x in features)
