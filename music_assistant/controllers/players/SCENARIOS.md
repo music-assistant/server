@@ -2281,6 +2281,21 @@ it leaves at once, and nothing plays later.
   - `test_grouping.py::test_a_sync_group_plays_on_once_its_silent_old_leader_lets_the_member_go`
   - `test_grouping.py::test_a_member_taken_out_while_its_silent_old_leader_holds_it_does_not_start`
 
+### GROUP-67 · A leader that plays over another protocol lets its followers go before it stops
+
+Downstairs plays with Kitchen leading over AirPlay, and Office following Kitchen on their own
+protocol. Kitchen leaves the group: it first lets Office go and then stops its AirPlay receiver, as
+a device can be silent for long on a group command right after that stop. Downstairs plays on, on
+Office, two seconds later. The same order applies when both leave at once. When Kitchen plays on the
+protocol Office follows it on, it stops first and lets Office go then.
+
+- End-to-end: **possible with** two speakers that group on their own protocol and have an AirPlay
+  receiver.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_plays_on_at_once_when_its_airplay_leader_leaves`
+  - `test_grouping.py::test_a_sync_group_whose_airplay_leader_and_its_member_leave_at_once_lets_them_go`
+  - `test_grouping.py::test_a_sync_group_leader_on_its_own_protocol_stops_before_it_lets_its_members_go`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered

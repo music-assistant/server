@@ -1156,6 +1156,115 @@ def _fall_silent(scenario: Scenario, speaker: FakeProtocol, seconds: float) -> N
     speaker.set_members = _set_members  # type: ignore[method-assign]
 
 
+def _hang_on_a_group_command_after_airplay(
+    scenario: Scenario, speaker: FakeProtocol, airplay: FakeProtocol
+) -> None:
+    """
+    Let a Sonos leader fall silent for 40 s on a group command right after its AirPlay output stopped.
+
+    :param speaker: The Sonos protocol of the leader.
+    :param airplay: Its AirPlay protocol.
+    """
+    loop = scenario.mass.loop
+    stopped_at = float("-inf")
+
+    async def _stop() -> None:
+        nonlocal stopped_at
+        stopped_at = loop.time()
+        await FakeProtocol.stop(airplay)
+
+    async def _set_members(
+        player_ids_to_add: list[str] | None = None, player_ids_to_remove: list[str] | None = None
+    ) -> None:
+        if loop.time() - stopped_at < 0.5:
+            _fall_silent(scenario, speaker, 40)
+            await speaker.set_members(player_ids_to_add, player_ids_to_remove)
+            return
+        await FakeProtocol.set_members(speaker, player_ids_to_add, player_ids_to_remove)
+
+    airplay.stop = _stop  # type: ignore[method-assign]
+    speaker.set_members = _set_members  # type: ignore[method-assign]
+
+
+async def test_a_sync_group_plays_on_at_once_when_its_airplay_leader_leaves(
+    scenario: Scenario,
+) -> None:
+    """
+    A leader that plays over AirPlay lets its Sonos follower go before its AirPlay output stops.
+
+    It falls silent on a group command right after that stop, which would hold up the group.
+    """
+    kitchen, office, kitchen_airplay, group_id = await _group_behind_an_airplay_leader(scenario)
+    _hang_on_a_group_command_after_airplay(scenario, kitchen, kitchen_airplay)
+    kitchen_id = _player_id(scenario, kitchen)
+    scenario.timeline.clear()
+
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(kitchen_id))
+    await scenario.advance(5)
+    assert leave.done()
+    await leave
+    await scenario.idle()
+
+    assert [(protocol_id, command[0]) for protocol_id, command in scenario.timeline] == [
+        ("sonos_kitchen", "set_members"),
+        ("airplay_kitchen", "stop"),
+        ("sonos_office", "play_media"),
+    ]
+    assert _active_output(scenario, kitchen_id) is None
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, group_id).group_members == [_player_id(scenario, office)]
+    await _stop(scenario, group_id)
+
+
+async def test_a_sync_group_whose_airplay_leader_and_its_member_leave_at_once_lets_them_go(
+    scenario: Scenario,
+) -> None:
+    """Members that leave together with their leader on AirPlay are free at once, and silent."""
+    kitchen, office, kitchen_airplay, group_id = await _group_behind_an_airplay_leader(scenario)
+    _hang_on_a_group_command_after_airplay(scenario, kitchen, kitchen_airplay)
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+
+    remove = await scenario.command(
+        scenario.mass.players.cmd_set_members(
+            group_id, player_ids_to_remove=[kitchen_id, office_id]
+        )
+    )
+    await scenario.advance(5)
+    assert remove.done()
+    await remove
+    await scenario.idle()
+
+    assert _state(scenario, office_id).synced_to is None
+    assert kitchen_airplay.playback_state == PlaybackState.IDLE
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+    assert _state(scenario, group_id).group_members == []
+
+
+async def test_a_sync_group_leader_on_its_own_protocol_stops_before_it_lets_its_members_go(
+    scenario: Scenario,
+) -> None:
+    """A leader that plays on the protocol its members follow it on is never left playing alone."""
+    _, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    kitchen_id = _player_id(scenario, kitchen)
+    group_id = await _sync_group(scenario, kitchen_id, _player_id(scenario, office))
+    await scenario.play(group_id)
+    await scenario.idle()
+    scenario.timeline.clear()
+
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(kitchen_id))
+    await scenario.advance(5)
+    assert leave.done()
+    await leave
+    await scenario.idle()
+
+    assert [(protocol_id, command[0]) for protocol_id, command in scenario.timeline] == [
+        ("sonos_kitchen", "stop"),
+        ("sonos_kitchen", "set_members"),
+        ("sonos_office", "play_media"),
+    ]
+    await _stop(scenario, group_id)
+
+
 async def test_a_sync_group_plays_on_once_its_silent_old_leader_lets_the_member_go(
     scenario: Scenario,
 ) -> None:

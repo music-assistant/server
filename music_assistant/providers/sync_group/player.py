@@ -788,8 +788,7 @@ class SyncGroupPlayer(PlayerProtocol):
                     # group or we just removed the last member from the group, so we dissolve
                     # the syncgroup. Use internal handler to stop the sync leader directly,
                     # bypassing group redirect that would loop back to this player.
-                    await self._stop_departing_leader(leader)
-                    await self._dissolve_syncgroup()
+                    await self._stop_and_dissolve(leader)
                 else:
                     # just a regular member(s) added/removed action,
                     # we can simply update the syncgroup members on the sync leader.
@@ -1051,10 +1050,11 @@ class SyncGroupPlayer(PlayerProtocol):
             ):
                 self._schedule_idle_grace_timer()
 
-    async def _dissolve_syncgroup(self) -> None:
+    async def _dissolve_syncgroup(self, leader_to_stop: Player | None = None) -> None:
         """
         Dissolve the current syncgroup by ungrouping all members.
 
+        :param leader_to_stop: The leader to stop once the members are ungrouped, if any.
         :raises ResourceBusyError: When the leader stays busy; the group then keeps its
             session as it was.
         """
@@ -1110,6 +1110,10 @@ class SyncGroupPlayer(PlayerProtocol):
                     # one would keep streaming on its own once the members are released
                     await self._stop_departing_leader(group_leader, wait_for_update=False)
                     self.mass.players.schedule_active_output_protocol_clear(group_leader)
+            if leader_to_stop:
+                await self._stop_departing_leader(leader_to_stop)
+                # the group sees its leader go idle, which schedules it again
+                self._cancel_idle_grace_timer()
             # Clear the leader's active protocol once it stops playing; the controller's
             # clearing in _handle_cmd_stop is skipped for a still-grouped protocol player.
             if sync_leader:
@@ -1405,7 +1409,7 @@ class SyncGroupPlayer(PlayerProtocol):
         single restart with the final member list.
 
         :param old_leader_id: The player_id of the departing leader.
-        :param leader_to_stop: The player to stop before dissolving. Defaults
+        :param leader_to_stop: The player to stop. Defaults
             to ``self.sync_leader`` but callers should pass the old leader
             explicitly when ``self.sync_leader`` has already been cleared.
         :param resume_playback: If True, schedule the debounced re-form which
@@ -1423,13 +1427,43 @@ class SyncGroupPlayer(PlayerProtocol):
                 self.display_name,
                 leader_to_stop.name,
             )
-            await self._stop_departing_leader(leader_to_stop)
-        await self._dissolve_syncgroup()
+            await self._stop_and_dissolve(leader_to_stop)
+        else:
+            await self._dissolve_syncgroup()
         if old_leader_id in self._attr_group_members:
             self._attr_group_members.remove(old_leader_id)
         if resume_playback and self._attr_group_members:
             self._reform_protocol_domain = preferred_protocol_domain
             self._schedule_reform_timer()
+
+    async def _stop_and_dissolve(self, leader: Player) -> None:
+        """
+        Stop a leader that leaves the group, and dissolve the group.
+
+        :param leader: The leader to stop.
+        """
+        # A Sonos speaker that gets a group command while its AirPlay stream ends answers none
+        # for some 40 seconds, so members it holds outside that stream are ungrouped first.
+        # A session that plays on the protocol that holds the members stops first: some
+        # providers refuse a group change while they play.
+        if self._holds_members_outside_session(leader):
+            await self._dissolve_syncgroup(leader_to_stop=leader)
+            return
+        await self._stop_departing_leader(leader)
+        await self._dissolve_syncgroup()
+
+    def _holds_members_outside_session(self, leader: Player) -> bool:
+        """
+        Return whether a leader holds members on another protocol than the one it plays on.
+
+        :param leader: The leader.
+        """
+        session = leader.resolve_output_protocol() or leader.device_protocol
+        session_members = self._to_player_ids(session.group_members) if session else []
+        return any(
+            member_id != leader.player_id and member_id not in session_members
+            for member_id in leader.group_members
+        )
 
     async def _stop_departing_leader(self, leader: Player, *, wait_for_update: bool = True) -> None:
         """
@@ -1588,8 +1622,7 @@ class SyncGroupPlayer(PlayerProtocol):
                 self.display_name,
                 old_leader.name,
             )
-            await self._stop_departing_leader(old_leader)
-            await self._dissolve_syncgroup()
+            await self._stop_and_dissolve(old_leader)
             return
 
         # A seamless handoff requires the new leader to already be a sync_client of
