@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.airplay.provider import AirPlayProvider
+from music_assistant.providers.airplay.stream import AirPlayStream
 
 from .conftest import make_player
 from .helpers import build_dacp_request, replay
@@ -88,6 +89,31 @@ async def test_play_while_own_stream_starts_is_ignored(
     player = make_player(mock_mass, playing=False)
     player.stream.start_pending = True
     await replay(airplay_provider, build_dacp_request(path))
+    getattr(mock_mass.players, cmd).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("path", "cmd"),
+    [("/ctrl-int/1/play", "cmd_play"), ("/ctrl-int/1/playpause", "cmd_play_pause")],
+)
+async def test_play_while_connected_stream_awaits_its_start_is_ignored(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock, path: str, cmd: str
+) -> None:
+    """Play between connecting and START (e.g. awaiting clock readiness) is an echo."""
+    player = make_player(mock_mass, playing=False, has_stream=False)
+    player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
+    stream = AirPlayStream(player)
+    process = MagicMock(closed=False, start=AsyncMock())
+    with (
+        patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["bin"]),
+        patch("music_assistant.providers.airplay.stream.AsyncProcess", return_value=process),
+        patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
+    ):
+        await stream.connect()
+    player.stream = stream
+
+    await replay(airplay_provider, build_dacp_request(path, stream.active_remote_id))
+
     getattr(mock_mass.players, cmd).assert_not_called()
 
 
