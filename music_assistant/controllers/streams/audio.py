@@ -4085,6 +4085,10 @@ class StreamsAudio:
         self.logger.warning(
             "Failed to parse radio URL %s: %s - attempting direct stream", validate_url, str(err)
         )
+        # a connection that failed, such as a DNS lookup, says nothing about the stream itself,
+        # so it is probed again on the next start rather than streamed without metadata for hours
+        if isinstance(err, aiohttp.ClientConnectionError):
+            return (validate_url, fallback_stream_type)
         return await self._cache_radio_result(url, fallback_stream_type, resolved_url=validate_url)
 
     async def _get_stream_details(

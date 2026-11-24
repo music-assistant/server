@@ -190,3 +190,48 @@ async def test_truncated_playlist_is_not_cached_as_a_direct_stream(
         await audio.resolve_radio_stream("http://radio.example.com/station.pls")
 
     cast("MagicMock", audio.mass).cache.set.assert_not_called()
+
+
+class _FailingConnCtx:
+    """Async context manager whose radio probe fails before any response."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def __aenter__(self) -> Any:
+        raise self._error
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "cached"),
+    [
+        (
+            aiohttp.ClientConnectorDNSError(MagicMock(), OSError("Timeout while contacting DNS")),
+            False,
+        ),
+        (aiohttp.ServerDisconnectedError(), False),
+        (aiohttp.ClientPayloadError("bad response"), True),
+    ],
+)
+async def test_failed_connection_streams_directly_without_caching(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, cached: bool
+) -> None:
+    """
+    A connection that fails streams the URL directly but is probed again on the next start.
+
+    A server that answered in a way that cannot be read is still remembered as a direct stream.
+    """
+    audio = _streams_audio()
+    monkeypatch.setattr(
+        audio, "_connect_radio_stream", lambda *_args, **_kwargs: _FailingConnCtx(error)
+    )
+    monkeypatch.setattr(audio, "_validate_shoutcast_stream", AsyncMock(return_value=False))
+
+    result = await audio.resolve_radio_stream("http://radio.example.com/stream")
+
+    assert result == ("http://radio.example.com/stream", StreamType.HTTP)
+    assert cast("MagicMock", audio.mass).cache.set.called is cached
