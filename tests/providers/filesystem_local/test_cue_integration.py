@@ -19,6 +19,8 @@ from music_assistant.providers.filesystem_local.cue import (
     CUE_TRACK_ID_DELIMITER,
     CueSheetHandler,
     cue_metadata_checksum,
+    cue_referenced_audio_stem,
+    is_multi_file_cue,
     make_cue_track_id,
     parse_cue_track_id,
 )
@@ -45,6 +47,21 @@ FILE "album.flac" WAVE
     PERFORMER "Dire Straits"
     ISRC GBAMU7800003
     INDEX 01 07:58:05
+"""
+
+# a per-track rip's leftover CUE: one FILE entry per track, naming the original WAV files
+PER_TRACK_CUE = """\
+PERFORMER "Bob Dylan"
+TITLE "Bob Dylan"
+FILE "12 Song to Woody.wav" WAVE
+  TRACK 12 AUDIO
+    TITLE "Song to Woody"
+    INDEX 01 00:00:00
+  TRACK 13 AUDIO
+    TITLE "See That My Grave Is Kept Clean"
+    INDEX 00 02:39:74
+FILE "13 See That My Grave Is Kept Clean.wav" WAVE
+    INDEX 01 00:00:00
 """
 
 
@@ -291,6 +308,66 @@ class TestFindCueAudioFile:
         cue_sheet = MagicMock(file_path="missing.flac")
         result = await provider._cue.find_audio_file(cue_item, cue_sheet)
         assert result is None
+
+
+class TestMultiFileCue:
+    """Tests for CUE sheets that reference one audio file per track."""
+
+    @pytest.mark.asyncio
+    async def test_multi_file_cue_hides_nothing(self, tmp_path: Path) -> None:
+        """A CUE with a FILE entry per track hides none of the per-track files."""
+        (tmp_path / "12 Song to Woody.wav").write_bytes(b"")
+        (tmp_path / "13 See That My Grave Is Kept Clean.wav").write_bytes(b"")
+        cue_item = _make_cue_item(tmp_path, PER_TRACK_CUE, name="Bob Dylan.cue")
+        provider = _make_provider(base_path=str(tmp_path))
+        cue_sheet = await provider._cue.load_cue_sheet(cue_item)
+
+        assert is_multi_file_cue(cue_sheet)
+        assert await provider._cue.find_audio_file(cue_item, cue_sheet) is None
+        assert cue_referenced_audio_stem(cue_item, cue_sheet) is None
+
+    @pytest.mark.asyncio
+    async def test_multi_file_cue_yields_no_tracks(self, tmp_path: Path) -> None:
+        """A CUE with a FILE entry per track is ignored instead of failing every sync."""
+        (tmp_path / "12 Song to Woody.wav").write_bytes(b"")
+        (tmp_path / "13 See That My Grave Is Kept Clean.wav").write_bytes(b"")
+        cue_item = _make_cue_item(tmp_path, PER_TRACK_CUE, name="Bob Dylan.cue")
+        provider = _make_provider(base_path=str(tmp_path))
+
+        assert await provider._cue.parse_tracks(cue_item) == []
+
+
+class TestUpdateCueStems:
+    """Tests for which audio files the sync hides on behalf of CUE sheets."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("multi_file_first", [True, False])
+    async def test_ignored_cue_keeps_a_file_another_cue_absorbs(
+        self, tmp_path: Path, multi_file_first: bool
+    ) -> None:
+        """An ignored CUE does not release an audio file a supported CUE absorbs."""
+        single = _make_cue_item(
+            tmp_path, SAMPLE_CUE.replace('"album.flac"', '"Album.flac"'), name="Disc image.cue"
+        )
+        multi = _make_cue_item(tmp_path, PER_TRACK_CUE, name="Album.cue")
+        provider = _make_provider(base_path=str(tmp_path))
+        cue_items = [multi, single] if multi_file_first else [single, multi]
+        cue_stems = {str(tmp_path / "Disc image"), str(tmp_path / "Album")}
+
+        await provider._update_cue_stems(cue_items, cue_stems)
+
+        assert cue_stems == {str(tmp_path / "Disc image"), str(tmp_path / "Album")}
+
+    @pytest.mark.asyncio
+    async def test_ignored_cue_releases_its_same_named_file(self, tmp_path: Path) -> None:
+        """An ignored CUE no longer hides the audio file that shares its name."""
+        multi = _make_cue_item(tmp_path, PER_TRACK_CUE, name="12 Song to Woody.cue")
+        provider = _make_provider(base_path=str(tmp_path))
+        cue_stems = {str(tmp_path / "12 Song to Woody")}
+
+        await provider._update_cue_stems([multi], cue_stems)
+
+        assert cue_stems == set()
 
 
 class TestParseCueTracks:
@@ -1030,3 +1107,44 @@ class TestBrowseCueSheets:
         item_ids = await self._browse(tmp_path, ["album.cue", "album.flac"])
 
         assert item_ids == [make_cue_track_id("album.cue", number) for number in (1, 2, 3)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ext", ["wav", "flac"])
+    async def test_per_track_cue_lists_every_track_file(self, tmp_path: Path, ext: str) -> None:
+        """A CUE with a FILE entry per track lists every track file and no CUE tracks."""
+        (tmp_path / "Bob Dylan.cue").write_text(
+            PER_TRACK_CUE.replace(".wav", f".{ext}"), encoding="utf-8"
+        )
+        (tmp_path / "12 Song to Woody.flac").write_bytes(b"fake")
+        (tmp_path / "13 See That My Grave Is Kept Clean.flac").write_bytes(b"fake")
+
+        item_ids = await self._browse(
+            tmp_path,
+            [
+                "Bob Dylan.cue",
+                "12 Song to Woody.flac",
+                "13 See That My Grave Is Kept Clean.flac",
+            ],
+        )
+
+        assert item_ids == ["12 Song to Woody.flac", "13 See That My Grave Is Kept Clean.flac"]
+
+    @pytest.mark.asyncio
+    async def test_per_track_cue_keeps_its_same_named_track(self, tmp_path: Path) -> None:
+        """A CUE with a FILE entry per track does not hide the track that shares its name."""
+        (tmp_path / "12 Song to Woody.cue").write_text(
+            PER_TRACK_CUE.replace(".wav", ".flac"), encoding="utf-8"
+        )
+        (tmp_path / "12 Song to Woody.flac").write_bytes(b"fake")
+        (tmp_path / "13 See That My Grave Is Kept Clean.flac").write_bytes(b"fake")
+
+        item_ids = await self._browse(
+            tmp_path,
+            [
+                "12 Song to Woody.cue",
+                "12 Song to Woody.flac",
+                "13 See That My Grave Is Kept Clean.flac",
+            ],
+        )
+
+        assert item_ids == ["12 Song to Woody.flac", "13 See That My Grave Is Kept Clean.flac"]
