@@ -120,6 +120,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         self._events_task: asyncio.Task[None] | None = None
         self._proc: AsyncProcess | None = None
         self._restart_error_count = 0
+        self._session_active: bool = False
         # _audio_format is the original Spotify source codec (Ogg Vorbis at the
         # configured tier's bitrate), advertised to clients for display.
         # _decoded_audio_format is the raw PCM go-librespot actually writes to its
@@ -349,6 +350,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
                 # provider so a dead/restarting daemon isn't treated as active and
                 # controllable; a fresh 'active' event re-establishes it on reconnect.
                 self._proc = None
+                self._session_active = False
                 try:
                     await self._event_callback(BackendEvent(BackendEventType.CONNECTION_LOST))
                 except Exception:
@@ -391,6 +393,14 @@ class GoLibrespotBackend(SpotifyConnectBackend):
     async def _handle_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Translate a single go-librespot websocket event and emit it normalized."""
         self.logger.debug("Received event [%s]: %s %s", self.name, event_type, data)
+        if event_type == "playing" and not self._session_active:
+            # go-librespot only reports 'active' for a transfer, while a play request
+            # (ours, or one through the Spotify Web API) makes it the active device as well
+            await self._event_callback(BackendEvent(BackendEventType.SESSION_ACTIVE))
+        if event_type in ("active", "playing"):
+            self._session_active = True
+        elif event_type == "inactive":
+            self._session_active = False
         await self._event_callback(self._translate_event(event_type, data))
 
     def _translate_event(self, event_type: str, data: dict[str, Any]) -> BackendEvent:
