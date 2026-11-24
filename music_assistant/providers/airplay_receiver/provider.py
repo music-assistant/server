@@ -578,7 +578,7 @@ class AirPlayReceiverProvider(PluginProvider):
                 args, stderr=True, name=f"shairport-sync[{daemon.airplay_name}]"
             )
 
-            # Open the FIFO before shairport-sync can invoke session-control hooks.
+            # Open the FIFO before shairport-sync starts writing metadata to it.
             daemon.metadata_reader = MetadataReader(
                 daemon.metadata_pipe.path, self.logger, partial(self._on_metadata_update, daemon)
             )
@@ -664,8 +664,8 @@ class AirPlayReceiverProvider(PluginProvider):
         if "connection from" in line:
             self.logger.info("AirPlay client connected: %s", line)
         else:
-            # Note: Play begin/stop events are now handled via sessioncontrol hooks
-            # through the metadata pipe, so we don't need to parse stderr logs
+            # Note: Play begin/stop events arrive through the metadata pipe,
+            # so we don't need to parse stderr logs
             self.logger.debug(line)
 
     async def _setup_pipes_and_config(self, daemon: _ReceiverDaemon) -> None:
@@ -815,7 +815,7 @@ class AirPlayReceiverProvider(PluginProvider):
         if daemon.stop_called:
             return
 
-        # Handle play state changes from sessioncontrol hooks
+        # Handle play state changes (shairport-sync's active state begin/end)
         if "play_state" in metadata:
             self._handle_play_state_change(daemon, metadata["play_state"])
             return
@@ -845,7 +845,7 @@ class AirPlayReceiverProvider(PluginProvider):
 
     def _handle_play_state_change(self, daemon: _ReceiverDaemon, play_state: str) -> None:
         """
-        Handle play state changes from sessioncontrol hooks.
+        Handle the start or end of an AirPlay client's playback.
 
         :param daemon: The receiver daemon the state change originates from.
         :param play_state: The new play state ("playing" or "stopped").
