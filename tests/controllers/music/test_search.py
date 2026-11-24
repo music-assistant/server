@@ -84,6 +84,7 @@ def _make_search_provider(instance_id: str, domain: str | None = None) -> Mock:
     prov.domain = domain or instance_id
     prov.name = instance_id
     prov.available = True
+    prov.type = ProviderType.MUSIC
     prov.supported_features = {ProviderFeature.SEARCH}
     prov.is_streaming_provider = True
     prov.search = AsyncMock(return_value=SearchResults())
@@ -93,6 +94,7 @@ def _make_search_provider(instance_id: str, domain: str | None = None) -> Mock:
 def _make_controller(providers: list[Mock]) -> MusicController:
     """Return a music controller wired to the given mocked providers."""
     mass = Mock()
+    mass.providers = providers
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock(return_value=None)
     mass.get_providers_supporting_feature.return_value = []
@@ -128,9 +130,6 @@ def _make_controller(providers: list[Mock]) -> MusicController:
     controller.mass = mass
     controller.domain = "music"
     controller.logger = logging.getLogger(__name__)
-    controller.get_unique_providers = Mock(  # type: ignore[method-assign]
-        return_value=[p.instance_id for p in providers]
-    )
     controller.search_library = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
     return controller
 
@@ -528,10 +527,12 @@ async def test_search_provider_without_streaming_attribute_gets_local_expiration
     """Providers lacking is_streaming_provider (e.g. plugins) get the short cache expiration."""
     prov = _make_search_provider("prov_plugin")
     del prov.is_streaming_provider
+    prov.type = ProviderType.PLUGIN
     prov.search.return_value = SearchResults(
         tracks=[_make_track("track1", "prov_plugin", "My Song")]
     )
     controller = _make_controller([prov])
+    cast("Mock", controller.mass.get_providers_supporting_feature).return_value = [prov]
 
     result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
 
@@ -813,11 +814,17 @@ async def test_plugin_search_leaves_out_tracks_on_hidden_sources(mock_get_user: 
     )
     plugin.search.return_value = results
     sources = [
-        Mock(instance_id=source, type=ProviderType.MUSIC, is_streaming_provider=False)
+        Mock(
+            instance_id=source,
+            type=ProviderType.MUSIC,
+            is_streaming_provider=False,
+            available=True,
+            supported_features=set(),
+            domain=source,
+        )
         for source in ("open_1", "hidden_1")
     ]
     controller = _make_controller([plugin, *sources])
-    controller.get_unique_providers = Mock(return_value=[])  # type: ignore[method-assign]
     cast("Mock", controller.mass.get_providers_supporting_feature).return_value = [plugin]
     set_music_source_access(
         controller.mass,
@@ -890,3 +897,23 @@ async def test_search_shareable_url_skipped_when_media_type_excluded(
 
     assert result == SearchResults()
     controller.get_item.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        ["service--second"],
+        ["service--first", "service--second"],
+    ],
+)
+async def test_search_keeps_requested_account_instances(requested: list[str]) -> None:
+    """Search every explicitly requested account, even if it shares a service."""
+    first = _make_search_provider("service--first", domain="service")
+    second = _make_search_provider("service--second", domain="service")
+    controller = _make_controller([first, second])
+
+    await controller.search("My Song", media_types=[MediaType.TRACK], providers=requested)
+
+    assert {
+        p.instance_id for p in (first, second) if cast("AsyncMock", p.search).await_count
+    } == set(requested)

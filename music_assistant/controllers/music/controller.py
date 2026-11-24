@@ -727,12 +727,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             include_library = "library" in providers
             requested_providers = set(providers)
-            search_providers = [
-                instance_id
-                for instance_id in all_search_providers
-                if (prov := self.get_visible_provider(instance_id))
-                and (prov.instance_id in requested_providers or prov.domain in requested_providers)
-            ]
+            # an account requested by its instance id is searched as is, also when
+            # another account represents its streaming service
+            requested_instances = requested_providers.intersection(
+                self.get_active_provider_instances()
+            )
+            search_providers = sorted(
+                requested_instances.union(
+                    instance_id
+                    for instance_id in all_search_providers
+                    if (prov := self.get_visible_provider(instance_id))
+                    and (
+                        prov.instance_id in requested_providers
+                        or prov.domain in requested_providers
+                    )
+                )
+            )
         # use cache to avoid repeated searches; the library results are narrowed to what
         # the calling user may see, so the entry is kept per user (and role)
         user = get_current_user()
