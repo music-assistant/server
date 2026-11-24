@@ -2362,6 +2362,8 @@ class StreamsAudio:
             handover = None
         else:
             discard_position = float(streamdetails.seek_position)
+        # a repeat of this item loads its details again while this pass still streams
+        start_position = streamdetails.seek_position
 
         total_chunks_received = 0
         # the buffer this item plays from, as of its first chunk: a stop detaches it from
@@ -2735,8 +2737,7 @@ class StreamsAudio:
             # streamdetails.duration is in media-time; seconds_streamed is stream-time
             # (post-atempo), so we scale by playback_speed to recover media-time.
             streamdetails.duration = int(
-                streamdetails.seek_position
-                + (seconds_streamed + uncredited_tail_seconds) * playback_speed
+                start_position + (seconds_streamed + uncredited_tail_seconds) * playback_speed
             )
             # propagate accurate duration to queue_item so UI displays it
             queue_item.duration = streamdetails.duration

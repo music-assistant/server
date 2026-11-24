@@ -343,6 +343,13 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 # this handover can have replaced the scheduled one of the item that follows now
                 self.update_next_item_on_player(queue_id)
                 return
+            if (
+                next_item.queue_item_id == current_item.queue_item_id
+                and next_item.streamdetails is not None
+                and next_item.streamdetails.seek_position
+            ):
+                # a repeat plays the item over from the start, not from where this pass started
+                await self._load_item(next_item)
 
             await self.mass.players.enqueue_next_media(
                 player_id=queue_id,
