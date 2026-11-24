@@ -14,6 +14,7 @@ import logging
 import os
 import secrets
 from functools import partial
+from ipaddress import IPv6Address, ip_address
 from itertools import batched
 from sys import intern
 from types import MappingProxyType
@@ -55,6 +56,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_VERIFY_SSL, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
+from music_assistant.helpers.hassio import SupervisorError, supervisor_request
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError, match_tts_language
 from music_assistant.helpers.util import lock, try_parse_int
@@ -735,9 +737,6 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._image_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("No AI Task entity that generates images")
-        internal_url = (
-            await self._get_internal_ha_url() if self.mass.running_as_hass_addon else None
-        )
         try:
             result = await self.hass.send_command(
                 "call_service",
@@ -771,8 +770,6 @@ class HomeAssistantProvider(PluginProvider):
             raise MusicAssistantError(msg)
         try:
             path = f"{parts.path}?{parts.query}" if parts.query else parts.path
-            if internal_url is not None:
-                return await self._fetch_image(path, internal_url=internal_url)
             return await self._fetch_image(path)
         except ClientResponseError as err:
             # its message names the full (signed) URL
@@ -1117,24 +1114,18 @@ class HomeAssistantProvider(PluginProvider):
             for entity_id, compressed_state in compressed_states.items()
         ]
 
-    async def _fetch_image(self, path: str, *, internal_url: str | None = None) -> bytes:
+    async def _fetch_image(self, path: str) -> bytes:
         """
         Fetch an image from the connected Home Assistant instance.
 
         :param path: The HA-relative image path.
-        :param internal_url: Validated internal HA URL for a direct AI Task image request.
         :raises FileNotFoundError: When HA does not answer with an image within the size limit.
         """
         # the HTTP client resolves percent-encoded dot segments, so check the decoded form
         if ".." in unquote(path.split("?", 1)[0]).split("/"):
             raise FileNotFoundError("Image not found")
-        direct = self.mass.running_as_hass_addon and path.startswith(AI_TASK_IMAGE_PATH_PREFIX)
-        if direct:
-            ha_url = internal_url or await self._get_internal_ha_url()
-            headers: dict[str, str] = {}
-            http_session = self.mass.http_session
-        else:
-            ha_url, headers, http_session = self._get_ha_http()
+        direct = self.mass.running_as_hass_addon and not path.startswith("/api/")
+        ha_url, headers, http_session = await self._get_ha_http_for(path)
         request = (
             http_session.get(f"{ha_url}{path}", headers=headers, allow_redirects=False)
             if direct
@@ -1156,41 +1147,30 @@ class HomeAssistantProvider(PluginProvider):
                     raise FileNotFoundError("Image too large")
             return bytes(data)
 
-    async def _get_internal_ha_url(self) -> str:
-        """Return the direct HA origin for signed images outside the Supervisor API proxy."""
+    async def _get_ha_http_for(self, path: str) -> tuple[str, dict[str, str], ClientSession]:
+        """Return the HA connection that can serve the image path."""
+        if not self.mass.running_as_hass_addon or path.startswith("/api/"):
+            return self._get_ha_http()
         try:
-            network_urls = await self.hass.send_command("network/url")
-        except BaseHassClientError:
+            core = await supervisor_request(self.mass, "GET", "/core/info")
+        except SupervisorError as err:
+            msg = f"Supervisor could not report Home Assistant's address: {err.message}"
+            raise ProviderUnavailableError(msg) from err
+        if not isinstance(core, dict):
+            raise ProviderUnavailableError("Supervisor returned invalid Home Assistant address")
+        try:
+            address = ip_address(core["ip_address"])
+            port = core["port"]
+            ssl = core["ssl"]
+        except KeyError, TypeError, ValueError:
             raise ProviderUnavailableError(
-                "Home Assistant's internal URL could not be retrieved"
+                "Supervisor returned invalid Home Assistant address"
             ) from None
-        internal = network_urls.get("internal") if isinstance(network_urls, dict) else None
-        if not isinstance(internal, str) or not internal:
-            raise MusicAssistantError(
-                "Set Home Assistant's internal URL in Settings > System > Network "
-                "to fetch AI Task images from the Music Assistant app"
-            )
-        try:
-            parts = urlsplit(internal)
-            valid = (
-                parts.scheme in ("http", "https")
-                and bool(parts.hostname)
-                and parts.username is None
-                and parts.password is None
-                and parts.path in ("", "/")
-                and not parts.query
-                and not parts.fragment
-                and not any(char.isspace() for char in internal)
-                and (parts.port is None or 0 < parts.port <= 65535)
-            )
-        except ValueError:
-            valid = False
-        if not valid:
-            raise MusicAssistantError(
-                "Home Assistant's internal URL must be an HTTP(S) origin without "
-                "credentials, a path, query or fragment"
-            )
-        return internal.rstrip("/")
+        if type(port) is not int or not 0 < port <= 65535 or type(ssl) is not bool:
+            raise ProviderUnavailableError("Supervisor returned invalid Home Assistant address")
+        host = f"[{address}]" if isinstance(address, IPv6Address) else str(address)
+        scheme = "https" if ssl else "http"
+        return f"{scheme}://{host}:{port}", {}, self.mass.http_session_no_ssl
 
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
