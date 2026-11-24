@@ -471,7 +471,6 @@ class SpotifyConnectProvider(PluginProvider):
             playback_session_id is not None
             and playback_session_id == daemon.streamed_playback_session_id
         )
-        daemon.streamed_playback_session_id = playback_session_id
         if reopened and not daemon.playing:
             self.logger.debug(
                 "Not resuming Spotify for %s: the player reopened its stream", active_player_id
@@ -537,6 +536,11 @@ class SpotifyConnectProvider(PluginProvider):
                 raise AudioError(f"Failed to acquire Spotify Connect: {err}") from err
             if not await self._wait_for_playing(daemon):
                 raise self._not_active_error(daemon)
+
+        # Only now: a renderer may open a second request while the first still acquires
+        # playback. A request that lost its claim meanwhile leaves the newer one's mark.
+        if daemon.active_session_id == stream_session_id:
+            daemon.streamed_playback_session_id = playback_session_id
 
         # The backend reports 100% volume until told otherwise; push the player's
         # volume so the Spotify app's absolute volume commands start from the

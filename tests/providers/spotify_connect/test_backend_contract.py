@@ -905,6 +905,31 @@ async def test_reopened_stream_leaves_paused_playback_alone(session_active: bool
     assert daemon.active_session_id is None
 
 
+async def test_second_request_during_acquisition_takes_over_the_claim() -> None:
+    """A renderer opening two requests at the start (Sonos) streams on the last of them."""
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(backend, session_active=True)
+    _player_with_volume(mass, 25)
+    mass.loop = asyncio.get_running_loop()
+    _source_session(mass, "queue1", "pb1")
+
+    first = asyncio.create_task(
+        provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess1")
+    )
+    await asyncio.sleep(0)
+    second = asyncio.create_task(
+        provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess2")
+    )
+    await asyncio.sleep(0)
+    daemon.playing = True
+    await asyncio.gather(first, second)
+    await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess1")
+
+    assert daemon.active_session_id == "sess2"
+    assert daemon.in_use_by_player == "queue1"
+    assert ("deactivate", None) not in backend.calls
+
+
 async def test_resume_after_reopened_stream_restarts_playback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
