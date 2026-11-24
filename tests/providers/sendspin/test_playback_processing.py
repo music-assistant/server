@@ -65,11 +65,16 @@ def test_empty_plan_does_not_require_transform(
     config = session._read_pipeline_config("member")
 
     assert not config.requires_transform
-    player.mass.streams.audio_processing.update_output.assert_called_once_with(
+    player.mass.streams.audio.get_player_output_plan.assert_called_once_with(
         "member",
-        output_plan,
+        pcm_format,
+        pcm_format,
+        handoff_format=pcm_format,
         queue_id="queue-1",
         session_id="session-1",
+        queue_item_id=None,
+        channel=None,
+        with_subwoofer=False,
     )
 
 
@@ -142,6 +147,9 @@ def test_a_speaker_of_a_set_plays_with_the_settings_of_the_set(
         pcm_format,
         pcm_format,
         handoff_format=pcm_format,
+        queue_id=None,
+        session_id=None,
+        queue_item_id=None,
         channel=SpeakerChannel.FRONT_LEFT,
         with_subwoofer=False,
     )
@@ -183,13 +191,9 @@ def test_the_main_speakers_of_a_set_report_its_output(
 
     session._read_pipeline_config("speaker")
 
-    update_output = player.mass.streams.audio_processing.update_output
-    if reported:
-        update_output.assert_called_once_with(
-            "pl_set", plan, queue_id="pl_set", session_id="session-1"
-        )
-    else:
-        update_output.assert_not_called()
+    # the plan is reported for the queue it is planned with
+    get_plan = player.mass.streams.audio.get_player_output_plan
+    assert get_plan.call_args.kwargs["queue_id"] == ("pl_set" if reported else None)
 
 
 async def test_a_bridged_member_follows_the_output_channels_of_the_output_it_rides_on(

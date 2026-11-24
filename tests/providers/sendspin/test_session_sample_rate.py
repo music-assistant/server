@@ -43,6 +43,7 @@ from music_assistant.providers.sendspin.player import (
     SendspinPlayer,
 )
 from music_assistant.providers.sendspin.provider import SendspinProvider
+from music_assistant.providers.squeezelite.bridge_role import SlimprotoBridgeRole
 from tests.common import MockProvider, attach_mock, mock_player_mass
 from tests.providers.sendspin.test_short_session_elapsed_anchor import _short_session
 
@@ -124,9 +125,9 @@ async def test_session_that_mixes_audio_plays_in_all_the_bits(
     )
     player, _ = _player([flac_24, FLAC_44K])
     session = _session(player, sample_rate=44100)
-    assert session._start_streamdetails is not None
+    assert session._item_streamdetails is not None
     # nothing else works on the audio of the item
-    session._start_streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+    session._item_streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
     monkeypatch.setattr(
         player.mass.streams.audio,
         "_resolve_player_dsp_config",
@@ -201,7 +202,7 @@ async def test_session_without_queue_item_returns_to_client_default() -> None:
     session = _session(player, sample_rate=44100)
     await session._follow_session_sample_rate([PLAYER_ID])
 
-    session._start_streamdetails = None
+    session._item_streamdetails = None
     await session._follow_session_sample_rate([PLAYER_ID])
     pcm_format, _ = session._select_session_pcm_formats()
 
@@ -227,6 +228,39 @@ async def test_late_joining_member_follows_session_rate() -> None:
     await session.add_member(MEMBER_ID)
 
     assert member_role.preferred_format == SendspinAudioFormat(44100, 16, 2)
+
+
+@pytest.mark.parametrize(
+    ("flow_mode", "expected_rate"),
+    [(FLOW_MODE_SAMPLE_RATE_SMART, 48000), (FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, 44100)],
+)
+async def test_only_bit_perfect_switches_down_to_a_later_lower_rate_item(
+    flow_mode: str, expected_rate: int
+) -> None:
+    """Smart keeps a session's higher rate for a lower-rate later item, bit-perfect follows it."""
+    player, role = _player([FLAC_48K, FLAC_44K], flow_mode=flow_mode)
+    session = await _start_session(player, 48000)
+
+    session._item_streamdetails = _flow_item("later", 44100).streamdetails
+    sample_rate = await session._later_item_sample_rate(session._item_streamdetails)
+    await session._follow_session_sample_rate([PLAYER_ID], later_item=True)
+
+    assert sample_rate == expected_rate
+    assert role.preferred_format == SendspinAudioFormat(expected_rate, 16, 2)
+
+
+async def test_a_bridge_keeps_the_session_format_for_a_later_item() -> None:
+    """A bridge, which restarts its stream to change formats, keeps it for a later item."""
+    player, _ = _player([FLAC_48K, FLAC_44K])
+    bridge_role = SlimprotoBridgeRole(client=player.api)
+    set_preferred_format = bridge_role.set_preferred_format = MagicMock()  # type: ignore[method-assign]
+    cast("MagicMock", player.api).roles_by_family.return_value = [bridge_role]
+
+    await player.follow_session_sample_rate(
+        _flow_item("later", 48000).streamdetails, later_item=True
+    )
+
+    set_preferred_format.assert_not_called()
 
 
 async def test_group_session_takes_the_source_rate_a_member_plays() -> None:
@@ -342,7 +376,7 @@ async def test_group_session_without_first_item_keeps_leader_rate() -> None:
     member, _ = _player([FLAC_48K], player_id=MEMBER_ID)
     _group(leader, member)
     session = _session(leader, sample_rate=44100)
-    session._start_streamdetails = None
+    session._item_streamdetails = None
 
     await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
     pcm_format, _ = session._select_session_pcm_formats()
@@ -378,7 +412,7 @@ async def test_a_client_that_renders_nothing_does_not_count() -> None:
     pcm_format, _ = session._select_session_pcm_formats()
 
     assert pcm_format.sample_rate == 48000
-    assert await session.get_session_sample_rate(session._start_streamdetails) == 48000  # type: ignore[arg-type]
+    assert await session.get_session_sample_rate(session._item_streamdetails) == 48000  # type: ignore[arg-type]
 
 
 async def test_consecutive_44k_tracks_flow_without_restart() -> None:
@@ -507,7 +541,7 @@ async def test_session_follows_the_rate_the_audio_arrives_in() -> None:
     )
 
     predicted = await session.get_session_sample_rate(item.streamdetails)
-    session._start_streamdetails = item.streamdetails
+    session._item_streamdetails = item.streamdetails
     await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
     pcm_format, _ = session._select_session_pcm_formats()
 
@@ -819,7 +853,7 @@ async def _start_session(leader: SendspinPlayer, sample_rate: int) -> SendspinPl
     :param sample_rate: The sample rate of the first item.
     """
     session = SendspinPlaybackSession(leader)
-    session._start_streamdetails = _flow_item("first", sample_rate).streamdetails
+    session._item_streamdetails = _flow_item("first", sample_rate).streamdetails
     await session._follow_session_sample_rate(
         [client.client_id for client in leader.api.group.clients]
     )
@@ -909,5 +943,5 @@ def _session(player: SendspinPlayer, *, sample_rate: int) -> SendspinPlaybackSes
     )
     session = SendspinPlaybackSession(player)
     media = PlayerMedia(uri="track-1", source_id="queue-1", queue_item_id="item-1")
-    session._start_streamdetails = session._get_start_streamdetails(media)
+    session._item_streamdetails = session._get_item_streamdetails(media)
     return session

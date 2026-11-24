@@ -2011,10 +2011,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.served_item_ids[item_id] = queue_data.session_id
-            # the output of a stream whose source failed can still send out an empty stream
+            # the output of a stream whose source failed can still send out an empty stream,
+            # and a player can move past an item it got no stream details for
             queue_item = self.get_item(queue_id, item_id)
             if not (
-                queue_item and queue_item.streamdetails and queue_item.streamdetails.stream_error
+                queue_item
+                and (queue_item.streamdetails is None or queue_item.streamdetails.stream_error)
             ):
                 queue_data.failed_source_items.clear()
 

@@ -45,8 +45,15 @@ def player_role(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     return role
 
 
-def _player(commands: list[PlayerCommand] | None) -> SendspinPlayer:
-    """Create a player whose hello lists ``commands``, or none for a current client."""
+def _player(
+    commands: list[PlayerCommand] | None, *, allows_legacy_clients: bool = True
+) -> SendspinPlayer:
+    """
+    Create a player whose hello lists ``commands``, or none for a current client.
+
+    :param commands: The commands the hello lists.
+    :param allows_legacy_clients: The server accepts clients that are not spec-compliant.
+    """
     support = ClientHelloPlayerSupport(
         supported_formats=[
             SupportedAudioFormat(codec=AudioCodec.PCM, channels=2, sample_rate=48000, bit_depth=16)
@@ -60,7 +67,10 @@ def _player(commands: list[PlayerCommand] | None) -> SendspinPlayer:
         SimpleNamespace(
             instance_id="sendspin--test",
             logger=Mock(),
-            server_api=SimpleNamespace(get_client=Mock(return_value=client)),
+            server_api=SimpleNamespace(
+                get_client=Mock(return_value=client),
+                allow_noncompliant_clients=allows_legacy_clients,
+            ),
         ),
     )
     player = SendspinPlayer(provider, "p1")
@@ -86,6 +96,21 @@ def test_current_client_features_follow_client_state(player_role: SimpleNamespac
     player_role.state_supported_commands = [PlayerCommand.MUTE]
     _volume_event(player)
     assert player.supported_features & CONTROL_FEATURES == {PlayerFeature.VOLUME_MUTE}
+
+
+@pytest.mark.usefixtures("player_role")
+@pytest.mark.parametrize("allows_legacy_clients", [True, False])
+def test_a_server_that_allows_legacy_clients_keeps_the_flow_stream(
+    allows_legacy_clients: bool,
+) -> None:
+    """Players take a queue item by item only on a server for spec-compliant clients."""
+    player = _player(None, allows_legacy_clients=allows_legacy_clients)
+
+    assert player.requires_flow_mode is allows_legacy_clients
+    takes_items = {PlayerFeature.ENQUEUE, PlayerFeature.GAPLESS_PLAYBACK}
+    assert player.supported_features & takes_items == (
+        set() if allows_legacy_clients else takes_items
+    )
 
 
 def test_client_state_known_before_registration_seeds_the_features(

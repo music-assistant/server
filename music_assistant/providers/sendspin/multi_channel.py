@@ -363,26 +363,30 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
 
     async def follow_session_sample_rate(
         self,
-        start_streamdetails: StreamDetails | None,
+        item_streamdetails: StreamDetails | None,
         *,
         crossfade_enabled: bool = False,
         overlay_active: bool = False,
+        later_item: bool = False,
     ) -> None:
         """
-        Prepare the speakers for a new playback session.
+        Prepare the speakers for a new playback session, or for a later item of one.
 
-        The speakers that left the group on their own come back, and the format of every
-        speaker follows the sample rate of the session.
+        The speakers that left the group on their own come back for a new session, and the
+        format of every speaker follows the sample rate of the item the session sends.
 
-        :param start_streamdetails: Stream details of the first item of the session, if any.
+        :param item_streamdetails: Stream details of the item the session sends, if any.
         :param crossfade_enabled: Whether the session blends the audio of its items.
         :param overlay_active: Whether an audio overlay is mixed into the session.
+        :param later_item: The item follows another one this player played in the session.
         """
-        await self.take_speakers(rejoin=True)
+        if not later_item:
+            await self.take_speakers(rejoin=True)
         await super().follow_session_sample_rate(
-            start_streamdetails,
+            item_streamdetails,
             crossfade_enabled=crossfade_enabled,
             overlay_active=overlay_active,
+            later_item=later_item,
         )
         for _, role in self._speaker_roles():
             role.set_preferred_format(*self._session_format(role, self._session_sample_rate))

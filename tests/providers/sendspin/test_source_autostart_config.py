@@ -410,7 +410,9 @@ async def test_a_change_of_the_analysis_switch_reaches_the_playing_input(
         )
     sendspin = await scenario.add_provider("sendspin")
     cast("Any", sendspin).clients = {}
-    cast("Any", sendspin).server_api = SimpleNamespace(get_client=cast("Any", sendspin).clients.get)
+    cast("Any", sendspin).server_api = SimpleNamespace(
+        get_client=cast("Any", sendspin).clients.get, allow_noncompliant_clients=True
+    )
     cast("Any", sendspin).is_virtual_player = lambda _client_id: False
     sources = cast("Any", sendspin).sources = MagicMock()
     protocol: SendspinBasePlayer

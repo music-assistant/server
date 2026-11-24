@@ -158,6 +158,19 @@ async def test_an_empty_stream_of_a_failed_item_keeps_the_count() -> None:
     assert STOP_TASK_ID in rig.tasks
 
 
+async def test_an_item_without_stream_details_keeps_the_count() -> None:
+    """A player that moves past an item it got no stream details for sent out no audio."""
+    rig = _Rig()
+    rig.fail("a")
+    rig.item("b").streamdetails = None
+    rig.fail("b")
+
+    rig.ctrl.mark_item_served(QUEUE_ID, "b")
+    rig.fail("c")
+
+    assert STOP_TASK_ID in rig.tasks
+
+
 async def test_an_item_that_fails_twice_counts_once() -> None:
     """An item whose stream reports its failure more than once counts once."""
     rig = _Rig()

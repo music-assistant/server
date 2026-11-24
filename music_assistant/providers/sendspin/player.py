@@ -19,6 +19,7 @@ from aiosendspin.models.management import (
     SetStaticPairingCodeConfig,
 )
 from aiosendspin.models.types import (
+    ArtworkSource,
     GoodbyeReason,
     PairAbortReason,
     PairMethod,
@@ -95,6 +96,7 @@ from PIL import Image
 
 from music_assistant.constants import (
     CONF_ALLOW_AUDIO_ANALYSIS,
+    CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
 )
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
@@ -156,7 +158,11 @@ from .helpers import (
     pin_code_format,
     speaks_legacy_wire,
 )
-from .playback import ANCHOR_REBASE_SIGNIFICANT_US, SendspinPlaybackSession
+from .playback import (
+    ANCHOR_REBASE_SIGNIFICANT_US,
+    SendspinPlaybackSession,
+    later_item_sample_rate,
+)
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -186,6 +192,10 @@ _OUTPUT_DELAY_COMMANDS = frozenset({PlayerCommand.SET_OUTPUT_DELAY, PlayerComman
 # Config constants for Sendspin audio format
 CONF_PREFERRED_SENDSPIN_FORMAT = "preferred_sendspin_format"
 SENDSPIN_FORMAT_AUTOMATIC = "automatic"
+# A crossfade is mixed at one sample rate before it reaches a Sendspin client.
+_CROSSFADE_DIFFERENT_SAMPLE_RATES_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.to_dict(), "hidden": True}
+)
 
 # Player types that can render a line-in, so groups and pairs stay selectable.
 SOURCE_AUTOSTART_TARGET_TYPES = {
@@ -1495,6 +1505,11 @@ class SendspinPlayer(SendspinBasePlayer):
     _published_metadata: Metadata | None = None
     # Server-clock time that metadata takes effect at, when it was scheduled ahead.
     _published_effective_us: int | None = None
+    # Queue item id, server-clock start and start position in ms of the metadata scheduled
+    # on the group.
+    _scheduled_item: tuple[str | None, int, int] | None = None
+    # Album artwork URL scheduled on the group, and the server-clock time it takes effect.
+    _scheduled_artwork: tuple[str | None, int] | None = None
     playback_session: SendspinPlaybackSession
     # set once the format a client asks for could not be read from its player role
     _requested_format_unreadable: ClassVar[bool] = False
@@ -1507,16 +1522,11 @@ class SendspinPlayer(SendspinBasePlayer):
     control_features_pinned: bool = False
     # stops taking the volume reports of the client before the protocol follows it itself
     _stop_taking_volume_reports: Callable[[], None] | None = None
-    # sample rate an automatic Sendspin format follows, set by the last playback session
+    # sample rate an automatic Sendspin format follows, set by the item the session sends
     _session_sample_rate: int | None = None
     # bit depth a lossless output of that session has, None when it has no first item: a
     # bridge reads it
     session_bit_depth: int | None = None
-
-    @property
-    def requires_flow_mode(self) -> bool:
-        """Return if the player requires flow mode."""
-        return True
 
     def __init__(
         self,
@@ -1534,6 +1544,13 @@ class SendspinPlayer(SendspinBasePlayer):
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
         }
+        if not provider.server_api.allow_noncompliant_clients:
+            # Items played one by one switch format within the stream, which legacy
+            # clients cannot follow.
+            self._attr_supported_features |= {
+                PlayerFeature.ENQUEUE,
+                PlayerFeature.GAPLESS_PLAYBACK,
+            }
         self._metadata_generation = 0
         self._content_takeover_pending = False
         self._metadata_lock = asyncio.Lock()
@@ -1859,6 +1876,25 @@ class SendspinPlayer(SendspinBasePlayer):
                 abort_existing=True,
             )
 
+    async def enqueue_next_media(self, media: PlayerMedia) -> None:
+        """Handle enqueuing of the next queue item on the player."""
+        if self.playback_session.set_next_media(media):
+            return
+        if not media.source_id or (queue := self.mass.player_queues.get(media.source_id)) is None:
+            return
+        # Restart from the current position like a seek, after which the queue hands over the
+        # new next item again.
+        self.logger.debug(
+            "The stream cannot take the next item anymore, restarting %s at %.1fs",
+            self.display_name,
+            queue.corrected_elapsed_time,
+        )
+        position = int(queue.corrected_elapsed_time)
+        if queue.current_item is not None and queue.current_item.duration:
+            # the position can run past the reported duration, which a seek refuses
+            position = min(position, queue.current_item.duration)
+        self.mass.create_task(self.mass.player_queues.seek(queue.queue_id, position))
+
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
         await super().on_config_updated()
@@ -1888,42 +1924,54 @@ class SendspinPlayer(SendspinBasePlayer):
 
     async def follow_session_sample_rate(
         self,
-        start_streamdetails: StreamDetails | None,
+        item_streamdetails: StreamDetails | None,
         *,
         crossfade_enabled: bool = False,
         overlay_active: bool = False,
+        later_item: bool = False,
     ) -> None:
         """
-        Match an automatic Sendspin format to the sample rate of a new playback session.
+        Match an automatic Sendspin format to the sample rate of the item the session sends.
 
-        The rate follows the player's sample rate setting for the first item of the session.
-        Without a first item, the client's own default format is used.
+        The rate follows the player's sample rate setting for that item.
+        Without an item, the client's own default format is used.
         An explicitly configured Sendspin format keeps its sample rate; a bridge may play it
         in fewer bits when the audio of the session has no more.
 
-        :param start_streamdetails: Stream details of the first item of the session, if any.
+        :param item_streamdetails: Stream details of the item the session sends, if any.
         :param crossfade_enabled: Whether the session blends the audio of its items.
         :param overlay_active: Whether an audio overlay is mixed into the session.
+        :param later_item: The item follows another one this player played in the session.
         """
-        if start_streamdetails is None:
+        if later_item and any(
+            isinstance(role, BridgePlayerRole) for role in self.api.roles_by_family("player")
+        ):
+            # a bridge restarts its stream to change formats, so it keeps the session's first one
+            return
+        if item_streamdetails is None:
             self._session_sample_rate = None
             self.session_bit_depth = None
         else:
             pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
                 self,
-                start_streamdetails=start_streamdetails,
+                start_streamdetails=item_streamdetails,
                 crossfade_enabled=crossfade_enabled,
                 overlay_active=overlay_active,
             )
-            self._session_sample_rate = pcm_format.sample_rate
+            sample_rate = pcm_format.sample_rate
+            if later_item and self._session_sample_rate is not None:
+                sample_rate = later_item_sample_rate(
+                    self.config, sample_rate, self._session_sample_rate
+                )
+            self._session_sample_rate = sample_rate
             # the codec only stands for a lossless one here
             output_format = await self.mass.streams.audio.get_output_format(
                 "flac",
                 self,
-                pcm_format.sample_rate,
+                sample_rate,
                 pcm_format.bit_depth,
-                media_type=start_streamdetails.media_type,
-                source_bit_depth=start_streamdetails.audio_format.bit_depth,
+                media_type=item_streamdetails.media_type,
+                source_bit_depth=item_streamdetails.audio_format.bit_depth,
             )
             self.session_bit_depth = output_format.bit_depth
         await self._apply_preferred_format()
@@ -2124,6 +2172,17 @@ class SendspinPlayer(SendspinBasePlayer):
         # queue may only now place the track in the flow stream.
         self._schedule_position_republish()
 
+    def on_upcoming_item_changed(self) -> None:
+        """Schedule the metadata of the item that plays next in the playback session."""
+        # legacy clients never get the next item's metadata ahead
+        if self.synced_to is not None or self.requires_flow_mode:
+            return
+        self.mass.create_task(
+            self._schedule_upcoming_metadata(),
+            task_id=f"sendspin_upcoming_metadata_{self.protocol_id}",
+            abort_existing=True,
+        )
+
     def on_queue_updated(self, queue_id: str) -> None:
         """Push the repeat and shuffle state of the queue this player is playing."""
         current_media = self._player_media
@@ -2138,7 +2197,7 @@ class SendspinPlayer(SendspinBasePlayer):
         repeat, shuffle = self._queue_repeat_shuffle(self.mass.player_queues.get(queue_id))
         self._publish_repeat_shuffle(repeat, shuffle=shuffle)
 
-    async def send_current_media_metadata(self) -> None:  # noqa: PLR0915
+    async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
         if not self.available or self._content_takeover_pending:
             return
@@ -2167,20 +2226,7 @@ class SendspinPlayer(SendspinBasePlayer):
         if not self._metadata_publish_allowed(generation):
             return
 
-        album_artist: str | None = None
-        if queue_item and queue_item.media_item and is_track(queue_item.media_item):
-            album_mapping = queue_item.media_item.album
-            full_album: Album | None = None
-            if album_mapping is not None:
-                if isinstance(album_mapping, Album):
-                    full_album = album_mapping
-                else:
-                    result = await self.mass.music.get_library_item_by_prov_id(
-                        MediaType.ALBUM, album_mapping.item_id, album_mapping.provider
-                    )
-                    full_album = result if isinstance(result, Album) else None
-                if full_album and full_album.artists:
-                    album_artist = full_album.artist_str
+        album_artist = await self._album_artist(queue_item)
         if not self._metadata_publish_allowed(generation):
             return
 
@@ -2219,6 +2265,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 self._published_item = (current_media.uri, current_media.queue_item_id)
                 self._published_metadata = metadata
                 self._published_effective_us = timestamp_us
+                # this metadata replaces the scheduled metadata
+                self._scheduled_item = None
+        self.on_upcoming_item_changed()
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2272,6 +2321,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 sample_rate_entry.depends_on = CONF_PREFERRED_SENDSPIN_FORMAT
                 sample_rate_entry.depends_on_value = SENDSPIN_FORMAT_AUTOMATIC
                 entries.append(sample_rate_entry)
+        entries.append(_CROSSFADE_DIFFERENT_SAMPLE_RATES_HIDDEN)
 
         if player_role is not None and not _OUTPUT_DELAY_COMMANDS.isdisjoint(
             player_role.state_supported_commands
@@ -2801,6 +2851,7 @@ class SendspinPlayer(SendspinBasePlayer):
             else:
                 await artwork_role.set_album_artwork(image)
                 self.last_sent_artwork_url = artwork_url
+                self._scheduled_artwork = None
 
     async def _send_album_artwork(
         self, current_media: PlayerMedia, *, generation: int | None = None
@@ -2812,28 +2863,157 @@ class SendspinPlayer(SendspinBasePlayer):
         :param generation: Metadata generation allowed to publish.
         """
         generation = self._metadata_generation if generation is None else generation
+        self._settle_scheduled_artwork()
         # image_url is resolved per-source upstream (radio / Spotify Connect / queue items).
         artwork_url = current_media.image_url
         if self._metadata_publish_allowed(generation) and artwork_url != self.last_sent_artwork_url:
             if artwork_url is not None:
-                # Fetch from the resolved URL so the bytes match artwork_url, even when
-                # radio now-playing art differs from the queue item's own image.
-                try:
-                    image_data = await self.mass.metadata.get_thumbnail(
-                        artwork_url, provider="builtin"
-                    )
-                except MediaNotFoundError:
-                    # artwork file was removed from disk; skip rather than crash the send
-                    image_data = None
-                if isinstance(image_data, bytes):
-                    # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
-                    image = await self._decode_artwork(image_data)
-                    if image is not None:
-                        await self._publish_artwork(image, artwork_url, generation)
+                image = await self._fetch_album_artwork(artwork_url)
+                if image is not None:
+                    await self._publish_artwork(image, artwork_url, generation)
             else:
                 await self._publish_artwork(None, None, generation)
 
         return artwork_url
+
+    async def _fetch_album_artwork(self, artwork_url: str) -> Image.Image | None:
+        """
+        Return the album artwork at the given URL, or None when it cannot be loaded.
+
+        :param artwork_url: The resolved image URL of the media.
+        """
+        # Fetch from the resolved URL so the bytes match artwork_url, even when
+        # radio now-playing art differs from the queue item's own image.
+        try:
+            image_data = await self.mass.metadata.get_thumbnail(artwork_url, provider="builtin")
+        except MediaNotFoundError:
+            # artwork file was removed from disk; skip rather than crash the send
+            return None
+        if not isinstance(image_data, bytes):
+            return None
+        # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
+        return await self._decode_artwork(image_data)
+
+    async def _schedule_upcoming_metadata(self) -> None:
+        """Schedule the metadata and album artwork of the next session item at its start."""
+        generation = self._metadata_generation
+        published_item = self._published_item
+        upcoming = self.playback_session.upcoming_item()
+        # Clients hold one scheduled update, so wait until the playing item is published.
+        if self._metadata_update_pending():
+            return
+        if (
+            upcoming is None
+            or published_item is None
+            or published_item[1] != upcoming[0].queue_item_id
+        ):
+            await self._cancel_upcoming_metadata(generation)
+            return
+        _, media, start_us = upcoming
+        if (
+            (player := self.player) is None
+            or not media.source_id
+            or not media.queue_item_id
+            or (queue := self.mass.player_queues.get(media.source_id)) is None
+            or (queue_item := self.mass.player_queues.get_item(queue.queue_id, media.queue_item_id))
+            is None
+        ):
+            await self._cancel_upcoming_metadata(generation)
+            return
+        next_media = player.queue_item_media(queue, queue_item)
+        self._settle_scheduled_artwork()
+        artwork: tuple[str | None, int] | None = None
+        if next_media.image_url != self.last_sent_artwork_url:
+            artwork = (next_media.image_url, start_us)
+        # A crossfade starts the item's own audio past its start.
+        start_ms = (
+            int(queue_item.streamdetails.seek_position * 1000) if queue_item.streamdetails else 0
+        )
+        scheduled_item = (media.queue_item_id, start_us, start_ms)
+        if self._scheduled_item == scheduled_item and self._scheduled_artwork == artwork:
+            return
+        album_artist = await self._album_artist(queue_item)
+        metadata = replace(
+            self._build_current_media_metadata(
+                next_media, queue_item, album_artist, is_playing=self._player_playing
+            ),
+            track_progress=start_ms,
+        )
+        image: Image.Image | None = None
+        if artwork is not None and artwork != self._scheduled_artwork and next_media.image_url:
+            image = await self._fetch_album_artwork(next_media.image_url)
+            if image is None:
+                artwork = None
+        async with self._metadata_lock:
+            if (
+                not self._metadata_publish_allowed(generation)
+                or self._published_item != published_item
+            ):
+                return
+            if (metadata_role := self._metadata_role) is not None:
+                metadata_role.set_metadata(metadata, timestamp_us=start_us)
+                self._scheduled_item = scheduled_item
+            if (artwork_role := self._artwork_role) is not None and (
+                artwork != self._scheduled_artwork
+            ):
+                # aiosendspin takes the change before it sends, so record it before awaiting
+                self._scheduled_artwork = artwork
+                if artwork is None:
+                    await artwork_role.cancel_scheduled(ArtworkSource.ALBUM)
+                else:
+                    await artwork_role.set_album_artwork(image, timestamp_us=start_us)
+
+    async def _cancel_upcoming_metadata(self, generation: int) -> None:
+        """
+        Cancel the metadata and album artwork scheduled for the next item.
+
+        :param generation: Metadata generation allowed to publish.
+        """
+        self._settle_scheduled_artwork()
+        if self._scheduled_item is None and self._scheduled_artwork is None:
+            return
+        async with self._metadata_lock:
+            if not self._metadata_publish_allowed(generation):
+                return
+            if (metadata_role := self._metadata_role) is not None:
+                metadata_role.cancel_scheduled()
+            scheduled_artwork, self._scheduled_artwork = self._scheduled_artwork, None
+            self._scheduled_item = None
+            if scheduled_artwork is not None and (artwork_role := self._artwork_role):
+                await artwork_role.cancel_scheduled(ArtworkSource.ALBUM)
+
+    def _settle_scheduled_artwork(self) -> None:
+        """Count the scheduled album artwork as sent once its start time has passed."""
+        if self._scheduled_artwork is None:
+            return
+        artwork_url, start_us = self._scheduled_artwork
+        provider = cast("SendspinProvider", self.provider)
+        if start_us <= provider.server_api.clock.now_us():
+            self.last_sent_artwork_url = artwork_url
+            self._scheduled_artwork = None
+
+    async def _album_artist(self, queue_item: QueueItem | None) -> str | None:
+        """
+        Return the album artist of a queue item's track, if known.
+
+        :param queue_item: The queue item to look up.
+        """
+        if not queue_item or not queue_item.media_item or not is_track(queue_item.media_item):
+            return None
+        album_mapping = queue_item.media_item.album
+        if album_mapping is None:
+            return None
+        full_album: Album | None
+        if isinstance(album_mapping, Album):
+            full_album = album_mapping
+        else:
+            result = await self.mass.music.get_library_item_by_prov_id(
+                MediaType.ALBUM, album_mapping.item_id, album_mapping.provider
+            )
+            full_album = result if isinstance(result, Album) else None
+        if full_album and full_album.artists:
+            return full_album.artist_str
+        return None
 
     async def _send_artist_artwork(
         self, current_item: QueueItem, *, generation: int | None = None
@@ -2967,6 +3147,8 @@ class SendspinPlayer(SendspinBasePlayer):
         self._published_item = None
         self._published_metadata = None
         self._published_effective_us = None
+        self._scheduled_item = None
+        self._scheduled_artwork = None
         self._last_beat_queue_item_id = None
         self._last_beat_anchor_us = None
 
@@ -3164,12 +3346,17 @@ class SendspinPlayer(SendspinBasePlayer):
         """
         Return the server-clock time the current track's audio starts, and its seek position.
 
-        None until the first chunk commits, or while the flow log hasn't recorded the track.
+        None until the first chunk commits, or while the track's start isn't known yet.
 
         :param queue: The queue the track plays from.
         :param queue_item: The track playing now.
         :param now_us: The server clock now.
         """
+        if queue is not None and not queue.flow_mode and not self.requires_flow_mode:
+            item_start_us = self.playback_session.item_start_us(queue_item.queue_item_id, now_us)
+            if item_start_us is None or queue_item.streamdetails is None:
+                return None
+            return item_start_us, queue_item.streamdetails.seek_position
         timeline_start_us = self.playback_session.flow_track_anchor_us(0)
         if timeline_start_us is None:
             return None
@@ -3241,6 +3428,8 @@ class SendspinPlayer(SendspinBasePlayer):
             metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
             self._published_metadata = metadata
             self._published_effective_us = timestamp_us
+            self._scheduled_item = None
+        self.on_upcoming_item_changed()
 
     async def _send_beat_schedule(
         self,
