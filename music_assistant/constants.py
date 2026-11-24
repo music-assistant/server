@@ -1053,7 +1053,7 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
-ATTR_NEXT_ITEM_REPLACEABLE: Final[str] = "next_item_replaceable"
+ATTR_LAST_LOCKED_INDEX: Final[str] = "last_locked_index"
 ATTR_IDLE_SINCE: Final[str] = "idle_since"
 
 # Album type detection patterns

@@ -13,6 +13,7 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import ATTR_LAST_LOCKED_INDEX
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.constants import NEXT_ITEM_REPLACE_MARGIN
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -145,6 +146,22 @@ async def test_play_next_lands_behind_a_buffered_track_that_starts_too_soon_to_r
     ctrl.move_item("q1", _item_id_at(ctrl, 4), pos_shift=0)
 
     assert _order(ctrl) == ["t0", "t1", "t4", "t2", "t3"]
+
+
+async def test_clients_get_the_locked_index_as_the_playing_track_moves_on() -> None:
+    """The published index follows the playing track, not only the buffered one."""
+    ctrl = _controller(current_index=0, index_in_buffer=0)
+    ctrl._preload_next_item = Mock()
+    ctrl.mass.players.replaces_enqueued_media.return_value = True
+    ctrl.track_loaded_in_buffer("q1", _item_id_at(ctrl, 1))
+    queue = ctrl._queue_data["q1"].queue
+    PlayerQueuesController.signal_update(ctrl, "q1")
+    assert queue.extra_attributes[ATTR_LAST_LOCKED_INDEX] == 0
+
+    queue.current_index = 1
+    PlayerQueuesController.signal_update(ctrl, "q1")
+
+    assert queue.extra_attributes[ATTR_LAST_LOCKED_INDEX] == 1
 
 
 async def test_the_buffered_track_stays_when_nothing_follows_it() -> None:

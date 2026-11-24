@@ -62,7 +62,7 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    ATTR_NEXT_ITEM_REPLACEABLE,
+    ATTR_LAST_LOCKED_INDEX,
     ATTR_PLAY_ACTION_IN_PROGRESS,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     MASS_LOGO_ONLINE,
@@ -908,7 +908,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidDataError(f"Item {queue_item_id} not found in queue")
         # the player owns everything up to this index and keeps playing it whatever the queue
         # says, so it is out of bounds as both a source and a destination
-        boundary_index = committed_index(queue) if queue.index_in_buffer is not None else None
+        boundary_index = (
+            self.committed_index(queue_id) if queue.index_in_buffer is not None else None
+        )
         if boundary_index is not None and item_index <= boundary_index:
             msg = f"{item_index} is already played/buffered"
             raise IndexError(msg)
@@ -949,7 +951,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index is None:
             raise InvalidDataError(f"Item {queue_item_id} not found in queue")
-        boundary_index = committed_index(queue) if queue.index_in_buffer is not None else None
+        boundary_index = (
+            self.committed_index(queue_id) if queue.index_in_buffer is not None else None
+        )
         if boundary_index is not None and item_index <= boundary_index:
             msg = f"{item_index} is already played/buffered"
             raise IndexError(msg)
@@ -981,7 +985,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         else:
             item_index = item_id_or_index
         queue = self._queue_data[queue_id].queue
-        boundary_index = committed_index(queue) if queue.index_in_buffer is not None else None
+        boundary_index = (
+            self.committed_index(queue_id) if queue.index_in_buffer is not None else None
+        )
         if boundary_index is not None and (
             item_index <= boundary_index
             # a player can only replace the buffered item with an item that follows it
@@ -2024,7 +2030,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             replaceable = lock_in > 0
             if replaceable:
                 self.mass.call_later(lock_in, self._lock_next_item, queue_id, task_id=lock_task_id)
-        queue.extra_attributes[ATTR_NEXT_ITEM_REPLACEABLE] = replaceable
+        self._queue_data[queue_id].next_item_replaceable = replaceable
         self._queue_data[queue_id].last_served_item_id = item_id
         self.mark_item_served(queue_id, item_id)
         self.release_unneeded_audio(queue_id)
@@ -2044,7 +2050,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         queue = self._queue_data[queue_id].queue
         queue.index_in_buffer = self.index_by_id(queue_id, item_id)
-        queue.extra_attributes[ATTR_NEXT_ITEM_REPLACEABLE] = False
+        self._queue_data[queue_id].next_item_replaceable = False
         # no audio is asked for when the next item's is in hand already, so
         # what left the queue's scope with this move is released here
         self.release_unneeded_audio(queue_id)
@@ -2544,6 +2550,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # a mirrored shuffle write (streams controller) changes what smart shuffle
         # resolves to, so refresh the derived flag with every signaled update
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
+        # clients may only move or remove the items after this index
+        queue.extra_attributes[ATTR_LAST_LOCKED_INDEX] = (
+            self.committed_index(queue_id) if queue.index_in_buffer is not None else None
+        )
         if items_changed:
             queue_data.items_cache_dirty = True
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
@@ -2560,6 +2570,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_id,
             task_id=f"save_queue_cache_{queue_id}",
         )
+
+    def committed_index(self, queue_id: str) -> int | None:
+        """Return the highest queue index the player holds, or None if it holds none."""
+        if (queue_data := self.queue_data_or_none(queue_id)) is None:
+            return None
+        return committed_index(queue_data.queue, queue_data.next_item_replaceable)
 
     def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
         """Get index by queue_item_id."""
@@ -3435,7 +3451,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.shuffle_enabled = shuffle_enabled
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue_items = self._queue_data[queue_id].items
-        cur_index = committed_index(queue)
+        cur_index = self.committed_index(queue_id)
         if cur_index is not None:
             next_index = cur_index + 1
             next_items = queue_items[next_index:]
@@ -4036,6 +4052,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Keep the next item of a queue in place, since an edit of it would come too late."""
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return
-        if queue_data.queue.extra_attributes.get(ATTR_NEXT_ITEM_REPLACEABLE):
-            queue_data.queue.extra_attributes[ATTR_NEXT_ITEM_REPLACEABLE] = False
+        if queue_data.next_item_replaceable:
+            queue_data.next_item_replaceable = False
             self.signal_update(queue_id)

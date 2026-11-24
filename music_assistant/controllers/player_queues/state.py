@@ -112,6 +112,8 @@ class PlayerQueueData:
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
     # queue_item_id most recently handed to the player as the next item
     next_item_id_enqueued: str | None = None
+    # the player can still replace the next item it was handed, until shortly before it plays
+    next_item_replaceable: bool = False
     # queue_item_id whose audio was most recently asked to be prepared ahead of its playback
     next_item_id_preparing: str | None = None
     # the audio buffers made for items of this queue: an item that left the queue keeps its

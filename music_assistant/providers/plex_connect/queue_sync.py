@@ -13,8 +13,6 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.enums import PlaybackState, QueueOption
 from plexapi.playqueue import PlayQueue
 
-from music_assistant.controllers.player_queues.helpers import committed_index
-
 from .parsing import PLEX_FETCH_ERRORS, plex_item_fields, plex_key_for_item
 
 if TYPE_CHECKING:
@@ -275,7 +273,8 @@ class QueueSyncMixin:
             queue is not None
             and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
             and queue.index_in_buffer is not None
-            and (boundary_index := committed_index(queue)) is not None
+            and (boundary_index := self.provider.mass.player_queues.committed_index(player_id))
+            is not None
         ):
             return boundary_index
         return current_index
