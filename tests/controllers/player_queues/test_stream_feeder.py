@@ -105,6 +105,50 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
     assert controller._queue_data["q1"].next_item_id_enqueued == next_item.queue_item_id
 
 
+async def test_a_stale_handover_hands_over_the_item_that_follows_now() -> None:
+    """A handover that lost its place to an edit still gets the new next item to the player."""
+    controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.logger = MagicMock()
+    controller.signal_update = MagicMock()  # type: ignore[method-assign]
+
+    @asynccontextmanager
+    async def already_playing(*_args: object, **_kwargs: object) -> AsyncIterator[None]:
+        yield
+
+    player_state = SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
+    mass = MagicMock()
+    mass.players.wait_for_player_update = MagicMock(side_effect=already_playing)
+    mass.players.get_player = MagicMock(return_value=SimpleNamespace(state=player_state))
+    mass.players.enqueue_next_media = AsyncMock()
+    controller.mass = mass
+    items = [_make_queue_item("q1", name) for name in ("nerin", "another-love", "future-track")]
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(items),
+        state=PlaybackState.PLAYING,
+        current_index=0,
+        index_in_buffer=0,
+        current_item=items[0],
+    )
+    # an edit moved the last item up while the handover of the old next item was scheduled
+    controller._queue_data = {
+        "q1": PlayerQueueData(
+            queue=queue, items=[items[0], items[2], items[1]], session_id="session-1"
+        )
+    }
+
+    controller._enqueue_next_item("q1", items[1])
+    for _ in range(2):
+        enqueue_callback, next_item = mass.call_later.call_args.args[1:3]
+        await enqueue_callback(next_item)
+
+    handed_over = mass.players.enqueue_next_media.await_args.kwargs["media"]
+    assert handed_over.queue_item_id == items[2].queue_item_id
+
+
 def _make_queue_item(queue_id: str, item_id: str) -> QueueItem:
     """Build a minimal playable queue item."""
     return QueueItem(
