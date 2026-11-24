@@ -131,6 +131,8 @@ class AppleMusicStreamingManager:
                 license_url, key_id, uri, item_id, adam_id
             ),
             path=stream_url,
+            # skips ffmpeg's scan of every fragment over HTTPS before the first output
+            extra_input_args=["-fflags", "+ignidx"],
             can_seek=True,
             allow_seek=True,
         )

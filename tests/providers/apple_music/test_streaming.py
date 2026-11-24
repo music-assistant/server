@@ -162,6 +162,8 @@ async def test_library_track_with_key_server_uses_the_widevine_path() -> None:
     assert result.audio_format.content_type is ContentType.MP4
     # the cbcp256 asset at index 0 is FairPlay and has no usable key
     assert result.path == CTRP_URL
+    # without it ffmpeg fetches every fragment before the first output (support#7205)
+    assert result.extra_input_args == ["-fflags", "+ignidx"]
 
 
 async def test_library_track_is_licensed_under_the_purchase_adam_id() -> None:
