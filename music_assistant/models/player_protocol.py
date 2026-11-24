@@ -528,6 +528,7 @@ class PlayerProtocol(ABC):
         always return ``False``. Group implementations should return ``True`` while
         a session is being formed, while it is actively playing/paused, and during
         any idle grace period; and ``False`` once the group is fully dormant.
+        While it is ``True``, a STOP command calls ``stop()`` also when the group is idle.
         """
         return False
 
