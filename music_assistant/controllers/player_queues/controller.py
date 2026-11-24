@@ -3741,6 +3741,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             # a new load owns nothing yet, so what the old one fetched says nothing about it
             queue_data.last_served_item_id = None
+            queue_data.next_item_replaceable = False
             # a player still playing (or paused on) an item will report once more on it, so that
             # one stays served; the rest of the old load is never heard from again, and an idle
             # player has nothing left that could be

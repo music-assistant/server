@@ -26,6 +26,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_LAST_LOCKED_INDEX,
     ATTR_PLAY_ACTION_IN_PROGRESS,
     MASS_LOGGER_NAME,
 )
@@ -229,6 +230,8 @@ class PlayerQueueData:
         queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
         # and the hold of an announcement, which ended with the restart
         queue.extra_attributes.pop(ATTR_ANNOUNCEMENT_IN_PROGRESS, None)
+        # and the index the player held, which signal_update derives again
+        queue.extra_attributes.pop(ATTR_LAST_LOCKED_INDEX, None)
         queue.sources = [
             item
             for item in cls._deserialize_media(raw_sources, queue.queue_id, "queue source")

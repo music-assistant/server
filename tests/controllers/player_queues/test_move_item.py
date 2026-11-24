@@ -141,7 +141,9 @@ async def test_play_next_lands_behind_a_buffered_track_that_starts_too_soon_to_r
     if ctrl.mass.call_later.called:
         delay, lock_next_item, queue_id = ctrl.mass.call_later.call_args.args
         assert delay == pytest.approx((60 - elapsed) / 2 - NEXT_ITEM_REPLACE_MARGIN, abs=0.5)
+        ctrl.signal_update.reset_mock()
         lock_next_item(queue_id)
+        ctrl.signal_update.assert_called_once_with("q1")
 
     ctrl.move_item("q1", _item_id_at(ctrl, 4), pos_shift=0)
 

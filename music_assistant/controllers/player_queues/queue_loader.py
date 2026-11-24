@@ -1367,8 +1367,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue.shuffle_enabled = True
         queue.repeat_mode = RepeatMode.OFF
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
-        # rebuild from the buffered position so the already-prepared next track is kept and the
-        # crossfade isn't disturbed; fall back to the current index (or the front when idle/empty)
+        # rebuild from the buffered position so the already-prepared next track is kept (unless the
+        # player can still replace it) and the crossfade isn't disturbed; fall back to the current
+        # index (or the front when idle/empty)
         base_index = self.committed_index(queue_id)
         insert_at = 0 if base_index is None else base_index + 1
         if option == QueueOption.REPLACE:
