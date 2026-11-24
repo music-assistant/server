@@ -242,6 +242,20 @@ async def test_enqueue_next_item_follows_an_edit_made_during_the_handover() -> N
     assert queue_data.next_item_id_enqueued == items[1].queue_item_id
 
 
+async def test_a_stale_handover_hands_over_the_item_that_follows_now() -> None:
+    """A handover that lost its place to an edit still gets the new next item to the player."""
+    controller, mass, _players, items = _handover_controller()
+    controller.signal_update = MagicMock()  # type: ignore[method-assign]
+    # an edit moved the last item up while the handover of the old next item was scheduled
+    controller._queue_data["q1"].items = [items[0], items[2], items[1]]
+
+    await _scheduled_handover(controller, mass, items[1])
+    await _start_scheduled_handover(mass)
+
+    handed_over = mass.players.enqueue_next_media.await_args.kwargs["media"]
+    assert handed_over.queue_item_id == items[2].queue_item_id
+
+
 def _make_queue_item(queue_id: str, item_id: str) -> QueueItem:
     """Build a minimal playable queue item."""
     return QueueItem(
