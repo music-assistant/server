@@ -68,6 +68,44 @@ _ALBUM_DATE_TAGS = ("date", "originaldate", "tdor", "originalyear", "tory")
 _NARRATOR_TAGS = ("narrator", "narratedby")
 _WRITER_TAGS = ("writers", "writer")
 
+# MP4 atoms copied straight into the result: (atom, result key)
+_MP4_SINGLE_ATOMS = (
+    ("©nam", "title"),
+    ("©ART", "artist"),
+    ("aART", "albumartist"),
+    ("©alb", "album"),
+    ("sonm", "titlesort"),
+    ("soal", "albumsort"),
+    ("©day", "date"),
+    ("©lyr", "lyrics"),
+)
+# multi-value to match ID3 behavior
+_MP4_LIST_ATOMS = (
+    ("©gen", "genre"),
+    ("soar", "artistsort"),
+    ("soaa", "albumartistsort"),
+)
+# iTunes freeform tags, named without the _MP4_FREEFORM_PREFIX: (name, result key)
+_MP4_FREEFORM_PREFIX = "----:com.apple.iTunes:"
+_MP4_FREEFORM_SINGLE_TAGS = (
+    ("MusicBrainz Album Id", "musicbrainzalbumid"),
+    ("MusicBrainz Release Group Id", "musicbrainzreleasegroupid"),
+    ("MusicBrainz Track Id", "musicbrainztrackid"),
+    ("MusicBrainz Recording Id", "musicbrainzrecordingid"),
+    ("MusicBrainz Release Track Id", "musicbrainzreleasetrackid"),
+    ("REPLAYGAIN_TRACK_GAIN", "replaygaintrackgain"),
+    ("REPLAYGAIN_ALBUM_GAIN", "replaygainalbumgain"),
+)
+# multi-value to match ID3 behavior
+_MP4_FREEFORM_LIST_TAGS = (
+    ("MusicBrainz Artist Id", "musicbrainzartistid"),
+    ("MusicBrainz Album Artist Id", "musicbrainzalbumartistid"),
+    ("ARTISTS", "artists"),
+    ("ALBUMARTISTS", "albumartists"),
+    ("BARCODE", "barcode"),
+    ("ISRC", "tsrc"),
+)
+
 
 def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
     """Return a tuple with all empty values removed."""
@@ -1080,7 +1118,7 @@ def _first_present(
     return None
 
 
-def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
+def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:
     """
     Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
 
@@ -1090,127 +1128,40 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
     """
     result: dict[str, Any] = {}
 
-    # Basic text tags (single value - extract first element)
-    if "©nam" in tags:
-        result["title"] = tags["©nam"][0]
-    if "©ART" in tags:
-        result["artist"] = tags["©ART"][0]
-    if "aART" in tags:
-        result["albumartist"] = tags["aART"][0]
-    if "©alb" in tags:
-        result["album"] = tags["©alb"][0]
+    for atom, key in _MP4_SINGLE_ATOMS:
+        if atom in tags:
+            result[key] = tags[atom][0]
+    for atom, key in _MP4_LIST_ATOMS:
+        if atom in tags:
+            result[key] = list(tags[atom])
+    for name, key in _MP4_FREEFORM_SINGLE_TAGS:
+        if (atom := _MP4_FREEFORM_PREFIX + name) in tags:
+            result[key] = _decode_mp4_freeform_single(tags[atom])
+    for name, key in _MP4_FREEFORM_LIST_TAGS:
+        if (atom := _MP4_FREEFORM_PREFIX + name) in tags:
+            result[key] = _decode_mp4_freeform_list(tags[atom])
 
-    # Genre can have multiple values
-    if "©gen" in tags:
-        result["genre"] = list(tags["©gen"])
-
-    # Sort tags (single value)
-    if "sonm" in tags:
-        result["titlesort"] = tags["sonm"][0]
-    if "soal" in tags:
-        result["albumsort"] = tags["soal"][0]
-    # Sort tags (multi-value to match ID3 behavior)
-    if "soar" in tags:
-        result["artistsort"] = list(tags["soar"])
-    if "soaa" in tags:
-        result["albumartistsort"] = list(tags["soaa"])
-
-    # iTunes freeform tags for MusicBrainz IDs
-    # Single value tags
-    if "----:com.apple.iTunes:MusicBrainz Album Id" in tags:
-        result["musicbrainzalbumid"] = _decode_mp4_freeform_single(
-            tags["----:com.apple.iTunes:MusicBrainz Album Id"]
-        )
-    if "----:com.apple.iTunes:MusicBrainz Release Group Id" in tags:
-        result["musicbrainzreleasegroupid"] = _decode_mp4_freeform_single(
-            tags["----:com.apple.iTunes:MusicBrainz Release Group Id"]
-        )
-    if "----:com.apple.iTunes:MusicBrainz Track Id" in tags:
-        result["musicbrainztrackid"] = _decode_mp4_freeform_single(
-            tags["----:com.apple.iTunes:MusicBrainz Track Id"]
-        )
-    if "----:com.apple.iTunes:MusicBrainz Recording Id" in tags:
-        result["musicbrainzrecordingid"] = _decode_mp4_freeform_single(
-            tags["----:com.apple.iTunes:MusicBrainz Recording Id"]
-        )
-    if "----:com.apple.iTunes:MusicBrainz Release Track Id" in tags:
-        result["musicbrainzreleasetrackid"] = _decode_mp4_freeform_single(
-            tags["----:com.apple.iTunes:MusicBrainz Release Track Id"]
-        )
-
-    # Multi-value tags (return as list to match ID3 behavior)
-    if "----:com.apple.iTunes:MusicBrainz Artist Id" in tags:
-        result["musicbrainzartistid"] = _decode_mp4_freeform_list(
-            tags["----:com.apple.iTunes:MusicBrainz Artist Id"]
-        )
-    if "----:com.apple.iTunes:MusicBrainz Album Artist Id" in tags:
-        result["musicbrainzalbumartistid"] = _decode_mp4_freeform_list(
-            tags["----:com.apple.iTunes:MusicBrainz Album Artist Id"]
-        )
-
-    # Additional freeform tags
-    if "----:com.apple.iTunes:ARTISTS" in tags:
-        result["artists"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:ARTISTS"])
-    if "----:com.apple.iTunes:ALBUMARTISTS" in tags:
-        result["albumartists"] = _decode_mp4_freeform_list(
-            tags["----:com.apple.iTunes:ALBUMARTISTS"]
-        )
-    if "----:com.apple.iTunes:BARCODE" in tags:
-        result["barcode"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:BARCODE"])
-    if "----:com.apple.iTunes:ISRC" in tags:
-        result["tsrc"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:ISRC"])
-
-    # Track and disc numbers (MP4 stores as tuple: [(number, total)])
-    # NOTE: type ignores needed because MP4Tags from mutagen uses an untyped get() internally
-    if tags.get("trkn"):  # type: ignore[no-untyped-call]
-        track_info = tags["trkn"][0]
-        if track_info[0]:
-            result["track"] = str(track_info[0])
-        if len(track_info) > 1 and track_info[1]:
-            result["tracktotal"] = str(track_info[1])
-    if tags.get("disk"):  # type: ignore[no-untyped-call]
-        disc_info = tags["disk"][0]
-        if disc_info[0]:
-            result["disc"] = str(disc_info[0])
-        if len(disc_info) > 1 and disc_info[1]:
-            result["disctotal"] = str(disc_info[1])
-
-    # Date
-    if "©day" in tags:
-        result["date"] = tags["©day"][0]
-
-    # Lyrics
-    if "©lyr" in tags:
-        result["lyrics"] = tags["©lyr"][0]
+    _parse_mp4_number_pair(tags, "trkn", "track", "tracktotal", result)
+    _parse_mp4_number_pair(tags, "disk", "disc", "disctotal", result)
 
     # Compilation flag
     if tags.get("cpil"):  # type: ignore[no-untyped-call]
         result["compilation"] = "1" if tags["cpil"] else "0"
 
     # album type may be multi-value; join them
-    if "----:com.apple.iTunes:MusicBrainz Album Type" in tags:
-        albumtypes = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:MusicBrainz Album Type"])
+    if (atom := _MP4_FREEFORM_PREFIX + "MusicBrainz Album Type") in tags:
+        albumtypes = _decode_mp4_freeform_list(tags[atom])
         if albumtypes:
             result["musicbrainzalbumtype"] = ";".join(albumtypes)
-
-    # ReplayGain tags
-    if "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN" in tags:
-        result["replaygaintrackgain"] = _decode_mp4_freeform_single(
-            tags["----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"]
-        )
-    if "----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN" in tags:
-        result["replaygainalbumgain"] = _decode_mp4_freeform_single(
-            tags["----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN"]
-        )
 
     # the original release date and the audiobook credits have no atom of their own, so taggers
     # store them as freeform tags in whatever casing they favour, and ffprobe keeps only the
     # first value of a freeform tag
     freeform: dict[str, list[str]] = {}
     for atom, values in tags.items():  # type: ignore[no-untyped-call]
-        if not atom.startswith("----:com.apple.iTunes:"):
+        if not atom.startswith(_MP4_FREEFORM_PREFIX):
             continue
-        name = _normalize_tag_key(atom.removeprefix("----:com.apple.iTunes:"))
+        name = _normalize_tag_key(atom.removeprefix(_MP4_FREEFORM_PREFIX))
         freeform[name] = _decode_mp4_freeform_list(values)
     for name in ("originaldate", "originalyear"):
         if values := freeform.get(name):
@@ -1228,6 +1179,29 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
     return result
 
 
+def _parse_mp4_number_pair(
+    tags: MP4Tags, atom: str, number_key: str, total_key: str, result: dict[str, Any]
+) -> None:
+    """
+    Parse an MP4 track or disc number atom into result dict.
+
+    :param tags: The MP4Tags object from mutagen.
+    :param atom: The atom holding the number, "trkn" or "disk".
+    :param number_key: Result key for the number.
+    :param total_key: Result key for the total.
+    :param result: Dictionary to store parsed tags.
+    """
+    # MP4 stores these as tuple: [(number, total)]
+    # NOTE: type ignore needed because MP4Tags from mutagen uses an untyped get() internally
+    if not tags.get(atom):  # type: ignore[no-untyped-call]
+        return
+    info = tags[atom][0]
+    if info[0]:
+        result[number_key] = str(info[0])
+    if len(info) > 1 and info[1]:
+        result[total_key] = str(info[1])
+
+
 def _id3_get_tag_text(tags: ID3Tags, key: str) -> Any | None:
     """
     Get text from ID3 tag (if exists).
@@ -1241,7 +1215,40 @@ def _id3_get_tag_text(tags: ID3Tags, key: str) -> Any | None:
     return None
 
 
-def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
+def _parse_id3_artist_tags(tags: ID3Tags, result: dict[str, Any]) -> None:
+    """
+    Parse artist-related tags from ID3 frames into result dict.
+
+    Handles ID3v2.4 null-separated multi-value TPE1/TPE2 frames, as well as the
+    explicit TXXX:ARTISTS and TXXX:ALBUMARTISTS frames which take precedence.
+
+    :param tags: The ID3Tags object from mutagen.
+    :param result: Dictionary to store parsed tags.
+    """
+    # Artist tags - support ID3v2.4 null-separated multi-value
+    if artist_values := _id3_get_tag_text(tags, "TPE1"):
+        if len(artist_values) > 1:
+            result["artists"] = list(artist_values)
+        else:
+            result["artist"] = artist_values[0]
+    if albumartist_values := _id3_get_tag_text(tags, "TPE2"):
+        if len(albumartist_values) > 1:
+            result["albumartists"] = list(albumartist_values)
+        else:
+            result["albumartist"] = albumartist_values[0]
+
+    # Explicit multi-value artist tags (take precedence)
+    if artists := _id3_get_tag_text(tags, "TXXX:ARTISTS"):
+        result["artists"] = artists
+    # Picard 3.0+ writes TXXX:ALBUMARTISTS and renames an existing TXXX:Album Artists to it
+    # on save. TXXX descriptions are case-sensitive, so accept the older spelling as well.
+    if albumartists := _id3_get_tag_text(tags, "TXXX:ALBUMARTISTS") or _id3_get_tag_text(
+        tags, "TXXX:Album Artists"
+    ):
+        result["albumartists"] = albumartists
+
+
+def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:
     """
     Parse ID3 tags (MP3 files) from mutagen ID3Tags object.
 
@@ -1258,31 +1265,12 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
     if album := _id3_get_tag_text(tags, "TALB"):
         result["album"] = album[0]
 
-    # Artist tags - support ID3v2.4 null-separated multi-value
-    if artist_values := _id3_get_tag_text(tags, "TPE1"):
-        if len(artist_values) > 1:
-            result["artists"] = list(artist_values)
-        else:
-            result["artist"] = artist_values[0]
-    if albumartist_values := _id3_get_tag_text(tags, "TPE2"):
-        if len(albumartist_values) > 1:
-            result["albumartists"] = list(albumartist_values)
-        else:
-            result["albumartist"] = albumartist_values[0]
+    # Artist tags (handles ID3v2.4 multi-value TPE1/TPE2 and the explicit ARTISTS tags)
+    _parse_id3_artist_tags(tags, result)
 
     # Genre, can hold multiple values
     if genre := _id3_get_tag_text(tags, "TCON"):
         result["genre"] = genre
-
-    # Explicit multi-value artist tags (take precedence)
-    if artists := _id3_get_tag_text(tags, "TXXX:ARTISTS"):
-        result["artists"] = artists
-    # Picard 3.0+ writes TXXX:ALBUMARTISTS and renames an existing TXXX:Album Artists to it
-    # on save. TXXX descriptions are case-sensitive, so accept the older spelling as well.
-    if albumartists := _id3_get_tag_text(tags, "TXXX:ALBUMARTISTS") or _id3_get_tag_text(
-        tags, "TXXX:Album Artists"
-    ):
-        result["albumartists"] = albumartists
 
     # MusicBrainz tags (single value)
     if albumid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Album Id"):
@@ -1547,7 +1535,61 @@ def _apev2_get_multi(tags: APEv2, key: str) -> list[str] | None:
     return values or None
 
 
-def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
+def _parse_apev2_artist_tags(tags: APEv2, result: dict[str, Any]) -> None:
+    """
+    Parse artist-related tags from APEv2 tags into result dict.
+
+    Handles null-separated multi-value Artist/Album Artist fields, as well as the
+    explicit ARTISTS and ALBUMARTISTS tags which take precedence.
+
+    :param tags: APEv2 tags object from mutagen.
+    :param result: Dictionary to store parsed tags.
+    """
+    # Artist tags - support null-separated multi-value
+    if artist_values := _apev2_get_multi(tags, "Artist"):
+        if len(artist_values) > 1:
+            result["artists"] = artist_values
+        else:
+            result["artist"] = artist_values[0]
+    if albumartist_values := _apev2_get_multi(tags, "Album Artist"):
+        if len(albumartist_values) > 1:
+            result["albumartists"] = albumartist_values
+        else:
+            result["albumartist"] = albumartist_values[0]
+
+    # Explicit multi-artist support (ARTISTS/ALBUMARTISTS tags take precedence)
+    if artists := _apev2_get_multi(tags, "Artists"):
+        result["artists"] = artists
+    if albumartists := _apev2_get_multi(tags, "ALBUMARTISTS"):
+        result["albumartists"] = albumartists
+
+
+def _parse_apev2_musicbrainz_tags(tags: APEv2, result: dict[str, Any]) -> None:
+    """
+    Parse MusicBrainz ID tags from APEv2 tags into result dict.
+
+    :param tags: APEv2 tags object from mutagen.
+    :param result: Dictionary to store parsed tags.
+    """
+    # MusicBrainz IDs - single value
+    if mb_albumid := _apev2_get_single(tags, "MUSICBRAINZ_ALBUMID"):
+        result["musicbrainzalbumid"] = mb_albumid
+    if mb_releasegroupid := _apev2_get_single(tags, "MUSICBRAINZ_RELEASEGROUPID"):
+        result["musicbrainzreleasegroupid"] = mb_releasegroupid
+    if mb_trackid := _apev2_get_single(tags, "MUSICBRAINZ_TRACKID"):
+        # MUSICBRAINZ_TRACKID in APEv2 is actually the recording ID
+        result["musicbrainzrecordingid"] = mb_trackid
+    if mb_releasetrackid := _apev2_get_single(tags, "MUSICBRAINZ_RELEASETRACKID"):
+        result["musicbrainzreleasetrackid"] = mb_releasetrackid
+
+    # MusicBrainz IDs - multi-value (can have multiple artist IDs)
+    if mb_artistid := _apev2_get_multi(tags, "MUSICBRAINZ_ARTISTID"):
+        result["musicbrainzartistid"] = mb_artistid
+    if mb_albumartistid := _apev2_get_multi(tags, "MUSICBRAINZ_ALBUMARTISTID"):
+        result["musicbrainzalbumartistid"] = mb_albumartistid
+
+
+def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:
     r"""
     Parse APEv2 tags into a normalized dictionary.
 
@@ -1566,44 +1608,14 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
     if album := _apev2_get_single(tags, "Album"):
         result["album"] = album
 
-    # Artist tags - support null-separated multi-value
-    if artist_values := _apev2_get_multi(tags, "Artist"):
-        if len(artist_values) > 1:
-            result["artists"] = artist_values
-        else:
-            result["artist"] = artist_values[0]
-    if albumartist_values := _apev2_get_multi(tags, "Album Artist"):
-        if len(albumartist_values) > 1:
-            result["albumartists"] = albumartist_values
-        else:
-            result["albumartist"] = albumartist_values[0]
+    # Artist tags (handles null-separated multi-value and the explicit ARTISTS tags)
+    _parse_apev2_artist_tags(tags, result)
 
     # Genre (can be multi-value)
     if genre := _apev2_get_multi(tags, "Genre"):
         result["genre"] = genre
 
-    # Explicit multi-artist support (ARTISTS/ALBUMARTISTS tags take precedence)
-    if artists := _apev2_get_multi(tags, "Artists"):
-        result["artists"] = artists
-    if albumartists := _apev2_get_multi(tags, "ALBUMARTISTS"):
-        result["albumartists"] = albumartists
-
-    # MusicBrainz IDs - single value
-    if mb_albumid := _apev2_get_single(tags, "MUSICBRAINZ_ALBUMID"):
-        result["musicbrainzalbumid"] = mb_albumid
-    if mb_releasegroupid := _apev2_get_single(tags, "MUSICBRAINZ_RELEASEGROUPID"):
-        result["musicbrainzreleasegroupid"] = mb_releasegroupid
-    if mb_trackid := _apev2_get_single(tags, "MUSICBRAINZ_TRACKID"):
-        # MUSICBRAINZ_TRACKID in APEv2 is actually the recording ID
-        result["musicbrainzrecordingid"] = mb_trackid
-    if mb_releasetrackid := _apev2_get_single(tags, "MUSICBRAINZ_RELEASETRACKID"):
-        result["musicbrainzreleasetrackid"] = mb_releasetrackid
-
-    # MusicBrainz IDs - multi-value (can have multiple artist IDs)
-    if mb_artistid := _apev2_get_multi(tags, "MUSICBRAINZ_ARTISTID"):
-        result["musicbrainzartistid"] = mb_artistid
-    if mb_albumartistid := _apev2_get_multi(tags, "MUSICBRAINZ_ALBUMARTISTID"):
-        result["musicbrainzalbumartistid"] = mb_albumartistid
+    _parse_apev2_musicbrainz_tags(tags, result)
 
     # Additional tags
     if barcode := _apev2_get_single(tags, "Barcode"):
