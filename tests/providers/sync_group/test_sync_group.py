@@ -3266,7 +3266,7 @@ class TestWaitMemberUnsynced:
 
         mass.players.wait_for_player_update = MagicMock(side_effect=_wait)
 
-        assert await sgp._wait_member_unsynced("m1") is True
+        assert await sgp._wait_member_unsynced("m1", release_timeout=STUCK_MEMBER_TIMEOUT) is True
 
         mass.players._handle_set_members.assert_awaited_once()
         assert waits == [5.0, STUCK_MEMBER_TIMEOUT]

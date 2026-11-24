@@ -1489,7 +1489,9 @@ class SyncGroupPlayer(PlayerProtocol):
                 err,
             )
 
-    async def _wait_member_unsynced(self, member_id: str, timeout: float = 5.0) -> bool:
+    async def _wait_member_unsynced(
+        self, member_id: str, timeout: float = 5.0, release_timeout: float = 2.0
+    ) -> bool:
         """
         Wait until the given member reports as unsynced (synced_to is None).
 
@@ -1502,6 +1504,7 @@ class SyncGroupPlayer(PlayerProtocol):
 
         :param member_id: The player to wait on.
         :param timeout: Seconds to wait for the first state propagation.
+        :param release_timeout: Seconds to wait once it was released from its stale parent.
         """
         member = self.mass.players.get_player(member_id)
         if member is None or not _is_online(member):
@@ -1519,7 +1522,7 @@ class SyncGroupPlayer(PlayerProtocol):
             return True
         # The provider didn't propagate within the timeout. Kick the member from
         # its stale parent (or from its own side when that parent is gone or offline),
-        # then wait again with a tighter budget.
+        # then wait again.
         # This rescues the common "Sonos UPnP event lag" case.
         # NOTE: not the public cmd_ungroup - it re-enters this syncgroup's set_members.
         self.logger.warning(
@@ -1539,7 +1542,7 @@ class SyncGroupPlayer(PlayerProtocol):
             member_id,
             attribute_name="synced_to",
             attribute_value=None,
-            timeout=STUCK_MEMBER_TIMEOUT,
+            timeout=release_timeout,
         ):
             try:
                 async with parent_lock:
@@ -1955,7 +1958,10 @@ class SyncGroupPlayer(PlayerProtocol):
             # a play or a member change in the meantime cancels or re-arms this task.
             members = list(self._attr_group_members)
             unsync_results = await asyncio.gather(
-                *(self._wait_member_unsynced(m) for m in members),
+                *(
+                    self._wait_member_unsynced(m, release_timeout=STUCK_MEMBER_TIMEOUT)
+                    for m in members
+                ),
                 return_exceptions=True,
             )
             stuck_members = [

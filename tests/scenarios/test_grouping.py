@@ -1317,6 +1317,36 @@ async def test_a_member_taken_out_while_its_silent_old_leader_holds_it_does_not_
     assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
 
 
+async def test_a_play_does_not_wait_until_a_silent_old_leader_lets_the_new_one_go(
+    scenario: Scenario,
+) -> None:
+    """A play that the new leader of a group can not start yet fails, and a later one plays."""
+    kitchen, office, _, group_id = await _group_behind_an_airplay_leader(scenario)
+    _fall_silent(scenario, kitchen, 36)
+    scenario.expect_log("Could not ungroup the members of Kitchen")
+    scenario.expect_log("Player Office still reports synced_to")
+    scenario.expect_log("Player Office is stuck")
+    scenario.expect_log("Aborting syncgroup form")
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(_player_id(scenario, kitchen)))
+    await scenario.advance(14)
+
+    play = await scenario.command(scenario.mass.players.cmd_play(group_id))
+    await scenario.advance(19)
+    assert play.done()
+    with pytest.raises(PlayerCommandFailed):
+        await play
+    await leave
+    await scenario.advance(10)
+    later_play = await scenario.command(scenario.mass.players.cmd_play(group_id))
+    await scenario.advance(5)
+    await later_play
+    await scenario.idle()
+
+    assert [command[0] for command in office.commands].count("play_media") == 1
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, group_id)
+
+
 @pytest.mark.parametrize("through_queue", [False, True])
 @pytest.mark.parametrize("seconds", [4, 14, 20, 30])
 async def test_a_sync_group_stopped_while_its_silent_old_leader_holds_a_member_stays_silent(
