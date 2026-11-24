@@ -242,10 +242,12 @@ class CommunityCatalogController(CoreController):
         """Return the installed community providers and, while enabled, what the catalog offers."""
         self._raise_in_safe_mode()
         installed = self._store.state.installed
+        updates = self._versions.targets(include_updates=True)
         providers = [
             provider
             for domain, record in installed.items()
-            if (provider := await self._installed_provider(domain, record)) is not None
+            if (provider := await self._installed_provider(domain, record, updates.get(domain)))
+            is not None
         ]
         if not self.config.get_value(CONF_ENABLED) or (index := self._gate.own_index()) is None:
             return providers
@@ -295,7 +297,8 @@ class CommunityCatalogController(CoreController):
                 raise _error("switched_off")
             installed = await self._install(domain)
             await self._load_installed(domain)
-            provider = await self._installed_provider(domain, installed)
+            # the latest version, so without an update
+            provider = await self._installed_provider(domain, installed, update=None)
         # the manifest of the live folder was just registered
         assert provider is not None
         return provider
@@ -685,13 +688,14 @@ class CommunityCatalogController(CoreController):
         return entry
 
     async def _installed_provider(
-        self, domain: str, installed: InstalledProvider
+        self, domain: str, installed: InstalledProvider, update: str | None
     ) -> CommunityProvider | None:
         """
         Return an installed provider as the app shows it, None when it has no manifest to show.
 
         :param domain: The domain of the provider.
         :param installed: What was installed.
+        :param update: The version an update of it installs, None when there is no update.
         """
         index = self._store.index
         entry = index.providers.get(domain) if index is not None else None
@@ -705,7 +709,7 @@ class CommunityCatalogController(CoreController):
             entry,
             own_entry=self._gate.own_entry(domain),
             decision=self._decisions.get(domain),
-            update=self._gate.evaluate(domain, installed, self._folder_hashes.get(domain)).version,
+            update=update,
             error=self.unavailable_reason(domain),
         )
 
