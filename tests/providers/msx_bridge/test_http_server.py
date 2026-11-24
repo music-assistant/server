@@ -39,6 +39,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
 )
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.providers.msx_bridge.audio_stream import (
     AudioPipeline,
     _collect_prebuffer,
@@ -1308,6 +1309,24 @@ async def test_run_stream_task_logs_expected_errors_and_unregisters(
         await server.audio.run_stream_task("msx_test", stream_task, None)
 
     assert "Stream error for player msx_test" in caplog.text
+    assert "msx_test" not in server.audio.active_stream_tasks
+
+
+async def test_run_stream_task_leaves_a_refusing_source_to_the_streams_controller(
+    provider: MSXBridgeProvider,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A source refusing the player ends the stream without an error logged here."""
+    server = MSXHTTPServer(provider, 0)
+
+    async def _refuse() -> None:
+        raise AudioSourceRefusedError("No AirPlay client is streaming to this receiver")
+
+    stream_task = asyncio.create_task(_refuse())
+    with pytest.raises(AudioSourceRefusedError):
+        await server.audio.run_stream_task("msx_test", stream_task, None)
+
+    assert "Stream error for player msx_test" not in caplog.text
     assert "msx_test" not in server.audio.active_stream_tasks
 
 

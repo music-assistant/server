@@ -13,6 +13,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
 from music_assistant.helpers.timeline_clock import TimelineClock
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ANCHOR_SEAT_LEAD_MS,
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -1189,6 +1190,36 @@ async def test_a_source_that_dies_settles_the_feed_question() -> None:
     await session._audio_streamer(failing_source())
 
     assert session._feed_settled.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "logged"),
+    [
+        (AudioSourceRefusedError("No AirPlay client is streaming to this receiver"), False),
+        (AudioError("source died"), True),
+    ],
+    ids=["refused", "failed"],
+)
+async def test_only_a_source_that_fails_is_logged_as_an_error(
+    error: AudioError, logged: bool
+) -> None:
+    """Only a failure is logged here: the streams controller logs a source refusing the player."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    no_chunks: list[bytes] = []
+
+    async def failing_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+        raise error
+
+    await session._audio_streamer(failing_source())
+
+    logger = cast("MagicMock", session.prov.logger)
+    assert logger.error.called is logged
+    assert logger.warning.called is logged
 
 
 @pytest.mark.asyncio

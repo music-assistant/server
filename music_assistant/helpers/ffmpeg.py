@@ -335,8 +335,9 @@ class FFMpeg(AsyncProcess):
     def _is_expected_task_error(self, err: BaseException) -> bool:
         """Return whether a helper task error is an expected outcome rather than a failure."""
         # a provider with no free source-stream slot is a normal outcome of a
-        # speculative prefetch: the caller retries once the current stream releases it
-        return _is_stream_limit_error(err)
+        # speculative prefetch: the caller retries once the current stream releases it;
+        # a live source that refuses the consumer is logged by the streams controller
+        return _is_expected_source_error(err)
 
 
 def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
@@ -1056,21 +1057,23 @@ def _raise_feeder_error(feeder_exception: Exception) -> NoReturn:
 
     :param feeder_exception: The exception raised by the FFmpeg stdin feeder.
     :raises ProviderStreamLimitError: When the source had no free stream slot.
+    :raises AudioSourceRefusedError: When the live source refused the consumer.
     :raises AudioError: For any other feeder failure, caused by the feeder exception.
     """
-    # keep the capacity error's type so callers can tell a busy source apart
-    if _is_stream_limit_error(feeder_exception):
+    # keep the type of a busy or refusing source's error so callers can tell it apart
+    if _is_expected_source_error(feeder_exception):
         raise feeder_exception
     raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
 
 
-def _is_stream_limit_error(err: BaseException) -> bool:
-    """Return whether the error means a provider had no free source-stream slot."""
-    # deferred import: the provider models pull the controller graph in at
+def _is_expected_source_error(err: BaseException) -> bool:
+    """Return whether the error means a source had no free stream slot or refused the consumer."""
+    # deferred imports: the provider models pull the controller graph in at
     # import time, which this low-level helper must stay clear of
+    from music_assistant.models.media_capabilities import AudioSourceRefusedError  # noqa: PLC0415
     from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
 
-    return isinstance(err, ProviderStreamLimitError)
+    return isinstance(err, ProviderStreamLimitError | AudioSourceRefusedError)
 
 
 def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:
