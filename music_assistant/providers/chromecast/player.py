@@ -28,6 +28,7 @@ from pychromecast import IDLE_APP_ID
 from pychromecast.const import CAST_TYPE_CHROMECAST
 from pychromecast.controllers.media import (
     MEDIA_PLAYER_ERROR_CODES,
+    STREAM_TYPE_BUFFERED,
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
@@ -1078,9 +1079,14 @@ class ChromecastPlayer(PlayerProtocol):
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
-        # Always use LIVE stream type because MA streams are real-time encoded by FFmpeg,
-        # so they are not seekable and don't have a known content length.
-        stream_type = STREAM_TYPE_LIVE
+        is_flow = "/flow/" in stream_url
+        # a flow stream carries on into the next track, so it has no length of its own
+        duration = None if is_flow else served_duration(media, stream_url)
+        # receivers show a "LIVE" label for a live stream, which only fits media without an end
+        has_end = is_flow or (
+            duration is not None
+            and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
+        )
         metadata = {
             "metadataType": 3,
             "albumName": media.album or "",
@@ -1097,9 +1103,9 @@ class ChromecastPlayer(PlayerProtocol):
                 "queue_item_id": media.queue_item_id or stream_url,
             },
             "contentType": f"audio/{file_ext}",
-            "streamType": stream_type,
+            "streamType": STREAM_TYPE_BUFFERED if has_end else STREAM_TYPE_LIVE,
             "metadata": metadata,
-            "duration": served_duration(media, stream_url),
+            "duration": duration,
         }
 
     def _handle_receiver_command(self, command: str) -> None:
