@@ -1227,7 +1227,13 @@ def _report_airplay(
     group.container_type = ContainerType.AIRPLAY
     group.active_service = None
     group.playback_metadata = {
-        "container": {"name": "AirPlay", "type": "linein.airplay", "service": {"name": "Airplay"}}
+        "container": {"name": "AirPlay", "type": "linein.airplay", "service": {"name": "Airplay"}},
+        "currentItem": {
+            "track": {
+                "name": "Shout",
+                "images": [{"url": "http://192.168.1.20:1400/getaa?u=1"}],
+            }
+        },
     }
     group.playback_actions = _actions({})
     player._airplay_output = MagicMock(  # type: ignore[method-assign]
@@ -1274,6 +1280,29 @@ def test_an_airplay_sender_of_its_own_is_reported_as_the_airplay_source() -> Non
         PlaybackState.PAUSED,
         SOURCE_AIRPLAY,
     )
+
+
+def test_our_airplay_session_reports_no_artwork() -> None:
+    """Test the artwork the speaker names for our AirPlay session is not reported."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+
+    # our stream ends before the speaker reports its pause
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.title == "Shout"
+    assert player._attr_current_media.image_url is None
+
+
+def test_an_airplay_sender_of_its_own_reports_its_artwork() -> None:
+    """Test the artwork of a phone that plays over AirPlay is reported."""
+    player, client = _speaker_on_airplay()
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.image_url == "http://192.168.1.20:1400/getaa?u=1"
 
 
 def test_a_sender_that_takes_over_while_we_stream_keeps_the_session_ours() -> None:
