@@ -267,6 +267,14 @@ When `SET_MEMBERS` is called on a dynamic group:
    - If no remaining member is part of the live session (e.g. only freshly-added players are left), or the protocol doesn't support handoff: fall back to **dissolve + re-form** (brief audio gap)
 3. If removing a non-leader member: forward to `cmd_set_members` on the leader
 
+### Losing the Sync Leader
+
+A leader whose stream died is not removed from the group: its provider reports the loss through `on_session_leader_lost`, for static and dynamic groups alike.
+
+1. While the group plays and the protocol supports dynamic leader switching, the session is handed over with the same seamless handoff as above, to the members it still feeds once the lost leader is out of it
+2. The lost leader stays in the internal member list, so it is part of the group again once it re-joins and the next time the group forms. It is last in line to lead a dynamic group; a static group goes by its configured order
+3. Without a member that is still fed, the group is left to the caller, which ends the session. The same goes for a leader whose receiver another sender took over
+
 ### Removing Last Member
 
 If the last member is removed, the group is dissolved (leader stopped, sync_leader cleared).
