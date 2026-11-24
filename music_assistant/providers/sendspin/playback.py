@@ -29,6 +29,7 @@ from music_assistant.controllers.streams.audio_processing import get_media_sessi
 from music_assistant.helpers.audio import arriving_audio_format, iter_pcm_slices, resample_pcm_audio
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import import_module_in_thread
+from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
@@ -1858,7 +1859,15 @@ class SendspinPlaybackSession:
             return
         queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
         if queue_item is not None and queue_item.streamdetails is None:
-            await self.player.mass.streams.audio.get_stream_details(queue_item=queue_item)
+            try:
+                await self.player.mass.streams.audio.get_stream_details(queue_item=queue_item)
+            except MusicAssistantError as err:
+                # a stream slot that is taken is no failure of the source
+                if not isinstance(err, ProviderStreamLimitError):
+                    self.player.mass.player_queues.report_source_failure(
+                        queue_item, get_media_session_id(media)
+                    )
+                raise
 
     async def _follow_session_sample_rate(
         self, player_ids: Iterable[str], *, later_item: bool = False

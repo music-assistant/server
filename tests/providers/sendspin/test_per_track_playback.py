@@ -13,7 +13,7 @@ import pytest
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL
 from music_assistant_models.dsp import DSPConfig
-from music_assistant_models.errors import AudioError
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.player import PlayerMedia
@@ -472,6 +472,32 @@ async def test_an_item_handed_over_without_stream_details_still_plays(
     await session._run_playback(first)
 
     assert streamed_with == [queue_items["item-1"].streamdetails, resolved]
+
+
+async def test_an_item_whose_stream_details_fail_counts_as_a_failed_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The queue stops after enough items in a row that never got stream details."""
+    first, failing = _media("item-1"), _media("item-2")
+    player = _player()
+    player._attr_current_media = first
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-2"])
+    queue_items = {
+        "item-1": SimpleNamespace(streamdetails=MagicMock()),
+        "item-2": SimpleNamespace(streamdetails=None),
+    }
+    player.mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: queue_items[item_id]
+    player.mass.streams.audio.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    player.mass.streams.get_stream.side_effect = lambda *_args, **_kwargs: _chunks(2)
+    session, _ = _session(monkeypatch, player)
+    monkeypatch.setattr(SendspinPlaybackSession, "_wait_for_buffer_drain", AsyncMock())
+    assert session.set_next_media(failing)
+
+    await session._run_playback(first)
+
+    player.mass.player_queues.report_source_failure.assert_called_once_with(
+        queue_items["item-2"], failing.queue_session_id
+    )
 
 
 async def test_an_item_that_fails_after_another_one_is_skipped(
