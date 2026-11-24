@@ -315,7 +315,7 @@ class QuizType(ABC):
                 async for track in self._iter_source_tracks(media_item):
                     if track.uri:
                         pool[track.uri] = track
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad source must not abort the round
                 LOGGER.warning("Could not load Music Quiz source %s: %s", source_uri, err)
         if not pool:
             raise InvalidDataError(
@@ -430,7 +430,7 @@ class QuizType(ABC):
                 target_size=target_size,
                 preferred_provider_instances=preferred_provider_instances or None,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, expansion is optional
             LOGGER.warning("Could not expand Music Quiz sources with similar music: %s", err)
             return
         if not similar_tracks:
@@ -498,7 +498,7 @@ class QuizType(ABC):
                     # search also stands in for an ISRC MusicBrainz has no recording for
                     if cross_check or isrc_year is None:
                         name_year = await self._name_release_year(provider, track)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - provider code, the library year stays
                     LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
         # the ISRC year is read before the search runs, so a search that stalls past the budget
         # or fails costs this track precision rather than the year the ISRC already supplied

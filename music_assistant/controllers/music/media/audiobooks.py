@@ -33,7 +33,10 @@ from music_assistant.constants import (
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
-from music_assistant.controllers.music.constants import RESUME_POSITION_TOLERANCE_SECONDS
+from music_assistant.controllers.music.constants import (
+    MATCH_SEARCH_LIMIT,
+    RESUME_POSITION_TOLERANCE_SECONDS,
+)
 from music_assistant.controllers.music.helpers import ResumePoint, select_resume_point
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
@@ -364,7 +367,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         matches: list[ProviderMapping] = []
         author_name = db_audiobook.authors[0] if db_audiobook.authors else ""
         search_str = f"{author_name} - {db_audiobook.name}" if author_name else db_audiobook.name
-        search_result = await self.search(search_str, provider.instance_id)
+        search_result = await self.search(
+            search_str, provider.instance_id, limit=MATCH_SEARCH_LIMIT
+        )
         for search_result_item in search_result:
             if not search_result_item.available:
                 continue

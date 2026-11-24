@@ -193,6 +193,7 @@ class HomeAssistantProvider(PluginProvider):
     _player_controls: dict[str, PlayerControl] | None = None
     _unsubscribe_controls: Callable[[], None] | None = None
     _unsubscribe_entity_registry: Callable[[], None] | None = None
+    _unsubscribe_core_config: Callable[[], None] | None = None
     _engine_refresh_task: asyncio.Task[None] | None = None
     _ai_engines: list[AIEngine]
     _image_engines: list[ImageEngine]
@@ -268,7 +269,7 @@ class HomeAssistantProvider(PluginProvider):
 
         return (*base_entries, *_control_config_entries())
 
-    async def handle_async_init(self) -> None:
+    async def handle_async_init(self) -> None:  # noqa: PLR0915
         """Handle async initialization of the plugin."""
         if self._listen_task and not self._listen_task.done():
             msg = "Home Assistant listener is already running"
@@ -311,10 +312,11 @@ class HomeAssistantProvider(PluginProvider):
             raise
         self._listen_task = self.mass.create_task(self._hass_listener())
         try:
-            # the registry subscription must be live before the first registry read, so no
-            # registry change can slip through unnoticed; _disconnect_hass tears the
-            # subscription down again on the failure paths below
+            # the subscriptions must be live before the first registry read, so no change
+            # can slip through unnoticed; _disconnect_hass tears them down again on the
+            # failure paths below
             await self._subscribe_entity_registry()
+            await self._subscribe_core_config()
             await self._resolve_startup_features()
         except asyncio.CancelledError:
             await self._cleanup_failed_init()
@@ -612,7 +614,7 @@ class HomeAssistantProvider(PluginProvider):
                         if not display_name:
                             display_name = user.get("name")
                         break
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - optional detail, HA errors vary
                 self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA user list: %s", err)
 
             # Get external URL for building avatar URL
@@ -621,7 +623,7 @@ class HomeAssistantProvider(PluginProvider):
                 network_urls = await self.hass.send_command("network/url")
                 if network_urls:
                     ha_url = network_urls.get("external") or network_urls.get("internal")
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - optional detail, HA errors vary
                 self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA network URLs: %s", err)
 
             # Find person linked to this HA user ID for display name and avatar
@@ -637,7 +639,7 @@ class HomeAssistantProvider(PluginProvider):
                         if (person_picture := person.get("picture")) and ha_url:
                             avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
                         break
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - optional detail, HA errors vary
                 self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA person details: %s", err)
 
             self.logger.log(
@@ -649,7 +651,7 @@ class HomeAssistantProvider(PluginProvider):
                 avatar_url,
             )
             return username, display_name, avatar_url
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure means no user details
             self.logger.warning("Failed to get HA user details: %s", err)
             return None, None, None
 
@@ -1191,6 +1193,9 @@ class HomeAssistantProvider(PluginProvider):
         if unsubscribe := self._unsubscribe_entity_registry:
             self._unsubscribe_entity_registry = None
             unsubscribe()
+        if unsubscribe := self._unsubscribe_core_config:
+            self._unsubscribe_core_config = None
+            unsubscribe()
         if refresh_task := self._engine_refresh_task:
             self._engine_refresh_task = None
             refresh_task.cancel()
@@ -1202,7 +1207,7 @@ class HomeAssistantProvider(PluginProvider):
                 await listen_task
             except asyncio.CancelledError:
                 pass
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the task can fail in any way, logged here
                 self.logger.warning("Home Assistant listener stopped with error: %s", err)
         await self.hass.disconnect()
 
@@ -1210,7 +1215,7 @@ class HomeAssistantProvider(PluginProvider):
         """Clean up the Home Assistant connection after initialization fails."""
         try:
             await self._disconnect_hass()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - cleanup must not hide the init error
             self.logger.warning("Failed to disconnect from Home Assistant: %s", err)
 
     async def _resolve_startup_features(self) -> None:
@@ -1335,6 +1340,24 @@ class HomeAssistantProvider(PluginProvider):
             return
         self._schedule_engine_refresh()
 
+    async def _subscribe_core_config(self) -> None:
+        """Watch the Home Assistant core config to learn that Home Assistant has started."""
+        # register for core config updates, replacing any earlier subscription
+        if unsubscribe := self._unsubscribe_core_config:
+            self._unsubscribe_core_config = None
+            unsubscribe()
+        # an already registered entity gets its state during the startup of Home Assistant
+        # without a registry update. Home Assistant ends its startup with a core config update,
+        # once every registered entity has a state; its homeassistant_started event is only
+        # available to administrators
+        self._unsubscribe_core_config = await self.hass.subscribe_events(
+            self._on_core_config_update, "core_config_updated"
+        )
+
+    def _on_core_config_update(self, _event: Event) -> None:
+        """Handle a core config update event."""
+        self._schedule_engine_refresh()
+
     def _schedule_engine_refresh(self) -> None:
         """(Re)schedule the debounced rebuild of the engine lists."""
         if refresh_task := self._engine_refresh_task:
@@ -1347,7 +1370,7 @@ class HomeAssistantProvider(PluginProvider):
         await asyncio.sleep(ENGINE_REFRESH_DEBOUNCE)
         try:
             await self._refresh_engines()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - background task, any failure is logged
             self.logger.warning("Failed to refresh Home Assistant engines: %s", err)
 
     # unlike _fetch_device_registry, this listing is mirrored for the lifetime of the

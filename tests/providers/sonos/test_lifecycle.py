@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from aiosonos.api.models import SonosCapability
@@ -85,6 +85,43 @@ async def _attach_speaker(scenario: Scenario) -> SonosPlayer:
         await protocol.setup()
     await scenario.settle()
     return protocol
+
+
+async def test_a_zone_of_an_amp_multi_is_reached_on_its_own_ports(scenario: Scenario) -> None:
+    """The client and the UPnP of a speaker use the ports discovery found for it."""
+    provider: Any = await scenario.add_provider("sonos")
+    provider.upnp = MagicMock()
+    discovery_info = cast(
+        "DiscoveryInfo",
+        {
+            "device": {
+                "id": UID,
+                "name": "Zone 2",
+                "modelDisplayName": "Amp Multi",
+                "capabilities": [SonosCapability.PLAYBACK],
+            }
+        },
+    )
+    protocol = SonosPlayer(
+        provider, UID, discovery_info=discovery_info, api_port=1444, upnp_port=1500
+    )
+    protocol.device_info.add_identifier(IdentifierType.IP_ADDRESS, "192.168.1.62")
+    client = MagicMock()
+    client.disconnect = AsyncMock()
+    client.subscribe.side_effect = _Subscriptions()
+    client.player.has_fixed_volume = False
+    client.player.is_passive = False
+    with (
+        patch(
+            "music_assistant.providers.sonos.player.SonosLocalApiClient", return_value=client
+        ) as client_class,
+        patch.object(protocol, "_connect", AsyncMock()),
+    ):
+        await protocol.setup()
+    await scenario.settle()
+
+    client_class.assert_called_once_with("192.168.1.62", ANY, 1444)
+    assert protocol.upnp.location == "http://192.168.1.62:1500/xml/device_description.xml"
 
 
 async def test_a_new_speaker_is_the_native_protocol_of_a_minted_player(

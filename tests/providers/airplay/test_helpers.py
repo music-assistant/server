@@ -8,13 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import ClientError
 
+from music_assistant.helpers.timeline_clock import TimelineClock, rate_term_ns
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
     RAOP_DISCOVERY_TYPE,
 )
 from music_assistant.providers.airplay.helpers import (
     _CLI_BINARY_CHECK_TIMEOUT,
+    SetKind,
     SetMembership,
+    cli_clock_args,
     cli_clock_time,
     default_buffer_depth,
     get_cli_binary,
@@ -35,14 +38,39 @@ ALAC_48000_24 = 1 << 21
 
 def test_cli_clock_time_ignores_wall_clock_steps() -> None:
     """A wall clock step does not move the cliairplay timeline."""
-    before = cli_clock_time()
+    clock = TimelineClock()
+    before = cli_clock_time(clock)
     with (
         patch("time.time", return_value=time.time() + 3600),
         patch("time.time_ns", return_value=time.time_ns() + 3600 * 10**9),
     ):
-        during = cli_clock_time()
+        during = cli_clock_time(clock)
 
     assert 0 <= during - before < 1
+
+
+def test_cli_clock_time_starts_at_unix_time() -> None:
+    """The cliairplay timeline reads as unix time when the clock is created."""
+    assert abs(cli_clock_time(TimelineClock()) - time.time()) < 0.1
+
+
+@pytest.mark.parametrize("rate_ppb", [0, 857_000, -857_000, 2_000_000])
+def test_cli_clock_args_give_cliairplay_the_same_timeline(rate_ppb: int) -> None:
+    """From its arguments, cliairplay computes the very time cli_clock_time reads."""
+    clock = TimelineClock()
+    with patch("music_assistant.helpers.timeline_clock.raw_clock_ns", return_value=4 * 10**14):
+        clock.set_rate(rate_ppb)
+    args = cli_clock_args(clock)
+    offset_ns = int(args[args.index("--clock-offset-ns") + 1])
+    assert int(args[args.index("--clock-rate-ppb") + 1]) == rate_ppb
+
+    for raw_ns in (4 * 10**14, 4 * 10**14 + 123_456_789, 2 * 10**15 + 1):
+        with patch("music_assistant.helpers.timeline_clock.raw_clock_ns", return_value=raw_ns):
+            timeline_unix_ns = clock.now_ns() + clock.unix_offset_ns
+            unix_now = cli_clock_time(clock)
+        # host_clock_now_ns() of cliairplay: the raw clock plus the offset and the rate term
+        assert raw_ns + offset_ns + rate_term_ns(raw_ns, rate_ppb) == timeline_unix_ns
+        assert unix_now == timeline_unix_ns / 1e9
 
 
 def test_get_decoded_property_matches_case_insensitively() -> None:
@@ -347,3 +375,49 @@ def test_the_set_of_a_device_stays_the_same_whoever_plays_to_it(
 def test_a_device_outside_a_set_has_no_place_in_one(record: MagicMock | None) -> None:
     """Only an _airplay record with the keys of an Apple TV's set names a place in one."""
     assert parse_set_membership(record) is None
+
+
+# The TXT keys of a stereo pair of HomePods without an Apple TV (ids made up): both carry
+# the id of the pair, and while nobody plays to it the group id has its idle pair form.
+_PAIR_ID = "7C1E5A20-3B4D-4F6A-9E8C-1D2F3A4B5C6D"
+_PAIR_KEYS = {"tsid": _PAIR_ID, "gpn": "Loft", "igl": "1", "gcgl": "1"}
+
+
+@pytest.mark.parametrize(
+    ("group_id", "position"),
+    [
+        (f"{_PAIR_ID}+0+5A1B2C3D-0000-4000-8000-000000000001", 0),
+        (f"{_PAIR_ID.lower()}+1+5A1B2C3D-0000-4000-8000-000000000002", 1),
+        # settled, both HomePods read the same group id
+        (f"{_PAIR_ID}+0+B3C4D5E6-0000-4000-8000-0000000000AA", 0),
+        # a form a HomePod can show while its pair settles
+        (f"{_PAIR_ID}+1", None),
+        # while a sender plays to the pair, its group id is the one of that session
+        (_OUR_GROUP, None),
+        (f"{_OUR_GROUP}+5A1B2C3D-0000-4000-8000-000000000002", None),
+        (f"{_OUR_GROUP}+1+5A1B2C3D-0000-4000-8000-000000000002", None),
+        (None, None),
+    ],
+)
+def test_a_homepod_of_a_pair_is_in_its_idle_pair_form_only_with_that_group_id(
+    group_id: str | None, position: int | None
+) -> None:
+    """A pair is keyed on its id; the position only tells whether the group id has that form."""
+    properties = dict(_PAIR_KEYS)
+    if group_id is not None:
+        properties["gid"] = group_id
+    record = _txt_record(AIRPLAY_DISCOVERY_TYPE, properties)
+
+    assert parse_set_membership(record) == SetMembership(
+        _PAIR_ID, position, 2, "Loft", SetKind.STEREO_PAIR
+    )
+
+
+def test_a_homepod_of_a_pair_that_an_apple_tv_uses_belongs_to_its_set() -> None:
+    """A HomePod in both a pair and the set of an Apple TV plays in the set of the Apple TV."""
+    record = _txt_record(
+        AIRPLAY_DISCOVERY_TYPE,
+        {**_SET_KEYS, **_HOMEPOD_IDLE, "psgsz": "3", "tsid": _PAIR_ID},
+    )
+
+    assert parse_set_membership(record) == SetMembership(_SET_ID, 1, 3, "Study")

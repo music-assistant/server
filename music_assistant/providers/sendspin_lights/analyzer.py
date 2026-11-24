@@ -1,5 +1,5 @@
 """
-Beat-driven audio analyzer for Hue Entertainment.
+Beat-driven audio analyzer shared by the Sendspin light plugins.
 
 Cycles palette colors smoothly between beats. The schedule of upcoming beats
 arrives from the server in advance, so each segment between two beats can be
@@ -16,11 +16,14 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from hue_entertainment import LightColorCommand
+from .models import LightColor
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from aiosendspin.models.visualizer import BeatTiming
-    from hue_entertainment import LightChannel
+
+    from .models import LightChannel
 
 # color@v1 fields harvested for the cycling palette. Order here is only the
 # collection order — the rendering palette is reordered for vibrancy + maximal
@@ -56,7 +59,7 @@ _BLACK_DROP_THRESHOLD = 0.05
 _PALETTE_MIN_SAT = 0.25
 
 # Mild saturation boost applied to every server color so washed-out album
-# palettes still feel saturated on Hue lamps. Hue + value preserved.
+# palettes still feel saturated on the lamps. Hue + value preserved.
 _PALETTE_SATURATION_BOOST = 1.0
 
 # Two chromatic colors whose HSV hue differs by more than this (fraction of the
@@ -173,6 +176,7 @@ _MODES: dict[str, _ModePreset] = {
         channel_max=1.00,
     ),
 }
+COLOR_MODES: tuple[str, ...] = tuple(_MODES)
 
 # Brightness pulse on the beat. Triangle window with this half-width fraction
 # of the surrounding beat interval. ~8% of segment ≈ ±40 ms at 120 BPM. The
@@ -262,17 +266,22 @@ class _ExpFilter:
         return self.value
 
 
-class HueAudioAnalyzer:
-    """Render Hue colors from a paced beat schedule and a color@v1 palette."""
+class AudioAnalyzer:
+    """Render light colors from a paced beat schedule and a color@v1 palette."""
 
     def __init__(
         self,
-        channels: list[LightChannel],
+        channels: Sequence[LightChannel],
         color_mode: str = DEFAULT_MODE,
         brightness: int = 100,
+        *,
+        palette_ceiling: float = 1.0,
     ) -> None:
         """
         Initialize the analyzer.
+
+        ``palette_ceiling`` (0-1] caps the brightest channel of every palette color;
+        lights that misrender at the edge of their gamut set it below 1.0.
 
         ``color_mode`` selects a preset bundle from `_MODES` (defaults to
         `DEFAULT_MODE` when unknown); reactivity is governed by that preset.
@@ -281,6 +290,7 @@ class HueAudioAnalyzer:
         self._color_mode = color_mode
         self._mode = _MODES.get(color_mode, _MODES[DEFAULT_MODE])
         self._brightness = max(0, min(100, brightness)) / 100.0
+        self._palette_ceiling = max(0.0, min(1.0, palette_ceiling))
 
         self._server_palette: dict[str, tuple[int, int, int] | None] = {}
         self._beats: deque[_ScheduledBeat] = deque()
@@ -408,7 +418,7 @@ class HueAudioAnalyzer:
 
     # -- Rendering --
 
-    def render(self, now_us: int) -> list[LightColorCommand]:
+    def render(self, now_us: int) -> list[LightColor]:
         """Render every channel at server-clock time ``now_us``."""
         self._prune(now_us)
         self._advance_spectrum(now_us)
@@ -624,9 +634,9 @@ class HueAudioAnalyzer:
         colors: list[tuple[float, float, float]],
         brightness: float,
         channel_multipliers: list[float] | None,
-    ) -> list[LightColorCommand]:
+    ) -> list[LightColor]:
         """Emit one command per channel with its own color and brightness."""
-        commands: list[LightColorCommand] = []
+        commands: list[LightColor] = []
         for i, ch in enumerate(self._channels):
             mult = (
                 channel_multipliers[i]
@@ -779,7 +789,7 @@ class HueAudioAnalyzer:
         raw, synthesized = self._gather_raw_palette()
         ordered = _order_palette(raw)
         max_pulse = max(self._mode.pulse_peak, self._mode.downbeat_pulse_peak)
-        equalized = _equalize_palette(ordered, max_pulse)
+        equalized = _equalize_palette(ordered, max_pulse, self._palette_ceiling)
         if synthesized:
             return equalized
         deduped = _drop_close_neighbours(equalized, _PALETTE_DEDUP_DISTANCE)
@@ -826,9 +836,9 @@ class HueAudioAnalyzer:
         return list(_NEUTRAL_GRADIENT), True
 
     @staticmethod
-    def _to_command(channel_id: int, r: float, g: float, b: float) -> LightColorCommand:
-        """Convert float RGB (0-1) to a 16-bit LightColorCommand."""
-        return LightColorCommand(
+    def _to_command(channel_id: int, r: float, g: float, b: float) -> LightColor:
+        """Convert float RGB (0-1) to a 16-bit LightColor."""
+        return LightColor(
             channel_id=channel_id,
             red=int(max(0.0, min(1.0, r)) * 65535),
             green=int(max(0.0, min(1.0, g)) * 65535),
@@ -844,7 +854,7 @@ def _lerp(
 
 
 def _normalise_axis(
-    channels: list[LightChannel], *, axis_index: int
+    channels: Sequence[LightChannel], *, axis_index: int
 ) -> tuple[bool, list[float], float]:
     """
     Return (valid, per-channel normalised position, min-gap) for an axis.
@@ -959,7 +969,7 @@ def _order_palette(
 
 
 def _equalize_palette(
-    colors: list[tuple[float, float, float]], pulse_peak: float
+    colors: list[tuple[float, float, float]], pulse_peak: float, cap: float = 1.0
 ) -> list[tuple[float, float, float]]:
     """
     Scale every color so its brightest channel hits a common target.
@@ -968,11 +978,8 @@ def _equalize_palette(
     output regardless of which palette slot is showing. Hue + saturation are
     preserved. When the pulse brightens on the beat (``pulse_peak > 1``) we
     leave ``1/pulse_peak`` of headroom; when it dims (``pulse_peak <= 1``)
-    no headroom is needed and we push to full output.
+    no headroom is needed and we push to ``cap``.
     """
-    # Cap below 1.0 so Hue Color bulbs don't push to the gamut edge where the
-    # firmware can fall back to off-color (sometimes green) interpolation.
-    cap = 0.85
     target = cap if pulse_peak <= 1.0 else cap / pulse_peak
     return [_scale_to_max_channel(c, target) for c in colors]
 

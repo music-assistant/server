@@ -231,7 +231,7 @@ class _Setup:
         queues.set_sleep_timer_target = Mock(return_value=None)
         # the stop a group's power off runs for its queue, without a permission check
         queues._handle_stop = AsyncMock(
-            side_effect=lambda qid: self.calls.append(("queue", "_handle_stop", qid))
+            side_effect=lambda qid, **_: self.calls.append(("queue", "_handle_stop", qid))
         )
         for method in QUEUE_METHODS:
 

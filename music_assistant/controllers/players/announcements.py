@@ -867,7 +867,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             elif restore_playback:
                 # player was playing something before the announcement - try to resume that here
                 await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # deliberately broad: set_members is a raw provider call that is not wrapped
             # into a MusicAssistantError, so it can surface anything its client library
             # raises. CancelledError is a BaseException and still propagates.

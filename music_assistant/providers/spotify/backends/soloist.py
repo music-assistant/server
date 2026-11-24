@@ -1978,7 +1978,7 @@ class _EngineRun:
                     await sink.resume()
                 else:
                     await sink.suspend()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # fail closed: a sink with unknown suspend state would leak stall
                 # silence into (or withhold audio from) the delivered PCM
                 self._fail(f"Spotify playback could not be controlled: {err}")
@@ -2002,7 +2002,7 @@ class _EngineRun:
                 await client.listen_events(self._handle_event)
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any connection loss is retried
                 if self._engine_exited or proc.returncode is not None:
                     # the daemon exited; the socket dying with it is not an error
                     return
@@ -2064,7 +2064,7 @@ class _EngineRun:
             self._engine_playing = playing
             was_paused, self._engine_paused = self._engine_paused, data.status == "paused"
             if self._engine_paused and data.position is not None and data.position.position_ms == 0:
-                self._observe_rewound_pause()
+                await self._observe_rewound_pause()
             # the engine repeats a pause across events: act on the transition only
             if self._engine_paused and not was_paused:
                 self._observe_external_pause()
@@ -2265,7 +2265,7 @@ class _EngineRun:
             item.engine_duration_ms = self._engine_length[1]
         return item
 
-    def _observe_rewound_pause(self) -> None:
+    async def _observe_rewound_pause(self) -> None:
         """End the current item when the engine has run past the last item it was given."""
         if (
             not self._moving
@@ -2285,6 +2285,11 @@ class _EngineRun:
             # it never came to play
             self._fed = None
             self._end_item()
+            # the engine reports a pause without its position first, which held the
+            # sink: an item whose end is known is owed its tail, and only a running
+            # sink lets it end short of its cut
+            if not item.abandoned and not item.chunks.full():
+                await self._set_sink(running=True)
 
     def _observe_device_active(self, *, active: bool) -> None:
         """Fail the run when the account starts playing somewhere else."""

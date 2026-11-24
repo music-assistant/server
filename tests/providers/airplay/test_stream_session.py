@@ -12,6 +12,7 @@ import pytest
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
+from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ANCHOR_SEAT_LEAD_MS,
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -70,6 +71,8 @@ def _make_session(
     :param seconds_streamed: How many seconds of audio have been streamed.
     """
     prov = MagicMock()
+    # a fresh clock reads as wall-clock time on the cliairplay timeline
+    prov.mass.timeline_clock = TimelineClock()
 
     pcm_format = MagicMock()
     pcm_format.pcm_sample_size = PCM_SAMPLE_SIZE
@@ -397,7 +400,7 @@ async def _start_group(
         patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
         patch(
             "music_assistant.providers.airplay.stream_session.cli_clock_time",
-            side_effect=lambda: clock[0],
+            side_effect=lambda _clock: clock[0],
         ),
     ):
         await session.start(MagicMock())
@@ -3328,6 +3331,7 @@ async def test_a_speaker_of_a_set_dropped_for_its_writes_is_lost_as_when_its_str
     second.stream.session = session
     plain = _plain_speaker()
     plain.owner = plain
+    plain.speakers = []
     session.sync_clients += [second, plain]
 
     def ffmpeg(write: AsyncMock) -> MagicMock:
@@ -3465,3 +3469,43 @@ async def test_a_speaker_back_in_the_music_of_its_set_that_fails_to_join_is_only
     stop_client.assert_awaited_once()
     stream.handle_stream_loss.assert_not_called()
     assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+async def test_the_homepod_that_carries_a_pair_dropped_for_its_writes_takes_the_pair_along() -> (
+    None
+):
+    """The HomePod that carries a stereo pair is a speaker of it: losing it stops the pair too."""
+    session, speaker, _ = _make_set_session()
+    carrier = _plain_speaker()
+    carrier.owner = carrier
+    carrier.speakers = [speaker]
+    speaker.owner = carrier
+    carrier.stream.session = session
+    session.sync_clients.append(carrier)
+    session._player_ffmpeg = {
+        speaker.protocol_id: MagicMock(closed=False, write=AsyncMock(), kill=AsyncMock()),
+        carrier.protocol_id: MagicMock(
+            closed=False, write=AsyncMock(side_effect=OSError("broken pipe")), kill=AsyncMock()
+        ),
+    }
+
+    with patch.object(session, "_cleanup_after_removal", new_callable=AsyncMock):
+        assert await session._write_chunk_to_all_players(b"\0" * 4)
+
+    carrier.stream.handle_stream_loss.assert_called_once_with(rejoin=True)
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_that_fails_its_late_join_never_takes_its_room_along() -> None:
+    """The Apple TV of a set is not heard: its failed join leaves its speakers playing."""
+    session, speaker, apple_tv = _make_set_session()
+    apple_tv.speakers = [speaker]
+    stream = _late_join_stream(session)
+    stream.session = session
+    stream.wait_for_connection = AsyncMock(side_effect=OSError("connection refused"))
+
+    with patch.object(session, "stop_client", new_callable=AsyncMock):
+        await session.add_client(apple_tv)
+
+    stream.handle_stream_loss.assert_not_called()

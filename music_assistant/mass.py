@@ -116,6 +116,7 @@ from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.provider_manifest import read_manifest_file
 from music_assistant.helpers.runtime_dir import prepare_runtime_dir
+from music_assistant.helpers.timeline_clock import TimelineClock, TimelineRateKeeper
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import (
     TaskManager,
@@ -284,6 +285,8 @@ class MusicAssistant:
     storage: StorageController
     community_catalog: CommunityCatalogController
     ai: AIController
+    # the clock every audio timeline runs on (Sendspin, slimproto and AirPlay)
+    timeline_clock: TimelineClock
 
     def __init__(
         self,
@@ -322,6 +325,7 @@ class MusicAssistant:
         )
         self._http_session: ClientSession | None = None
         self._http_session_no_ssl: ClientSession | None = None
+        self.timeline_clock = TimelineClock()
 
     async def start(self) -> None:  # noqa: PLR0915
         """Start running the Music Assistant server."""
@@ -439,6 +443,8 @@ class MusicAssistant:
         # Only needed for installs broken before provider removal started cleaning up.
         # TODO: remove after 2.11 release
         await self.music.cleanup_stale_provider_shortcuts()
+        # the providers schedule audio on the timeline clock, so it gets its rate first
+        TimelineRateKeeper(self).start()
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()
         # load regular providers (skip when in safe mode)
@@ -1623,15 +1629,6 @@ class MusicAssistant:
             if await self.config.create_builtin_provider_config(manifest.domain):
                 newly_created_defaults.add(manifest.domain)
             changes_made = True
-            # TEMP: migration - to be removed after 2.8 release
-            # enable all existing players of the default providers if they are not already enabled
-            # due to the linked protocol feature we introduced
-            for player_config in await self.config.get_player_configs(
-                provider=default_provider, include_disabled=True
-            ):
-                if player_config.enabled:
-                    continue
-                await self.config.save_player_config(player_config.player_id, {"enabled": True})
             default_providers_setup.add(default_provider)
         if changes_made:
             self.config.set(CONF_DEFAULT_PROVIDERS_SETUP, default_providers_setup)

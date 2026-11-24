@@ -1987,6 +1987,24 @@ class TestGenreLookupAndScanner:
         result = await genre_ctrl.scan_mappings()
         assert result["status"] == "triggered"
 
+    @pytest.mark.parametrize(
+        "scan_method", ["_bulk_scan_media_genres", "_bulk_scan_unmapped_genres"]
+    )
+    async def test_scanner_maps_genre_with_nul_character(
+        self, mass: MusicAssistant, genre_ctrl: GenreController, scan_method: str
+    ) -> None:
+        """A raw genre containing a NUL character does not break mapping of the other genres."""
+        # mass is class-scoped, so each parametrized run needs its own names
+        valid_name = f"ValidGenre{scan_method}"
+        track = await _add_test_track(mass, f"NulTrack{scan_method}")
+
+        await _set_track_genres(
+            mass, int(track.item_id), [f"Nul\x00Genre{scan_method}", valid_name]
+        )
+        await getattr(genre_ctrl, scan_method)()
+
+        assert valid_name in await _linked_genre_names(mass, MediaType.TRACK, track.item_id)
+
 
 # ===================================================================
 # Group J: Base Class Integration (3 tests)

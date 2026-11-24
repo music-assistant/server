@@ -70,6 +70,11 @@ CHECK_AUTH_TIMEOUT = 30  # seconds
 CREDENTIALS_FILE = "credentials.json"
 # seconds a playlist search waits on the global session, leaving room for the fallback
 GLOBAL_SEARCH_TIMEOUT = 4
+# results per media type a search goes deep on the global session (every search without a
+# custom Client ID, and the playlist search with one): each page of 10 is a request on the
+# budget all installs without their own Client ID share (1 per 2 seconds), and it keeps the
+# playlist search within GLOBAL_SEARCH_TIMEOUT
+GLOBAL_SEARCH_LIMIT = 20
 
 # OAuth Settings
 SCOPE = [

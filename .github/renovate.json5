@@ -1,0 +1,60 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['config:recommended'],
+
+  // Dependabot keeps the Python packages and GitHub Actions up to date. Renovate only bumps
+  // the binaries Dockerfile.base pins by version and checksum, which Dependabot cannot.
+  enabledManagers: ['custom.regex'],
+
+  // Per OHF quality standards: 7-day cooldown on new releases, so a compromised release has
+  // time to be spotted and unpublished before this repo is offered it.
+  minimumReleaseAge: '7 days',
+
+  labels: ['dependencies'],
+  // a bump only ships through a new base image, so the PR stays a draft until that exists
+  draftPR: true,
+  prBodyNotes: [
+    "**This only changes `Dockerfile.base`, which ships through a new base image:**\n\n1. Run the **Build base image** workflow on this branch with the next base image version (about 2.5 hours).\n2. Set `BASE_IMAGE_VERSION_BETA` and `BASE_IMAGE_VERSION_NIGHTLY` in `.github/workflows/release.yml` to that version, so the tests run in the new image. Renovate stops updating this branch once you push to it.\n3. Test the affected providers (AirPlay Receiver for shairport-sync, Snapcast, Spotify Connect for go-librespot, all playback for FFmpeg), then mark this PR ready for review.",
+  ],
+
+  customManagers: [
+    {
+      customType: 'regex',
+      description: 'Binaries pinned in Dockerfile.base, marked by a "# renovate:" comment',
+      managerFilePatterns: ['/^Dockerfile\\.base$/'],
+      matchStrings: [
+        // a version ARG, followed by the commit its tag must resolve to for a git checkout
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\nARG \\w+_VERSION=(?<currentValue>\\S+)(\\nARG \\w+_SHA=(?<currentDigest>[0-9a-f]{40}))?',
+        // the SHA256 of a release asset, with the tag of the release it belongs to
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) digestVersion=(?<currentValue>\\S+)\\n\\s*\\w+_SHA256="(?<currentDigest>[0-9a-f]{64})"',
+      ],
+    },
+  ],
+
+  packageRules: [
+    {
+      description: 'The version ARGs hold the release tag without its "v"; pre-releases are skipped.',
+      matchDatasources: ['github-releases'],
+      extractVersion: '^v(?<version>\\d+\\.\\d+\\.\\d+)$',
+    },
+    {
+      description: 'Only release tags, not the development tags such as 5.7-dev.',
+      matchDepNames: ['mikebrady/shairport-sync'],
+      extractVersion: '^(?<version>\\d+\\.\\d+(\\.\\d+)?)$',
+    },
+    {
+      description: 'FFmpeg is core to all playback, so we plan its bumps: it only gets a PR on request from the dashboard.',
+      matchDepNames: ['FFmpeg/FFmpeg'],
+      extractVersion: '^n(?<version>\\d+\\.\\d+(\\.\\d+)?)$',
+      commitMessageTopic: 'FFmpeg',
+      dependencyDashboardApproval: true,
+    },
+    {
+      description: 'One monthly PR for the provider binaries, so one base image build covers them all.',
+      matchDepNames: ['mikebrady/shairport-sync', 'snapcast/snapcast', 'devgianlu/go-librespot'],
+      groupName: 'base image binaries',
+      schedule: ['* * 1 * *'],
+      updateNotScheduled: false,
+    },
+  ],
+}

@@ -27,7 +27,7 @@ from music_assistant_models.enums import (
     RepeatMode,
     SourceControl,
 )
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError, PlayerUnavailableError
 from music_assistant_models.media_items import (
     AudioSource,
     ProviderMapping,
@@ -477,7 +477,7 @@ class SpotifyConnectProvider(PluginProvider):
             )
             try:
                 await self.mass.players.cmd_stop(prev_player_id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - player code, stopping is best effort
                 self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
 
         # Push the options the session reported before this claim existed, so the
@@ -547,7 +547,7 @@ class SpotifyConnectProvider(PluginProvider):
             # here: those cleared the playing flag or replaced the session id first.)
             try:
                 await daemon.backend.deactivate()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - releasing the session is best effort
                 self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
 
     async def on_source_released(self, source_id: str, player_id: str) -> None:
@@ -566,8 +566,10 @@ class SpotifyConnectProvider(PluginProvider):
         # the player we were on - which by now is playing whatever took our place.
         daemon.active_player_id = None
         try:
-            await daemon.backend.deactivate()
-        except Exception as err:
+            # shielded: a failed playback start releases from within its own task, which the
+            # 'paused' event of a backend that pauses before giving up the device cancels
+            await asyncio.shield(daemon.backend.deactivate())
+        except Exception as err:  # noqa: BLE001 - releasing the session is best effort
             self.logger.debug("Failed to release Spotify session: %s", err)
 
     async def on_source_control(
@@ -759,14 +761,15 @@ class SpotifyConnectProvider(PluginProvider):
             player_id=player_id,
             safe_player_id=re.sub(r"[^A-Za-z0-9_.-]", "_", player_id),
             publish_name=publish_name,
-            stream_metadata=StreamMetadata(title=f"Spotify Connect | {publish_name}"),
+            # no title until a track plays, so the source shows by its own name
+            stream_metadata=StreamMetadata(title=""),
         )
         daemon.backend = self._create_backend(daemon, player.name)
-        daemon.audio_source = self._build_audio_source(daemon, player.name)
+        daemon.audio_source = self._build_audio_source(daemon)
         self._daemons[player_id] = daemon
         try:
             await daemon.backend.start()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # a daemon that cannot start makes the whole provider unusable
             # (shared engine setup); surface it like a backend fatal error
             self._daemons.pop(player_id, None)
@@ -891,7 +894,7 @@ class SpotifyConnectProvider(PluginProvider):
             translation_owner=self.translation_owner,
         )
 
-    def _build_audio_source(self, daemon: _PlayerDaemon, player_name: str) -> AudioSource:
+    def _build_audio_source(self, daemon: _PlayerDaemon) -> AudioSource:
         """
         Construct the AudioSource MediaItem for a daemon.
 
@@ -902,13 +905,13 @@ class SpotifyConnectProvider(PluginProvider):
         queue-session verbs.
 
         :param daemon: The daemon state the source belongs to.
-        :param player_name: The connected player's display name.
         """
         return AudioSource(
             # the player id is stable across renames, so the source uri survives them
             item_id=daemon.player_id,
             provider=self.instance_id,
-            name=f"{self.name} ({player_name})",
+            name=self.name,
+            owner_player_id=daemon.player_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=daemon.player_id,
@@ -958,7 +961,7 @@ class SpotifyConnectProvider(PluginProvider):
         started = self.mass.loop.time()
         try:
             await self.mass.players.cmd_stop(player_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - player code, any failure ends the handling
             self.logger.debug("Failed to stop player %s on pause: %s", player_id, err)
             return
         # a timeout around the stop is not enforceable: the process cleanup it waits on
@@ -1019,6 +1022,8 @@ class SpotifyConnectProvider(PluginProvider):
         """
         Trigger play_media after a short debounce.
 
+        When the player is not available, the Spotify session is released instead.
+
         The backend can emit a stale 'playing' from a dying session just before it
         reconnects; acting on it immediately would start a stream for a session
         that is about to be replaced. Debouncing — and cancelling the task on a
@@ -1042,7 +1047,19 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.active_player_id = target_player_id
         # awaited inline so the tracked deferred task covers the whole start and
         # a daemon teardown can still cancel an in-flight source selection
-        await self.mass.player_queues.play_media(target_player_id, str(daemon.audio_source.uri))
+        try:
+            await self.mass.player_queues.play_media(target_player_id, str(daemon.audio_source.uri))
+        except PlayerUnavailableError as err:
+            # the player is not available (off, and no power control woke it). The start failed
+            # before the player took the source, so no on_source_released follows: release the
+            # session here, or the Spotify app goes on showing playback on a silent speaker
+            self.logger.info(
+                "Cannot start Spotify Connect playback [%s] on player %s: %s",
+                daemon.publish_name,
+                target_player_id,
+                err,
+            )
+            await self.on_source_released(daemon.player_id, target_player_id)
 
     def _clear_active_player(self, daemon: _PlayerDaemon) -> None:
         """Clear the active player and reset playback state when a session ends."""
@@ -1271,7 +1288,7 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.last_volume_sent = volume
         try:
             await self.mass.players.cmd_volume_set(daemon.in_use_by_player, volume)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # Volume sync is best-effort: the player may not support volume, or the
             # command may fail. Restore the cached value so a retry isn't wrongly
             # deduped, and never let it bubble up and drop the events loop.
@@ -1303,7 +1320,7 @@ class SpotifyConnectProvider(PluginProvider):
         # resets to its 100% default on a new session or backend restart.
         try:
             await self._push_volume_to_backend(daemon, volume)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - volume sync is best effort
             self.logger.debug("Failed to sync player volume to Spotify: %s", err)
 
     async def _push_volume_to_backend(self, daemon: _PlayerDaemon, volume: int) -> None:

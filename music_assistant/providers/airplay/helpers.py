@@ -7,13 +7,12 @@ import os
 import platform
 import plistlib
 import re
-import time
 from dataclasses import dataclass
+from enum import StrEnum
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientTimeout
-from aiosendspin.clock import RawMonotonicClock
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
@@ -27,6 +26,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import PlayerConfig
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.helpers.timeline_clock import TimelineClock
     from music_assistant.mass import MusicAssistant
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,15 +40,33 @@ _CLI_BINARY_CHECK_TIMEOUT = 15.0
 # Bound the /info capability probe: it runs in the discovery path, and a receiver
 # that is slow to answer must not hold up player registration.
 _INFO_PROBE_TIMEOUT = 5.0
-_RAW_CLOCK = RawMonotonicClock()
-# Every cliairplay process gets this one offset (--clock-offset-ns), so the whole
-# group plays on Sendspin's raw clock and host clock slews and steps move nothing.
-CLI_CLOCK_OFFSET_NS: Final[int] = time.time_ns() - _RAW_CLOCK.now_us() * 1000
 
 
-def cli_clock_time() -> float:
-    """Return now on the cliairplay timeline, in unix-epoch seconds."""
-    return (_RAW_CLOCK.now_us() * 1000 + CLI_CLOCK_OFFSET_NS) / 1e9
+def cli_clock_time(clock: TimelineClock) -> float:
+    """
+    Return now on the cliairplay timeline, in unix-epoch seconds.
+
+    :param clock: The timeline clock of the server.
+    """
+    return (clock.now_ns() + clock.unix_offset_ns) / 1e9
+
+
+def cli_clock_args(clock: TimelineClock) -> list[str]:
+    """
+    Return the cliairplay arguments that put a process on the cliairplay timeline.
+
+    Every cliairplay process gets them, so the whole group plays on the timeline clock of
+    the server and host clock slews and steps move nothing. A process keeps the rate it
+    was started with.
+
+    :param clock: The timeline clock of the server.
+    """
+    return [
+        "--clock-offset-ns",
+        str(clock.offset_ns + clock.unix_offset_ns),
+        "--clock-rate-ppb",
+        str(clock.rate_ppb),
+    ]
 
 
 def get_sync_offset_ms(config: PlayerConfig) -> int:
@@ -254,26 +272,39 @@ def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | No
     return None
 
 
+class SetKind(StrEnum):
+    """The kind of set of AirPlay devices that plays as one player."""
+
+    # an Apple TV with one HomePod or a stereo pair of them as its speakers
+    HOME_THEATER = "home_theater"
+    # a stereo pair of HomePods without an Apple TV
+    STEREO_PAIR = "stereo_pair"
+
+
 @dataclass(frozen=True)
 class SetMembership:
-    """The place of an AirPlay device in the home theater set of an Apple TV."""
+    """The place of an AirPlay device in a set of devices that plays as one player."""
 
-    # id of the set, shared by the Apple TV and its speakers
+    # id of the set, shared by all of its devices
     set_id: str
-    # 0 for the Apple TV that carries the set, above 0 for one of its speakers
-    position: int
-    # number of devices in the set, the Apple TV included
+    # 0 for the device that carries the set, above 0 for one of its speakers. A record of a
+    # stereo pair tells no role: there it is the digit of the idle pair form of its group id,
+    # None while a sender plays to the pair
+    position: int | None
+    # number of devices in the set, the one that carries it included
     size: int
     # name of the room the set is in
     name: str | None
+    kind: SetKind = SetKind.HOME_THEATER
 
 
 def parse_set_membership(discovery_info: AsyncServiceInfo | None) -> SetMembership | None:
     """
-    Return the place of a device in the home theater set of an Apple TV, None outside one.
+    Return the place of a device in a set of devices that plays as one player, None outside one.
 
-    Only the keys that stay the same while any sender plays to the set are read, so the
-    result does not change with a session.
+    That is the home theater set of an Apple TV, read from the keys that stay the same while
+    any sender plays to it, or a stereo pair of HomePods. A HomePod in both belongs to the
+    set of its Apple TV.
 
     :param discovery_info: The _airplay._tcp record of the device.
     """
@@ -281,7 +312,7 @@ def parse_set_membership(discovery_info: AsyncServiceInfo | None) -> SetMembersh
         return None
     set_id = get_decoded_property(discovery_info, "psgid")
     if not set_id or get_decoded_property(discovery_info, "psgtp") != "1":
-        return None
+        return _parse_stereo_pair(discovery_info)
     try:
         position = int(get_decoded_property(discovery_info, "pgmid") or "")
     except ValueError:
@@ -406,6 +437,27 @@ async def get_cli_binary() -> str:
     raise RuntimeError(msg)
 
 
+def get_protocol_id(device_id: str) -> str:
+    """
+    Return the protocol id of an AirPlay device.
+
+    :param device_id: The deviceid of its _airplay record, or the MAC address its RAOP
+        instance name starts with.
+    """
+    return f"ap{device_id.replace(':', '').lower()}"
+
+
+def is_airplay_record_of(discovery_info: AsyncServiceInfo, protocol_id: str) -> bool:
+    """
+    Return whether an _airplay record is advertised by the device with this protocol id.
+
+    :param discovery_info: The _airplay record.
+    :param protocol_id: The protocol id of the device.
+    """
+    device_id = discovery_info.decoded_properties.get("deviceid")
+    return device_id is not None and get_protocol_id(device_id) == protocol_id
+
+
 def player_id_to_mac_address(player_id: str) -> str:
     """Convert a player_id to a MAC address-like string."""
     # the player_id is the mac address prefixed with "ap"
@@ -500,3 +552,31 @@ def _get_cli_binary_name(system: str, machine: str) -> str | None:
     if normalized_system not in ("linux", "macos"):
         return None
     return f"cliairplay-{normalized_system}-{architecture}"
+
+
+def _parse_stereo_pair(discovery_info: AsyncServiceInfo) -> SetMembership | None:
+    """
+    Return the membership of a HomePod in a stereo pair, None outside one.
+
+    Both speakers carry the id of the pair. While nobody plays to the pair, the group id has
+    its idle pair form ``<pair id>+<digit>+<id>``, which tells no role: both HomePods of a
+    settled pair read the same one. The position only tells whether the record is in that form.
+
+    :param discovery_info: The _airplay._tcp record of the device.
+    """
+    if not (pair_id := get_decoded_property(discovery_info, "tsid")):
+        return None
+    pair_id = pair_id.upper()
+    group_id = (get_decoded_property(discovery_info, "gid") or "").upper().split("+")
+    position = (
+        int(group_id[1])
+        if len(group_id) == 3 and group_id[0] == pair_id and group_id[1].isdigit()
+        else None
+    )
+    return SetMembership(
+        set_id=pair_id,
+        position=position,
+        size=2,
+        name=get_decoded_property(discovery_info, "gpn") or None,
+        kind=SetKind.STEREO_PAIR,
+    )

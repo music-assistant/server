@@ -253,7 +253,7 @@ class PodcastIndexProvider(MusicProvider):
                     return podcast
         except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - anything else ends as not found
             self.logger.debug("Unexpected error getting podcast %s: %s", prov_podcast_id, err)
 
         raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
@@ -271,7 +271,7 @@ class PodcastIndexProvider(MusicProvider):
             if podcast:
                 podcast_name = podcast.name
                 self.logger.debug("Got podcast name from MA context: %s", podcast_name)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the podcast name is optional
             self.logger.debug("Could not get podcast from MA context: %s", err)
 
         # If we don't have the name, get it from the API
@@ -283,7 +283,7 @@ class PodcastIndexProvider(MusicProvider):
                 if podcast_response.get("feed"):
                     podcast_name = podcast_response["feed"].get("title")
                     self.logger.debug("Got podcast name from API fallback: %s", podcast_name)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the podcast name is optional
                 self.logger.warning("Could not get podcast name from API: %s", err)
 
         try:
@@ -309,7 +309,7 @@ class PodcastIndexProvider(MusicProvider):
 
         except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - anything else ends the listing
             self.logger.warning(
                 "Unexpected error getting episodes for %s: %s", prov_podcast_id, err
             )
@@ -336,7 +336,7 @@ class PodcastIndexProvider(MusicProvider):
         except ValueError as err:
             # Handle malformed episode ID
             raise InvalidDataError(f"Invalid episode ID format: {prov_episode_id}") from err
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - anything else ends as not found
             self.logger.warning("Unexpected error getting episode %s: %s", prov_episode_id, err)
 
         if episode is None or episode_data is None:
@@ -409,7 +409,7 @@ class PodcastIndexProvider(MusicProvider):
         except ValueError as err:
             # Handle malformed episode ID
             raise InvalidDataError(f"Invalid episode ID format: {item_id}") from err
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - anything else ends as not found
             self.logger.warning("Unexpected error getting stream for %s: %s", item_id, err)
 
         raise MediaNotFoundError(f"Stream not found for {item_id}")

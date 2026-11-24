@@ -261,3 +261,21 @@ class TestHlsRadioTitle:
     async def test_title_without_a_known_start_is_the_newest(self, data: dict[str, Any]) -> None:
         """Without a known start the newest title is the only one to go by."""
         assert await self._title(_playlist([4.0, 4.0], ["A", "B"]), data) == "B"
+
+    @pytest.mark.asyncio
+    async def test_title_and_artist_are_decoded(self) -> None:
+        """Entity-encoded EXTINF fields reach the player metadata decoded."""
+        controller = StreamsAudio(MagicMock())
+        playlist = '#EXTM3U\n#EXTINF:4,title="I&apos;m Losing You",artist="John Lennon"\nseg.aac\n'
+        response = _FakeTextResponse(playlist.encode(), None, "https://a.example")
+        http_session: Any = controller.mass.http_session_no_ssl
+        http_session.get = MagicMock(return_value=response)
+        update = MagicMock()
+        controller._update_radio_stream_metadata = update  # type: ignore[method-assign]
+        details = MagicMock(data={"hls_media_playlist_url": "https://a.example"}, stream_title=None)
+
+        await controller._update_hls_radio_metadata(details, 0)
+
+        assert details.stream_title == "John Lennon - I'm Losing You"
+        assert update.call_args.kwargs["title"] == "I'm Losing You"
+        assert update.call_args.kwargs["artist"] == "John Lennon"

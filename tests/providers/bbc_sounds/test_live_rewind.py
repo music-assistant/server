@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 import pytest
+from auntie_sounds.history import SegmentHistory
 from auntie_sounds.models import (
     LiveStation,
     Network,
@@ -304,6 +305,7 @@ class TestLiveProgrammeStreamDetails:
             "get_hls_substream",
             AsyncMock(return_value=Mock(path=LIVE_URL)),
         )
+        monkeypatch.setattr(provider, "live_programme", AsyncMock(return_value=Mock()))
 
         details = await provider.get_stream_details(programme_id.item_id, MediaType.PODCAST_EPISODE)
 
@@ -317,6 +319,37 @@ class TestLiveProgrammeStreamDetails:
         # the details (and so the buffer seeks are checked against) last the whole programme
         assert details.expiration >= 3600
         provider.client.content.get_by_pid.assert_not_called()  # type: ignore[attr-defined]
+
+    async def test_now_playing_names_the_programme_being_played(
+        self, provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test between tracks the rewound programme is shown, not the station's current one."""
+        now = datetime.now(tz=UTC)
+        start, end = now - timedelta(hours=1), now + timedelta(hours=1)
+        programme_id = LiveProgrammeId(
+            "bbc_radio_one", "m0031hzl", int(start.timestamp()), int(end.timestamp())
+        )
+        provider.client.stations.get_station.return_value = LiveStation(  # type: ignore[attr-defined]
+            id="bbc_radio_one", titles=Titles(primary="Another programme"), stream="master.m3u8"
+        )
+        provider.client.schedules.refresh_history.return_value = SegmentHistory()  # type: ignore[attr-defined]
+        monkeypatch.setattr(
+            provider.mass.streams.audio,
+            "get_hls_substream",
+            AsyncMock(return_value=Mock(path=LIVE_URL)),
+        )
+        monkeypatch.setattr(
+            provider, "live_programme", AsyncMock(return_value=_schedule_item(start, end))
+        )
+        details = await provider.get_stream_details(programme_id.item_id, MediaType.PODCAST_EPISODE)
+        assert details.stream_metadata_update_callback is not None
+
+        await details.stream_metadata_update_callback(details, 60)
+
+        assert details.stream_metadata is not None
+        assert "Radio 1 Breakfast" in (details.stream_metadata.title or "")
+        assert "Another programme" not in (details.stream_metadata.title or "")
+        provider.client.schedules.on_air.assert_not_called()  # type: ignore[attr-defined]
 
     async def test_ended_programme_prefers_the_on_demand_version(
         self, provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch
@@ -386,6 +419,23 @@ class TestLiveProgrammeLookup:
         provider.client.schedules.get_schedule.assert_awaited_once_with(  # type: ignore[attr-defined]
             station_id="bbc_radio_one", date=broadcast_date
         )
+
+    async def test_live_programme_is_matched_on_its_start_time(
+        self, provider: BBCSoundsProvider
+    ) -> None:
+        """Test a programme broadcast twice in a day is matched on its start, not its pid alone."""
+        start = datetime(2026, 9, 24, 7, 0, tzinfo=UTC)
+        end = start + timedelta(hours=3)
+        repeat = _schedule_item(start + timedelta(hours=12), end + timedelta(hours=12))
+        item = _schedule_item(start, end)
+        provider.client.schedules.get_schedule.return_value = Schedule(  # type: ignore[attr-defined]
+            id="schedule", sub_items=[repeat, item]
+        )
+        programme_id = LiveProgrammeId(
+            "bbc_radio_one", "m0031hzl", int(start.timestamp()), int(end.timestamp())
+        )
+
+        assert await provider.live_programme(programme_id) is item
 
 
 class TestContinueWithStation:

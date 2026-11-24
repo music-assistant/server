@@ -5,7 +5,7 @@
   "description": "Stream radio shows, news, and podcasts from ARD Sounds (Germany’s public broadcaster).",
   "codeowners": ["@jfeil"],
   "provides": ["radio", "podcast"],
-  "requirements": ["gql[all]==4.0.0"],
+  "requirements": ["gql[all]==4.4.0"],
   "documentation": "https://music-assistant.io/music-providers/ard-sounds/",
   "multi_instance": true,
   "stage": "stable"

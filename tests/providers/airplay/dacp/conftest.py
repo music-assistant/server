@@ -73,6 +73,8 @@ def airplay_provider(
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.get_transport_command_target.return_value = None
     provider._speakers = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     return provider
 
 
@@ -129,6 +131,7 @@ def make_player(  # noqa: PLR0913
         stream = MagicMock()
         stream.active_remote_id = active_remote
         stream.running = True
+        stream.start_pending = False
         stream.connected = stream_connected
         stream.prevent_playback = prevent_playback
         stream.session = MagicMock() if has_session else None

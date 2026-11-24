@@ -14,7 +14,7 @@ from aiosendspin.models.types import AudioCodec as SendspinAudioCodec
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream, StreamStoppedError
 from aiosendspin.server.roles.player.v1 import PlayerV1Role
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, MediaType, SpeakerChannel
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import (
@@ -1446,7 +1446,7 @@ class SendspinPlaybackSession:
             # a client that renders nothing takes the audio as it is
             return _PipelineConfig(requires_transform=False, filter_params=())
         # a speaker of a multi-channel player plays with the settings of that player
-        protocol_id, channel = provider.speaker_output(player_id)
+        protocol_id, channel, with_subwoofer = provider.speaker_output(player_id)
         # the DSP settings are those of the player the member's protocol belongs to
         member = self.player.mass.players.get_player_by_protocol(protocol_id)
         dsp_config = self.player.mass.config.get_player_dsp_config(
@@ -1461,9 +1461,11 @@ class SendspinPlaybackSession:
                 output_format,
                 handoff_format=self._pcm_format,
                 channel=channel,
+                with_subwoofer=with_subwoofer,
             )
             filter_params = tuple(output_plan.filter_params)
-        except Exception:
+        except Exception as err:  # noqa: BLE001 - any failure means no dedicated dsp channel
+            self.player.logger.debug("Could not build the output plan for %s: %s", player_id, err)
             filter_params = ()
             output_plan = None
         # a ComplexFilter (e.g. convolution) is never a plain string, so it always counts
@@ -1473,6 +1475,8 @@ class SendspinPlaybackSession:
         requires_transform = dsp_enabled or custom_filter_graph
         if (
             output_plan is not None
+            # a subwoofer plays along with the main speakers, which report for their player
+            and channel != SpeakerChannel.LFE
             and self._queue_id is not None
             and self._queue_session_id is not None
         ):

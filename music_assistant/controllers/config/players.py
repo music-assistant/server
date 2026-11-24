@@ -1346,6 +1346,7 @@ class PlayerConfigMixin:
                 key=CONF_PRE_ANNOUNCE_CHIME_URL,
                 type=ConfigEntryType.STRING,
                 category="announcements",
+                advanced=True,
                 required=False,
                 depends_on=CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
                 depends_on_value=True,
@@ -1416,16 +1417,18 @@ class PlayerConfigMixin:
                 disabled=PlayerFeature.VOLUME_MUTE not in own_features,
             )
         ]
-        # add audio protocols as volume controls if the native protocol has no volume control
+        # "auto" is what applies while nothing is stored: the protocol that renders owns the
+        # level. It comes first, so it is the default, also next to a native control.
         for protocol in player.audio_protocols:
-            if has_native_volume_control:
-                break
             if not protocol.available_for_playback:
                 continue
             if protocol.supports_feature(PlayerFeature.VOLUME_SET):
                 if auto_option not in volume_options:
-                    volume_options.append(auto_option)
-                if protocol.provider.domain in ("chromecast", "dlna"):
+                    volume_options.insert(0, auto_option)
+                if not has_native_volume_control and protocol.provider.domain in (
+                    "chromecast",
+                    "dlna",
+                ):
                     # for chromecast/dlna we can use the protocol for volume control
                     # even if it is not the active protocol
                     volume_options.append(
@@ -1433,8 +1436,11 @@ class PlayerConfigMixin:
                     )
             if protocol.supports_feature(PlayerFeature.VOLUME_MUTE):
                 if auto_option not in mute_options:
-                    mute_options.append(auto_option)
-                if protocol.provider.domain in ("chromecast", "dlna"):
+                    mute_options.insert(0, auto_option)
+                if not has_native_volume_control and protocol.provider.domain in (
+                    "chromecast",
+                    "dlna",
+                ):
                     # for chromecast/dlna we can use the protocol for volume control
                     # even if it is not the active protocol
                     mute_options.append(

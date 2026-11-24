@@ -80,8 +80,9 @@ class PlayerQueueData:
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
     transitioning: bool = False
-    # the queue's own play action runs (a skip, a seek, a resume, a replace): it goes on to the
-    # track that action plays, though its player can still report a pause until that track plays
+    # the queue's own play action runs (a skip, a seek, a resume, a replace, a play now): it
+    # goes on to the track that action plays, though its player can still report a pause until
+    # that track plays
     own_play_action: bool = False
     # a command (a pause, a stop) halted the playback of the queue's items and it has not played
     # since: the queue keeps its place, and its player going idle is not the end of the queue
@@ -113,10 +114,9 @@ class PlayerQueueData:
     next_item_id_enqueued: str | None = None
     # queue_item_id whose audio was most recently asked to be prepared ahead of its playback
     next_item_id_preparing: str | None = None
-    # the audio buffers made for items of this queue, each with the item it was made for: an
-    # item that left the queue keeps its buffer here. The entry of a buffer that was cleared
-    # goes the next time the record is read
-    audio_buffers: list[tuple[QueueItem, AudioBuffer]] = field(default_factory=list)
+    # the audio buffers made for items of this queue: an item that left the queue keeps its
+    # buffer here. A buffer that was cleared goes the next time the record is read
+    audio_buffers: list[AudioBuffer] = field(default_factory=list)
     # queue_item_id of the last upcoming item placed by Smart Fades ordering; playback orders the
     # next batch behind it
     fade_ordered_until: str | None = None
@@ -245,7 +245,7 @@ class PlayerQueueData:
         for item_data in items_data:
             try:
                 items.append(QueueItem.from_cache(item_data))
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one unreadable item must not drop the queue
                 LOGGER.warning("Skipping unreadable queue item for %s: %s", queue.queue_id, err)
         # keep the wire-facing count consistent with the items actually restored (some may have been
         # skipped above), so refill / "running low" logic reads the right number
@@ -272,7 +272,7 @@ class PlayerQueueData:
                 continue
             try:
                 result.append(media_from_dict(x))
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one unreadable item must not drop the queue
                 LOGGER.warning("Skipping unreadable %s for %s: %s", label, queue_id, err)
         return result
 

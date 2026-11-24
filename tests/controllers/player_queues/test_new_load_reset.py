@@ -59,7 +59,6 @@ async def test_a_new_load_drops_what_the_old_one_fetched() -> None:
     data = ctrl._queue_data["q1"]
     data.last_served_item_id = data.items[2].queue_item_id
     ctrl._preload_next_item = Mock()
-    ctrl._cleanup_stale_queue_buffers = Mock()
     ctrl._load_item = AsyncMock()
     ctrl._check_player_permission = Mock()
     ctrl._set_transitioning = Mock()

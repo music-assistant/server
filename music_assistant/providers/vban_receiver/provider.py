@@ -115,7 +115,7 @@ class VBANReceiverProvider(PluginProvider):
         self._audio_source = AudioSource(
             item_id=AUDIO_SOURCE_ID,
             provider=self.instance_id,
-            name=f"{self.manifest.name}: {self._vban_stream_name}",
+            name=self.name,
             provider_mappings={
                 ProviderMapping(
                     item_id=AUDIO_SOURCE_ID,

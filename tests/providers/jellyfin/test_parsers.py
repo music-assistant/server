@@ -212,6 +212,37 @@ def test_audio_format_wav_container_not_treated_as_raw_pcm() -> None:
     assert result.channels == 2
 
 
+@pytest.mark.parametrize(
+    ("codec", "expected_content_type", "expected_codec_type"),
+    [
+        ("wmalossless", ContentType.WMA, ContentType.WMALOSSLESS),
+        ("wmapro", ContentType.WMA, ContentType.WMAPRO),
+        ("wmav2", ContentType.WMA, ContentType.WMAV2),
+        ("mp3", ContentType.UNKNOWN, ContentType.MP3),
+    ],
+)
+def test_audio_format_asf_container(
+    codec: str, expected_content_type: ContentType, expected_codec_type: ContentType
+) -> None:
+    """Jellyfin's asf container is reported as WMA only when it carries a WMA codec."""
+    track: dict[str, Any] = {
+        ITEM_KEY_MEDIA_SOURCES: [{ITEM_KEY_CONTAINER: "asf"}],
+        ITEM_KEY_MEDIA_STREAMS: [
+            {
+                ITEM_KEY_MEDIA_STREAM_TYPE: "Audio",
+                ITEM_KEY_MEDIA_CODEC: codec,
+                ITEM_KEY_MEDIA_CHANNELS: 2,
+                "SampleRate": 44100,
+                "BitDepth": 16,
+            },
+        ],
+    }
+    result = audio_format(track)  # type: ignore[arg-type]
+
+    assert result.content_type == expected_content_type
+    assert result.codec_type == expected_codec_type
+
+
 def test_parse_lyrics_synced() -> None:
     """Synced Jellyfin lyrics produce plain text and LRC."""
     raw = {

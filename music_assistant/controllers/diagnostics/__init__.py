@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 # maximum time one section contributor may take before it is dropped from the report
 SECTION_TIMEOUT = 2.0
 

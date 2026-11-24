@@ -189,7 +189,7 @@ class MusicAssistantControl:
         while not self._stopped:
             try:
                 self._connect_and_read()
-            except (Exception, KeyboardInterrupt) as e:
+            except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 - the socket loop must keep running
                 logger.info("Exception in socket loop: %s", e)
                 if not self._stopped:
                     sleep(2)

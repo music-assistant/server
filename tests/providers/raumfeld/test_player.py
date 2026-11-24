@@ -1540,6 +1540,37 @@ async def test_stopping_a_zone_that_already_stopped_is_fine() -> None:
     assert player._attr_playback_state == PlaybackState.IDLE
 
 
+async def test_a_stop_waits_for_the_zone_the_host_is_still_publishing() -> None:
+    """A stop right after a group dissolved waits for the zone's renderer, then stops it."""
+    player, action = _zone_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    # the host lists the zone's renderer again only on the third look
+    cast("MagicMock", player._provider).zone_location.side_effect = [None, None, _ZONE, _ZONE]
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch("music_assistant.providers.raumfeld.player.ZONE_WAIT_INTERVAL", 0),
+    ):
+        await player.stop()
+    assert [c.args for c in action.await_args_list] == [(_ZONE, "Stop")]
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+async def test_a_stop_fails_when_the_host_never_publishes_the_zone() -> None:
+    """A zone whose renderer stays unpublished fails the stop, rather than reporting idle."""
+    player, action = _zone_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    cast("MagicMock", player._provider).zone_location.return_value = None
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch("music_assistant.providers.raumfeld.player.ZONE_WAIT_TIMEOUT", 0),
+        pytest.raises(PlayerCommandFailed, match="has not published its zone"),
+    ):
+        await player.stop()
+    action.assert_not_awaited()
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
 async def test_a_failed_stop_is_reported() -> None:
     """A stop the zone refuses otherwise fails, rather than reporting the room as idle."""
     player, action = _zone_player()

@@ -218,7 +218,7 @@
     },
     "output_codec": {
       "label": "Output codec to use for streaming audio to the player",
-      "description": "Select the codec to use for streaming audio to this player. \nBy default, Music Assistant sends lossless, high quality audio to all players and prefers the FLAC codec because it offers some compression while still remaining lossless \n\nSome players however do not support FLAC and require the stream to be packed into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
+      "description": "Select the codec to use for streaming audio to this player. \nMost players get lossless, high quality FLAC by default, which offers some compression while still remaining lossless. \n\nSome players default to a lossy codec such as MP3 instead, because they do not support FLAC or stop playing a long FLAC stream after a while. \n\nChoosing a lossy codec also saves some network bandwidth, at the cost of audio quality.",
       "options": {
         "flac": "FLAC (lossless, compressed)",
         "mp3": "MP3 (lossy)",
@@ -286,9 +286,9 @@
     },
     "zeroconf_interfaces": {
       "label": "Mdns/Zeroconf discovery interface(s)",
-      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nBy default, Music Assistant will only listen on the default interface. If you have multiple network interfaces and you want to discover players on all interfaces, you can change this setting to 'All interfaces'.\n\nA change takes effect after restarting Music Assistant.",
+      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nBy default, Music Assistant uses mDNS on the network interfaces of your local network(s) and leaves out the virtual interfaces of Docker, virtual machines, VPNs and Thread. Change this setting to 'All interfaces' to use mDNS on those as well.\n\nA change takes effect after restarting Music Assistant.",
       "options": {
-        "default": "Default interface",
+        "default": "Local network interfaces",
         "all": "All interfaces"
       }
     },
@@ -487,7 +487,7 @@
     "sync_options": "Sync/import options",
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
-    "playback": "Queue Playback",
+    "playback": "Playback",
     "source_selection": "Source selection",
     "items_to_select": "Items to select",
     "default_enqueue_option": "Default enqueue option",
@@ -955,6 +955,9 @@
       "libraries": {
         "name": "Libraries"
       },
+      "live_sources": {
+        "name": "Live sources"
+      },
       "recommendations": {
         "name": "Recommendations"
       },
@@ -1379,6 +1382,8 @@
     "invalid_token": "The access token is invalid or has expired.",
     "resource_busy": "This resource is currently in use elsewhere.",
     "rate_limited": "Rate limit reached. Please try again later.",
+    "rate_limited_minutes": "Rate limit reached. Please try again in about {0} minutes.",
+    "rate_limited_hours": "Rate limit reached. Please try again in about {0} hours.",
     "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
     "connection_timeout": "Connection timed out: {0}.",
     "connect_failed": "Failed to connect to {0}.",

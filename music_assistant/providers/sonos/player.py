@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -27,8 +28,8 @@ from aiosonos.api.models import (
     SonosCapability,
 )
 from aiosonos.client import SonosLocalApiClient
+from aiosonos.const import LOCAL_API_PORT, SonosEvent
 from aiosonos.const import EventType as SonosEventType
-from aiosonos.const import SonosEvent
 from aiosonos.exceptions import (
     CannotConnect,
     CommandTimeout,
@@ -64,6 +65,7 @@ from music_assistant.models.player import PlayerSource
 from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.providers.sonos.const import (
     AMP_MODEL,
+    AUDIO_IN_SERVICE,
     CONF_SHOW_DEVICE_SETTINGS,
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
@@ -74,14 +76,17 @@ from music_assistant.providers.sonos.const import (
     PLAYBACK_STATE_MAP,
     PLAYER_SOURCE_MAP,
     PREVIOUS_ITEMS,
+    RENDERING_CONTROL_SERVICE,
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
+    SOURCE_LINE_IN_OF,
     SOURCE_MUSIC_ASSISTANT,
     SOURCE_RADIO,
     SOURCE_SPOTIFY,
     SOURCE_TV,
     UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
     UPCOMING_ITEMS,
+    UPNP_PORT,
 )
 from music_assistant.providers.sonos.helpers import get_channel_layout
 from music_assistant.providers.sonos.options import (
@@ -162,6 +167,7 @@ FINISHED_CLIP_STATES = (
 # playback states in which a session holds its speaker
 RENDERING_STATES = (PlaybackState.PLAYING, PlaybackState.PAUSED)
 SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
+REPEAT_ROUND_SUFFIX = re.compile(r"~r(\d+)")
 
 
 class SonosPlayer(PlayerProtocol):
@@ -178,10 +184,22 @@ class SonosPlayer(PlayerProtocol):
         prov: SonosPlayerProvider,
         protocol_id: str,
         discovery_info: SonosDiscoveryInfo,
+        api_port: int = LOCAL_API_PORT,
+        upnp_port: int = UPNP_PORT,
     ) -> None:
-        """Initialize the SonosPlayer."""
+        """
+        Initialize the SonosPlayer.
+
+        :param prov: The Sonos provider.
+        :param protocol_id: The Sonos player ID.
+        :param discovery_info: The discovery info the speaker returned.
+        :param api_port: The port of the speaker's local API.
+        :param upnp_port: The port of the speaker's UPnP services.
+        """
         super().__init__(prov, protocol_id)
         self.discovery_info = discovery_info
+        self._api_port = api_port
+        self._upnp_port = upnp_port
         self.connected: bool = False
         self._listen_task: asyncio.Task[None] | None = None
         self._connect_lock = asyncio.Lock()
@@ -226,16 +244,26 @@ class SonosPlayer(PlayerProtocol):
         self._own_airplay_session = False
         # the other speakers of this speaker's set, as last reported to the players controller
         self._reported_bonded_ids: set[str] = set()
+        # whether something is connected to the line-in, None until the speaker reported it
+        self._line_in_connected: bool | None = None
 
     @property
     def source_list(self) -> list[PlayerSource]:
-        """Return this player's sources; a service we did not map is listed only while it plays."""
+        """
+        Return this player's sources, with the line-in of the speakers of its household.
+
+        A service we did not map is listed only while it plays, and so is the line-in of
+        another speaker that has nothing connected to it.
+        """
         # the entry of such a service can outlive the source it stands for: once a paused
         # session is given up on, the speaker keeps reporting it and rebuilds the entry
         return [
-            x
-            for x in self._attr_source_list
-            if x.id in PLAYER_SOURCE_MAP or x.id == self._attr_active_source
+            *(
+                x
+                for x in self._attr_source_list
+                if x.id in PLAYER_SOURCE_MAP or x.id == self._attr_active_source
+            ),
+            *self._household_line_ins(),
         ]
 
     @property
@@ -271,10 +299,12 @@ class SonosPlayer(PlayerProtocol):
         assert self.device_info.ip_address is not None  # for type checking
         # connect the player first so we can fail early
         self.client = SonosLocalApiClient(
-            self.device_info.ip_address, self.mass.http_session_no_ssl
+            self.device_info.ip_address, self.mass.http_session_no_ssl, self._api_port
         )
         provider = cast("SonosPlayerProvider", self._provider)
-        self.upnp = SonosSpeakerUpnp(provider.upnp, self.device_info.ip_address, self.logger)
+        self.upnp = SonosSpeakerUpnp(
+            provider.upnp, self.device_info.ip_address, self._upnp_port, self.logger
+        )
         await self._connect(False)
 
         # collect supported features
@@ -316,8 +346,6 @@ class SonosPlayer(PlayerProtocol):
         if mac_address and is_valid_mac_address(mac_address):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
 
-        if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
-            self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_LINE_IN])
         if SonosCapability.HT_PLAYBACK in self.discovery_info["device"]["capabilities"]:
             self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_TV])
         if SonosCapability.AIRPLAY in self.discovery_info["device"]["capabilities"]:
@@ -533,7 +561,7 @@ class SonosPlayer(PlayerProtocol):
         """Follow (renew) the speaker's events, and poll the options they do not cover."""
         if not self.connected:
             return
-        await self.upnp.follow(self._on_rendering_change)
+        await self.upnp.follow(self._on_upnp_change, self._event_services)
         if not self.upnp.follows:
             await self._update_options()
         elif polled := [option for option in self._offered_options if option.polled]:
@@ -800,8 +828,12 @@ class SonosPlayer(PlayerProtocol):
         # whatever the source turns out to be, it is not our queue any more
         self._forget_queue()
         self._announcement_media = None
-        if source == SOURCE_LINE_IN:
-            await self.group_controller.load_line_in(play_on_completion=True)
+        if device_id := _line_in_device_id(source):
+            # the speaker's own line-in is the one it loads by default
+            await self.group_controller.load_line_in(
+                device_id=None if device_id == self.protocol_id else device_id,
+                play_on_completion=True,
+            )
         elif source == SOURCE_TV:
             await self.client.player.load_home_theater_playback()
         else:
@@ -980,7 +1012,8 @@ class SonosPlayer(PlayerProtocol):
         Return the requested item, the one before it and the items after it, as the queue is now.
 
         The items are addressed by queue position, each under an id the speaker reports back;
-        an item the speaker already holds an id for at another position gets an id of its own.
+        an item the speaker already holds an id for at another position gets an id of its own,
+        and so does every round of a queue (or track) that repeats.
 
         :param item_id: The id the speaker asked about, as it reports it; an omitted or empty
             one asks for the start of the queue.
@@ -1023,6 +1056,10 @@ class SonosPlayer(PlayerProtocol):
                 if queue.current_index is not None
                 else (queue.index_in_buffer or 0)
             )
+        # the speaker discards a window without the id it asked about and plays on out of the
+        # one it holds: the position it asked about goes out under that id, whatever sits there
+        asked = (center_index, item_id) if item_id and self.from_current_load(item_id) else None
+        repeat_round = self._repeat_round(asked[1]) if asked else 0
 
         items: list[PlayerMedia] = []
         wire_ids: list[str] = []
@@ -1032,12 +1069,16 @@ class SonosPlayer(PlayerProtocol):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
                 items.append(await self._player_media_for_speaker(queue_item, idx))
-                wire_ids.append(self._wire_id_at(queue_item.queue_item_id, idx, generation))
+                wire_ids.append(
+                    self._wire_id_at(queue_item.queue_item_id, idx, generation, asked, repeat_round)
+                )
                 positions[idx] = wire_ids[-1]
 
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
+        upcoming_positions: dict[int, str] = {}
         last_index: int | str = center_index
+        last_position = center_index
         for _ in range(min(UPCOMING_ITEMS, max_upcoming)):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
@@ -1045,15 +1086,25 @@ class SonosPlayer(PlayerProtocol):
             next_index = self.mass.player_queues.index_by_id(queue_id, next_item.queue_item_id)
             if next_index is None:
                 break
+            if next_index <= last_position:
+                # repeat starts the queue (or the track) over
+                repeat_round += 1
             items.append(await self._player_media_for_speaker(next_item, next_index))
-            wire_ids.append(self._wire_id_at(next_item.queue_item_id, next_index, generation))
-            positions[next_index] = wire_ids[-1]
+            wire_ids.append(
+                self._wire_id_at(
+                    next_item.queue_item_id, next_index, generation, asked, repeat_round
+                )
+            )
+            # the speaker fetches ahead of the item it plays: a position this window lists
+            # again in a later round is fetched for the round it reaches first
+            upcoming_positions.setdefault(next_index, wire_ids[-1])
             if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
                 # a track or a pair that repeats itself gets one more round, not a window
                 # full: the speaker is never refused the track it plays or the one before
                 # it, so it would keep repeating them after repeat was switched off
                 break
             last_index = next_item.queue_item_id
+            last_position = next_index
 
         window = SonosQueueWindow(
             items=items,
@@ -1062,7 +1113,7 @@ class SonosPlayer(PlayerProtocol):
             # check after the loop in case the window filled exactly up to the last item
             includes_end=self.mass.player_queues.get_next_item(queue_id, last_index) is None,
         )
-        self._window_item_ids = positions
+        self._window_item_ids = positions | upcoming_positions
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Serving Sonos queue window for %s on player %s: %s",
@@ -1308,7 +1359,9 @@ class SonosPlayer(PlayerProtocol):
             # an AirPlay sender of its own, such as a phone, started playing on the speaker
             self._own_airplay_session = False
         if container_type == ContainerType.LINEIN:
-            self._attr_active_source = SOURCE_LINE_IN
+            # Sonos names the speaker whose line-in plays; a member reads it from the group of
+            # its coordinator
+            self._attr_active_source = _playing_line_in(container)
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
             self._attr_active_source = SOURCE_TV
         elif container_type == ContainerType.AIRPLAY:
@@ -1452,7 +1505,9 @@ class SonosPlayer(PlayerProtocol):
             self.mass.create_task(self.upnp.unfollow())
             if self.upnp.player_ip != self.client.player_ip:
                 provider = cast("SonosPlayerProvider", self._provider)
-                self.upnp = SonosSpeakerUpnp(provider.upnp, self.client.player_ip, self.logger)
+                self.upnp = SonosSpeakerUpnp(
+                    provider.upnp, self.client.player_ip, self._upnp_port, self.logger
+                )
             if self._marked_asleep:
                 self._attr_powered = True
                 self._marked_asleep = False
@@ -1539,9 +1594,11 @@ class SonosPlayer(PlayerProtocol):
             None,
         )
         if source_index is None:
-            if self._attr_active_source in PLAYER_SOURCE_MAP:
+            if self._attr_active_source in PLAYER_SOURCE_MAP or _line_in_device_id(
+                self._attr_active_source
+            ):
                 # a mapped source this player does not offer itself, such as the line-in of
-                # the coordinator it is synced to
+                # the coordinator it is synced to, or a line-in, listed for the household
                 return
             # a service we did not map: the user can not start it from MA and its transport
             # is whatever the speaker reports for it
@@ -1813,9 +1870,31 @@ class SonosPlayer(PlayerProtocol):
         # stop or an eviction
         return group.active_session_id is not None or self._playing_queue_id() is not None
 
-    def _wire_id_at(self, queue_item_id: str, index: int, generation: int | None) -> str:
-        """Return the id to serve a queue item under at a queue position."""
+    def _wire_id_at(
+        self,
+        queue_item_id: str,
+        index: int,
+        generation: int | None,
+        asked: tuple[int, str] | None,
+        repeat_round: int,
+    ) -> str:
+        """
+        Return the id to serve a queue item under at a queue position.
+
+        :param queue_item_id: The queue item served at the position.
+        :param index: The queue position.
+        :param generation: The load generation to serve under; the current one when omitted.
+        :param asked: The position the speaker asked about and the id it asked about there,
+            which that position is served under in the repeat round of that id.
+        :param repeat_round: How many times repeat started the queue over before this item.
+        """
+        if asked is not None and asked[0] == index and self._repeat_round(asked[1]) == repeat_round:
+            return asked[1]
         wire_id = self.wire_item_id(queue_item_id, generation) or queue_item_id
+        if repeat_round:
+            # the speaker keys what it fetched on the item id: a round that repeats the id of
+            # the round before is not fetched cleanly (skipped, or fetched twice at once)
+            wire_id = f"{wire_id}~r{repeat_round}"
         binding = self._served_bindings.get(wire_id)
         if binding is None or binding[0] == index:
             return wire_id
@@ -1823,6 +1902,12 @@ class SonosPlayer(PlayerProtocol):
         # moved the item since): the item itself gets an identity of its own where it sits now,
         # so a report on either cannot be read as the other
         return f"{wire_id}~{index}"
+
+    @staticmethod
+    def _repeat_round(wire_item_id: str) -> int:
+        """Return the repeat round an id the speaker reports was served in, 0 for the first."""
+        match = REPEAT_ROUND_SUFFIX.search(wire_item_id)
+        return int(match.group(1)) if match else 0
 
     def _playing_item_id(self, wire_item_id: str) -> str:
         """Return the queue item the speaker plays under a reported id, logging a stale one once."""
@@ -2307,8 +2392,10 @@ class SonosPlayer(PlayerProtocol):
         """Return whether the player API port answers a TCP connect."""
         try:
             async with asyncio.timeout(1):
-                # 1443 is the port aiosonos' websocket connects to
-                _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
+                # the port aiosonos' websocket connects to
+                _, writer = await asyncio.open_connection(
+                    self.device_info.ip_address, self.client.port
+                )
         except OSError, TimeoutError:
             return False
         writer.close()
@@ -2398,9 +2485,79 @@ class SonosPlayer(PlayerProtocol):
             task_id=f"sonos_options_{self.protocol_id}",
         )
 
-    def _on_rendering_change(self, changes: dict[str, str]) -> None:
+    def _on_upnp_change(self, changes: dict[str, str]) -> None:
+        if (line_in_connected := changes.get("LineInConnected")) is not None:
+            self._on_line_in_connected(line_in_connected == "1")
         if self.connected and not OPTION_EVENT_VARIABLES.isdisjoint(changes):
             self._schedule_options_read()
+
+    def _on_line_in_connected(self, connected: bool) -> None:
+        if connected == self._line_in_connected:
+            return
+        self._line_in_connected = connected
+        # the other speakers list this line-in only while something is connected to it
+        for speaker in self._household_speakers():
+            if speaker is not self:
+                speaker.update_state()
+
+    @property
+    def _has_line_in(self) -> bool:
+        return SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]
+
+    @property
+    def _event_services(self) -> tuple[str, ...]:
+        if self._has_line_in:
+            return (RENDERING_CONTROL_SERVICE, AUDIO_IN_SERVICE)
+        return (RENDERING_CONTROL_SERVICE,)
+
+    def _household_speakers(self) -> list[SonosPlayer]:
+        """Return the speakers of this speaker's household, itself included."""
+        household_id = self.discovery_info.get("householdId")
+        protocols = cast("list[SonosPlayer]", self.provider.protocols)
+        return [x for x in protocols if x.discovery_info.get("householdId") == household_id]
+
+    def _household_line_ins(self) -> list[PlayerSource]:
+        """
+        Return the line-in of the speakers of the household, its own first.
+
+        The line-in of another speaker is listed while something is connected to it, which is
+        not known before that speaker reported it, or while it plays here.
+        """
+        others = (x for x in self._household_speakers() if x is not self)
+        return [
+            replace(
+                PLAYER_SOURCE_MAP[SOURCE_LINE_IN],
+                id=_line_in_source_id(speaker.protocol_id),
+                owner_player_id=None if speaker is self else speaker.protocol_id,
+            )
+            for speaker in (self, *sorted(others, key=lambda x: x.display_name))
+            if speaker._has_line_in
+            and (
+                speaker is self
+                or speaker._line_in_connected
+                or _line_in_source_id(speaker.protocol_id) == self._attr_active_source
+            )
+        ]
+
+
+def _line_in_source_id(device_id: str) -> str:
+    """Return the source id of the line-in of a speaker."""
+    return f"{SOURCE_LINE_IN_OF}{device_id}"
+
+
+def _line_in_device_id(source_id: str) -> str | None:
+    """Return the speaker whose line-in a source id names, None for another source."""
+    if source_id.startswith(SOURCE_LINE_IN_OF):
+        return source_id.removeprefix(SOURCE_LINE_IN_OF)
+    return None
+
+
+def _playing_line_in(container: Container | None) -> str:
+    """Return the source id of the line-in a group plays, by the speaker Sonos names for it."""
+    # aiosonos does not declare the field yet
+    device_id = cast("dict[str, Any]", container or {}).get("lineInSource")
+    # without it, the line-in of no speaker in particular
+    return _line_in_source_id(device_id) if device_id else SOURCE_LINE_IN
 
 
 def _is_wakeable(discovery_info: SonosDiscoveryInfo) -> bool:

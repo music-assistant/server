@@ -7,6 +7,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -241,10 +242,19 @@ class SyncGroupPlayer(PlayerProtocol):
 
     @property
     def source_list(self) -> list[PlayerSource]:
-        """Return list of available (native) sources for this player."""
+        """
+        Return list of available (native) sources for this player.
+
+        These are the sources of the sync leader's device, whose inputs belong to the leader.
+        """
         # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
-        if self.sync_leader and (device := self.sync_leader.device_protocol):
-            return device.source_list
+        if (sync_leader := self.sync_leader) and (device := sync_leader.device_protocol):
+            return [
+                replace(source, owner_player_id=sync_leader.player_id)
+                if source.is_input and source.owner_player_id is None
+                else source
+                for source in device.source_list
+            ]
         return []
 
     @property
@@ -579,6 +589,22 @@ class SyncGroupPlayer(PlayerProtocol):
         :param repeat_mode: The repeat mode the source should apply.
         """
         await self._require_leader_protocol().set_repeat(repeat_mode)
+
+    async def select_source(self, source: str) -> None:
+        """
+        Handle SELECT SOURCE command on the group.
+
+        The sources of the group are those of its sync leader, which switches to the source.
+
+        :param source: The source(id) to select, as defined in the source_list.
+        """
+        sync_leader = self._require_sync_leader()
+        # Use internal handler to target the sync leader directly,
+        # bypassing group/sync redirect that would loop back to this player.
+        async with self.mass.players.get_player_lock(
+            sync_leader.player_id, PlayerLockPurpose.PLAYBACK
+        ):
+            await self.mass.players._handle_select_source(sync_leader.player_id, source)
 
     async def set_members(  # noqa: PLR0912, PLR0915
         self,
@@ -1049,7 +1075,7 @@ class SyncGroupPlayer(PlayerProtocol):
                             await self.mass.players._handle_set_members(
                                 group_leader, player_ids_to_remove=sync_children
                             )
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - the dissolve carries on either way
                         self.logger.log(
                             logging.WARNING if _is_online(group_leader) else logging.DEBUG,
                             "Could not ungroup the members of %s while dissolving group %s: %s",
@@ -1398,7 +1424,7 @@ class SyncGroupPlayer(PlayerProtocol):
                     await self.mass.players._handle_cmd_stop(leader.player_id)
             else:
                 await self.mass.players._handle_cmd_stop(leader.player_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the dissolve carries on either way
             self.logger.log(
                 logging.WARNING if _is_online(leader) else logging.DEBUG,
                 "Could not stop departing leader %s of group %s: %s",
@@ -1466,7 +1492,7 @@ class SyncGroupPlayer(PlayerProtocol):
                 await self.mass.players._detach_member(member)
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the stuck state is checked right after
             self.logger.debug("stale-parent removal recovery for %s raised: %s", member.name, err)
         member = self.mass.players.get_player(member_id)
         if member is None or member.synced_to is None:

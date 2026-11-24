@@ -25,20 +25,27 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
     ProviderFeature,
     ProviderType,
     RepeatMode,
     SourceControl,
 )
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.media_items import AudioSource
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_player_access,
+    player_access_filter,
+)
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.media_capabilities import AudioSourceMixin, SourceControlValue
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -48,6 +55,8 @@ from .helpers import handle_player_command
 
 if TYPE_CHECKING:
     from music_assistant_models.audio_processing import ActiveSourceAudioDetails
+    from music_assistant_models.media_items import AudioSource
+    from music_assistant_models.player import PlayerSource
     from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 
@@ -119,10 +128,10 @@ class AudioSourceSession:
         Adopts the metadata they carry unless the source has reported something
         itself: while a source is still selected on a player, what it reported is
         what the session reports, however long ago it said it. Until it says
-        anything, the placeholder every provider sets in ``get_stream_details``
-        stands in — for vban_receiver and sendspin that is the only
-        metadata there is, and a later placeholder replaces an earlier one so
-        those two still follow a reconnect that changed what they describe.
+        anything, the placeholder a provider sets in ``get_stream_details``
+        stands in — for vban_receiver that is the only metadata there is, and a
+        later placeholder replaces an earlier one so it still follows a reconnect
+        that changed what it describes.
 
         :param streamdetails: The stream details resolved for this source.
         """
@@ -203,6 +212,53 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
         if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
             return None
         return session.source, provider
+
+    def get_audio_source_owner(self, source: AudioSource | PlayerSource) -> Player | None:
+        """
+        Return the player a source belongs to, None when it names none.
+
+        :param source: A live audio source, or an input a player offers from another player.
+        """
+        if (owner_id := source.owner_player_id) is None:
+            return None
+        # a provider may name the player by one of its protocols
+        return self.get_player_or_protocol_player(owner_id)
+
+    def get_audio_source_name(
+        self, source: AudioSource | PlayerSource, player_id: str | None = None
+    ) -> str:
+        """
+        Return the name of a source as shown on a player, or outside any player.
+
+        On the player the source belongs to it is the name of the source. Elsewhere the
+        name of that player follows in parentheses, unless the player is only an input.
+        A source that belongs to no player shows by its name everywhere.
+
+        :param source: A live audio source, or an input a player offers from another player.
+        :param player_id: The player it is shown on, None for outside any player.
+        """
+        owner = self.get_audio_source_owner(source)
+        if owner is None or owner.player_id == player_id or owner.type == PlayerType.SOURCE:
+            return source.name
+        return f"{source.name} ({owner.name})"
+
+    def may_use_audio_source(self, source: AudioSource | PlayerSource) -> bool:
+        """
+        Return whether the calling user may use a source, by the player it belongs to.
+
+        A source of no player is always allowed. A user limited to some players may use the
+        source of one of those, or of the own client player, and never one whose player is
+        not a known player, such as a disabled one.
+
+        :param source: A live audio source, or an input a player offers from another player.
+        """
+        if source.owner_player_id is None:
+            return True
+        current_user = get_current_user()
+        if player_access_filter(current_user) is None:
+            return True
+        owner = self.get_audio_source_owner(source)
+        return owner is not None and has_player_access(current_user, owner.player_id, owner)
 
     def claim_audio_source_session(
         self,
@@ -427,6 +483,12 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
             source = player_id  # default to MA queue source
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
+        # an input of another player, such as the line-in of another speaker, belongs to that
+        # player: refused before anything happens to the player
+        entry = next((x for x in player.source_list if x.id == source), None)
+        if entry is not None and not self.may_use_audio_source(entry):
+            msg = f"No access to the player that {entry.name} belongs to"
+            raise InsufficientPermissions(msg)
         is_queue = self.mass.player_queues.get(self.resolve_player_id(source)) is not None
         if not is_queue:
             # a source that plays takes the place of a step (next, previous) that has not
@@ -758,9 +820,10 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
             SourceControl.NEXT: audio_source.can_next_previous,
             SourceControl.PREVIOUS: audio_source.can_next_previous,
         }.get(action, True)
+        source_name = self.get_audio_source_name(audio_source, player.player_id)
         if not supported:
             msg = (
-                f"The active source ({audio_source.name}) on player "
+                f"The active source ({source_name}) on player "
                 f"{player.name} does not support this action"
             )
             raise PlayerCommandFailed(
@@ -774,10 +837,7 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
         except NotImplementedError as err:
             # a source with no control surface at all (vban_receiver) reaches the base
             # implementation; a caller deserves a refusal rather than a server error
-            msg = (
-                f"The active source ({audio_source.name}) on player "
-                f"{player.name} can not be controlled"
-            )
+            msg = f"The active source ({source_name}) on player {player.name} can not be controlled"
             raise PlayerCommandFailed(
                 msg,
                 translation_key="source_control_unsupported",
@@ -860,14 +920,15 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
         if "://" not in source:
             return None
         try:
-            item = await self.mass.music.get_item_by_uri(source)
+            media_type, provider_instance_id_or_domain, item_id = await parse_uri(source)
+            if media_type != MediaType.AUDIO_SOURCE:
+                return None
+            item = await self.mass.music.get_audio_source(item_id, provider_instance_id_or_domain)
         except MusicAssistantError as err:
             # not resolvable as media, so it is something else (a queue id, a
             # player-native source) — logged because a provider being unavailable
             # or unauthenticated also lands here
             self.logger.debug("Could not resolve %s as an audio source: %s", source, err)
-            return None
-        if not isinstance(item, AudioSource):
             return None
         provider = self.mass.get_provider(item.provider)
         if not isinstance(provider, AudioSourceMixin):
@@ -906,7 +967,7 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
                 PlayerMedia(
                     uri=audio_source.uri or audio_source.item_id,
                     media_type=MediaType.AUDIO_SOURCE,
-                    title=audio_source.name,
+                    title=self.get_audio_source_name(audio_source, player.player_id),
                     # the session's owner, which its stream url is keyed on
                     source_id=player.player_id,
                     queue_session_id=session.playback_session_id,
@@ -946,7 +1007,15 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
         # check if player is already playing and source is different
         # in that case we need to stop the player first
         prev_source = player.active_source
-        if prev_source and source != prev_source:
+        # but a group hands a source of a member to that member, which stops itself: a stop of
+        # the group could end the group
+        own_protocol = player.own_protocol
+        handed_over = (
+            own_protocol is not None
+            and own_protocol.role == ProtocolRole.VIRTUAL
+            and any(x.id == source for x in own_protocol.source_list)
+        )
+        if prev_source and source != prev_source and not handed_over:
             with suppress(PlayerCommandFailed, RuntimeError):
                 # just try to stop (regardless of state) and let it settle, so the
                 # new source does not race the teardown. A player that already

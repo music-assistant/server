@@ -47,7 +47,7 @@ def _source(item_id: str = "main") -> AudioSource:
 
 
 def _controller(resolved: Any = None) -> tuple[Any, MagicMock, MagicMock]:
-    """Build a controller whose music lookup returns ``resolved`` for any uri."""
+    """Build a controller whose source lookup returns ``resolved`` for any source uri."""
     mass = MagicMock()
     mass.config.get_raw_core_config_value.return_value = "INFO"
     controller = PlayerController(mass)
@@ -57,9 +57,9 @@ def _controller(resolved: Any = None) -> tuple[Any, MagicMock, MagicMock]:
     provider.on_source_released = AsyncMock()
     mass.get_provider.return_value = provider
     if isinstance(resolved, Exception):
-        mass.music.get_item_by_uri = AsyncMock(side_effect=resolved)
+        mass.music.get_audio_source = AsyncMock(side_effect=resolved)
     else:
-        mass.music.get_item_by_uri = AsyncMock(return_value=resolved)
+        mass.music.get_audio_source = AsyncMock(return_value=resolved)
     player = MagicMock()
     player.player_id = PLAYER_ID
     player.name = "Player 1"
@@ -188,7 +188,7 @@ async def test_selecting_another_source_releases_the_first() -> None:
     """A player plays one source at a time, and the one it leaves is handed back."""
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
-    controller.mass.music.get_item_by_uri = AsyncMock(side_effect=MediaNotFoundError("nope"))
+    controller.mass.music.get_audio_source = AsyncMock(side_effect=MediaNotFoundError("nope"))
     controller.mass.player_queues.get = MagicMock(return_value=MagicMock())
 
     await controller._handle_select_source(PLAYER_ID, PLAYER_ID)
@@ -569,7 +569,7 @@ async def test_a_source_string_that_is_not_a_uri_is_not_resolved() -> None:
     controller, _provider, _player = _controller(_source())
 
     assert await controller._resolve_audio_source_uri("line-in") is None
-    controller.mass.music.get_item_by_uri.assert_not_awaited()
+    controller.mass.music.get_audio_source.assert_not_awaited()
 
 
 async def test_an_unresolvable_uri_is_not_treated_as_a_source() -> None:
@@ -713,7 +713,7 @@ async def test_swapping_one_source_for_another_hands_the_first_back() -> None:
             )
         },
     )
-    controller.mass.music.get_item_by_uri = AsyncMock(return_value=other_source)
+    controller.mass.music.get_audio_source = AsyncMock(return_value=other_source)
 
     await controller._handle_select_source(PLAYER_ID, f"{other_instance}://audio_source/receiver")
 

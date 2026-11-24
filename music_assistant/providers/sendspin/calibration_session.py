@@ -510,7 +510,7 @@ class CalibrationSession:
             return
         try:
             await self.mass.player_queues.stop(self.queue_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001
             # deliberately broad: this may never mask the restore below, and the queue
             # controller reaches into the player provider, which is free to surface
             # anything its client library raises. CancelledError still propagates.
@@ -598,7 +598,7 @@ class CalibrationSession:
         """
         try:
             await step
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001
             # deliberately broad and per step: every step reaches into the player
             # provider, which is free to surface anything its client library raises,
             # and one failure may not strand the rest of the restore.
@@ -765,7 +765,7 @@ class CalibrationSession:
         self._anchor_closed = True
         try:
             await self._shared_session.close()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001
             # deliberately broad: the anchor lives in the Sendspin provider, whose
             # removal path can surface anything; a failure here may not propagate out
             # of a teardown. CancelledError still propagates.
@@ -838,7 +838,7 @@ class CalibrationSession:
                 await self.mass.players.cmd_volume_mute(player_id, True)
             else:
                 await self.mass.players.cmd_volume_set(player_id, 0)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001
             # deliberately broad: a failure to silence one speaker may not abort the
             # solo of the speaker being measured. CancelledError still propagates.
             self.logger.warning("Could not silence player %s: %s", player.state.name, err)

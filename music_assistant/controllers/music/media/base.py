@@ -1633,8 +1633,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Link a library item to the music providers MusicBrainz knows it on.
 
-        Only providers the item has no mapping for yet are linked, and a linked item that
-        another library item already holds is left alone rather than merged.
+        Only providers the item has no mapping for yet are linked. A linked item that another
+        library item already holds is left alone, unless MusicBrainz says that library item is
+        the same one, which is then merged into this one.
 
         :param db_item: The library item to link.
         :param urls: The item's URLs on MusicBrainz (its URL relations).
@@ -1649,7 +1650,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for candidate in candidates
             if await self._verify_musicbrainz_mapping(db_item, candidate)
         ]
-        added = await self.add_unclaimed_provider_mappings(db_item.item_id, verified)
+        merged = [
+            candidate
+            for candidate in verified
+            if await self._merge_musicbrainz_duplicate(db_item, candidate)
+        ]
+        added = merged + await self.add_unclaimed_provider_mappings(db_item.item_id, verified)
         db_item.provider_mappings.update(added)
         self.logger.debug(
             "Linked %s %s via MusicBrainz to: %s (already mapped: %s, unavailable: %s)",
@@ -2471,6 +2477,41 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         return True
 
+    def _is_musicbrainz_duplicate(self, db_item: ItemCls, holder: ItemCls) -> bool:
+        """
+        Return True if another library item holding a linked provider item is the same item.
+
+        Override in a subclass whose MusicBrainz identity tells two library items apart.
+
+        :param db_item: The library item being linked.
+        :param holder: The other library item that holds the linked provider item.
+        """
+        return False
+
+    async def _merge_musicbrainz_duplicate(
+        self, db_item: ItemCls, mapping: ProviderMapping
+    ) -> bool:
+        """Merge the library item holding a linked mapping into the item if it is the same."""
+        holder = await self.get_library_item_by_prov_id(mapping.item_id, mapping.provider_instance)
+        if (
+            holder is None
+            or int(holder.item_id) == int(db_item.item_id)
+            or not self._is_musicbrainz_duplicate(db_item, holder)
+        ):
+            return False
+        self.logger.debug(
+            "Merging %s item id %s into item id %s: MusicBrainz links both to %s/%s",
+            self.media_type.value,
+            holder.item_id,
+            db_item.item_id,
+            mapping.provider_domain,
+            mapping.item_id,
+        )
+        merged_item = await self.merge_library_items(db_item.item_id, holder.item_id)
+        db_item.provider_mappings.update(merged_item.provider_mappings)
+        db_item.date_added = merged_item.date_added
+        return True
+
     def _musicbrainz_link_provider(self) -> MusicbrainzProvider | None:
         """Return the MusicBrainz provider when it is loaded and linking through it is enabled."""
         if not self.mass.metadata.link_providers_via_musicbrainz:
@@ -2792,11 +2833,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         media_type = media_type or self.media_type
         table_alias = table_alias or self.db_table
+        # without table statistics sqlite picks the unique index, which scans every id of the
+        # media type per item, so the index on the item id is forced
         return (
             f"(SELECT JSON_GROUP_ARRAY(json_array("
             f"{DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id_type, "
             f"{DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id)) "
             f"FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+            f"INDEXED BY {DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx "
             f"WHERE {DB_TABLE_EXTERNAL_ID_LOOKUP}.media_type = '{media_type.value}' "
             f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.item_id = {table_alias}.item_id)"
         )
@@ -4323,6 +4367,48 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         async with self.mass.music.database.deferred_commit():
             await self._update_library_item_from_provider(db_id, update)
         return True
+
+    async def _set_main_artists(
+        self,
+        table: str,
+        item_column: str,
+        db_id: int,
+        artists: Iterable[Artist | ItemMapping],
+        overwrite: bool = False,
+    ) -> None:
+        """
+        Store the main artists of an album or track.
+
+        An empty set of artists never clears the stored rows.
+
+        :param table: The table holding the main artists of the item's media type.
+        :param item_column: The column of that table holding the item's library id.
+        :param db_id: Library id of the item.
+        :param artists: The main artists.
+        :param overwrite: Replace the stored main artists rather than adding to them.
+        """
+        all_artists = list(artists)
+        if not all_artists:
+            if overwrite:
+                # a caller asking to replace all artists with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning(
+                    "Ignoring request to clear all artists of %s id %s",
+                    self.media_type.value,
+                    db_id,
+                )
+            return
+        # look up all artists first so a failing lookup leaves the stored rows untouched
+        artist_ids = [
+            await self.mass.music.artists.get_or_add_library_artist_id(artist)
+            for artist in all_artists
+        ]
+        if overwrite:
+            await self.mass.music.database.delete(table, {item_column: db_id})
+        for artist_id in artist_ids:
+            await self.mass.music.database.insert_or_replace(
+                table, {item_column: db_id, "artist_id": artist_id}
+            )
 
     async def _copy_library_item_relations(self, target_id: int, source_id: int) -> None:
         """Copy the relations that reference the merged media item onto the target."""

@@ -131,6 +131,8 @@ class AppleMusicStreamingManager:
                 license_url, key_id, uri, item_id, adam_id
             ),
             path=stream_url,
+            # skips ffmpeg's scan of every fragment over HTTPS before the first output
+            extra_input_args=["-fflags", "+ignidx"],
             can_seek=True,
             allow_seek=True,
         )
@@ -258,8 +260,8 @@ class AppleMusicStreamingManager:
     def _decryption_headers(self) -> dict[str, str]:
         """Return headers required for decryption requests."""
         return {
-            "authorization": f"Bearer {self.provider._music_app_token}",
-            "media-user-token": cast("str", self.provider._music_user_token),
+            "authorization": f"Bearer {self.provider.music_app_token}",
+            "media-user-token": cast("str", self.provider.music_user_token),
             "connection": "keep-alive",
             "accept": "application/json",
             "origin": "https://music.apple.com",

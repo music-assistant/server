@@ -37,6 +37,7 @@ def provider() -> EmbyProvider:
         "get_library_albums",
         "get_library_tracks",
         "get_library_playlists",
+        "get_library_audiobooks",
     ],
 )
 @pytest.mark.parametrize("response", [{}, {ITEMS: None}, {ITEMS: {}}])
@@ -47,6 +48,9 @@ async def test_malformed_item_list_raises(
 ) -> None:
     """A missing or wrong-typed Items field must abort the library sync."""
     provider._get_music_libraries = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{ITEM_KEY_ID: "library"}]
+    )
+    provider._get_audiobook_libraries = AsyncMock(  # type: ignore[method-assign]
         return_value=[{ITEM_KEY_ID: "library"}]
     )
     provider._get = AsyncMock(return_value=response)  # type: ignore[method-assign]
@@ -73,6 +77,7 @@ async def test_empty_item_list_is_a_valid_empty_library(provider: EmbyProvider) 
         ("get_library_albums", MediaType.ALBUM),
         ("get_library_tracks", MediaType.TRACK),
         ("get_library_playlists", MediaType.PLAYLIST),
+        ("get_library_audiobooks", MediaType.AUDIOBOOK),
     ],
 )
 @pytest.mark.parametrize("entry", [None, {}, {ITEM_KEY_ID: {}}])
@@ -84,6 +89,9 @@ async def test_non_object_entry_is_reported(
 ) -> None:
     """An unidentifiable malformed entry must hold back deletions for its listing."""
     provider._get_music_libraries = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{ITEM_KEY_ID: "library"}]
+    )
+    provider._get_audiobook_libraries = AsyncMock(  # type: ignore[method-assign]
         return_value=[{ITEM_KEY_ID: "library"}]
     )
     provider._get = AsyncMock(  # type: ignore[method-assign]

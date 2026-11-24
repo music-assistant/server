@@ -24,6 +24,9 @@ PRESET_IDS = range(1, 7)
 SOURCE_STANDBY = "STANDBY"
 SOURCE_INVALID = "INVALID_SOURCE"
 
+# sources that are inputs of the speaker: AUX and the product's own (TV, HDMI)
+INPUT_SOURCES = ("AUX", "PRODUCT")
+
 # strings for overwriting a preset
 ACTION_OVERWRITE_PRESET_1 = "action_overwrite_preset_1"
 ACTION_OVERWRITE_PRESET_2 = "action_overwrite_preset_2"

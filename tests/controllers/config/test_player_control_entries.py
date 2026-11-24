@@ -21,6 +21,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL_CUTS_POWER,
     CONF_POWER_ON_STARTUP_TIME,
     CONF_VOLUME_CONTROL,
+    PLAYER_CONTROL_PROTOCOL,
 )
 from music_assistant.mass import MusicAssistant
 
@@ -130,6 +131,29 @@ async def test_default_is_never_a_disabled_option(
     assert default_option.disabled is False
     # with no native support the safe fallback is the always-present "none" control
     assert entry.default_value == PLAYER_CONTROL_NONE
+
+
+@pytest.mark.parametrize(
+    ("conf_key", "feature"),
+    [
+        (CONF_VOLUME_CONTROL, PlayerFeature.VOLUME_SET),
+        (CONF_MUTE_CONTROL, PlayerFeature.VOLUME_MUTE),
+    ],
+)
+async def test_auto_is_the_default_next_to_a_native_control(
+    mass_minimal: MusicAssistant, conf_key: str, feature: PlayerFeature
+) -> None:
+    """With an audio protocol that can take the control, the default shows what applies: auto."""
+    entry = _entries_by_key(mass_minimal, {feature}, {feature})[conf_key]
+
+    assert entry.default_value == PLAYER_CONTROL_PROTOCOL
+    assert [option.value for option in entry.options][:2] == [
+        PLAYER_CONTROL_PROTOCOL,
+        PLAYER_CONTROL_NATIVE,
+    ]
+    # native stays selectable, and now differs from the default, so a save stores it
+    native = next(option for option in entry.options if option.value == PLAYER_CONTROL_NATIVE)
+    assert native.disabled is False
 
 
 async def test_fake_mute_offered_when_volume_provided_by_protocol_player(

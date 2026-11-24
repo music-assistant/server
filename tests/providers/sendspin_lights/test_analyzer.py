@@ -1,27 +1,34 @@
-"""Tests for HueAudioAnalyzer (beat-driven palette cycling)."""
+"""Tests for the shared Sendspin lights AudioAnalyzer (beat-driven palette cycling)."""
 
 from __future__ import annotations
 
 import colorsys
+from dataclasses import dataclass
 
 import pytest
 from aiosendspin.models.visualizer import BeatTiming
-from hue_entertainment import LightChannel, LightColorCommand
 
-from music_assistant.providers.hue_entertainment.analyzer import (
+from music_assistant.providers.sendspin_lights.analyzer import (
     _NEUTRAL_GRADIENT,
     DEFAULT_MODE,
-    HueAudioAnalyzer,
+    AudioAnalyzer,
     _distinct_hue_count,
     _ScheduledBeat,
 )
+from music_assistant.providers.sendspin_lights.models import LightColor
 
 
-def _make_channels(count: int) -> list[LightChannel]:
+@dataclass(frozen=True)
+class _Channel:
+    """Minimal light channel satisfying the analyzer's LightChannel protocol."""
+
+    channel_id: int
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+def _make_channels(count: int) -> list[_Channel]:
     """Create a list of test light channels."""
-    return [
-        LightChannel(channel_id=i, service_id=f"svc_{i}", name=f"Light {i}") for i in range(count)
-    ]
+    return [_Channel(channel_id=i) for i in range(count)]
 
 
 def _beat(ts_us: int, *, downbeat: bool = False) -> BeatTiming:
@@ -34,18 +41,18 @@ class TestSettings:
 
     def test_init_defaults(self) -> None:
         """Test analyzer initialization with default settings."""
-        analyzer = HueAudioAnalyzer(_make_channels(3))
+        analyzer = AudioAnalyzer(_make_channels(3))
         assert analyzer._brightness == 1.0
         assert analyzer._color_mode == DEFAULT_MODE
 
     def test_brightness_clamping(self) -> None:
         """Test that brightness is clamped to 0-100."""
-        assert HueAudioAnalyzer(_make_channels(1), brightness=150)._brightness == 1.0
-        assert HueAudioAnalyzer(_make_channels(1), brightness=-10)._brightness == 0.0
+        assert AudioAnalyzer(_make_channels(1), brightness=150)._brightness == 1.0
+        assert AudioAnalyzer(_make_channels(1), brightness=-10)._brightness == 0.0
 
     def test_update_settings(self) -> None:
         """Test live settings update."""
-        analyzer = HueAudioAnalyzer(_make_channels(2))
+        analyzer = AudioAnalyzer(_make_channels(2))
         analyzer.update_settings(brightness=75)
         assert analyzer._brightness == pytest.approx(0.75)
 
@@ -55,7 +62,7 @@ class TestBeatScheduling:
 
     def test_push_beats_resolves_bar_positions(self) -> None:
         """The beat counter increments continuously across the schedule."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.push_beats(
             [
                 _beat(1_000_000, downbeat=True),
@@ -71,7 +78,7 @@ class TestBeatScheduling:
 
     def test_clear_beats_resets_counter(self) -> None:
         """clear_beats also resets the per-bar counter for the next schedule."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.push_beats([_beat(0), _beat(500_000), _beat(1_000_000)])
         analyzer.clear_beats()
         analyzer.push_beats([_beat(2_000_000)])
@@ -79,7 +86,7 @@ class TestBeatScheduling:
 
     def test_render_prunes_old_beats(self) -> None:
         """Past beats older than the most recent one are pruned during render."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.push_beats([_beat(i * 1_000_000) for i in range(5)])
         analyzer.render(now_us=3_500_000)
         # Only the most recent past beat is kept ahead of the cursor.
@@ -91,26 +98,26 @@ class TestRenderColors:
 
     def test_render_with_no_beats_falls_back_to_peak_walker(self) -> None:
         """No beats scheduled → renderer delegates to the peak-driven walker."""
-        analyzer = HueAudioAnalyzer(_make_channels(2))
+        analyzer = AudioAnalyzer(_make_channels(2))
         commands = analyzer.render(now_us=0)
         assert len(commands) == 2
         assert _channel_sum(commands[0]) > 0
 
     def test_render_no_channels_returns_empty(self) -> None:
         """Empty channel list yields no commands."""
-        analyzer = HueAudioAnalyzer([])
+        analyzer = AudioAnalyzer([])
         analyzer.push_beats([_beat(0), _beat(500_000)])
         assert analyzer.render(now_us=250_000) == []
 
     def test_brightness_scales_output(self) -> None:
         """Halving brightness halves the rendered channel values."""
-        full = HueAudioAnalyzer(_make_channels(1), brightness=100).render(now_us=0)[0]
-        half = HueAudioAnalyzer(_make_channels(1), brightness=50).render(now_us=0)[0]
+        full = AudioAnalyzer(_make_channels(1), brightness=100).render(now_us=0)[0]
+        half = AudioAnalyzer(_make_channels(1), brightness=50).render(now_us=0)[0]
         assert half.green == pytest.approx(full.green // 2, abs=1)
 
     def test_pulse_boosts_above_steady_level(self) -> None:
         """In a pulsed mode, output on the beat exceeds the steady (off-beat) level."""
-        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="flashing")
+        analyzer = AudioAnalyzer(_make_channels(1), color_mode="flashing")
         analyzer.push_beats([_beat(0, downbeat=True), _beat(1_000_000), _beat(2_000_000)])
         on_beat = analyzer.render(now_us=1_000_000)[0]
         steady = analyzer.render(now_us=1_500_000)[0]
@@ -119,8 +126,8 @@ class TestRenderColors:
     def test_pulse_higher_on_downbeat_than_regular(self) -> None:
         """Identical timing but a downbeat flag produces a stronger pulse."""
 
-        def render_at_beat(*, downbeat: bool) -> LightColorCommand:
-            analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="flashing")
+        def render_at_beat(*, downbeat: bool) -> LightColor:
+            analyzer = AudioAnalyzer(_make_channels(1), color_mode="flashing")
             analyzer.push_beats(
                 [_beat(0, downbeat=True), _beat(500_000, downbeat=downbeat), _beat(1_000_000)]
             )
@@ -136,13 +143,13 @@ class TestPalette:
 
     def test_no_color_uses_neutral_fallback(self) -> None:
         """With no color@v1 update, the neutral tint gradient is used."""
-        raw, synthesized = HueAudioAnalyzer(_make_channels(1))._gather_raw_palette()
+        raw, synthesized = AudioAnalyzer(_make_channels(1))._gather_raw_palette()
         assert raw == _NEUTRAL_GRADIENT
         assert synthesized is True
 
     def test_two_distinct_hues_cycle_the_album_colors(self) -> None:
         """Two hue-distant colors are used as-is, not synthesized."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.apply_color_palette({"primary": (200, 0, 0), "accent": (0, 0, 200)})
         raw, synthesized = analyzer._gather_raw_palette()
         assert synthesized is False
@@ -150,7 +157,7 @@ class TestPalette:
 
     def test_single_hue_expands_into_same_family(self) -> None:
         """A single hue plus near-whites yields a gradient that stays in that hue."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.apply_color_palette(
             {
                 "primary": (20, 90, 30),
@@ -164,14 +171,14 @@ class TestPalette:
 
     def test_single_hue_palette_does_not_collapse(self) -> None:
         """The single-hue gradient keeps more than one distinct color."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.apply_color_palette({"primary": (20, 90, 30), "on_dark": (250, 250, 250)})
         palette = analyzer._active_palette()
         assert len({tuple(round(c, 3) for c in entry) for entry in palette}) > 1
 
     def test_dark_saturated_color_is_not_achromatic(self) -> None:
         """A dark-but-colored seed (brown) keeps its hue instead of washing neutral."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.apply_color_palette({"primary": (60, 40, 25), "on_dark": (250, 250, 250)})
         raw, synthesized = analyzer._gather_raw_palette()
         assert synthesized is True
@@ -179,7 +186,7 @@ class TestPalette:
 
     def test_achromatic_uses_neutral_gradient(self) -> None:
         """An all-grey palette produces the subtle neutral tint gradient."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.apply_color_palette(
             {
                 "primary": (128, 128, 128),
@@ -193,7 +200,7 @@ class TestPalette:
 
     def test_undefined_palette_field_keeps_prior_value(self) -> None:
         """apply_color_palette merges, leaving fields not in the update untouched."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.apply_color_palette({"primary": (10, 20, 30), "accent": (40, 50, 60)})
         analyzer.apply_color_palette({"primary": (100, 100, 100)})
         assert analyzer._server_palette["primary"] == (100, 100, 100)
@@ -221,14 +228,14 @@ class TestSpectrumScheduling:
 
     def test_spectrum_not_applied_before_timestamp(self) -> None:
         """A spectrum frame stays pending until render time reaches its ts."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.apply_spectrum([60000] * 4, timestamp_us=1_000_000)
         analyzer.render(now_us=500_000)
         assert analyzer._spectrum == []
 
     def test_spectrum_applied_once_due(self) -> None:
         """Once now_us reaches the ts, the frame is promoted to active spectrum."""
-        analyzer = HueAudioAnalyzer(_make_channels(1))
+        analyzer = AudioAnalyzer(_make_channels(1))
         analyzer.apply_spectrum([60000] * 4, timestamp_us=1_000_000)
         analyzer.render(now_us=1_000_000)
         assert len(analyzer._spectrum) == 4
@@ -239,7 +246,7 @@ class TestPeakWalkFallback:
 
     def test_peaks_advance_palette_when_no_beats(self) -> None:
         """Each consumed peak bumps _peak_palette_position by mode.palette_advance."""
-        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="ambient")
+        analyzer = AudioAnalyzer(_make_channels(1), color_mode="ambient")
         step = analyzer._mode.palette_advance
         analyzer.apply_peak(strength=200, timestamp_us=1_000_000)
         analyzer.apply_peak(strength=200, timestamp_us=2_000_000)
@@ -248,20 +255,20 @@ class TestPeakWalkFallback:
 
     def test_pending_peak_does_not_advance_before_due(self) -> None:
         """Peaks scheduled in the future leave the walker untouched until promoted."""
-        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="ambient")
+        analyzer = AudioAnalyzer(_make_channels(1), color_mode="ambient")
         analyzer.apply_peak(strength=200, timestamp_us=5_000_000)
         analyzer.render(now_us=1_000_000)
         assert analyzer._peak_palette_position == 0.0
 
     def test_no_beats_no_peaks_holds_first_palette_slot(self) -> None:
         """Without any beats or peaks, the walker stays at slot 0."""
-        analyzer = HueAudioAnalyzer(_make_channels(2))
+        analyzer = AudioAnalyzer(_make_channels(2))
         analyzer.render(now_us=0)
         assert analyzer._peak_palette_position == 0.0
 
     def test_clear_beats_resets_peak_walker(self) -> None:
         """clear_beats wipes the peak-driven position so the next track starts fresh."""
-        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="ambient")
+        analyzer = AudioAnalyzer(_make_channels(1), color_mode="ambient")
         analyzer.apply_peak(strength=255, timestamp_us=500_000)
         analyzer.render(now_us=500_000)
         assert analyzer._peak_palette_position > 0.0
@@ -279,6 +286,23 @@ class TestScheduledBeatModel:
             sb.timestamp_us = 1  # type: ignore[misc]
 
 
-def _channel_sum(command: LightColorCommand) -> int:
+class TestPaletteCeiling:
+    """Tests for the provider-supplied palette ceiling."""
+
+    def _peak(self, ceiling: float) -> float:
+        analyzer = AudioAnalyzer(_make_channels(1), color_mode="ambient", palette_ceiling=ceiling)
+        analyzer.apply_color_palette({"primary": (200, 0, 0), "accent": (0, 0, 200)})
+        return max(max(c) for c in analyzer._active_palette())
+
+    def test_default_uses_full_output(self) -> None:
+        """Without a ceiling the brightest palette channel reaches full output."""
+        assert self._peak(1.0) == pytest.approx(1.0)
+
+    def test_ceiling_caps_palette(self) -> None:
+        """A lower ceiling caps the brightest channel of every palette color."""
+        assert self._peak(0.85) == pytest.approx(0.85)
+
+
+def _channel_sum(command: LightColor) -> int:
     """Total 16-bit energy across a command's RGB channels."""
     return int(command.red + command.green + command.blue)

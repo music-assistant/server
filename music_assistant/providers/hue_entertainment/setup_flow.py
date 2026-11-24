@@ -102,7 +102,7 @@ async def run_setup(session: SetupSession) -> None:
         except LoginFailed as err:
             errors = {"base": err.translation_key or str(err)}
             continue
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any other error is shown in the form
             errors = {"base": str(err)}
             continue
         finally:
@@ -126,7 +126,7 @@ async def _fetch_bridge_id(host: str, username: str) -> str | None:
     api_authed = HueEntertainmentAPI(host, username)
     try:
         return await api_authed.get_bridge_id()
-    except Exception:
+    except Exception:  # noqa: BLE001 - best effort, the bridge id is optional
         return None
     finally:
         await api_authed.close()
@@ -216,7 +216,7 @@ async def _setup_zigbee(session: SetupSession) -> None:
         except ZigguratError, StepExpiredError, TimeoutError:
             errors = {"base": "ziggurat_unreachable"}
             continue
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any other error is shown in the form
             errors = {"base": str(err)}
             continue
         if zigbee_lights is None:

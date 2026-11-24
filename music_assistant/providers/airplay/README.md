@@ -64,7 +64,7 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 airplay/
 ├── provider.py           # Main provider class, MDNS discovery, DACP server, PTP daemon
 ├── player.py             # AirPlayPlayer implementation
-├── speaker.py            # AirPlaySpeaker: a speaker of the home theater set of an Apple TV
+├── speaker.py            # AirPlaySpeaker: a speaker of a set that plays as one player
 ├── stream_session.py     # Manages streaming sessions for synchronized playback
 ├── pairing.py           # Pairing: HAP via cliairplay --pair-setup, RAOP native
 ├── helpers.py           # Utility functions (binary lookup, TXT serialization, etc.)
@@ -219,7 +219,29 @@ pair), and the HomePods are fed directly as its speakers.
 - While the player of the Apple TV is disabled, its HomePods are players of their own. Without
   the Apple TV on the network, the player of the set is unavailable and its HomePods stay
   speakers.
-- A set has no Sendspin bridge yet; the Sendspin output of its player stays stored.
+- In a Sendspin group the bridge of the set feeds its speakers, each anchored on the Sendspin
+  timeline as a join, and the Apple TV after them as in a session of its own: fed silence, sent no
+  volume, added once more when it fails but not after it ended its session itself (unless a
+  speaker of the set just set up again, which ends it too), and never stopping its speakers. A
+  speaker that comes back while the set plays and cannot join is left out until it comes back
+  again, and a set with no speaker left in the stream stops, as in a native session.
+
+A stereo pair of HomePods without an Apple TV plays as one player the same way: the protocol
+of the first HomePod is the player of the pair (named after the room, multi-channel with a
+stereo layout), the second is its speaker, and both are fed the whole stereo stream.
+
+- Both HomePods carry the id of the pair (`tsid`). Their records tell no roles: while nobody
+  plays to the pair the group id has its idle pair form `<tsid>+<digit>+<id>`, the same on both
+  HomePods once the pair settled, and during a session it is the id of that session.
+- Which HomePod carries the pair is decided once and kept (in memory only): the one whose stored
+  player is the multi-channel room; else, with both records seen, the only one that has a stored
+  player at all (the player of the other is removed once the pair formed, while the room stays
+  stored as the player it was until it attaches again), or otherwise the one with the lowest
+  protocol id. Until then both are left alone.
+- The player the second HomePod had before is only removed when both current records are in
+  their idle pair form, never on a remembered one, and never when that player is a
+  multi-channel room.
+- A HomePod that is in a pair and in the set of an Apple TV belongs to the set of the Apple TV.
 
 ### Protocol ID Format
 
@@ -776,13 +798,15 @@ The bridge consists of:
 
 - **`BridgePlayerRole`**: A custom Sendspin role that receives audio chunks from PushStream
 - **`SendspinAirPlayBridge`**: Manages the bridge for a single AirPlay player
+- **`_BridgeTransport`**: The stream the bridge feeds one AirPlay device: the player itself, or
+  each speaker and the Apple TV of a home theater set, each with its own anchor and writer
 - **`SendspinBridgeManager`**: Manages bridges for all AirPlay players
 
 ### Transport Loss
 
-The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing.
+The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing. The fresh stream starts on the audio the bridge still holds, from where a late joiner starts: the chunks Sendspin delivers run up to its whole buffer ahead of what the group plays, so the chunk that exposed the loss would start it that far ahead. A speaker that comes back into a set that plays starts the same way.
 
-Giving up on a stream — a start that raised, a protocol that never became ready, or a transport that dropped again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of a recovery — takes the speaker out of the Sendspin session. Sendspin reports playback from the group's own state, and the protocol gives a player no way to report that it went silent, so a bridge that merely stopped feeding its speaker would hold the visible player on PLAYING for the rest of the stream. Leaving is what surfaces that silence: a shared group plays on without this speaker, a solo one stops.
+Giving up on a stream — a start that raised, a protocol that never became ready, or a transport that dropped again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of a recovery — takes the speaker out of the Sendspin session; for a set, any of its speakers giving up takes the whole set out, while its Apple TV, and a speaker that came back while the set played and never joined, only leave the stream. Sendspin reports playback from the group's own state, and the protocol gives a player no way to report that it went silent, so a bridge that merely stopped feeding its speaker would hold the visible player on PLAYING for the rest of the stream. Leaving is what surfaces that silence: a shared group plays on without this speaker, a solo one stops.
 
 Leaving a shared group schedules a bounded re-join through the ordinary `SendspinGroup.add_client`, on the delays in `BRIDGE_REJOIN_ATTEMPT_DELAYS`, so a speaker that was only briefly away comes back on its own. A bridge that gives up again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of being put back is left out for good — that is what keeps a device which cannot hold a connection from cycling in and out of the group, since re-joining re-runs the very start that just failed. The attempt is abandoned when the speaker has meanwhile been given a group or a stream of its own, is streaming outside the bridge, or the group it left no longer exists. A speaker missing from discovery is not re-joined but is looked for again on the next attempt, because a device that rebooted stays absent for a while after it starts answering. A solo bridge has nothing to re-join, since leaving is what stops it.
 

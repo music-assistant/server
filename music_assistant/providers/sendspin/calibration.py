@@ -670,7 +670,7 @@ class SendspinCalibration:
                 await put_static_delay_back(
                     self.provider, StaticDelaySnapshot(protocol_id, delay_ms, carrier_id)
                 )
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 # deliberately broad: one speaker that can not take its delay back may
                 # not keep the provider from loading, nor the others from theirs
                 self.logger.warning(

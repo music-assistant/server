@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -17,6 +18,7 @@ from music_assistant.providers.deezer.parsers import (
     map_album_type,
     parse_artist,
     parse_audiobook,
+    parse_audiobook_from_album,
     parse_track,
 )
 from music_assistant.providers.deezer.provider import DeezerProvider
@@ -109,6 +111,8 @@ def _audiobook(**details: str) -> SimpleNamespace:
         duration=3600,
         publisher=None,
         is_favorite=False,
+        release_date=details.pop("release_date", None),
+        original_release_date=details.pop("original_release_date", None),
         **details,
     )
 
@@ -123,6 +127,44 @@ def test_audiobook_from_a_list_has_no_barcode(provider: DeezerProvider) -> None:
     """Audiobooks from lists carry no UPC."""
     parsed = parse_audiobook(provider, _audiobook())  # type: ignore[arg-type]
     assert parsed.external_ids == set()
+
+
+@pytest.mark.parametrize(
+    ("dates", "expected"),
+    [
+        (
+            {
+                "original_release_date": "2003-01-01T00:00:00.000Z",
+                "release_date": "2017-03-24T00:00:00.000Z",
+            },
+            datetime(2003, 1, 1, tzinfo=UTC),
+        ),
+        ({"release_date": "2017-03-24T00:00:00.000Z"}, datetime(2017, 3, 24, tzinfo=UTC)),
+    ],
+    ids=["original release", "no original release"],
+)
+def test_audiobook_has_its_release_date(
+    provider: DeezerProvider, dates: dict[str, str], expected: datetime
+) -> None:
+    """The audiobook carries its original release date, else its release date."""
+    parsed = parse_audiobook(provider, _audiobook(**dates))  # type: ignore[arg-type]
+    assert parsed.metadata.release_date == expected
+
+
+def test_audiobook_from_a_release_has_its_date_and_label(provider: DeezerProvider) -> None:
+    """An audiobook found among releases carries the release date, and the label as publisher."""
+    release = SimpleNamespace(
+        id="575397181",
+        display_title="Conni und ihr kleiner Bruder",
+        cover=None,
+        is_explicit=False,
+        contributors=SimpleNamespace(edges=[]),
+        release_date="2024-05-10T00:00:00.000Z",
+        label="Karussell",
+    )
+    parsed = parse_audiobook_from_album(provider, release)  # type: ignore[arg-type]
+    assert parsed.publisher == "Karussell"
+    assert parsed.metadata.release_date == datetime(2024, 5, 10, tzinfo=UTC)
 
 
 def _track(sizes: dict[str, int]) -> SimpleNamespace:

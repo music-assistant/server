@@ -71,7 +71,7 @@ async def zha_available(mass: MusicAssistant) -> bool:
         return False
     try:
         return await _ziggurat_url(hass) is not None
-    except Exception:
+    except Exception:  # noqa: BLE001 - any failure means not available
         return False
 
 
@@ -167,7 +167,7 @@ async def _ha_host(hass: HomeAssistantProvider) -> str | None:
     """Return the host of Home Assistant's internal URL, else that of the plugin's URL."""
     try:
         urls = await _command(hass, "network/url")
-    except Exception:
+    except Exception:  # noqa: BLE001 - any failure falls back to the plugin url
         urls = None
     internal = urls.get("internal") if isinstance(urls, dict) else None
     for url in (internal, hass.url):

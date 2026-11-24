@@ -11,9 +11,9 @@ Sendspin Server (PushStream → group visualizer/color roles → FFT/spectrum + 
 Bridge visualizer + color roles (features keyed to playback timestamp)
        │
        ▼ (frame / beats / color callbacks)
-HueAudioAnalyzer (queues by timestamp; bass beat detection, color cycling, energy pulse)   ← this provider
+AudioAnalyzer (queues by timestamp; bass beat detection, color cycling, energy pulse)   ← sendspin_lights (shared)
        │
-       ▼ (30 Hz render loop drains at server-clock + Hue-latency lead → LightColorCommand frames)
+       ▼ (30 Hz render loop drains at server-clock + Hue-latency lead → LightColor frames → LightColorCommand)
 LightTarget (targets.py)   ← this provider
        │
        ├─ HueAreaTarget → EntertainmentSession → HueDtlsStreamer (DTLS 1.2 PSK + HueStream v2)   ← hue-entertainment lib
@@ -64,8 +64,10 @@ library's `EntertainmentSession` facade, which opens the stream on demand, runs 
 blocking DTLS handshake in an executor, and enforces the bridge's single-active-stream
 constraint.
 
-Only the Sendspin-specific glue lives here: the visualizer client wiring (`bridge.py`),
-the light targets (`targets.py`, `zigbee.py`) and the audio-to-color analyzer (`analyzer.py`).
+Only the Sendspin-specific glue lives here: the visualizer client wiring (`bridge.py`) and
+the light targets (`targets.py`, `zigbee.py`). The audio-to-color analyzer is shared with the
+other Sendspin light plugins in `sendspin_lights/analyzer.py`; this provider only caps its
+palette (`PALETTE_CEILING`) to stay inside the Hue gamut.
 
 ## File Structure
 
@@ -77,7 +79,6 @@ hue_entertainment/
 ├── bridge.py                  Sendspin visualizer client → analyzer → LightTarget
 ├── targets.py                 Hue bridge area and ZHA lamp targets
 ├── zigbee.py                  ZHA lookups through the Home Assistant plugin
-├── analyzer.py                Bass beat detection, color cycling, effect modes
 ├── constants.py               MA config keys + Sendspin spectrum request config
 └── manifest.json              Plugin manifest (requires hue-entertainment)
 ```

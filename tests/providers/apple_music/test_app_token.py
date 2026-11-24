@@ -31,7 +31,7 @@ async def _loaded_app_token(stored: str | None, bundled: str) -> str | None:
     provider.streaming_manager = Mock(initialize=AsyncMock())
     with patch("music_assistant.providers.apple_music.provider.MUSIC_APP_TOKEN", bundled):
         await provider.handle_async_init()
-    return provider._music_app_token
+    return provider.music_app_token
 
 
 @pytest.mark.parametrize(

@@ -160,6 +160,7 @@ from .cue import (
     CueSheetHandler,
     cue_metadata_checksum,
     cue_referenced_audio_stem,
+    is_multi_file_cue,
     make_cue_track_id,
     parse_cue_track_id,
 )
@@ -500,12 +501,15 @@ class LocalFileSystemProvider(MusicProvider):
             for item in scanned:
                 if item.ext not in CUE_EXTENSIONS:
                     continue
-                cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                 try:
                     cue_sheet = await self._cue.load_cue_sheet(item)
                 except InvalidDataError as err:
+                    cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                     self.logger.warning("Unable to parse CUE sheet %s: %s", item.relative_path, err)
                     continue
+                if is_multi_file_cue(cue_sheet):
+                    continue
+                cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                 if await self._cue.find_audio_file(item, cue_sheet) is None:
                     self.logger.debug(
                         "Skipping CUE sheet with missing companion audio file: %s",
@@ -696,18 +700,14 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             if force_refresh_tracks:
                 await self._drop_stale_album_artist_caches()
-            # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
-                for cue_item in (
-                    *unchanged_cue_items,
-                    *(item for item, _ in items_to_process if item.ext in CUE_EXTENSIONS),
-                ):
-                    try:
-                        cue_sheet = await self._cue.load_cue_sheet(cue_item)
-                    except InvalidDataError:
-                        continue
-                    if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
-                        cue_stems.add(companion_stem)
+                await self._update_cue_stems(
+                    [
+                        *unchanged_cue_items,
+                        *(item for item, _ in items_to_process if item.ext in CUE_EXTENSIONS),
+                    ],
+                    cue_stems,
+                )
             # drop CUE companion audio: absorbed into CUE tracks and not tracked in
             # provider_mappings, so they would otherwise flag as changed every sync
             items_to_process = [
@@ -742,6 +742,8 @@ class LocalFileSystemProvider(MusicProvider):
                     self.logger.warning(
                         "Unable to parse CUE sheet %s: %s", cue_item.relative_path, err
                     )
+                    continue
+                if is_multi_file_cue(cue_sheet):
                     continue
                 for cue_track in cue_sheet.tracks:
                     cur_filenames.add(make_cue_track_id(cue_item.relative_path, cue_track.number))
@@ -1401,7 +1403,7 @@ class LocalFileSystemProvider(MusicProvider):
                 await _file.write("test")
             await asyncio.to_thread(os.remove, temp_file_name)
             self.write_access = True
-        except Exception as err:
+        except OSError as err:
             self.logger.debug("Write access disabled: %s", str(err))
 
     async def resolve(self, file_path: str) -> FileSystemItem:
@@ -1522,6 +1524,35 @@ class LocalFileSystemProvider(MusicProvider):
                 os.close(root_fd)
 
         await asyncio.to_thread(_walk)
+
+    async def _update_cue_stems(self, cue_items: list[FileSystemItem], cue_stems: set[str]) -> None:
+        """
+        Add the audio files CUE sheets name to cue_stems and release ignored CUE sheets.
+
+        :param cue_items: Every CUE sheet found in this scan.
+        :param cue_stems: Absolute paths (without extension) of the CUE sheets in this scan,
+            updated to the audio files that must not be imported as regular tracks.
+        """
+        kept: set[str] = set()
+        ignored: set[str] = set()
+        for cue_item in cue_items:
+            own_stem = cue_item.absolute_path.rsplit(".", 1)[0]
+            try:
+                cue_sheet = await self._cue.load_cue_sheet(cue_item)
+            except InvalidDataError:
+                kept.add(own_stem)
+                continue
+            if is_multi_file_cue(cue_sheet):
+                # ignored, so its same-named audio file is a regular track
+                ignored.add(own_stem)
+                continue
+            kept.add(own_stem)
+            # a CUE may name an audio file other than its own; hide that companion too
+            if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
+                cue_stems.add(companion_stem)
+                kept.add(companion_stem)
+        # applied after every sheet is read so the result does not depend on their order
+        cue_stems.difference_update(ignored - kept)
 
     def _classify_scan_item(
         self,
@@ -2486,8 +2517,10 @@ class LocalFileSystemProvider(MusicProvider):
                 # excluding its same-named companion here would lose that otherwise
                 # playable file entirely, since this CUE itself yields nothing below
                 continue
-            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
             cue_sheets[item.relative_path] = cue_sheet
+            if is_multi_file_cue(cue_sheet):
+                continue
+            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
             if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
                 cue_stems.add(companion_stem)
         for item in items:
@@ -2497,6 +2530,8 @@ class LocalFileSystemProvider(MusicProvider):
                 loaded_cue_sheet = cue_sheets.get(item.relative_path)
                 if loaded_cue_sheet is None:
                     self.logger.warning("Skipping unreadable CUE sheet %s", item.relative_path)
+                    continue
+                if is_multi_file_cue(loaded_cue_sheet):
                     continue
                 if await self._cue.find_audio_file(item, loaded_cue_sheet) is None:
                     self.logger.warning(
@@ -3280,7 +3315,7 @@ class LocalFileSystemProvider(MusicProvider):
             try:
                 raw = await self._read_file(lrc_path)
                 track.metadata.lrc_lyrics = raw.decode("utf-8")
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - lyrics are optional, sources vary
                 self.logger.warning(
                     "Failed to read lyrics file %s: %s",
                     lrc_path,
@@ -3661,7 +3696,7 @@ class LocalFileSystemProvider(MusicProvider):
                     try:
                         raw = await self._read_file(_item.relative_path)
                         audio_book.metadata.description = raw.decode("utf-8")
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - description is optional, sources vary
                         self.logger.warning(
                             "Could not read description from file %s: %s",
                             _item.relative_path,

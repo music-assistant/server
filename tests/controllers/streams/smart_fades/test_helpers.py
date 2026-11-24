@@ -258,7 +258,7 @@ class TestLocalBpm:
         wandering = steady[-1] + np.cumsum(0.48 + 0.06 * np.sin(np.arange(1, 61) * 0.9))
         beats = np.round(np.concatenate((steady, wandering)) / 0.02) * 0.02
 
-        assert local_bpm(beats, 126.3) == 126.3
+        assert local_bpm(beats.astype(np.float32), 126.3) == 126.3
 
     def test_too_few_beats_return_the_fallback(self) -> None:
         """Three bars of beats are too few to read a tempo from."""
