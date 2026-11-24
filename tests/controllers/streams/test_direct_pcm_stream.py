@@ -107,8 +107,8 @@ def test_single_item_stream_forwards_the_seek_position(seek_position: int) -> No
     assert call_kwargs["seek_position"] == seek_position
 
 
-def test_single_item_stream_never_mixes_a_declared_tail_overlap() -> None:
-    """A direct PCM stream of a single item plays a declared overlap as part of the item."""
+def test_single_item_stream_without_a_player_never_mixes_a_declared_tail_overlap() -> None:
+    """A direct PCM stream with no player to mix for plays a declared overlap as part of the item."""
     queue_item = _queue_item(0)
     assert queue_item.streamdetails is not None
     queue_item.streamdetails.tail_overlap = TailOverlap(duration=3.0, next_queue_item_id="item-2")
