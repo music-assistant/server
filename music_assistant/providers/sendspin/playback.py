@@ -376,7 +376,6 @@ class SendspinPlaybackSession:
         self._faded_in_offsets: set[int] = set()
         self._producer_task: asyncio.Task[None] | None = None
         self._replacement: _ItemReplacement | None = None
-        self._replace_lock = asyncio.Lock()
 
     def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
         """
@@ -463,32 +462,31 @@ class SendspinPlaybackSession:
         :param media: The item that now follows the playing one.
         :return: False when only a restart from the current position replaces the item.
         """
-        async with self._replace_lock:
-            if (replacement := self._replacement) is not None:
-                # the cut still running plays this item in place of the one it replaces
-                replacement.media = media
-                return True
-            task = self._producer_task
-            push_stream = self._push_stream
-            if (
-                task is None
-                or task.done()
-                or push_stream is None
-                or (anchor_us := self._timeline_start_us) is None
-            ):
-                return False
-            playing_offset_us, _ = self._playing_item(anchor_us, push_stream.now_us())
-            offset_us = next((o for o, _ in self._item_starts if o > playing_offset_us), None)
-            if offset_us is None or offset_us in self._faded_in_offsets:
-                return False
-            if media.source_id and self.player.mass.streams.audio.fade_pending(media.source_id):
-                # the cut would drop a fade into a later item, which only a restart resets
-                return False
-            replacement = self._replacement = _ItemReplacement(
-                media, offset_us, asyncio.get_running_loop().create_future()
-            )
-            task.cancel()
-            return await asyncio.shield(replacement.done)
+        if (replacement := self._replacement) is not None:
+            # the cut still running plays this item in place of the one it replaces
+            replacement.media = media
+            return True
+        task = self._producer_task
+        push_stream = self._push_stream
+        if (
+            task is None
+            or task.done()
+            or push_stream is None
+            or (anchor_us := self._timeline_start_us) is None
+        ):
+            return False
+        playing_offset_us, _ = self._playing_item(anchor_us, push_stream.now_us())
+        offset_us = next((o for o, _ in self._item_starts if o > playing_offset_us), None)
+        if offset_us is None or offset_us in self._faded_in_offsets:
+            return False
+        if media.source_id and self.player.mass.streams.audio.fade_pending(media.source_id):
+            # the cut would drop a fade into a later item, which only a restart resets
+            return False
+        replacement = self._replacement = _ItemReplacement(
+            media, offset_us, asyncio.get_running_loop().create_future()
+        )
+        task.cancel()
+        return await asyncio.shield(replacement.done)
 
     # -- Public API ------------------------------------------------------------
 
