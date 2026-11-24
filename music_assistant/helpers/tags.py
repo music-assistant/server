@@ -118,6 +118,9 @@ def split_items(
             final_items.extend(split_items(item, allow_unsafe_splitters))
         return tuple(final_items)
     org_str = org_str.strip()
+    if "\x00" in org_str:
+        # NUL is the ID3v2.4 multi-value separator, some taggers also write it into other formats
+        return split_items(org_str.split("\x00"), allow_unsafe_splitters)
     if TAG_SPLITTER in org_str:
         return clean_tuple(org_str.split(TAG_SPLITTER))
     if allow_unsafe_splitters and "/" in org_str:
