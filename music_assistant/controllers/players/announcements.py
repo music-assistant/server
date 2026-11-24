@@ -533,10 +533,16 @@ class AnnouncementsMixin(_PlayerControllerBase):
         # an announcement is always meant to be heard, so a deliberate mute is lifted for
         # its duration. this happens before the announcement volume is resolved below,
         # since a fake mute control parks the player at volume 0 to mute it.
-        # in case of a (sync) group, this covers all child players.
+        # in case of a group player, this covers all its members; a player that leads
+        # others only announces on itself.
+        audience = (
+            player.group_members
+            if player.type == PlayerType.GROUP and player.group_members
+            else (player.player_id,)
+        )
         muted_players = [
             muted_player
-            for member_id in player.group_members or (player.player_id,)
+            for member_id in audience
             if (muted_player := self.get_player(member_id)) and muted_player.volume_muted
         ]
         # filled while the announcement volume is applied below

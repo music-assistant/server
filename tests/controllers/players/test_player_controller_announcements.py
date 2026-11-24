@@ -1943,25 +1943,45 @@ class TestPlayNativeAnnouncement:
 
         assert mute_mock.await_args_list == [call(False), call(True)]
 
-    async def test_muted_sync_group_members_all_hear_the_announcement(
+    async def test_muted_group_player_members_all_hear_the_announcement(
         self, mock_mass: MagicMock
     ) -> None:
-        """Every member of a muted sync group is unmuted, keeping its mute lock."""
+        """Every muted member of a group player is unmuted, keeping its mute lock."""
+        controller, player, _ = self._make_player(mock_mass)
+        provider = cast("MockProvider", _own(player).provider)
+        member, _ = _attach(provider, "player_2", "Player 2")
+        group, group_protocol = _attach(
+            provider, "group_1", "Group 1", player_type=PlayerType.GROUP
+        )
+        group_protocol._attr_group_members = ["player_1", "player_2"]
+        group_protocol._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        group_protocol.play_announcement = AsyncMock()  # type: ignore[method-assign]
+        _refresh(player, member, group)
+        assert group.group_members == ["player_1", "player_2"]
+        mute_mocks = {p.player_id: _mute_natively(p) for p in (player, member)}
+        # both members were muted while grouped, so both hold a mute lock
+        for p in (player, member):
+            p.extra_data[ATTR_MUTE_LOCK] = True
+
+        await controller._play_native_announcement(group, _own(group), _announcement(), None)
+
+        for player_id, mute_mock in mute_mocks.items():
+            assert mute_mock.await_args_list == [call(False), call(True)], player_id
+            assert controller._players[player_id].extra_data[ATTR_MUTE_LOCK] is True
+
+    async def test_player_leading_others_only_unmutes_itself(self, mock_mass: MagicMock) -> None:
+        """A player that leads others announces on itself, so a muted member stays muted."""
         controller, leader, _ = self._make_player(mock_mass)
         member, _ = _attach(cast("MockProvider", _own(leader).provider), "player_2", "Player 2")
         _own(leader)._attr_group_members = [_proto("player_1"), _proto("player_2")]
         _refresh(leader, member)
         assert leader.group_members == ["player_1", "player_2"]
         mute_mocks = {player.player_id: _mute_natively(player) for player in (leader, member)}
-        # both members were muted while grouped, so both hold a mute lock
-        for player in (leader, member):
-            player.extra_data[ATTR_MUTE_LOCK] = True
 
         await controller._play_native_announcement(leader, _own(leader), _announcement(), None)
 
-        for player_id, mute_mock in mute_mocks.items():
-            assert mute_mock.await_args_list == [call(False), call(True)], player_id
-            assert controller._players[player_id].extra_data[ATTR_MUTE_LOCK] is True
+        assert mute_mocks["player_1"].await_args_list == [call(False), call(True)]
+        mute_mocks["player_2"].assert_not_awaited()
 
     async def test_fake_muted_player_announces_at_its_real_volume(
         self, mock_mass: MagicMock
