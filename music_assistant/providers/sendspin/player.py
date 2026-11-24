@@ -9,7 +9,7 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import replace
 from io import BytesIO
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from aiosendspin.models import AudioCodec, MediaCommand
 from aiosendspin.models.core import DynamicPairMethodDescriptor
@@ -270,6 +270,9 @@ PAIR_PIN_ENTRY_TIMEOUT = 120.0
 PAIR_CONFIRM_TIMEOUT = 30.0
 # Seconds a Cast-bridged member gets to report its Sendspin app ready.
 CAST_APP_READY_TIMEOUT = 30.0
+# Seconds a playback start is held back for the Sendspin apps of the Cast-bridged
+# members of its group.
+CAST_MEMBERS_READY_TIMEOUT = 10.0
 
 # PlayerMedia fields behind MEDIA_IDENTITY_KEYS, derived so the same-item check in
 # play_media() cannot drift from what update_state() treats as a media change.
@@ -373,7 +376,10 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.models.setup_flow import SetupSession
-    from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
+    from music_assistant.providers.chromecast.sendspin_bridge import (
+        SendspinBridgeManager,
+        SendspinChromecastBridge,
+    )
     from music_assistant.providers.hass import HomeAssistantProvider
 
     from .provider import PinPairingSession, SendspinProvider
@@ -1497,7 +1503,7 @@ class SendspinPlayer(SendspinBasePlayer):
     # stop counts only while the app is waited for: during the status refresh before it,
     # the outgoing session's natural end stops the group too and must not drop the start.
     _play_generation: int = 0
-    _pending_cast_app_ready: asyncio.Future[None] | None = None
+    _pending_cast_app_ready: asyncio.Future[Any] | None = None
     _content_takeover_pending: bool = False
     # Item (uri and queue item id) of the metadata last published to the group.
     _published_item: tuple[str, str | None] | None = None
@@ -1819,42 +1825,56 @@ class SendspinPlayer(SendspinBasePlayer):
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
-        # Cast-only: launch the Sendspin Cast app and wait for it before start(). The
-        # stream would otherwise run on while the app launches (several seconds), and
-        # the device would miss the start of the track. The fresh future also cancels
-        # any stale pending one from a previous timed-out attempt.
+        # Cast-only: launch the Sendspin Cast app, also on the group members, and wait for
+        # it before start(). The stream would otherwise run on while the app launches
+        # (several seconds), and the device would miss the start of the track, or all of
+        # a short one. The fresh future also cancels any stale pending one from a previous
+        # timed-out attempt.
         bridge = (
             mgr.get_bridge_by_client_id(self.protocol_id)
             if (mgr := self._get_cast_bridge_manager())
             else None
         )
+        member_bridges = self._cast_bridges_to_wait_for()
         self._play_generation += 1
         generation = self._play_generation
         cast_app_ready: asyncio.Future[None] | None = None
-        if bridge is not None:
-            await bridge.refresh_cast_app_state()
+        members_ready: dict[SendspinChromecastBridge, asyncio.Future[None]] = {}
+        if bridges := [b for b in (bridge, *member_bridges) if b is not None]:
+            await asyncio.gather(*(b.refresh_cast_app_state() for b in bridges))
             if generation != self._play_generation:
                 # stopped or replaced during the refresh
                 return
-            cast_app_ready = bridge.reset_cast_app_ready()
+            if bridge is not None:
+                cast_app_ready = bridge.reset_cast_app_ready()
+            members_ready = {
+                b: ready for b in member_bridges if not (ready := b.reset_cast_app_ready()).done()
+            }
 
         prev_media_identity = self._media_identity()
         self._attr_current_media = media
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
 
-        if bridge is not None and cast_app_ready is not None:
-            if not cast_app_ready.done():
-                # End the current playback rather than keep its stream for a successor:
-                # the device isn't receiving it, its progress would run on under the new
-                # media while the app launches, and a failed launch would leave it open.
-                await self.playback_session.cancel("new media requested")
-                if generation != self._play_generation:
-                    # stopped or regrouped during the cancel: don't launch for it
-                    return
-                bridge.launch_cast_app()
-            if not await self._wait_for_cast_app(cast_app_ready, generation):
+        bridges_to_launch = list(members_ready)
+        if bridge is not None and cast_app_ready is not None and not cast_app_ready.done():
+            bridges_to_launch.append(bridge)
+        if bridges_to_launch:
+            # End the current playback rather than keep its stream for a successor:
+            # the device isn't receiving it, its progress would run on under the new
+            # media while the app launches, and a failed launch would leave it open.
+            await self.playback_session.cancel("new media requested")
+            if generation != self._play_generation:
+                # stopped or regrouped during the cancel: don't launch for it
                 return
+            for bridge_to_launch in bridges_to_launch:
+                bridge_to_launch.launch_cast_app()
+        if cast_app_ready is not None and not await self._wait_for_cast_app(
+            cast_app_ready, generation
+        ):
+            return
+        if members_ready and not await self._wait_for_member_cast_apps(members_ready, generation):
+            return
 
         # The spec reserves stream/end for queue-empty, not track changes.
         await self.playback_session.cancel("new media requested", keep_stream=True)
@@ -2669,8 +2689,63 @@ class SendspinPlayer(SendspinBasePlayer):
                 self._pending_cast_app_ready = None
         return generation == self._play_generation
 
+    def _cast_bridges_to_wait_for(self) -> list[SendspinChromecastBridge]:
+        """
+        Return the bridges of the other group members whose Cast app a playback start waits for.
+
+        Empty while the group plays, so that a member that does not come up only holds back a
+        start from idle, not every track change and seek.
+        """
+        if not (mgr := self._get_cast_bridge_manager()) or self.api.group.has_active_stream:
+            return []
+        bridges = (
+            mgr.get_bridge_by_client_id(client.client_id)
+            for client in self.api.group.clients
+            if client is not self.api
+        )
+        return [b for b in bridges if b is not None and b.cast_player.available]
+
+    async def _wait_for_member_cast_apps(
+        self,
+        members_ready: dict[SendspinChromecastBridge, asyncio.Future[None]],
+        generation: int,
+    ) -> bool:
+        """
+        Give the Sendspin Cast apps of the group members time to report ready.
+
+        Playback starts without a member that fails or does not make it in time.
+
+        :param members_ready: The cast-ready future of each member to wait for, by its bridge.
+        :param generation: The play_media call's playback generation.
+        :return: Whether playback should still start: False once stopped or replaced.
+        """
+        waiter = asyncio.ensure_future(
+            asyncio.wait(members_ready.values(), timeout=CAST_MEMBERS_READY_TIMEOUT)
+        )
+        self._pending_cast_app_ready = waiter
+        try:
+            # unlike awaiting the waiter itself, this returns when an abort cancels it
+            await asyncio.wait([waiter])
+        finally:
+            waiter.cancel()
+            if self._pending_cast_app_ready is waiter:
+                self._pending_cast_app_ready = None
+        if generation != self._play_generation:
+            return False
+        if late := [
+            bridge.cast_player.display_name
+            for bridge, ready in members_ready.items()
+            if not ready.done()
+        ]:
+            self.logger.warning(
+                "Starting playback on %s without waiting longer for the Cast app on %s",
+                self.display_name,
+                ", ".join(late),
+            )
+        return True
+
     def _abort_pending_cast_start(self) -> None:
-        """Drop a playback start that is still waiting for the Sendspin Cast app."""
+        """Drop a playback start that is still waiting for a Sendspin Cast app."""
         self._play_generation += 1
         if (pending := self._pending_cast_app_ready) is not None and not pending.done():
             pending.cancel()
