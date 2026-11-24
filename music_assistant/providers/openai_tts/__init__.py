@@ -111,7 +111,7 @@ async def fetch_backend_voices(
         ) as response:
             response.raise_for_status()
             data = await response.json()
-    except Exception:
+    except Exception:  # noqa: BLE001 - user-set server, any failure means no voices
         return []
     items = data.get("voices", data.get("data")) if isinstance(data, dict) else data
     if not isinstance(items, list):

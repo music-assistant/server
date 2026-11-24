@@ -388,12 +388,12 @@ class SonicSimilarityPlugin(PluginProvider):
         self._unregister_handles.clear()
         try:
             self.mass.tasks.unregister_scheduled_task(PERIODIC_REFRESH_TASK_ID)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - cleanup must carry on
             self.logger.debug("Periodic refresh task unregister failed: %s", err)
         if self._clap_index is not None:
             try:
                 await self._clap_index.close()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - cleanup must carry on
                 self.logger.debug("Character index close failed: %s", err)
             self._clap_index = None
         # Drop encoder ref so its (large) tensors can be GC'd.
@@ -497,7 +497,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 media_types=[MediaType.TRACK],
                 fully_played_only=False,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - recommendations are optional
             self.logger.debug("recently_played failed: %s", err)
             return None
         if not recent:
@@ -1658,7 +1658,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 try:
                     await self._clap_index.add(row["provider"], row["item_id"], emb)
                     added += 1
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one failing item must not stop the rest
                     self.logger.debug(
                         "Add to Character index failed for %s/%s: %s",
                         row["provider"],
@@ -1737,7 +1737,7 @@ class SonicSimilarityPlugin(PluginProvider):
             try:
                 self._text_encoder = await asyncio.to_thread(self._load_text_encoder)
                 self.logger.info("CLAP text encoder loaded (lazy)")
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - model loading can fail in any way
                 self.logger.warning("CLAP text encoder load failed: %s", err)
                 self._text_encoder = None
         return self._text_encoder

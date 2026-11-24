@@ -477,7 +477,7 @@ class SpotifyConnectProvider(PluginProvider):
             )
             try:
                 await self.mass.players.cmd_stop(prev_player_id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - player code, stopping is best effort
                 self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
 
         # Push the options the session reported before this claim existed, so the
@@ -547,7 +547,7 @@ class SpotifyConnectProvider(PluginProvider):
             # here: those cleared the playing flag or replaced the session id first.)
             try:
                 await daemon.backend.deactivate()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - releasing the session is best effort
                 self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
 
     async def on_source_released(self, source_id: str, player_id: str) -> None:
@@ -569,7 +569,7 @@ class SpotifyConnectProvider(PluginProvider):
             # shielded: a failed playback start releases from within its own task, which the
             # 'paused' event of a backend that pauses before giving up the device cancels
             await asyncio.shield(daemon.backend.deactivate())
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - releasing the session is best effort
             self.logger.debug("Failed to release Spotify session: %s", err)
 
     async def on_source_control(
@@ -769,7 +769,7 @@ class SpotifyConnectProvider(PluginProvider):
         self._daemons[player_id] = daemon
         try:
             await daemon.backend.start()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # a daemon that cannot start makes the whole provider unusable
             # (shared engine setup); surface it like a backend fatal error
             self._daemons.pop(player_id, None)
@@ -961,7 +961,7 @@ class SpotifyConnectProvider(PluginProvider):
         started = self.mass.loop.time()
         try:
             await self.mass.players.cmd_stop(player_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - player code, any failure ends the handling
             self.logger.debug("Failed to stop player %s on pause: %s", player_id, err)
             return
         # a timeout around the stop is not enforceable: the process cleanup it waits on
@@ -1288,7 +1288,7 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.last_volume_sent = volume
         try:
             await self.mass.players.cmd_volume_set(daemon.in_use_by_player, volume)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # Volume sync is best-effort: the player may not support volume, or the
             # command may fail. Restore the cached value so a retry isn't wrongly
             # deduped, and never let it bubble up and drop the events loop.
@@ -1320,7 +1320,7 @@ class SpotifyConnectProvider(PluginProvider):
         # resets to its 100% default on a new session or backend restart.
         try:
             await self._push_volume_to_backend(daemon, volume)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - volume sync is best effort
             self.logger.debug("Failed to sync player volume to Spotify: %s", err)
 
     async def _push_volume_to_backend(self, daemon: _PlayerDaemon, volume: int) -> None:

@@ -171,7 +171,7 @@ class HueAreaTarget:
         """
         try:
             status, _rid = await hue_api.get_entertainment_status(self._area.id)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best effort, start goes on regardless
             return
         if status != "active":
             return
@@ -335,7 +335,7 @@ class ZigbeeTarget:
                 continue
             try:
                 await session.start()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any failure is retried on the next pass
                 LOGGER.debug("Zigbee stream of '%s' not up yet: %s", self._name, err)
                 continue
             LOGGER.info("Zigbee stream of '%s' is up", self._name)

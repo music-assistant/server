@@ -614,7 +614,7 @@ class HomeAssistantProvider(PluginProvider):
                         if not display_name:
                             display_name = user.get("name")
                         break
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - optional detail, HA errors vary
                 self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA user list: %s", err)
 
             # Get external URL for building avatar URL
@@ -623,7 +623,7 @@ class HomeAssistantProvider(PluginProvider):
                 network_urls = await self.hass.send_command("network/url")
                 if network_urls:
                     ha_url = network_urls.get("external") or network_urls.get("internal")
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - optional detail, HA errors vary
                 self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA network URLs: %s", err)
 
             # Find person linked to this HA user ID for display name and avatar
@@ -639,7 +639,7 @@ class HomeAssistantProvider(PluginProvider):
                         if (person_picture := person.get("picture")) and ha_url:
                             avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
                         break
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - optional detail, HA errors vary
                 self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA person details: %s", err)
 
             self.logger.log(
@@ -651,7 +651,7 @@ class HomeAssistantProvider(PluginProvider):
                 avatar_url,
             )
             return username, display_name, avatar_url
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure means no user details
             self.logger.warning("Failed to get HA user details: %s", err)
             return None, None, None
 
@@ -1207,7 +1207,7 @@ class HomeAssistantProvider(PluginProvider):
                 await listen_task
             except asyncio.CancelledError:
                 pass
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the task can fail in any way, logged here
                 self.logger.warning("Home Assistant listener stopped with error: %s", err)
         await self.hass.disconnect()
 
@@ -1215,7 +1215,7 @@ class HomeAssistantProvider(PluginProvider):
         """Clean up the Home Assistant connection after initialization fails."""
         try:
             await self._disconnect_hass()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - cleanup must not hide the init error
             self.logger.warning("Failed to disconnect from Home Assistant: %s", err)
 
     async def _resolve_startup_features(self) -> None:
@@ -1370,7 +1370,7 @@ class HomeAssistantProvider(PluginProvider):
         await asyncio.sleep(ENGINE_REFRESH_DEBOUNCE)
         try:
             await self._refresh_engines()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - background task, any failure is logged
             self.logger.warning("Failed to refresh Home Assistant engines: %s", err)
 
     # unlike _fetch_device_registry, this listing is mirrored for the lifetime of the

@@ -1403,7 +1403,7 @@ class LocalFileSystemProvider(MusicProvider):
                 await _file.write("test")
             await asyncio.to_thread(os.remove, temp_file_name)
             self.write_access = True
-        except Exception as err:
+        except OSError as err:
             self.logger.debug("Write access disabled: %s", str(err))
 
     async def resolve(self, file_path: str) -> FileSystemItem:
@@ -3315,7 +3315,7 @@ class LocalFileSystemProvider(MusicProvider):
             try:
                 raw = await self._read_file(lrc_path)
                 track.metadata.lrc_lyrics = raw.decode("utf-8")
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - lyrics are optional, sources vary
                 self.logger.warning(
                     "Failed to read lyrics file %s: %s",
                     lrc_path,
@@ -3696,7 +3696,7 @@ class LocalFileSystemProvider(MusicProvider):
                     try:
                         raw = await self._read_file(_item.relative_path)
                         audio_book.metadata.description = raw.decode("utf-8")
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - description is optional, sources vary
                         self.logger.warning(
                             "Could not read description from file %s: %s",
                             _item.relative_path,

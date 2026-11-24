@@ -262,7 +262,7 @@ class InternetArchiveProvider(MusicProvider):
                 ):
                     break
 
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failing strategy must not stop the others
                 self.logger.warning("Search strategy %d failed: %s", strategy_idx + 1, err)
                 continue
 
@@ -554,7 +554,7 @@ class InternetArchiveProvider(MusicProvider):
             if len(chapters) > 1:
                 audiobook.metadata.chapters = chapters
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - duration and chapters are optional
             self.logger.warning(
                 "Could not process audio files for audiobook %s: %s", prov_audiobook_id, err
             )
@@ -849,7 +849,7 @@ class InternetArchiveProvider(MusicProvider):
                         async for chunk in response.content.iter_chunked(8192):
                             chapters_yielded = True
                             yield chunk
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - a failing chapter must not stop the rest
                     self.logger.error("Chapter %s streaming failed: %s", i + 1, e)
                     continue
 
@@ -910,7 +910,7 @@ class InternetArchiveProvider(MusicProvider):
         try:
             audio_files = await self._get_audio_files(prov_podcast_id)
             podcast.total_episodes = len(audio_files)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the episode count is optional
             self.logger.warning(
                 "Could not get episode count for podcast %s: %s", prov_podcast_id, err
             )

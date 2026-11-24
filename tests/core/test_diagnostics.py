@@ -172,7 +172,7 @@ def test_exception_lru_bound() -> None:
         exc_type = type(f"CustomError{index}", (Exception,), {})
         try:
             raise exc_type("boom")  # noqa: TRY301 - simulates a failure
-        except Exception:
+        except Exception:  # noqa: BLE001 - catches the type made just above
             record = logging.LogRecord(
                 "test", logging.ERROR, __file__, 1, "failed", None, sys.exc_info()
             )

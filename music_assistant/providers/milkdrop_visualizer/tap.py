@@ -349,7 +349,7 @@ class TapManager:
         while True:
             try:
                 cursor = await self._read_once(tap, cursor)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # a source that failed mid-track is a playback problem, not a
                 # reason for this tap to stop following the player
                 self.logger.debug("Tap for %s could not read: %s", tap.player_id, err)
