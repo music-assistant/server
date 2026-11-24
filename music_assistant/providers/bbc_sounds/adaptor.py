@@ -359,7 +359,6 @@ class PodcastConverter(BaseConverter):
             stream_details = StreamDetails(
                 stream_metadata=StreamMetadata(
                     title=episode.name,
-                    uri=source_obj.stream,
                 ),
                 media_type=MediaType.PODCAST_EPISODE,
                 stream_type=StreamType.HLS,
@@ -462,7 +461,6 @@ class PodcastConverter(BaseConverter):
             ),
             podcast=podcast,
             provider_mappings={self._create_provider_mapping(episode.pid)},
-            uri=episode.stream,
         )
         ma_episode.metadata.release_date = release_date(episode)
         return ma_episode
