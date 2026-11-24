@@ -58,6 +58,10 @@ SENDSPIN_LINK_WAIT_TRIES = 20
 # Sendspin goes ahead on the last status it reported.
 CAST_STATUS_REFRESH_TIMEOUT = 3.0
 
+# Seconds a connected Sendspin Cast app gets to report its clock synchronized, before
+# it counts as ready without that report.
+CAST_APP_SYNC_TIMEOUT = 3.0
+
 # Devices known to not work with the Sendspin Cast bridge.
 # Tuple of (manufacturer, model) where "*" is a wildcard.
 # These devices will not get a Sendspin bridge, allowing other protocols
