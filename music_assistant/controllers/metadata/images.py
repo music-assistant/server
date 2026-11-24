@@ -3,20 +3,26 @@ Image handling for the Metadata Controller.
 
 Provides the ImageProxyMixin, mixed into the MetaDataController, which resolves
 media images to (proxied) URLs, renders and caches thumbnails, serves the
-``/imageproxy`` HTTP endpoint and extracts colour palettes.
+``/imageproxy`` HTTP endpoint, extracts colour palettes and stores custom images.
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import threading
 import time
-from base64 import b64encode
+from base64 import b64decode, b64encode
+from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
+import aiofiles
+import shortuuid
 from aiohttp import web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
@@ -32,16 +38,19 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CUSTOM_IMAGES_DIRNAME, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette, invalidate_cached_palette
 from music_assistant.helpers.images import (
+    MAX_CUSTOM_IMAGE_BYTES,
     create_thumb_hash,
     detect_image_content_format,
     get_image_data,
     get_image_thumb,
     invalidate_cached_image,
+    validate_custom_image,
 )
+from music_assistant.helpers.security import is_safe_path
 
 from .constants import (
     _ALLOWED_IMAGEPROXY_SIZES,
@@ -296,6 +305,68 @@ class ImageProxyMixin:
         """
         await invalidate_cached_image(self.mass, provider, path)
         await invalidate_cached_palette(self.mass, provider, path)
+
+    async def store_custom_image(self, data: str, name_prefix: str) -> MediaItemImage:
+        """
+        Validate and store base64 image data, return the image that references it.
+
+        PNG, JPEG, WebP, GIF or BMP is accepted; the format is detected from the
+        actual content. Each upload gets a unique path.
+
+        :param data: Base64 encoded image bytes, optionally as a data-URL.
+        :param name_prefix: Prefix of the generated filename, e.g. `genre.12`.
+        """
+        # a data-URL prefix is allowed for convenience (that's what a browser
+        # FileReader produces); only the base64 payload after the comma is used
+        if data.startswith("data:"):
+            data = data.split(",", 1)[-1]
+        # base64 inflates by roughly 4/3, so bound the encoded input before decoding
+        # to cap memory, then confirm the decoded size against the real limit
+        if len(data) > MAX_CUSTOM_IMAGE_BYTES // 3 * 4 + 8:
+            raise InvalidDataError("Image exceeds the size limit")
+        try:
+            raw = b64decode(data, validate=True)
+        except ValueError as err:
+            raise InvalidDataError("Image data is not valid base64") from err
+        ext = await asyncio.to_thread(validate_custom_image, raw)
+        images_dir = os.path.join(self.mass.storage_path, CUSTOM_IMAGES_DIRNAME)
+        await asyncio.to_thread(os.makedirs, images_dir, exist_ok=True)
+        # a new path per upload keeps stale cached variants from ever being served
+        filename = f"{name_prefix}.{shortuuid.random(8).lower()}.{ext}"
+        async with aiofiles.open(os.path.join(images_dir, filename), "wb") as outfile:
+            await outfile.write(raw)
+        return MediaItemImage(
+            type=ImageType.THUMB,
+            path=f"{CUSTOM_IMAGES_DIRNAME}/{filename}",
+            provider="builtin",
+            remotely_accessible=False,
+        )
+
+    async def delete_custom_image(self, image: MediaItemImage) -> None:
+        """
+        Delete a stored custom image and its cached variants.
+
+        A no-op for an image that is not a stored custom image.
+
+        :param image: The image to delete.
+        """
+        if not self.is_custom_image(image):
+            return
+        await self.invalidate_image_cache(image.provider, image.path)
+        images_dir = os.path.join(self.mass.storage_path, CUSTOM_IMAGES_DIRNAME)
+        filename = image.path.removeprefix(f"{CUSTOM_IMAGES_DIRNAME}/")
+        if not is_safe_path(filename, images_dir):
+            return
+        with suppress(FileNotFoundError):
+            await asyncio.to_thread(os.remove, os.path.join(images_dir, filename))
+
+    def is_custom_image(self, image: MediaItemImage) -> bool:
+        """
+        Return True when the image is a user-uploaded custom image.
+
+        :param image: The image to check.
+        """
+        return image.provider == "builtin" and image.path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
 
     async def get_thumbnail(
         self,

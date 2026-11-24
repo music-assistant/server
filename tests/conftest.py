@@ -17,6 +17,7 @@ from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.community_catalog import CommunityCatalogController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
+from music_assistant.controllers.metadata.images import ImageProxyMixin
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.statistics import StatisticsController
 from music_assistant.controllers.tasks import TasksController
@@ -201,6 +202,13 @@ async def _music_mass_context(
         mass_instance.metadata = MagicMock()
         mass_instance.metadata.schedule_update_metadata = MagicMock()
         mass_instance.metadata.invalidate_image_cache = AsyncMock()
+        # real custom image storage on top of the mocked metadata controller
+        image_store = ImageProxyMixin()
+        image_store.mass = mass_instance
+        image_store.invalidate_image_cache = mass_instance.metadata.invalidate_image_cache  # type: ignore[method-assign]
+        mass_instance.metadata.store_custom_image = image_store.store_custom_image
+        mass_instance.metadata.delete_custom_image = image_store.delete_custom_image
+        mass_instance.metadata.is_custom_image = image_store.is_custom_image
         mass_instance.webserver = MagicMock()
         mass_instance.webserver.auth.list_users = AsyncMock(return_value=[])
 
