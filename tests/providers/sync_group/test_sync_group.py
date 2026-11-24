@@ -51,7 +51,10 @@ from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import PlayerProtocol
-from music_assistant.providers.sync_group.constants import REFORM_DEBOUNCE_SECONDS
+from music_assistant.providers.sync_group.constants import (
+    REFORM_DEBOUNCE_SECONDS,
+    STUCK_MEMBER_TIMEOUT,
+)
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 from tests.common import (
     MockProtocol,
@@ -3244,6 +3247,30 @@ class TestWaitMemberUnsynced:
             old_leader, player_ids_to_remove=["m1"]
         )
 
+    async def test_a_member_whose_release_failed_is_still_waited_for(self) -> None:
+        """A leader that does not answer the release can let its member go later."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_member(mass, "m1")
+        member.state.synced_to = "old_leader"
+        _make_member(mass, "old_leader")
+        mass.players._handle_set_members = AsyncMock(side_effect=TimeoutError)
+        waits: list[float] = []
+
+        @asynccontextmanager
+        async def _wait(*_args: Any, timeout: float, **_kwargs: Any) -> AsyncIterator[None]:
+            yield
+            waits.append(timeout)
+            if timeout == STUCK_MEMBER_TIMEOUT:
+                member.state.synced_to = None
+
+        mass.players.wait_for_player_update = MagicMock(side_effect=_wait)
+
+        assert await sgp._wait_member_unsynced("m1", release_timeout=STUCK_MEMBER_TIMEOUT) is True
+
+        mass.players._handle_set_members.assert_awaited_once()
+        assert waits == [5.0, STUCK_MEMBER_TIMEOUT]
+
     @pytest.mark.parametrize("parent_registered", [True, False])
     async def test_member_leaves_on_its_own_when_stale_parent_is_offline(
         self, parent_registered: bool
@@ -4201,6 +4228,103 @@ class TestDebouncedReform:
             call.kwargs.get("player_ids_to_add") == ["m3"]
             for call in mass.players._handle_set_members.await_args_list
         )
+
+
+class TestOrderOfStopAndRelease:
+    """A leader that leaves is stopped before its members are released, or right after."""
+
+    @staticmethod
+    def _group(mass: MagicMock, output: str, holder: str) -> tuple[SyncGroupPlayer, list[str]]:
+        """
+        Return a playing group with one follower, and the calls its leader gets.
+
+        :param output: Domain of the protocol its leader plays on.
+        :param holder: Domain of the protocol that holds its follower.
+        """
+        sgp = _make_sync_group(mass)
+        leader = _make_member(
+            mass,
+            "leader",
+            audio=["airplay"],
+            active_output=output,
+            playback_state=PlaybackState.PLAYING,
+        )
+        _make_member(mass, "m2", audio=["airplay"])
+        _protocol(leader, holder)._attr_group_members = [f"{holder}_leader", f"{holder}_m2"]
+        leader.state.group_members = UniqueList(["leader", "m2"])
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+        sgp._attr_playback_state = PlaybackState.PLAYING
+        calls: list[str] = []
+
+        def _stop(_player_id: str) -> None:
+            calls.append("stop")
+            leader.state.playback_state = PlaybackState.IDLE
+            sgp._update_attributes()
+
+        players = mass.players
+        players._handle_cmd_stop.side_effect = _stop
+        players._handle_set_members.side_effect = lambda *_a, **_k: calls.append("release")
+        players.schedule_active_output_protocol_clear = MagicMock(
+            side_effect=lambda _player: calls.append("clear")
+        )
+        _run_scheduled_tasks(mass)
+        return sgp, calls
+
+    @pytest.mark.parametrize(
+        ("output", "holder", "expected"),
+        [
+            ("airplay", "sonos", ["release", "stop", "clear"]),
+            ("airplay", "airplay", ["stop", "release", "clear"]),
+            ("sonos", "sonos", ["stop", "release", "clear"]),
+        ],
+    )
+    async def test_members_outside_the_session_are_released_first(
+        self, output: str, holder: str, expected: list[str]
+    ) -> None:
+        """Only members that the protocol that plays does not hold are released first."""
+        mass = _make_mock_mass()
+        sgp, calls = self._group(mass, output, holder)
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_and_reform("leader")
+
+        assert calls == expected
+        assert sgp.sync_leader is None
+        # the stop leaves no idle grace behind, and the re-form is pending
+        assert sgp._idle_grace_task is None
+        assert sgp._reform_task is not None
+        sgp._cancel_reform_timer()
+
+    async def test_a_group_no_member_can_lead_ends_in_the_same_order(self) -> None:
+        """A leader that leaves only offline members behind releases them first as well."""
+        mass = _make_mock_mass()
+        sgp, calls = self._group(mass, "airplay", "sonos")
+        member = mass.players.get_player("m2")
+        _set_reachable(member, False)
+        member.state.available = False
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        assert calls == ["release", "stop", "clear"]
+        assert sgp.sync_leader is None
+        assert sgp.is_active_session is False
+
+    async def test_a_leader_whose_release_fails_is_stopped_all_the_same(self) -> None:
+        """A leader that does not answer the release stops, and the group re-forms."""
+        mass = _make_mock_mass()
+        sgp, calls = self._group(mass, "airplay", "sonos")
+        mass.players._handle_set_members.side_effect = TimeoutError
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_and_reform("leader")
+
+        mass.players._handle_set_members.assert_awaited_once()
+        assert calls == ["stop", "clear"]
+        assert sgp.sync_leader is None
+        assert sgp._reform_task is not None
+        sgp._cancel_reform_timer()
 
 
 def _lock_with_side_effect(on_enter: Callable[[], None]) -> MagicMock:

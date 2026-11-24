@@ -2269,6 +2269,36 @@ plays on all three once they have started up.
 - End-to-end: **possible with** a power control the lab can switch and can make refuse.
 - Proven by: `test_group_power_on.py::test_a_group_none_of_whose_members_can_play_fails_and_waits_for_them_at_its_next_start`
 
+### GROUP-66 · A sync group plays on once its silent old leader lets a member go
+
+Downstairs plays with Kitchen leading over AirPlay, and Office following Kitchen on their own
+protocol. Kitchen leaves the group and answers no group command for 36 s, after which its device
+lets Office go: Downstairs then plays on, on Office. When Office leaves the group during the wait,
+it leaves at once, and nothing plays later. Nor does it when Downstairs is stopped during the wait.
+A play on Downstairs during the wait fails instead of waiting along; a later one plays.
+
+- End-to-end: **no**: the device has to be silent for that long.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_plays_on_once_its_silent_old_leader_lets_the_member_go`
+  - `test_grouping.py::test_a_member_taken_out_while_its_silent_old_leader_holds_it_does_not_start`
+  - `test_grouping.py::test_a_sync_group_stopped_while_its_silent_old_leader_holds_a_member_stays_silent`
+  - `test_grouping.py::test_a_play_does_not_wait_until_a_silent_old_leader_lets_the_new_one_go`
+
+### GROUP-67 · A leader that plays over another protocol lets its followers go before it stops
+
+Downstairs plays with Kitchen leading over AirPlay, and Office following Kitchen on their own
+protocol. Kitchen leaves the group: it first lets Office go and then stops its AirPlay receiver, as
+a device can be silent for long on a group command right after that stop. Downstairs plays on, on
+Office, two seconds later. The same order applies when both leave at once. When Kitchen plays on the
+protocol Office follows it on, it stops first and lets Office go then.
+
+- End-to-end: **possible with** two speakers that group on their own protocol and have an AirPlay
+  receiver.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_plays_on_at_once_when_its_airplay_leader_leaves`
+  - `test_grouping.py::test_a_sync_group_whose_airplay_leader_and_its_member_leave_at_once_lets_them_go`
+  - `test_grouping.py::test_a_sync_group_leader_on_its_own_protocol_stops_before_it_lets_its_members_go`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
