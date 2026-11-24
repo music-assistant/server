@@ -1468,6 +1468,11 @@ class SonosPlayer(PlayerProtocol):
             if not current_media.uri:
                 current_media.uri = container["id"]["objectId"]
 
+        if current_media and self._own_airplay_session:
+            # the speaker drops the artwork of our own AirPlay session as soon as our stream
+            # stops, while it still names it
+            current_media.image_url = None
+
         self._attr_current_media = current_media
 
     def update_elapsed_time(self, elapsed_time: float | None = None) -> None:
