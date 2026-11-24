@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import AsyncGenerator, Sequence
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -310,9 +311,13 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         self, action_id: str, uri: str, player_id: str | None
     ) -> ConfigActionResult | None:
         """Handle a menu action from manifest's menu_actions."""
-        if action_id != "listen_from_start":
-            return await super().handle_menu_action(action_id, uri, player_id)
-        return await self._listen_from_start(uri, player_id)
+        handlers = {
+            "listen_live": partial(self._play_live_rewind_action, uri, player_id, True),
+            "listen_from_start": partial(self._play_live_rewind_action, uri, player_id),
+        }
+        if handler := handlers.get(action_id):
+            return await handler()
+        return await super().handle_menu_action(action_id, uri, player_id)
 
     async def live_programme(self, programme_id: LiveProgrammeId) -> ScheduleItem | RadioShow:
         """
@@ -344,8 +349,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             f"Programme {programme_id.pid} not found in the {episode_date} schedule"
         )
 
-    async def _listen_from_start(
-        self, uri: str, player_id: str | None
+    async def _play_live_rewind_action(
+        self, uri: str, player_id: str | None, jump_to_live: bool = False
     ) -> ConfigActionResult | None:
         """Handle a 'listen from start' menu request."""
         if not player_id:
@@ -367,8 +372,12 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             raise MusicAssistantError(
                 f"Error when trying to play from start on {item.name}"
             ) from err
+        start_position = 0
+        if jump_to_live and current_programme.start is not None:
+            start_position = int((datetime.utc() - current_programme.start).total_seconds())
+
         await self.mass.player_queues.play_media(
-            player_id, playable_version, option=QueueOption.PLAY, start_position=0
+            player_id, playable_version, option=QueueOption.PLAY, start_position=start_position
         )
         return None
 

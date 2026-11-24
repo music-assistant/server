@@ -18,6 +18,14 @@
   "multi_instance": true,
   "menu_actions": [
     {
+      "id": "listen_live",
+      "label": "Listen live",
+      "media_types": ["radio"],
+      "scope": "queues.control",
+      "icon": "mdi-play-circle-outline",
+      "requires_player": true
+    },
+    {
       "id": "listen_from_start",
       "label": "Listen from start",
       "media_types": ["radio"],
