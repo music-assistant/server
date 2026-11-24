@@ -344,6 +344,10 @@ def _has_display(cast_info: CastInfo) -> bool:
     """Return whether the Cast device has a display to show a dashboard on."""
     if cast_info.cast_type != CAST_TYPE_CHROMECAST:
         return False
+    # pychromecast's placeholder when the device info named no manufacturer, which also
+    # leaves display_supported at its default
+    if cast_info.manufacturer == "Unknown manufacturer":
+        return False
     # Host discovery reports "cast" when a device omits display_supported, so a model
     # pychromecast knows as audio-only overrides it.
     model = (cast_info.model_name or "").lower()

@@ -89,10 +89,18 @@ def test_register_video_capable_device() -> None:
 
 
 @pytest.mark.parametrize(
-    ("model_name", "registered"),
-    [("Chromecast Audio", False), ("Google Home Mini", False), ("Google Nest Hub", True)],
+    ("model_name", "manufacturer", "registered"),
+    [
+        ("Chromecast Audio", "Google Inc.", False),
+        ("Google Home Mini", "Google Inc.", False),
+        ("Google Nest Hub", "Google Inc.", True),
+        ("WiiM Pro", "Unknown manufacturer", False),
+        ("BRAVIA 4K", "Sony", True),
+    ],
 )
-def test_register_host_discovered_device_by_known_model(model_name: str, registered: bool) -> None:
+def test_register_host_discovered_device_by_known_model(
+    model_name: str, manufacturer: str, registered: bool
+) -> None:
     """Host discovery reports cast type 'cast' when display_supported is missing."""
     dashboards = _make_dashboards()
     uuid = uuid4()
@@ -104,7 +112,7 @@ def test_register_host_discovered_device_by_known_model(model_name: str, registe
         "192.168.1.20",
         8009,
         CAST_TYPE_CHROMECAST,
-        "Google Inc.",
+        manufacturer,
     )
 
     dashboards.register(uuid, cast_info)
