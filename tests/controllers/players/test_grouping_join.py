@@ -591,6 +591,98 @@ async def test_a_dissolved_leader_is_stopped_after_its_members_left() -> None:
     assert devices.calls == [_leaves("sonos_a", "sonos_b", "sonos_c"), ("stop_leader", "a")]
 
 
+def _member_on_the_own_protocol(world: _World) -> None:
+    """Add Sendspin speaker v holding w's Sendspin client in its own group, w playing on it."""
+    world.protocol(
+        "sendspin_v",
+        "v",
+        "sendspin",
+        role=ProtocolRole.NATIVE,
+        members=("sendspin_v", "sendspin_w"),
+    )
+    world.player("v", "sendspin_v", group_members=("v", "w"))
+    world.protocol("wiim_w", "w", "wiim", role=ProtocolRole.NATIVE, features=PLAYS)
+    world.protocol("sendspin_w", "w", "sendspin")
+    world.player("w", "wiim_w", "sendspin_w", synced_to="v", active_output="sendspin_w")
+
+
+async def test_a_member_that_leaves_the_own_protocol_drops_its_output_after_the_call() -> None:
+    """A member that played on the leader's own protocol through its audio protocol drops it."""
+    world = _World()
+    _member_on_the_own_protocol(world)
+    devices = _Devices(world)
+    await _join(devices, "v", None, ("w",))
+    assert devices.calls == [_leaves("sendspin_v", "sendspin_w"), ("clear_output", "w")]
+
+
+async def test_the_outputs_of_the_native_leavers_are_read_after_the_call() -> None:
+    """A member whose output moved on while the native call ran keeps it."""
+    world = _World()
+    _member_on_the_own_protocol(world)
+    devices = _Devices(world)
+    devices.during["set_members", "sendspin_v"] = devices.change("w", active_output="native")
+    await _join(devices, "v", None, ("w",))
+    assert devices.calls == [_leaves("sendspin_v", "sendspin_w")]
+
+
+def _last_member_leaves(devices: _Devices) -> None:
+    """Let s's AirPlay group report itself empty once its removal call ran."""
+
+    def _alone() -> None:
+        world = devices.world
+        world.protocols["airplay_s"] = replace(world.protocols["airplay_s"], group_members=())
+
+    devices.during["set_members", "airplay_s"] = _alone
+
+
+async def test_a_stopped_leader_drops_the_output_it_kept_once_its_group_ended() -> None:
+    """The output a stopped leader kept for its group is cleared once its last member left."""
+    world = _World()
+    _with_member_w(world)
+    devices = _Devices(world)
+    _last_member_leaves(devices)
+    await _join(devices, "s", None, ("w",))
+    assert devices.calls == [
+        _leaves("airplay_s", "airplay_w"),
+        ("clear_output", "w"),
+        ("clear_output", "s"),
+    ]
+
+
+@pytest.mark.parametrize("state", [PLAYING, PAUSED])
+async def test_a_rendering_leader_keeps_its_output_once_its_group_ended(
+    state: PlaybackState,
+) -> None:
+    """A leader that plays or is paused keeps its output, also without members."""
+    world = _World()
+    _with_member_w(world)
+    world.players["s"] = replace(world.players["s"], playback_state=state)
+    devices = _Devices(world)
+    _last_member_leaves(devices)
+    await _join(devices, "s", None, ("w",))
+    assert ("clear_output", "s") not in devices.calls
+    assert world.players["s"].active_output == "airplay_s"
+
+
+async def test_a_stopped_leader_keeps_its_output_while_it_still_has_a_member() -> None:
+    """A stopped leader that lets one member go keeps the output its group stays on."""
+    world = _World()
+    _with_member_w(world)
+    world.protocols["airplay_s"] = replace(
+        world.protocols["airplay_s"], group_members=("airplay_s", "airplay_w", "airplay_b")
+    )
+    devices = _Devices(world)
+
+    def _b_stays() -> None:
+        world.protocols["airplay_s"] = replace(
+            world.protocols["airplay_s"], group_members=("airplay_s", "airplay_b")
+        )
+
+    devices.during["set_members", "airplay_s"] = _b_stays
+    await _join(devices, "s", None, ("w",))
+    assert devices.calls == [_leaves("airplay_s", "airplay_w"), ("clear_output", "w")]
+
+
 async def test_a_takeover_is_opened_for_new_content_over_a_protocol_only() -> None:
     """The hook runs before anything else and its token goes to the caller; never natively."""
     world = _World()

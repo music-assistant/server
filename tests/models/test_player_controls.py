@@ -5,7 +5,8 @@ Covers the power_control, volume_control, and mute_control properties
 on the Player model, including:
 - Explicit config values (native, fake, none)
 - Explicit config pointing to a protocol or player control
-- Auto-select: the active output protocol -> native -> any audio protocol -> none
+- Auto-select: the active output protocol while it plays -> native -> the idle active output
+  protocol -> any audio protocol -> none
 """
 
 from __future__ import annotations
@@ -34,6 +35,15 @@ from music_assistant.models.player_protocol import PlayerProtocol
 from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
 
 _PROTO_DOMAIN = "test_protocol"
+
+# the volume and mute control of a player, with the feature each resolves for
+_CONTROLS = pytest.mark.parametrize(
+    ("feature", "control"),
+    [
+        (PlayerFeature.VOLUME_SET, "_volume_control"),
+        (PlayerFeature.VOLUME_MUTE, "_mute_control"),
+    ],
+)
 
 
 @pytest.fixture
@@ -658,6 +668,47 @@ class TestProtocolPlayerPreferActive:
             ],
         )
         assert player._volume_control == "proto_b"
+
+
+class TestIdleActiveOutput:
+    """Test the volume and mute control of a player whose active output plays nothing."""
+
+    @_CONTROLS
+    def test_idle_output_gives_way_to_own_protocol(
+        self, mock_mass: MagicMock, feature: PlayerFeature, control: str
+    ) -> None:
+        """An active output that plays nothing leaves the control to the own protocol."""
+        _create_protocol(mock_mass, "proto_a", {feature})
+        player = _create_player(mock_mass, features={feature})
+        _link_protocols(player, [_make_protocol_link("proto_a", "airplay")], "proto_a")
+        assert getattr(player, control) == PLAYER_CONTROL_NATIVE
+
+    @_CONTROLS
+    @pytest.mark.parametrize("state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
+    def test_rendering_output_keeps_the_control(
+        self, mock_mass: MagicMock, feature: PlayerFeature, control: str, state: PlaybackState
+    ) -> None:
+        """An active output that plays or is paused keeps the control from the own protocol."""
+        protocol = _create_protocol(mock_mass, "proto_a", {feature})
+        protocol._attr_playback_state = state
+        player = _create_player(mock_mass, features={feature})
+        _link_protocols(player, [_make_protocol_link("proto_a", "airplay")], "proto_a")
+        assert getattr(player, control) == "proto_a"
+
+    @_CONTROLS
+    def test_idle_output_keeps_the_control_without_own_control(
+        self, mock_mass: MagicMock, feature: PlayerFeature, control: str
+    ) -> None:
+        """A player whose own protocol has no such control keeps it on its idle active output."""
+        _create_protocol(mock_mass, "proto_a", {feature})
+        _create_protocol(mock_mass, "proto_b", {feature})
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [_make_protocol_link("proto_a"), _make_protocol_link("proto_b")],
+            "proto_b",
+        )
+        assert getattr(player, control) == "proto_b"
 
 
 class TestControlDomainPriority:

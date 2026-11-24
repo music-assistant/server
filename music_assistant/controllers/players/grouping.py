@@ -248,8 +248,15 @@ async def _join(run: _GroupRun, join: Join, *, new_content: bool) -> None:  # no
             player_ids_to_add=list(native.add) or None,
             player_ids_to_remove=list(native.remove) or None,
         )
+        rules = run.read()
+        run.clear_outputs(rules.leaving_outputs(native.remove))
     if join.stop_after:
         await players._stop_player_or_its_queue(run.player(target_id))
+    if not join.add:
+        # a leader that stopped while grouped kept its output for the group it may have lost
+        rules = run.read()
+        if rules.holds_idle_output(rules.held_player(target_id)):
+            run.clear_outputs([target_id])
 
 
 async def _regroup(run: _GroupRun, regroup: Regroup) -> None:
