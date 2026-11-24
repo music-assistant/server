@@ -271,14 +271,6 @@ extend-select = ["D213"]
 "tests/**" = ["S104", "S105"]
 # the provider templates show example code in comments
 "music_assistant/providers/_demo_*/**" = ["ERA001"]
-# BLE001 is being enabled area by area: remove a path once its broad excepts are decided
-"music_assistant/providers/fastmcp_server/**" = ["BLE001"]
-"music_assistant/providers/kion_music/**" = ["BLE001"]
-"music_assistant/providers/yandex_music/**" = ["BLE001"]
-"music_assistant/providers/yandex_smarthome/**" = ["BLE001"]
-"music_assistant/providers/yandex_station/**" = ["BLE001"]
-"music_assistant/providers/zvuk_music/**" = ["BLE001"]
-"tests/providers/msx_bridge/**" = ["BLE001"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false

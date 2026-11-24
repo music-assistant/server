@@ -209,7 +209,7 @@ class YandexGlagol:
         except TimeoutError:
             return {"error": "timeout"}
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - callers expect an error result, not a raise
             _LOGGER.error("[%s] Send error: %r", self.name, e)
             return {"error": repr(e)}
 

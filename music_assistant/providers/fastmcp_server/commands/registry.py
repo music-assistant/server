@@ -170,14 +170,14 @@ class ProviderCommandSet:
             for unregister in reversed(callbacks):
                 try:
                     unregister()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - every callback must still run
                     if first_error is None:
                         first_error = exc
         finally:
             if self._buffer is not None:
                 try:
                     self._buffer.stop()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - first error is raised after cleanup
                     if first_error is None:
                         first_error = exc
         if first_error is not None:
