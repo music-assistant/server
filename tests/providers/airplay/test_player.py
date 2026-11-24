@@ -2173,6 +2173,301 @@ async def test_stop_cancels_pending_rejoin() -> None:
         assert rejoin_task.cancelled()
 
 
+def _configure_solo_resume_mocks(player: AirPlayPlayer) -> tuple[MagicMock, MagicMock]:
+    """Configure parent player and queue mocks for solo resume tests."""
+    parent = MagicMock(
+        player_id="q1",
+        enabled=True,
+        available=True,
+        powered=True,
+        offline_by_power_control=False,
+        synced_to=None,
+        active_group=None,
+        group_members=[],
+        active_output_protocol="native",
+        own_protocol=player,
+        playback_state=PlaybackState.IDLE,
+        active_source="q1",
+    )
+    player._player = parent
+    queue = MagicMock(
+        queue_id="q1",
+        active=True,
+        ended=False,
+        current_item=MagicMock(),
+        state=PlaybackState.IDLE,
+    )
+    queue_data = MagicMock(halted_by_command=False, session_id="sess-1")
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.queue_data_or_none.return_value = queue_data
+    return queue, queue_data
+
+
+@pytest.mark.asyncio
+async def test_solo_resume_retries_with_backoff_and_cancels_on_stop() -> None:
+    """Solo resume retries on failure and stops if the user explicitly stops."""
+    player = _make_idle_player()
+    _configure_solo_resume_mocks(player)
+    resumes: list[str] = []
+
+    async def _resume(queue_id: str, fade_in: bool | None = None) -> None:
+        assert fade_in is True
+        resumes.append(queue_id)
+        raise PlayerCommandFailed("transient connection failure")
+
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.resume = AsyncMock(side_effect=_resume)
+    mass.create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
+    cast("MagicMock", player.provider).bridge_manager.stop_streaming.return_value = False
+    player._last_solo_resume_at = 1.0
+
+    with (
+        patch(_NO_DELAYS, (0, 0, 60)),
+        patch.object(AirPlayPlayer, "update_state"),
+    ):
+        player.schedule_solo_resume("q1")
+        resume_task = player._resume_task
+        assert resume_task is not None
+        for _ in range(50):
+            if len(resumes) == 2:
+                break
+            await asyncio.sleep(0)
+        assert resumes == ["q1", "q1"]
+        await player.stop()
+        assert player._resume_task is None
+        assert vars(player)["_last_solo_resume_at"] is None
+        with contextlib.suppress(asyncio.CancelledError):
+            await resume_task
+        assert resume_task.cancelled()
+        assert resumes == ["q1", "q1"]
+
+
+@pytest.mark.asyncio
+async def test_solo_resume_aborts_when_queue_stopped_or_powered_off() -> None:
+    """Solo resume aborts without calling resume if queue was stopped or player powered off."""
+    player = _make_idle_player()
+    _queue, queue_data = _configure_solo_resume_mocks(player)
+    queue_data.session_id = None  # simulates player_queues.stop() after 0.5s debounce
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.resume = AsyncMock()
+    mass.create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
+
+    with patch(_NO_DELAYS, (0, 60)):
+        player.schedule_solo_resume("q1")
+        assert player._resume_task is not None
+        await asyncio.wait_for(player._resume_task, timeout=1)
+    mass.player_queues.resume.assert_not_awaited()
+    assert vars(player)["_resume_task"] is None
+
+    _queue, _queue_data = _configure_solo_resume_mocks(player)
+    assert player.player is not None
+    cast("MagicMock", player.player).powered = False
+    with patch(_NO_DELAYS, (0, 60)):
+        player.schedule_solo_resume("q1")
+        assert player._resume_task is not None
+        await asyncio.wait_for(player._resume_task, timeout=1)
+    mass.player_queues.resume.assert_not_awaited()
+    assert player._resume_task is None
+
+
+@pytest.mark.asyncio
+async def test_solo_resume_succeeds_on_retry_and_respects_repeat_guard() -> None:
+    """Solo resume succeeds on retry (surviving cancel_recovery) and guards rapid drops."""
+    player = _make_idle_player()
+    queue, _queue_data = _configure_solo_resume_mocks(player)
+    attempts = 0
+
+    async def _resume(_queue_id: str, fade_in: bool | None = None) -> None:
+        nonlocal attempts
+        assert fade_in is True
+        attempts += 1
+        # Simulate play_media calling cancel_recovery() from inside the resume task
+        player.cancel_recovery()
+        if attempts == 1:
+            raise PlayerCommandFailed("transient error")
+        player.stream = MagicMock(running=True)
+        queue.state = PlaybackState.PLAYING
+
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.resume = AsyncMock(side_effect=_resume)
+    mass.create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        player.schedule_solo_resume("q1")
+        assert player._resume_task is not None
+        await player._resume_task
+    assert attempts == 2
+    assert vars(player)["_resume_task"] is None
+    assert player._last_solo_resume_at is not None
+
+    # A second immediate drop within 30s is skipped by the rapid-repeat guard,
+    # expires once 30s passes, and is cleared by an explicit stop().
+    player.stream = None
+    now = player._last_solo_resume_at
+    with patch("music_assistant.providers.airplay.player.time.monotonic", return_value=now + 5.0):
+        player.schedule_solo_resume("q1")
+    assert vars(player)["_resume_task"] is None
+    with (
+        patch("music_assistant.providers.airplay.player.time.monotonic", return_value=now + 31.0),
+        patch(_NO_DELAYS, (60,)),
+    ):
+        player.schedule_solo_resume("q1")
+        task = player._resume_task
+        assert task is not None
+        player.cancel_recovery()
+        assert vars(player)["_resume_task"] is None
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+    with patch.object(AirPlayPlayer, "update_state"):
+        await player.stop()
+    assert player._last_solo_resume_at is None
+
+
+@pytest.mark.asyncio
+async def test_solo_resume_exhausts_attempts_and_logs_warning() -> None:
+    """Exhausting all solo resume attempts logs a final warning and clears _resume_task."""
+    player = _make_idle_player()
+    _configure_solo_resume_mocks(player)
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.resume = AsyncMock(side_effect=PlayerCommandFailed("still offline"))
+    mass.create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
+
+    with patch(_NO_DELAYS, (0, 0)):
+        player.schedule_solo_resume("q1")
+        assert player._resume_task is not None
+        await player._resume_task
+    assert vars(player)["_resume_task"] is None
+    assert player._last_solo_resume_at is None
+    assert mass.player_queues.resume.await_count == 2
+    warning_calls = cast("MagicMock", player.logger).warning.call_args_list
+    assert any("Giving up on automatic resume" in call.args[0] for call in warning_calls)
+
+
+def test_get_resumable_solo_queue_id_guards() -> None:
+    """get_resumable_solo_queue_id rejects paused players, groups, and halted queues."""
+    player = _make_idle_player()
+    queue, queue_data = _configure_solo_resume_mocks(player)
+    assert player.player is not None
+    parent = cast("MagicMock", player.player)
+    parent.playback_state = PlaybackState.PLAYING
+    player._attr_playback_state = PlaybackState.PLAYING
+    queue.state = PlaybackState.PLAYING
+
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.PLAYING) == "q1"
+
+    player._attr_playback_state = PlaybackState.PAUSED
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.PLAYING) is None
+
+    player._attr_playback_state = PlaybackState.PLAYING
+    parent.active_group = "ugp_living_room"
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.PLAYING) is None
+
+    parent.active_group = None
+    parent.own_protocol = MagicMock()
+    parent.active_output_protocol = "native"
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.PLAYING) is None
+
+    parent.own_protocol = player
+    queue_data.halted_by_command = True
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.PLAYING) is None
+
+    # During backoff (expected_state=IDLE), tolerate lagging queue.state == PLAYING (debounce)
+    # while rejecting explicitly PAUSED queues.
+    queue_data.halted_by_command = False
+    player._attr_playback_state = PlaybackState.IDLE
+    parent.playback_state = PlaybackState.IDLE
+    queue.state = PlaybackState.PLAYING
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.IDLE) == "q1"
+
+    queue.state = PlaybackState.PAUSED
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.IDLE) is None
+
+    queue.state = PlaybackState.IDLE
+    parent.powered = None
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.IDLE) == "q1"
+
+    queue.ended = True
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.IDLE) is None
+    queue.ended = False
+
+    parent.active_source = "spotify_connect"
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.IDLE) is None
+    parent.active_source = "q1"
+
+    parent.playback_state = PlaybackState.PLAYING
+    assert player.get_resumable_solo_queue_id(expected_state=PlaybackState.IDLE) is None
+
+
+@pytest.mark.asyncio
+async def test_solo_resume_through_real_session_start_does_not_self_cancel() -> None:
+    """AirPlayStreamSession.start() TaskGroup children must not cancel the parent _resume_task."""
+    from music_assistant.providers.airplay.stream_session import (  # noqa: PLC0415
+        AirPlayStreamSession,
+    )
+
+    player = _make_idle_player()
+    _configure_solo_resume_mocks(player)
+    player.config.get_value = MagicMock(return_value=0)  # type: ignore[method-assign]
+    pcm_format = MagicMock(sample_rate=44100, bit_depth=16, channels=2, pcm_sample_size=4)
+    media = MagicMock(elapsed_time=0, source_id=None, queue_session_id=None)
+    session = AirPlayStreamSession(cast("Any", player.provider), [player], pcm_format, media)
+
+    async def _resume(_queue_id: str, fade_in: bool | None = None) -> None:
+        assert fade_in is True
+        fake_stream = MagicMock(
+            running=True,
+            connect=AsyncMock(),
+            start=AsyncMock(),
+            wait_for_connection=AsyncMock(),
+            stop=AsyncMock(),
+        )
+        with (
+            patch(
+                "music_assistant.providers.airplay.stream_session.AirPlayStream",
+                return_value=fake_stream,
+            ),
+            patch.object(session, "_start_player_ffmpeg", AsyncMock()),
+            patch.object(session, "_audio_streamer", AsyncMock()),
+            patch.object(session, "_wait_members_audio_present", AsyncMock()),
+            patch.object(session, "_wait_members_clock_ready", AsyncMock(return_value=1000)),
+            patch.object(session, "_seat_member_anchors", AsyncMock(return_value={})),
+            patch.object(session, "_start_members", AsyncMock()),
+        ):
+            await session.start(MagicMock())
+
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.resume = AsyncMock(side_effect=_resume)
+    mass.create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
+
+    with patch(_NO_DELAYS, (0,)):
+        player.schedule_solo_resume("q1")
+        assert player._resume_task is not None
+        await player._resume_task
+
+    assert player.stream is not None
+    assert player.stream.running is True
+    assert player._last_solo_resume_at is not None
+
+
+@pytest.mark.asyncio
+async def test_solo_resume_propagates_unexpected_programming_error() -> None:
+    """Unexpected non-playback exceptions propagate instead of being retried."""
+    player = _make_idle_player()
+    _configure_solo_resume_mocks(player)
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.resume = AsyncMock(side_effect=TypeError("unexpected bug"))
+    mass.create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
+
+    with patch(_NO_DELAYS, (0, 0)):
+        player.schedule_solo_resume("q1")
+        assert player._resume_task is not None
+        with pytest.raises(TypeError, match="unexpected bug"):
+            await player._resume_task
+    assert mass.player_queues.resume.await_count == 1
+
+
 # --- Group membership and the leader's stream session ---
 
 

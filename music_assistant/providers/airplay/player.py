@@ -22,7 +22,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProtocolRole,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerOptionValueType
 from music_assistant_models.unique_list import UniqueList
@@ -46,6 +46,7 @@ from .constants import (
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
+    AIRPLAY_SOLO_RESUME_GUARD_SECONDS,
     AIRPLAY_VOLUME_ECHO_GRACE_S,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
@@ -152,6 +153,8 @@ class AirPlayPlayer(PlayerProtocol):
         # set when the _airplay._tcp record said goodbye, until a fresh one arrives
         self._airplay_record_gone = False
         self._rejoin_task: asyncio.Task[None] | None = None
+        self._resume_task: asyncio.Task[None] | None = None
+        self._last_solo_resume_at: float | None = None
         # Set (static) player attributes
         self._attr_name = display_name
         self._attr_available = True
@@ -705,8 +708,9 @@ class AirPlayPlayer(PlayerProtocol):
     async def stop(self) -> None:
         """Send STOP command to player."""
         # an explicit stop (including power-off routed as stop) is user intent:
-        # drop any pending automatic re-join
-        self.cancel_group_rejoin()
+        # drop any pending automatic re-join or solo resume
+        self.cancel_recovery()
+        self._last_solo_resume_at = None
         async with self._lock:
             # forward stop to the entire stream session, also one a stopped stream was part of
             if session := self.session or next(
@@ -733,6 +737,7 @@ class AirPlayPlayer(PlayerProtocol):
 
     async def play(self) -> None:
         """Handle PLAY (unpause) command on the player."""
+        self.cancel_recovery()
         session = self.session
         if self.group_members or self.synced_to or (session and session.parked):
             # Grouped pause parks the whole session (standby); unpausing one
@@ -761,6 +766,7 @@ class AirPlayPlayer(PlayerProtocol):
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
+        self.cancel_recovery()
         # a set plays in a session of its speakers, which parks like a group
         if self.group_members or self.synced_to or self.carries_set:
             # A broadcast pause cannot keep independent member processes
@@ -783,10 +789,12 @@ class AirPlayPlayer(PlayerProtocol):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        # the player is being (re)purposed on purpose: drop any pending
-        # automatic re-join left over from an unexpected stream loss
-        self.cancel_group_rejoin()
         async with self._lock:
+            # the player is being (re)purposed on purpose: drop any pending
+            # automatic re-join or solo resume left over from an unexpected stream loss
+            self.cancel_recovery()
+            if self._resume_task is not asyncio.current_task():
+                self._last_solo_resume_at = None
             if self.synced_to:
                 # this should not happen, but guard anyways
                 raise RuntimeError("Player is synced")
@@ -929,6 +937,7 @@ class AirPlayPlayer(PlayerProtocol):
         :param player_ids_to_remove: Protocol ids of the AirPlay players to remove.
         """
         async with self._lock:
+            self.cancel_recovery()
             if self.synced_to:
                 # this should not happen, but guard anyways
                 raise RuntimeError("Player is synced, cannot set members")
@@ -1020,6 +1029,8 @@ class AirPlayPlayer(PlayerProtocol):
 
                 # add new child to the existing stream (RAOP or AirPlay2) session (if any)
                 self._attr_group_members.append(protocol_id)
+                if child_player_to_add is not None:
+                    child_player_to_add.cancel_recovery()
                 if stream_session and child_player_to_add is not None:
                     # Skip add_client if the player is already streaming in this session
                     # (e.g. after a dynamic leader switch where the stream continues).
@@ -1276,7 +1287,7 @@ class AirPlayPlayer(PlayerProtocol):
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
         await super().on_detach()
-        self.cancel_group_rejoin()
+        self.cancel_recovery()
         if session := self.session:
             # remove this player from the stream session if it is running
             for endpoint in self.session_endpoints:
@@ -1314,7 +1325,7 @@ class AirPlayPlayer(PlayerProtocol):
             the group at the moment the stream was lost, used to resolve the re-join
             target (the leadership may transfer while the backoff runs).
         """
-        self.cancel_group_rejoin()
+        self.cancel_recovery()
         if self.player is not None and self.player.offline_by_power_control:
             return
         self.logger.info(
@@ -1335,6 +1346,107 @@ class AirPlayPlayer(PlayerProtocol):
         self._rejoin_task = None
         if not rejoin_task.done():
             rejoin_task.cancel()
+
+    def schedule_solo_resume(self, queue_id: str) -> None:
+        """
+        Schedule a bounded automatic queue resume after unexpected solo stream loss.
+
+        Used when a solo AirPlay player's stream process dies unexpectedly while
+        playing a queue (e.g. a transient RAOP control/media channel failure):
+        resumes the active queue after a short backoff unless the player was
+        repurposed, became unavailable, or the queue was stopped/ended.
+
+        :param queue_id: Queue id that was actively playing when the stream died.
+        """
+        if self._resume_task is not None and not self._resume_task.done():
+            return
+        now = time.monotonic()
+        if (
+            self._last_solo_resume_at is not None
+            and (now - self._last_solo_resume_at) < AIRPLAY_SOLO_RESUME_GUARD_SECONDS
+        ):
+            self.logger.warning(
+                "Skipping automatic resume for %s (queue %s): repeated stream loss within %.0fs guard window",
+                self.display_name,
+                queue_id,
+                AIRPLAY_SOLO_RESUME_GUARD_SECONDS,
+            )
+            return
+        self.cancel_recovery()
+        self.logger.info(
+            "Scheduling automatic resume of %s (queue %s) after unexpected stream loss",
+            self.display_name,
+            queue_id,
+        )
+        self._resume_task = self.mass.create_task(self._solo_resume_attempts(queue_id))
+
+    def cancel_solo_resume(self) -> None:
+        """Cancel any pending automatic solo resume attempts for this player."""
+        resume_task = self._resume_task
+        if resume_task is None or resume_task is asyncio.current_task():
+            return
+        self._resume_task = None
+        if not resume_task.done():
+            resume_task.cancel()
+
+    def cancel_recovery(self) -> None:
+        """Cancel any pending automatic group re-join or solo resume attempts."""
+        self.cancel_group_rejoin()
+        self.cancel_solo_resume()
+
+    def get_resumable_solo_queue_id(self, *, expected_state: PlaybackState) -> str | None:
+        """Return the queue id if this solo AirPlay player is eligible for auto-resume."""
+        if (
+            self.group_members
+            or self.synced_to
+            or self.playback_state != expected_state
+            or (expected_state == PlaybackState.IDLE and self.stream and self.stream.running)
+        ):
+            return None
+        parent = self.player
+        if (
+            not self.available
+            or parent is None
+            or not parent.enabled
+            or not parent.available
+            or parent.powered is False
+            or parent.offline_by_power_control
+        ):
+            return None
+        active_output = parent.active_output_protocol
+        output_is_self = (
+            active_output == self.protocol_id
+            or (active_output == "native" and parent.own_protocol is self)
+            or (active_output is None and parent.own_protocol in (None, self))
+        )
+        if (
+            parent.synced_to
+            or parent.active_group
+            or parent.group_members
+            or parent.playback_state != expected_state
+            or not output_is_self
+        ):
+            return None
+        queue = self.mass.player_queues.get(parent.player_id)
+        if queue is None:
+            return None
+        queue_state_ok = (
+            queue.state == PlaybackState.PLAYING
+            if expected_state == PlaybackState.PLAYING
+            else queue.state != PlaybackState.PAUSED
+        )
+        if (
+            parent.active_source not in (queue.queue_id, None)
+            or not queue.active
+            or queue.ended
+            or queue.current_item is None
+            or not queue_state_ok
+        ):
+            return None
+        queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
+        if queue_data is None or queue_data.halted_by_command or queue_data.session_id is None:
+            return None
+        return queue.queue_id
 
     def on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
@@ -1734,6 +1846,58 @@ class AirPlayPlayer(PlayerProtocol):
             if client := cast("AirPlayPlayer | None", self.provider.get_protocol(child_id)):
                 sync_clients.append(client)
         return sync_clients
+
+    async def _solo_resume_attempts(self, queue_id: str) -> None:
+        """Resume this solo player's active queue after a bounded backoff."""
+        max_attempts = len(AIRPLAY_REJOIN_ATTEMPT_DELAYS)
+        try:
+            for attempt, delay in enumerate(AIRPLAY_REJOIN_ATTEMPT_DELAYS, start=1):
+                await asyncio.sleep(delay)
+                if self.get_resumable_solo_queue_id(expected_state=PlaybackState.IDLE) != queue_id:
+                    return
+                if await self._attempt_solo_resume(queue_id, attempt, max_attempts):
+                    return
+            self.logger.warning(
+                "Giving up on automatic resume for %s (queue %s) after %d attempt(s); "
+                "the player stays idle",
+                self.display_name,
+                queue_id,
+                max_attempts,
+            )
+        finally:
+            if self._resume_task is asyncio.current_task():
+                self._resume_task = None
+
+    async def _attempt_solo_resume(self, queue_id: str, attempt: int, max_attempts: int) -> bool:
+        """Execute one solo resume attempt and return True if playback is running."""
+        try:
+            # Fade in on automatic recovery so playback does not snap back at full volume.
+            await self.mass.player_queues.resume(queue_id, fade_in=True)
+        except (PlayerCommandFailed, PlayerUnavailableError, TimeoutError, OSError) as err:
+            self.logger.warning(
+                "Automatic resume of %s (queue %s) failed (attempt %d/%d): %s",
+                self.display_name,
+                queue_id,
+                attempt,
+                max_attempts,
+                err,
+            )
+            return False
+        if self.stream and self.stream.running:
+            self._last_solo_resume_at = time.monotonic()
+            self.logger.info(
+                "Automatically resumed %s (queue %s) after unexpected stream loss",
+                self.display_name,
+                queue_id,
+            )
+            return True
+        self.logger.warning(
+            "Automatic resume of %s did not produce a running stream (attempt %d/%d)",
+            self.display_name,
+            attempt,
+            max_attempts,
+        )
+        return False
 
     async def _group_rejoin_attempts(self, candidate_ids: list[str]) -> None:
         """Re-join this player to its group's live session after a bounded backoff."""

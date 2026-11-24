@@ -286,6 +286,7 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # that the group still plays and the player was not repurposed meanwhile, and
 # the whole schedule is abandoned as soon as either no longer holds.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
+AIRPLAY_SOLO_RESUME_GUARD_SECONDS: Final[float] = 30.0
 # Seconds before the one re-add of the Apple TV of a set that left the session of its
 # speakers: a session opened 5 s after the Apple TV reset one stayed up (measured).
 AIRPLAY_SILENT_MEMBER_REJOIN_DELAY: Final[int] = 5
