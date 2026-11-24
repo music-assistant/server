@@ -896,13 +896,9 @@ async def test_reopened_stream_leaves_paused_playback_alone(session_active: bool
     # the same selection the provider streamed before
     daemon.streamed_playback_session_id = "pb1"
     _source_session(mass, "queue1", "pb1")
-    mass.players.cmd_stop = AsyncMock()
 
     await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess2")
-    await asyncio.sleep(0)
 
-    # stopped, as it would keep reopening the silent stream
-    mass.players.cmd_stop.assert_awaited_once_with("queue1")
     assert daemon.playing is False
     assert backend.calls == []
     assert daemon.in_use_by_player is None
@@ -1255,6 +1251,65 @@ async def test_playing_cancels_pending_pause_stop() -> None:
         await task
     assert task.cancelled()
     assert stopped == []  # the stale stop never reached the player
+
+
+@pytest.mark.parametrize("stop_seconds", [0, 3600], ids=["stop_done", "stop_in_flight"])
+async def test_resume_before_the_stopped_stream_ends_restarts_playback(
+    monkeypatch: pytest.MonkeyPatch, stop_seconds: int
+) -> None:
+    """A quick resume starts playback anew; the late end of the old stream releases nothing."""
+    monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0)
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        active_player_id="queue1",
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+    )
+
+    async def _cmd_stop(_player_id: str) -> None:
+        await asyncio.sleep(stop_seconds)
+
+    mass.players.cmd_stop = _cmd_stop
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess1")
+    task = daemon.pending_play_media_task
+    assert task is not None
+    await task
+
+    assert ("deactivate", None) not in backend.calls
+    mass.player_queues.play_media.assert_awaited_once_with("queue1", _SOURCE_URI)
+
+
+async def test_released_source_cancels_pending_pause_stop() -> None:
+    """A player that moved on to something else is not stopped by a pause from before."""
+    provider, daemon, mass = _make_provider(
+        FakeBackend(), playing=True, session_active=True, active_player_id="queue1"
+    )
+    stopped: list[str] = []
+    lock = asyncio.Lock()
+    await lock.acquire()
+
+    async def _cmd_stop(player_id: str) -> None:
+        async with lock:
+            stopped.append(player_id)
+
+    mass.players.cmd_stop = _cmd_stop
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
+    await asyncio.sleep(0)
+    await provider.on_source_released(_PLAYER_ID, "queue1")
+    lock.release()
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert stopped == []
 
 
 async def test_paused_replaces_pending_pause_stop() -> None:
