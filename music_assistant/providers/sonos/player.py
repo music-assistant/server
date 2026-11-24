@@ -799,12 +799,16 @@ class SonosPlayer(PlayerProtocol):
             self._queue_session_id = None
             self._flow_queue_id = None
             self.cloud_queue_id = media.source_id
-            self._loaded_session_id = media.queue_session_id
+
+            def _load_starts(_sonos_session_id: str) -> None:
+                self._loaded_session_id = media.queue_session_id
+
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.protocol_id}/v2.3/"
             try:
                 await self.group_controller.play_cloud_queue(
                     cloud_queue_url,
                     item_id=self.wire_item_id(media.queue_item_id),
+                    on_session=_load_starts,
                 )
             except (Exception, asyncio.CancelledError) as err:
                 self._settle_failed_load(err, media.source_id, previous_queue_id)

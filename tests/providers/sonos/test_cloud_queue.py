@@ -111,11 +111,19 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
 
 
 def _loads_into_a_session(
-    group: MagicMock, on_load: Callable[..., Awaitable[None]] | None = None
+    group: MagicMock,
+    on_load: Callable[..., Awaitable[None]] | None = None,
+    on_setup: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Let a mocked group load a cloud queue into a session of its own, as the speaker does."""
 
-    async def _play_cloud_queue(*args: object, **kwargs: object) -> None:
+    async def _play_cloud_queue(
+        *args: object, on_session: Callable[[str], None] | None = None, **kwargs: object
+    ) -> None:
+        if on_setup is not None:
+            await on_setup()
+        if on_session is not None:
+            on_session("loaded-session")
         if on_load is not None:
             await on_load(*args, **kwargs)
         group.active_session_id = "loaded-session"
@@ -490,7 +498,7 @@ async def test_a_window_asked_ahead_of_a_load_addresses_the_loaded_session(repla
 
 
 async def test_a_load_addresses_the_session_it_loads() -> None:
-    """Test the window a speaker reads for its load holds the items of the new session."""
+    """Test a window holds the items of the new session from the load on, not while it is set up."""
     player = _make_player_on_real_queues(3, RepeatMode.OFF)
     cast("AsyncMock", player.mass.streams.resolve_stream_url).side_effect = (
         lambda _player_id, media, queue_index: f"{media.queue_session_id}/{queue_index}"
@@ -500,10 +508,13 @@ async def test_a_load_addresses_the_session_it_loads() -> None:
     client.player.is_passive = False
     served: list[SonosQueueWindow] = []
 
-    async def _play_cloud_queue(*_args: object, item_id: str, **_kwargs: object) -> None:
+    async def _read_window_for_load(*_args: object, item_id: str, **_kwargs: object) -> None:
         served.append(await player.build_cloud_queue_window(item_id))
 
-    _loads_into_a_session(client.player.group, _play_cloud_queue)
+    async def _read_window_during_setup() -> None:
+        served.append(await player.build_cloud_queue_window("track0@0"))
+
+    _loads_into_a_session(client.player.group, _read_window_for_load, _read_window_during_setup)
     player.client = client
 
     with pytest.MonkeyPatch.context() as patch:
@@ -518,7 +529,9 @@ async def test_a_load_addresses_the_session_it_loads() -> None:
             )
         )
 
-    assert [x.uri for x in served[0].items] == [f"next-session/{i}" for i in range(3)]
+    during_setup, for_load = served
+    assert [x.uri for x in during_setup.items] == [f"session/{i}" for i in range(3)]
+    assert [x.uri for x in for_load.items] == [f"next-session/{i}" for i in range(3)]
 
 
 async def test_unavailable_items_are_left_out() -> None:
