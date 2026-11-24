@@ -1114,8 +1114,10 @@ class TestLeaderLost:
         :param fed: Ids of the members the session feeds.
         :param domain: The domain of the protocol that carries the session.
         """
-        for name in ("b", "c"):
-            _protocol(members[name], domain).live_session = (
+        for name, member in members.items():
+            if name == "a":
+                continue
+            _protocol(member, domain).live_session = (
                 [f"{domain}_{x}" for x in fed] if name in fed else []
             )
 
@@ -1213,6 +1215,36 @@ class TestLeaderLost:
                 changes.assert_awaited_once_with(player_ids_to_add=added)
             else:
                 changes.assert_not_awaited()
+
+    async def test_a_member_lost_while_it_takes_the_lead_does_not_lead(self) -> None:
+        """The next member that is still heard leads, and the session is handed to it."""
+        mass, sgp, members = self._playing_group()
+        for name in ("c", "d"):
+            # put back into the session, so the lead has to switch its output first
+            members[name] = _make_member(mass, name, "sonos", audio=["airplay"])
+            _protocol(members[name], "airplay").set_members = AsyncMock()  # type: ignore[method-assign]
+        members["e"] = _make_member(mass, "e", None, audio=["airplay"], active_output="airplay")
+        sgp._attr_group_members = list(members)
+        self._feed(members, "b", "c", "d", "e")
+        lost = _protocol(members["a"], "airplay")
+
+        async def _step_out(**_kwargs: Any) -> None:
+            self._feed(members, "c", "d", "e")
+
+        async def _activate(player: Player, _protocol_id: str) -> None:
+            if player is members["c"]:
+                self._feed(members, "d", "e")
+
+        lost.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+        mass.players._activate_output_protocol.side_effect = _activate
+
+        assert await sgp.on_session_leader_lost(lost)
+
+        assert sgp.sync_leader is members["d"]
+        _member_changes(_protocol(members["c"], "airplay")).assert_not_awaited()
+        _member_changes(_protocol(members["d"], "airplay")).assert_awaited_once_with(
+            player_ids_to_add=["airplay_e"]
+        )
 
     async def test_a_handover_that_finds_nobody_left_is_none(
         self, caplog: pytest.LogCaptureFixture

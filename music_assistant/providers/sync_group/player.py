@@ -1671,10 +1671,9 @@ class SyncGroupPlayer(PlayerProtocol):
         # last in line to lead again
         self._attr_group_members.sort(key=lambda x: x == old_leader.player_id)
         await session.set_members(player_ids_to_remove=[session.protocol_id])
-        # that can take a while, and what cost the leader its stream may have hit more members:
-        # go by who is fed now, and leave the others to their own return
-        live_ids = self._still_live(live_ids)
-        if target.protocol_id not in live_ids:
+        # each step can take a while, and what cost the leader its stream may have hit more
+        # members: go by who is fed now, and leave the others to their own return
+        while target.protocol_id not in (live_ids := self._still_live(live_ids)):
             if target.player is not None:
                 self.mass.players.schedule_active_output_protocol_clear(target.player)
             target = await self._elect_live_leader(old_leader, live_ids, domain)
