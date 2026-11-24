@@ -22,7 +22,11 @@ from pychromecast.error import NotConnected
 
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
 from music_assistant.providers.chromecast.constants import SENDSPIN_CAST_APP_ID
-from music_assistant.providers.chromecast.sendspin_bridge import SendspinChromecastBridge
+from music_assistant.providers.chromecast.sendspin_bridge import (
+    SendspinCastController,
+    SendspinChromecastBridge,
+)
+from tests.common import collect_loop_errors
 
 
 def _make_bridge(
@@ -219,14 +223,109 @@ async def test_stream_start_right_after_connected_does_not_relaunch() -> None:
     bridge, _ = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=False)
     launches = _block_launches(bridge)
 
-    ready = bridge.reset_cast_app_ready()
+    bridge.reset_cast_app_ready()
     # the app reports connected just before the Sendspin server sees its connection
     bridge._mark_cast_app_connected()
     bridge._on_stream_start(MagicMock())
     await asyncio.sleep(0)
 
-    assert ready.done()
     assert launches == []
+
+
+async def test_connected_app_is_ready_once_its_clock_is_synchronized() -> None:
+    """A connected app is waited for until it can play the audio it receives."""
+    bridge, client = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=False)
+    ready = bridge.reset_cast_app_ready()
+
+    bridge._mark_cast_app_connected()
+    client.is_connected = True
+    await asyncio.sleep(0)
+    assert not ready.done()
+
+    bridge._on_cast_synced()
+    await asyncio.sleep(0)
+    assert ready.done()
+    assert ready.exception() is None
+
+
+async def test_synchronized_report_of_an_app_without_connection_does_not_count() -> None:
+    """An app whose connection is gone is not ready, whatever it reports itself."""
+    bridge, _ = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=False)
+    ready = bridge.reset_cast_app_ready()
+
+    bridge._on_cast_synced()
+    await asyncio.sleep(0)
+
+    assert not ready.done()
+
+
+async def test_app_that_never_reports_synchronized_is_ready_after_a_while() -> None:
+    """A connected app that does not report its clock is not waited for indefinitely."""
+    bridge, _ = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=False)
+    ready = bridge.reset_cast_app_ready()
+
+    with patch.object(bridge_module, "CAST_APP_SYNC_TIMEOUT", 0.01):
+        bridge._mark_cast_app_connected()
+    assert not ready.done()
+    await asyncio.wait_for(ready, timeout=1)
+
+
+async def test_earlier_connected_report_does_not_make_a_new_launch_ready() -> None:
+    """The time given to an earlier app does not end the wait for its successor."""
+    bridge, _ = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=False)
+    replaced = bridge.reset_cast_app_ready()
+    with patch.object(bridge_module, "CAST_APP_SYNC_TIMEOUT", 0.01):
+        bridge._mark_cast_app_connected()
+
+    ready = bridge.reset_cast_app_ready()
+    with collect_loop_errors() as reported:
+        await asyncio.sleep(0.05)
+
+    assert replaced.cancelled()
+    assert not ready.done()
+    assert reported == []
+
+
+async def test_started_bridge_gets_ready_from_the_reports_of_its_app() -> None:
+    """The reports the Cast app sends to a started bridge make it ready."""
+    bridge, client = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=False)
+    bridge.sendspin_server.register_external_player.return_value = client  # type: ignore[attr-defined]
+    client.roles_by_family.return_value = []
+    with patch.object(bridge_module, "_build_bridge_hello"):
+        await bridge.start()
+    controller = bridge._log_controller
+    assert controller is not None
+    ready = bridge.reset_cast_app_ready()
+
+    controller.receive_message(MagicMock(), {"type": "status", "state": "connected"})
+    client.is_connected = True
+    controller.receive_message(
+        MagicMock(), {"type": "status", "state": "stopped", "sync": {"synced": True}}
+    )
+
+    await asyncio.wait_for(ready, timeout=1)
+
+
+@pytest.mark.parametrize(
+    ("status", "reported"),
+    [
+        ({"state": "stopped", "sync": {"synced": True, "offset": 3}}, True),
+        ({"state": "playing", "sync": {"synced": True}}, True),
+        ({"state": "stopped", "sync": {"synced": False, "offset": 0}}, False),
+        ({"state": "connected", "message": "Ready to play"}, False),
+        ({"state": "stopped", "volume": 35}, False),
+    ],
+)
+def test_status_reports_the_synchronized_clock(status: dict[str, Any], reported: bool) -> None:
+    """The Cast app's status tells whether its clock is synchronized."""
+    on_synced = MagicMock()
+    controller = SendspinCastController(
+        logging.getLogger("test.cast_bridge"), on_cast_synced=on_synced
+    )
+
+    assert controller.receive_message(MagicMock(), {"type": "status", **status})
+
+    assert on_synced.called is reported
 
 
 async def test_running_app_that_lost_its_connection_is_launched_again() -> None:
