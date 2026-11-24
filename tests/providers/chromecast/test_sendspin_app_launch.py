@@ -115,5 +115,5 @@ async def test_accepted_launch_sends_the_config() -> None:
 
     assert [message["type"] for message in sent_messages] == ["config"]
     assert bridge._cast_app_was_active is True
-    # readiness comes from the app's own "connected" status, not from the launch
+    # readiness comes from the app's own status reports, not from the launch
     assert not ready.done()
