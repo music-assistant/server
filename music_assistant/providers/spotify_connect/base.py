@@ -105,6 +105,16 @@ class SpotifyConnectBackend(ABC):
         """Return the decoded PCM format the audio reader actually delivers."""
 
     @property
+    def stream_ends_on_pause(self) -> bool:
+        """
+        Whether the audio stream reaches a clean end when playback pauses.
+
+        A backend returning False never reaches one; the provider then also stops the
+        player actively when playback stopped instead of paused.
+        """
+        return True
+
+    @property
     def supports_queue_control(self) -> bool:
         """
         Whether the backend implements the queue-session verbs.

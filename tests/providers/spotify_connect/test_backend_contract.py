@@ -896,9 +896,13 @@ async def test_reopened_stream_leaves_paused_playback_alone(session_active: bool
     # the same selection the provider streamed before
     daemon.streamed_playback_session_id = "pb1"
     _source_session(mass, "queue1", "pb1")
+    mass.players.cmd_stop = AsyncMock()
 
     await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess2")
+    await asyncio.sleep(0)
 
+    # stopped, as it would keep reopening the silent stream
+    mass.players.cmd_stop.assert_awaited_once_with("queue1")
     assert daemon.playing is False
     assert backend.calls == []
     assert daemon.in_use_by_player is None
@@ -1149,6 +1153,36 @@ def test_translate_event_volume_without_value_is_other() -> None:
     event = _make_backend()._translate_event("volume", {"max": 100})
     assert event.type is BackendEventType.OTHER
     assert event.volume is None
+
+
+@pytest.mark.parametrize(
+    ("stream_ends", "stopped_players"),
+    [(True, []), (False, ["player-1"])],
+    ids=["ending_stream_plays_out", "endless_stream_is_stopped"],
+)
+async def test_stopped_only_stops_player_when_stream_does_not_end(
+    stream_ends: bool, stopped_players: list[str]
+) -> None:
+    """The end of what Spotify plays leaves the player its buffered audio."""
+
+    class _Backend(FakeBackend):
+        @property
+        def stream_ends_on_pause(self) -> bool:
+            return stream_ends
+
+    provider, daemon, mass = _make_provider(_Backend(), playing=True, active_player_id="player-1")
+    stopped: list[str] = []
+
+    async def _cmd_stop(player_id: str) -> None:
+        stopped.append(player_id)
+
+    mass.players.cmd_stop = _cmd_stop
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.STOPPED))
+    await asyncio.sleep(0)
+
+    assert daemon.playing is False
+    assert stopped == stopped_players
 
 
 async def test_paused_stops_player() -> None:

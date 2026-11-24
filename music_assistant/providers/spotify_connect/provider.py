@@ -463,8 +463,9 @@ class SpotifyConnectProvider(PluginProvider):
         # A second stream request for the same selection is the renderer reopening its
         # stream on its own, as Sonos does with a radio stream. While Spotify is paused it
         # gets the silent stream but no claim: it must not resume or take back playback,
-        # and its teardown must not release anything. Every selection from MA starts a new
-        # playback session. Read before any await, while the session is still this one.
+        # and its teardown must not release anything. The player is stopped, or it would
+        # keep reopening. Every selection from MA starts a new playback session. Read
+        # before any await, while the session is still the one this request is for.
         source_session = self.mass.players.get_audio_source_session(owner_player_id)
         playback_session_id = source_session.playback_session_id if source_session else None
         reopened = (
@@ -475,6 +476,8 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.debug(
                 "Not resuming Spotify for %s: the player reopened its stream", active_player_id
             )
+            if daemon.pending_pause_stop_task is None:
+                self._schedule_pause_stop(daemon, active_player_id)
             return
 
         # Claim ownership for this queue BEFORE kicking the previous player: the
@@ -978,7 +981,7 @@ class SpotifyConnectProvider(PluginProvider):
 
     async def _stop_paused_player(self, player_id: str) -> None:
         """
-        Stop the active player after a pause.
+        Stop a player that consumes the live source while Spotify is paused.
 
         :param player_id: The player currently consuming the live source.
         """
@@ -1189,14 +1192,25 @@ class SpotifyConnectProvider(PluginProvider):
             was_playing = daemon.playing
             daemon.set_playing(False)
             # A pause/stop is the definitive "don't start": cancel a deferred fire
-            # from a now-stale 'playing'.
+            # from a now-stale 'playing'. On a backend whose stream ends on pause the
+            # active get_audio_stream sees the PCM stop and ends the stream (clean
+            # EOF), so the player leaves the playing state and the next 'playing'
+            # event re-fires play_media to resume.
             self._cancel_pending_play_media(daemon)
-            # The player is stopped actively, also when the stream ends on its own:
-            # a renderer may reopen an ended stream (Sonos plays the source as a radio
-            # stream). The active player is kept, so the next 'playing' event resumes
-            # playback on it. Only the playing→paused transition fires it: the backend
-            # reports a pause through multiple events (state delta + snapshot).
-            if was_playing and (player_id := daemon.active_player_id):
+            # A pause must be heard at once, so it stops the player. A 'stopped' (the last
+            # track ended, or go-librespot moving on to autoplay) leaves a stream that ends
+            # by itself to play out what the player buffered; a backend without a stream
+            # end never signals EOF, so there the player must be stopped actively. The
+            # active player is kept, so the next 'playing' event resumes playback on it.
+            # Only the playing→paused transition fires it: the backend reports a pause
+            # through multiple events (state delta + snapshot).
+            if (
+                was_playing
+                and (
+                    event.type is BackendEventType.PAUSED or not daemon.backend.stream_ends_on_pause
+                )
+                and (player_id := daemon.active_player_id)
+            ):
                 self._schedule_pause_stop(daemon, player_id)
 
         if event.type is BackendEventType.METADATA and event.metadata is not None:
