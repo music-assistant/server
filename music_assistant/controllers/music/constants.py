@@ -43,6 +43,11 @@ LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 BROWSE_CACHE_EXPIRATION: Final[int] = 2 * 60
 # how many similar artists or tracks the providers are asked for, the size of such a listing
 SIMILAR_ITEMS_LIMIT: Final[int] = 25
+# how many results a provider search for a match returns: a match is among the best hits,
+# and a deeper search costs a provider that pages its search (such as Spotify) more requests
+MATCH_SEARCH_LIMIT: Final[int] = 10
+# how many of an artist's tracks, and of its albums, are searched for to match the artist
+MATCH_REFERENCE_LIMIT: Final[int] = 10
 
 # max time to wait for a single provider's search results before
 # contributing empty results for it, so one slow provider can never block
@@ -70,6 +75,9 @@ RECOMMENDATIONS_ROWS_TIMEOUT: Final[int] = 5
 
 # browse scheme under which every recommendation row can be opened in full
 RECOMMENDATIONS_BROWSE_SCHEME: Final[str] = "discover"
+
+# browse scheme of the folder that holds the live sources
+LIVE_SOURCES_BROWSE_SCHEME: Final[str] = "live_sources"
 
 # max items a library recommendation row returns when browsed in full,
 # instead of the handful its Discover row shows

@@ -274,6 +274,169 @@ async def test_a_paused_queue_that_is_stopped_at_the_pause_timeout_is_not_ended(
     )
 
 
+async def _pause_at_the_speaker(scenario: Scenario, speaker: FakeProtocol, seconds: float) -> None:
+    """
+    Pause the speaker at the device itself, as its own app or a remote does.
+
+    Returns once the queue of the speaker followed it.
+
+    :param seconds: Seconds of the stream the speaker played before the pause.
+    """
+    await scenario.report(
+        speaker,
+        playback_state=PlaybackState.PAUSED,
+        elapsed_time=seconds,
+        elapsed_time_last_updated=scenario.wall_time(),
+    )
+    # the queue follows its player with a short delay
+    await scenario.advance(1)
+
+
+def _pause_watchers(player_id: str) -> list[asyncio.Task[Any]]:
+    """Return the running pause watchers of the queue of a player."""
+    return [
+        task
+        for task in asyncio.all_tasks()
+        if task.get_name() == f"watch_pause_{player_id}" and not task.done()
+    ]
+
+
+async def test_a_pause_at_the_speaker_stops_its_queue_at_the_pause_timeout(
+    scenario: Scenario,
+) -> None:
+    """A queue paused at the speaker itself is stopped once the pause timeout passes."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+
+    await _pause_at_the_speaker(scenario, speaker, PLAYED_SECONDS)
+    assert _position(scenario, player_id).state == PlaybackState.PAUSED
+    # the pause timeout is 30 s
+    await scenario.advance(28)
+    assert ("stop",) not in speaker.commands
+    await scenario.advance(2)
+    assert speaker.commands[-1] == ("stop",)
+
+    await _forget_position(scenario, speaker)
+    stopped = _position(scenario, player_id)
+    assert (stopped.state, stopped.ended, stopped.current_index) == (PlaybackState.IDLE, False, 0)
+    await scenario.mass.player_queues.resume(player_id)
+    await scenario.settle()
+    resumed = _position(scenario, player_id)
+    assert resumed.state == PlaybackState.PLAYING
+    # the queue keeps the position it last saw playing, as a paused position is not trusted
+    assert resumed.elapsed_time == pytest.approx(PLAYED_SECONDS, abs=1)
+
+
+async def test_a_queue_stopped_after_a_pause_at_the_speaker_resumes_from_that_pause(
+    scenario: Scenario,
+) -> None:
+    """A queue resumes from the pause at the speaker, not from a pause command before it."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+    await scenario.mass.players.cmd_pause(player_id)
+    await scenario.advance(1)
+    # played on at the speaker, and paused there again later on
+    await scenario.report(
+        speaker,
+        playback_state=PlaybackState.PLAYING,
+        elapsed_time=PLAYED_SECONDS,
+        elapsed_time_last_updated=scenario.wall_time(),
+    )
+    await scenario.advance(2 * PLAYED_SECONDS)
+    await _pause_at_the_speaker(scenario, speaker, 3 * PLAYED_SECONDS)
+    await scenario.advance(30)
+    assert speaker.commands[-1] == ("stop",)
+    await _forget_position(scenario, speaker)
+
+    await scenario.mass.player_queues.resume(player_id)
+    await scenario.settle()
+    resumed = _position(scenario, player_id)
+    assert resumed.state == PlaybackState.PLAYING
+    assert resumed.elapsed_time == pytest.approx(3 * PLAYED_SECONDS, abs=1)
+
+
+async def test_a_queue_played_on_at_the_speaker_within_the_pause_timeout_is_not_stopped(
+    scenario: Scenario,
+) -> None:
+    """A queue that plays again before the pause timeout passes is left alone."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+
+    await _pause_at_the_speaker(scenario, speaker, PLAYED_SECONDS)
+    await scenario.advance(19)
+    await scenario.report(
+        speaker,
+        playback_state=PlaybackState.PLAYING,
+        elapsed_time=PLAYED_SECONDS,
+        elapsed_time_last_updated=scenario.wall_time(),
+    )
+    await scenario.advance(40)
+
+    assert ("stop",) not in speaker.commands
+    assert _position(scenario, player_id).state == PlaybackState.PLAYING
+    assert not _pause_watchers(player_id)
+
+
+async def test_another_source_paused_at_the_speaker_is_not_stopped(scenario: Scenario) -> None:
+    """A source that took the speaker over from the queue stays paused for as long as it is."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+
+    await scenario.report(speaker, active_source="spotify")
+    await _pause_at_the_speaker(scenario, speaker, 0)
+    await scenario.advance(60)
+
+    assert ("stop",) not in speaker.commands
+    player = scenario.player(player_id)
+    assert player is not None
+    assert (player.active_source, player.playback_state) == ("spotify", PlaybackState.PAUSED)
+    assert not _pause_watchers(player_id)
+
+
+async def test_a_source_that_takes_over_a_paused_speaker_is_not_stopped(
+    scenario: Scenario,
+) -> None:
+    """A source that takes a paused speaker over from the queue is not stopped at its timeout."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+    await _pause_at_the_speaker(scenario, speaker, PLAYED_SECONDS)
+    assert _pause_watchers(player_id)
+
+    # a paused session of another app moves onto the speaker within the pause timeout
+    await scenario.advance(10)
+    await scenario.report(speaker, active_source="spotify")
+    await scenario.advance(60)
+
+    assert ("stop",) not in speaker.commands
+    player = scenario.player(player_id)
+    assert player is not None
+    assert (player.active_source, player.playback_state) == ("spotify", PlaybackState.PAUSED)
+    assert not _pause_watchers(player_id)
+
+
+async def test_a_pause_command_is_watched_once(scenario: Scenario) -> None:
+    """The pause command and the pause its speaker reports for it share one pause watcher."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+
+    await scenario.mass.players.cmd_pause(player_id)
+    # the queue follows its player with a short delay
+    await scenario.advance(1)
+
+    assert speaker.commands[-1] == ("pause",)
+    assert _position(scenario, player_id).state == PlaybackState.PAUSED
+    assert len(_pause_watchers(player_id)) == 1
+    await scenario.advance(30)
+    assert speaker.commands[-1] == ("stop",)
+    assert speaker.commands.count(("stop",)) == 1
+
+
 async def test_a_queue_whose_pause_failed_still_ends_when_it_played_out(
     scenario: Scenario,
 ) -> None:

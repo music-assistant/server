@@ -1,7 +1,5 @@
 """Tests for the BBC Sounds provider's station, playback and on-demand handling."""
 
-from __future__ import annotations
-
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -10,15 +8,16 @@ from unittest.mock import ANY, AsyncMock, Mock
 import pytest
 from auntie_sounds.models import (
     Container,
+    Duration,
     Menu,
     MenuItem,
     Network,
     Playlist,
     Podcast,
     RadioClip,
+    RadioShow,
+    Schedule,
     ScheduleItem,
-    Segment,
-    SegmentOffset,
     Synopses,
     Titles,
 )
@@ -33,7 +32,6 @@ from music_assistant_models.media_items import (
     Radio,
     Track,
 )
-from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
@@ -48,18 +46,6 @@ def _mock(service: object) -> AsyncMock:
     """Return a client service, which the client fixture replaces with a mock, as that mock."""
     assert isinstance(service, AsyncMock)
     return service
-
-
-def _segment() -> Segment:
-    """Build a track that plays for the first minute of a programme."""
-    return Segment(
-        id="segment",
-        segment_type="music",
-        uris=[],
-        titles=Titles(primary="Artist", secondary="Song"),
-        image_url="https://example.com/song.jpg",
-        offset=SegmentOffset(start=0, end=60),
-    )
 
 
 def _open_radio_four(provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
@@ -183,7 +169,7 @@ class TestOnDemandEpisodes:
 
     @pytest.mark.usefixtures("cache_tasks")
     async def test_radio_clip_is_returned_as_an_episode(self, provider: BBCSoundsProvider) -> None:
-        """Test a clip listed as a podcast episode can be looked up, keeping its own name."""
+        """Test a clip listed as a podcast episode can be looked up, named with its programme."""
         _mock(provider.client.content).get_by_pid.return_value = RadioClip(
             id="vpid",
             pid="clip_pid",
@@ -203,7 +189,41 @@ class TestOnDemandEpisodes:
         episode = await provider.get_podcast_episode("clip_pid")
 
         assert type(episode) is PodcastEpisode
-        assert episode.name == "Clip title"
+        assert episode.name == "Podcast • Clip title"
+
+    @pytest.mark.usefixtures("cache_tasks")
+    async def test_radio_show_keeps_the_date_it_was_broadcast(
+        self, provider: BBCSoundsProvider
+    ) -> None:
+        """Test a show played from a schedule is named with its broadcast date."""
+
+        def show(start: datetime | None = None, end: datetime | None = None) -> RadioShow:
+            return RadioShow(
+                id="vpid",
+                pid="show_pid",
+                titles=Titles(primary="Today", secondary="Business news"),
+                duration=Duration(label="", value=3600),
+                container=Podcast(id="brand_pid", title="Today", titles=Titles(primary="Today")),
+                start=start,
+                end=end,
+            )
+
+        # 05:30 UTC is 06:30 in the UK in October
+        start = datetime(2026, 10, 12, 5, 30, tzinfo=UTC)
+        end = datetime(2026, 10, 12, 6, 30, tzinfo=UTC)
+        _mock(provider.client.schedules).get_schedule.return_value = Schedule(
+            id="schedule", sub_items=[show(start, end)]
+        )
+        await provider.browse_manager.browse(
+            f"{provider.instance_id}://schedules/{RADIO_FOUR_SERVICE_ID}/2026-10-12"
+        )
+        aired_show = show()
+        _mock(provider.client.content).get_by_pid.return_value = aired_show
+
+        episode = await provider.get_podcast_episode("show_pid")
+
+        assert episode.name == "Today • Business news · 12 Oct 2026"
+        assert (aired_show.start, aired_show.end) == (start, end)
 
     @pytest.mark.usefixtures("cache_tasks")
     async def test_other_types_are_rejected(self, provider: BBCSoundsProvider) -> None:
@@ -212,63 +232,6 @@ class TestOnDemandEpisodes:
 
         with pytest.raises(Exception, match="Unexpected type Container for episode pid"):
             await provider.get_podcast_episode("pid")
-
-
-class TestProgrammeSegments:
-    """Tests for the songs played in an on-demand programme."""
-
-    async def test_cache_miss_returns_and_stores_the_segments(
-        self, provider: BBCSoundsProvider
-    ) -> None:
-        """Test the first lookup returns the API's segments as well as caching them."""
-        segments = [_segment()]
-        _mock(provider.client.content).get_show_segments.return_value = segments
-        cache_set = AsyncMock()
-        provider.mass.cache.get = AsyncMock(return_value=False)  # type: ignore[method-assign]
-        provider.mass.cache.set = cache_set  # type: ignore[method-assign]
-
-        assert await provider.stream_manager.now_playing._get_programme_segments("vpid") == segments
-        assert cache_set.await_args is not None
-        cached = cache_set.await_args.kwargs["data"]
-        assert [Segment.from_dict(item) for item in cached] == segments
-
-    async def test_first_metadata_update_shows_the_track(self, provider: BBCSoundsProvider) -> None:
-        """Test the now-playing track is shown before the segments are cached."""
-        _mock(provider.client.content).get_show_segments.return_value = [_segment()]
-        provider.mass.cache.get = AsyncMock(return_value=False)  # type: ignore[method-assign]
-        provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
-        stream_details = Mock(spec=StreamDetails)
-        stream_details.data = {"vpid": "vpid", "pid": "pid"}
-        stream_details.stream_metadata = StreamMetadata(title="Programme")
-
-        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
-            stream_details, elapsed_time=30
-        )
-
-        assert stream_details.stream_metadata.title == "Song"
-        assert stream_details.stream_metadata.artist == "Artist"
-
-    async def test_empty_track_list_is_fetched_once_per_playback(
-        self, provider: BBCSoundsProvider
-    ) -> None:
-        """Test a programme without a track list isn't cached, or fetched every refresh."""
-        _mock(provider.client.content).get_show_segments.return_value = []
-        cache_set = AsyncMock()
-        provider.mass.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        provider.mass.cache.set = cache_set  # type: ignore[method-assign]
-        stream_details = Mock(spec=StreamDetails)
-        stream_details.data = {"vpid": "vpid", "pid": "pid"}
-        stream_details.stream_metadata = StreamMetadata(title="Programme")
-
-        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
-            stream_details, elapsed_time=30
-        )
-        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
-            stream_details, elapsed_time=35
-        )
-
-        _mock(provider.client.content).get_show_segments.assert_awaited_once()
-        cache_set.assert_not_awaited()
 
 
 class TestMenuActionsListenFromStart:

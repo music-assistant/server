@@ -14,7 +14,7 @@ from aiosendspin.models.types import AudioCodec as SendspinAudioCodec
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream, StreamStoppedError
 from aiosendspin.server.roles.player.v1 import PlayerV1Role
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, MediaType, SpeakerChannel
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import (
@@ -448,15 +448,13 @@ class SendspinPlaybackSession:
 
         :param start_streamdetails: Stream details of the first item of the session.
         """
-        from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
-
+        provider = cast("SendspinProvider", self.player.provider)
         member_rates: list[int] = []
         for client in self.player.api.group.clients:
-            player = self.player.provider.get_protocol(client.client_id)
-            session_format = (
-                await player.get_session_format(start_streamdetails)
-                if isinstance(player, SendspinPlayer)
-                else None
+            if provider.is_silent_client(client.client_id):
+                continue
+            session_format = await provider.get_client_session_format(
+                client.client_id, start_streamdetails
             )
             if session_format is not None:
                 member_rates.append(_counted_sample_rate(_to_audio_format(*session_format)))
@@ -1443,22 +1441,31 @@ class SendspinPlaybackSession:
 
     def _read_pipeline_config(self, player_id: str) -> _PipelineConfig:
         """Read MA config and determine if member needs a dedicated DSP channel."""
+        provider = cast("SendspinProvider", self.player.provider)
+        if provider.is_silent_client(player_id):
+            # a client that renders nothing takes the audio as it is
+            return _PipelineConfig(requires_transform=False, filter_params=())
+        # a speaker of a multi-channel player plays with the settings of that player
+        protocol_id, channel, with_subwoofer = provider.speaker_output(player_id)
         # the DSP settings are those of the player the member's protocol belongs to
-        member = self.player.mass.players.get_player_by_protocol(player_id)
+        member = self.player.mass.players.get_player_by_protocol(protocol_id)
         dsp_config = self.player.mass.config.get_player_dsp_config(
-            member.player_id if member else player_id
+            member.player_id if member else protocol_id
         )
         dsp_enabled = bool(dsp_config.enabled)
         try:
             output_format = self._get_member_output_format(player_id)
             output_plan = self.player.mass.streams.audio.get_player_output_plan(
-                player_id,
+                protocol_id,
                 self._pcm_format,
                 output_format,
                 handoff_format=self._pcm_format,
+                channel=channel,
+                with_subwoofer=with_subwoofer,
             )
             filter_params = tuple(output_plan.filter_params)
-        except Exception:
+        except Exception as err:  # noqa: BLE001 - any failure means no dedicated dsp channel
+            self.player.logger.debug("Could not build the output plan for %s: %s", player_id, err)
             filter_params = ()
             output_plan = None
         # a ComplexFilter (e.g. convolution) is never a plain string, so it always counts
@@ -1468,6 +1475,8 @@ class SendspinPlaybackSession:
         requires_transform = dsp_enabled or custom_filter_graph
         if (
             output_plan is not None
+            # a subwoofer plays along with the main speakers, which report for their player
+            and channel != SpeakerChannel.LFE
             and self._queue_id is not None
             and self._queue_session_id is not None
         ):
@@ -1534,10 +1543,12 @@ class SendspinPlaybackSession:
         quality gain there. Members playing another rate than the session are resampled
         on the receiving side.
         """
+        provider = cast("SendspinProvider", self.player.provider)
         member_rates = [
             rate
             for client in self.player.api.group.clients
-            if (rate := self._get_member_sample_rate(client.client_id))
+            if not provider.is_silent_client(client.client_id)
+            and (rate := self._get_member_sample_rate(client.client_id))
         ]
         streamdetails = self._start_streamdetails
         sample_rate = self._pick_session_sample_rate(

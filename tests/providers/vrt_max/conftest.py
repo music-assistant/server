@@ -24,7 +24,7 @@ def provider() -> VrtMaxProvider:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     use_real_create_task(mass)
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "vrt_max"
     manifest.type = ProviderType.MUSIC
     config = Mock()

@@ -1,7 +1,7 @@
 """
 Shared lifecycle management for Sendspin bridges.
 
-A Sendspin bridge exposes a protocol of another provider (AirPlay, squeezelite,
+A Sendspin bridge exposes a protocol of another provider (squeezelite, AirPlay,
 Chromecast) as an external Sendspin client, so the device can take part in Sendspin
 synchronized playback. The bridge is a derived transport: its Sendspin protocol
 rides on the protocol it bridges (its underlying protocol) and belongs to the
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 # The providers whose bridges carry the Sendspin output of a player, the first choice first.
-BRIDGE_ORDER: tuple[str, ...] = ("airplay", "squeezelite", "chromecast")
+BRIDGE_ORDER: tuple[str, ...] = ("squeezelite", "airplay", "chromecast")
 
 # The players reported to have more than one stored Sendspin output, by those outputs.
 _REPORTED_OUTPUTS: set[tuple[str, ...]] = set()
@@ -313,8 +313,10 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             try:
                 bridge = self._create_bridge(protocol)
                 await bridge.start()
-            except Exception:
-                self.logger.warning("Failed to start Sendspin bridge for %s", protocol.display_name)
+            except Exception as err:  # noqa: BLE001 - a failed bridge is cleaned up whatever went wrong
+                self.logger.warning(
+                    "Failed to start Sendspin bridge for %s: %s", protocol.display_name, err
+                )
                 if bridge is not None:
                     if bridge.is_registered:
                         # it registered its client before it failed, and takes it along

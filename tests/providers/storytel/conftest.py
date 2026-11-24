@@ -14,7 +14,7 @@ def provider() -> Storytel:
     """Create a real Storytel provider with mocked dependencies and no persisted setup_data."""
     mass = Mock()
     mass.config.get.return_value = {}
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "storytel"
     config = Mock()
     config.instance_id = "storytel--test"

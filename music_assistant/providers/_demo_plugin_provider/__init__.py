@@ -26,9 +26,9 @@ but we also support that you specify a material design icon in the manifest.json
 
 Optional is a strings.json file with the texts of the provider in English, which are
 translated into the other languages. This demo keeps the label of its menu action there
-(menu_actions.<id>.label) and the message its menu action answers with (config_actions.<key>).
-The descriptions of its tools for AI assistants (mcp_tools) are English only and stay in
-manifest.json.
+(menu_actions.<id>.label), the message its menu action answers with (config_actions.<key>)
+and the label of its page (page.label). The descriptions of its tools for AI assistants
+(mcp_tools) are English only and stay in manifest.json.
 
 IMPORTANT NOTE:
 We strongly recommend developing on either macOS or Linux and start your development
@@ -40,9 +40,11 @@ See also our general DEVELOPMENT.md guide in the repository for more information
 
 from __future__ import annotations
 
+import html
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import (
     ContentType,
@@ -61,6 +63,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.media_capabilities import SourceControlValue
 from music_assistant.models.plugin import PluginProvider
 
@@ -92,15 +95,12 @@ SUPPORTED_FEATURES = {
     # this constant should contain a set of provider-level features
     # that your provider supports or an empty set if none.
     # see the ProviderFeature enum for all available features.
-    # a feature your provider offers whatever its config belongs in the 'features' list of
-    # manifest.json instead: it is merged into the supported features automatically and the
-    # app uses it to decide where the provider is listed, also before it is loaded
-    # (a plugin with 'audio_source' is shown under Music sources).
-    # this demo declares 'AUDIO_SOURCE' in its manifest, which means the provider exposes
-    # a (live) audio source to Music Assistant.
-    # features that depend on the config of the instance are passed here at setup;
-    # this demo passes 'SCROBBLE' to demonstrate the concept, which means the provider
-    # receives a report of every media item that is played.
+    # this demo declares two of the plugin-specific features to demonstrate the concept:
+    # 'AUDIO_SOURCE' means the provider exposes a (live) audio source to Music Assistant
+    # and 'SCROBBLE' means it receives a report of every media item that is played.
+    # the 'provides' of manifest.json lists them as 'audio_source' and 'scrobble', for
+    # discovery only, before the provider is loaded; these features decide what it does.
+    ProviderFeature.AUDIO_SOURCE,
     ProviderFeature.SCROBBLE,
 }
 
@@ -241,6 +241,22 @@ class MyDemoPluginprovider(PluginProvider):
                 )
             sources.append(entry)
         return {"sources": sources}
+
+    async def handle_page_request(self, request: web.Request, path: str) -> web.StreamResponse:
+        """Serve a request to the page of this provider instance."""
+        # OPTIONAL
+        # Implement when manifest.json declares a "page", such as a small web interface. The
+        # app lists it in its main menu, and opens it in a new tab behind a short-lived address
+        # for the user who chose it. The server calls this as that user (get_current_user())
+        # for every request to it, with the path after the page's root. The page runs
+        # sandboxed: it gets no token and can not reach the app, so it talks to the provider
+        # through relative urls to its own sub-paths.
+        user = get_current_user()
+        name = user.display_name or user.username if user else ""
+        return web.Response(
+            text=f"<!doctype html><p>Hello {html.escape(name)}, from the demo plugin.</p>",
+            content_type="text/html",
+        )
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return the AudioSources this plugin currently exposes."""

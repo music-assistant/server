@@ -119,6 +119,28 @@ def test_discovery_library_logger_levels(
             logger.setLevel(previous_level)
 
 
+def test_discovery_library_loggers_follow_an_inherited_level(mass_minimal: MusicAssistant) -> None:
+    """A controller logger without a level of its own sets the libraries from the one it inherits."""
+    controller_logger = mass_minimal.discovery.logger
+    assert controller_logger.parent is not None
+    loggers = [
+        controller_logger,
+        controller_logger.parent,
+        logging.getLogger("async_upnp_client"),
+        logging.getLogger("zeroconf"),
+    ]
+    previous_levels = [logger.level for logger in loggers]
+    try:
+        controller_logger.setLevel(logging.NOTSET)
+        controller_logger.parent.setLevel(logging.INFO)
+        mass_minimal.discovery._configure_library_loggers()
+
+        assert [logger.level for logger in loggers[2:]] == [logging.WARNING, logging.WARNING]
+    finally:
+        for logger, previous_level in zip(loggers, previous_levels, strict=True):
+            logger.setLevel(previous_level)
+
+
 async def test_run_provider_discovery_dispatches_upnp_callbacks(mass: MusicAssistant) -> None:
     """Provider-targeted discovery should fan SSDP results back into the provider callback."""
     provider = StubUpnpProvider()
@@ -403,15 +425,18 @@ async def test_async_find_mdns_service_matches_exact_device_name(mass: MusicAssi
     )
 
 
-async def test_async_find_mdns_service_no_substring_match(mass: MusicAssistant) -> None:
+async def test_async_find_mdns_service_no_substring_match(mass_minimal: MusicAssistant) -> None:
     """Looking up a name that is only a substring of a discovered name should not match."""
-    mass.discovery.aiozc.zeroconf.cache.cache = {
+    # a started server advertises itself in background tasks that also build an
+    # AsyncServiceInfo, which would land in the patch below while the lookup waits
+    mass_minimal.discovery._aiozc = MagicMock()
+    mass_minimal.discovery.aiozc.zeroconf.cache.cache = {
         "atv kelder._raop._tcp.local.": {},
     }
     with patch(
         "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
     ) as mock_service_info:
-        result = await mass.discovery.async_find_mdns_service(
+        result = await mass_minimal.discovery.async_find_mdns_service(
             "_raop._tcp.local.", "Kelder", timeout=0.1
         )
 

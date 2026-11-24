@@ -31,7 +31,12 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import LifeSpan
 
-from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_ARTISTS
+from music_assistant.constants import (
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
+    DB_TABLE_TRACKS,
+)
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
     CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ,
@@ -53,6 +58,7 @@ from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzLifeSpan
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
+from tests.controllers.music.helpers import create_album, create_track
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator, Sequence
@@ -1317,3 +1323,64 @@ async def test_relink_check_selects_what_the_relink_query_selects(mass: MusicAss
     assert {artist.item_id for artist in selected} == checked
     # identified, not mapped to spotify, looked up at or before it was seen or never
     assert len(checked) == 3
+
+
+async def _add_album_track(
+    mass: MusicAssistant, name: str, album: Album, isrc: str, recording: str | None = None
+) -> Track:
+    """Add a library track on the album, with its MusicBrainz recording id when given."""
+    track = create_track("qobuz_1", name, name=name, isrc=isrc)
+    track.album = album
+    for mapping in track.provider_mappings:
+        mapping.in_library = True
+    if recording:
+        track.add_external_id(ExternalID.MB_RECORDING, recording)
+    return await mass.music.tracks.add_item_to_library(track)
+
+
+async def test_link_run_selects_the_artists_and_tracks_of_identified_albums(
+    mass: MusicAssistant,
+) -> None:
+    """The artists and tracks of an identified album are selected while they lack their own id."""
+    identified = create_album(
+        "qobuz_1",
+        "identified",
+        "Identified",
+        "Identified Artist",
+        external_ids={(ExternalID.MB_ALBUM, RELEASE_ID)},
+    )
+    unknown = create_album("qobuz_1", "unknown", "Unknown", "Unknown Artist")
+    # the link run only works on what is in the library
+    for mapping in (*identified.provider_mappings, *unknown.provider_mappings):
+        mapping.in_library = True
+    await mass.music.albums.add_item_to_library(identified)
+    await mass.music.albums.add_item_to_library(unknown)
+    selected_track = await _add_album_track(mass, "Plain", identified, "USRC17607831")
+    await _add_album_track(
+        mass, "Recorded", identified, "USRC17607832", "b1a9c0e9-d987-4042-ae91-78d6a3267d69"
+    )
+    await _add_album_track(mass, "Elsewhere", unknown, "USRC17607833")
+
+    artists = await mass.music.artists.get_library_items_by_query(
+        extra_query_parts=[_artists_to_identify_query()]
+    )
+    tracks = await mass.music.tracks.get_library_items_by_query(
+        extra_query_parts=[_tracks_to_identify_query()]
+    )
+
+    assert [artist.name for artist in artists] == ["Identified Artist"]
+    assert [track.item_id for track in tracks] == [selected_track.item_id]
+
+
+async def test_link_run_looks_a_musicbrainz_id_up_by_its_item(mass: MusicAssistant) -> None:
+    """The link run finds the MusicBrainz id of an item through the index on the item id."""
+    # the test database has no table statistics, as on a new install
+    plan = await mass.music.database.get_rows_from_query(
+        f"EXPLAIN QUERY PLAN SELECT item_id FROM {DB_TABLE_TRACKS} "
+        f"WHERE {_tracks_to_identify_query()}",
+        limit=0,
+    )
+
+    lookups = [row["detail"] for row in plan if DB_TABLE_EXTERNAL_ID_LOOKUP in row["detail"]]
+    assert lookups
+    assert all(f"{DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx" in detail for detail in lookups)

@@ -17,6 +17,8 @@ Developer docs
 
       export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib:/usr/local/lib:/usr/lib"
 
+* shairport-sync 5.6.3 or newer (a classic AirPlay build), also at OS level. Install it if you want to run the `airplay_receiver` plugin. On macOS, run `brew install shairport-sync`. Distribution packages are often older or built for AirPlay 2; [the plugin's README](music_assistant/providers/airplay_receiver/bin/README.md) explains how to build it.
+
 We recommend developing on a (recent) macOS or Linux machine.
 It is recommended to use Visual Studio Code as your IDE, since launch files to start Music Assistant are provided as part of the repository. Furthermore, the current code base is not verified to work on a native Windows machine. If you would like to develop on a Windows machine, install [WSL2](https://code.visualstudio.com/blogs/2019/09/03/wsl2) to increase your swag-level 🤘.
 
@@ -88,8 +90,8 @@ In most cases, you won't need to modify the models. However, if you do need to m
 ### Running a provider from a folder outside the server
 
 A provider that lives outside the server repository (for example in a repository of its own) can be run from where it is:
-* Name the provider folder after the provider's `domain`. A domain the server already has is refused.
-* Start the server in dev mode (`PYTHONDEVMODE=1`, or from a checkout with a `.venv` in the repository root) and pass the folder that holds your provider folders:
+* Put the provider in a folder named after its `domain`, in a folder named `provider`, or in `providers/<domain>` in a repository with several providers, as the community catalog accepts. It loads under its domain either way. A domain the server already has is refused.
+* Start the server in dev mode (`PYTHONDEVMODE=1`, or from a checkout with a `.venv` in the repository root) and pass the folder that holds them, such as the root of your repository:
 
       PYTHONDEVMODE=1 python -m music_assistant --dev-providers-dir /path/to/my_providers
 
@@ -180,6 +182,7 @@ The easiest way to get start is to copy the contents of the manifest of an exist
 Create a file called `__init__.py` inside the folder of your provider. This file will contain the logic for the provider. All Music Providers must inherit from the [`MusicProvider`](./music_assistant/models/music_provider.py) base class and override the necessary functions where applicable. A few things to note:
 * The `setup()` function is called by Music Assistant upon initialization of the provider. It gives you the opportunity the prepare the provider for usage. For example, logging in a user or obtaining a token can be done in this function.
 * A provider should let Music Assistant know which [`ProviderFeature`](https://github.com/music-assistant/models/blob/main/music_assistant_models/enums.py) it supports by implementing the property `supported_features`, which returns a list of `ProviderFeature`.
+* List the media types a user looks for the provider under, whatever its config, in the optional `provides` of its manifest, such as `audiobook` and `podcast` for an audiobook server or `radio` for a radio directory. It is metadata for discovery only: what the provider does at runtime always comes from its code.
 * A podcast provider must set each episode's `position` so that the oldest episode has the lowest number and the newest the highest. The episode listing is sorted on it and "play from here" queues the selected episode plus everything newer, so a provider that numbers episodes by the order its API happens to return them will show them backwards. Rank on the publication date using `rank_episodes_by_date()` in [`podcast_parsers`](./music_assistant/helpers/podcast_parsers.py), and leave the position at 0 where it is unknown.
 * Image paths that are not URLs (for example a cover id that `resolve_image()` fetches from the service) are dropped when they are read back from a playlist file, because a stored path could point at a local file. If your `resolve_image()` only ever looks such a path up in your own service, override `accepts_stored_image_path()` to accept the paths your service uses. See the [Plex](./music_assistant/providers/plex/__init__.py) provider as an example. [OpenSubsonic](./music_assistant/providers/opensubsonic/sonic_provider.py) accepts any id, which is only safe because the id is sent to its server and never used for anything else.
 * The actual playback of audio in Music Assistant happens in two phases:
@@ -256,6 +259,7 @@ A player provider implements one `PlayerProtocol` (`music_assistant/models/playe
 * Software players that share a host report an id of their own instance as `UUID` or `SERIAL_NUMBER` identifier.
 * A provider whose native protocol stands for devices of other makes (a Home Assistant media player) is ranked below the vendor's own protocol in `NATIVE_PRIORITY`: on a device that has both, it attaches as a control protocol of the vendor's player.
 * Every zone of a multi-zone chassis reports its zone as `ZONE` next to the identifiers of the chassis: `MAIN_ZONE` for the zone where the protocols of the chassis that report no zone (AirPlay, DLNA, ...) play, its own id for every other zone.
+* A protocol that delivers a set of speakers as one player (a stereo pair, a home theater set) reports `PlayerType.MULTI_CHANNEL` as its type (`_attr_type`) and the layout of its speakers (`_attr_channel_layout`). It reports the other speakers of the set with `mass.players.remove_absorbed_players(protocol_id, protocol_ids)`, which removes their players for good. So it names a speaker only when the set itself names it as one of its speakers at that moment, never because a speaker is silent, after a timeout or from an incomplete list, and only by a protocol id of its own provider. It registers no protocol for a speaker while the set names it. The Sonos and AirPlay players do this.
 
 The server asks a provider to look for its devices again when one may be found again: after a player is enabled, after a player that is not a group is removed, and when a protocol that is not attached moves to another player (in a merge, or when it is taken off its player) or is switched on again as an output. It then replays the cached mDNS records of the provider's `mdns_discovery` types and reruns the SSDP search of its `upnp_discovery` targets. So `discover_players()` only has to offer the known devices that this cannot reach.
 
@@ -280,7 +284,7 @@ The manifest file contains metadata and configuration about a provider. The supp
 | codeowners  | List of Github names of the codeowners of the provider  | array[string]  |
 | support_url | Optional https URL where the maintainer takes bug reports and questions, when not the project's support repository. | string |
 | stage | The development/stability stage: `alpha`, `beta`, `stable`, `experimental`, `unmaintained` or `deprecated`. Defaults to `stable`. | string |
-| requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference | array[string] |
+| requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference. A provider in the community catalog may only use package names with optional extras and version specifiers (no URLs, environment markers or options), available as wheels for Linux amd64 and arm64. | array[string] |
 | documentation | URL to the provider's documentation page. | string |
 | multi_instance | Whether multiple instances of the provider are supported, e.g. multiple user accounts for Spotify | boolean |
 | builtin | Whether this is a system/builtin provider that is loaded by default | boolean |
@@ -293,7 +297,8 @@ The manifest file contains metadata and configuration about a provider. The supp
 | credits | List of credits/attributions, e.g. for libraries or icons used. Accepts markdown formatting. | array[string] |
 | menu_actions | Entries the provider adds to the menu of a media item, see [Menu actions](#-menu-actions). | array[object] |
 | mcp_tools | Tools the provider offers to AI assistants, see [Tools for AI assistants (MCP)](#-tools-for-ai-assistants-mcp). | array[object] |
-| features | Features the provider offers whatever its config, such as `audio_source`. The app uses them to decide where the provider is listed, and they are merged into its supported features. | array[string] |
+| page | A page the provider serves, offered in the main menu of the app, see [Provider pages](#-provider-pages). | object |
+| provides | Optional metadata for discovery only, such as the Marketplace filters: what the provider offers whatever its config, known before it is loaded. A music provider lists the media types a user looks for it under: `artist`, `album`, `track`, `playlist`, `radio`, `podcast`, `audiobook` or `sound_effect`. A plugin lists its main features: `audio_source` (plays audio into Music Assistant as a live source), `ai` (provides AI engines), `tts` (provides speech engines), `scrobble` (records what is played to an outside listening history), `assistant` (lets an AI or voice assistant find music and control players), `visualizer` (turns music into light effects or visuals), `recommendations` (builds playlists, mixes or recommendations from your music) or `fun` (party modes and games for guests). A player provider can list `audio_source`. A provider with the `AUDIO_SOURCE`, `AI_QUERY`, `TTS` or `SCROBBLE` feature in every config lists the matching value. What a provider does at runtime always comes from its code. | array[string] |
 
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
 
@@ -322,7 +327,7 @@ A provider can add its own entries to the menu of a track, album, artist, playli
 * `icon`: optional, the name of a [Material Design Icon](https://pictogrammers.com/library/mdi), such as `mdi-image-frame`, of at most 64 characters.
 * `requires_player`: optional, `true` when the action acts on a player. The app then also offers it in the menu of the play button, and passes the chosen player.
 
-When a user chooses an entry, the app calls the API command `providers/invoke_menu_action` with the instance of the provider, the id of the action, the `uri` of the item and, for an action that requires a player, the `player_id`. The server checks that the user may use that instance and holds the scope of the action, that the `uri` is of one of its media types and that the user may use the player, and then calls `handle_menu_action(action_id, uri, player_id)` on that instance. The server only checks the kind of item in the `uri`, not that the item exists or that it belongs to your provider, so `handle_menu_action` looks the item up itself. Implement it in your provider: it answers nothing, or a `ConfigActionResult` with a message the app shows and/or a url it opens once. To say the action failed, raise a `MusicAssistantError`. The provider registers no command. A provider that allows several instances needs nothing extra: the entries are offered for each instance, and each instance handles the actions chosen for it.
+When a user chooses an entry, the app calls the API command `providers/invoke_menu_action` with the instance of the provider, the id of the action, the `uri` of the item and, for an action that requires a player, the `player_id`. The server checks that the user may use that instance and holds the scope of the action, that the `uri` is of one of its media types and that the user may use the player, and then calls `handle_menu_action(action_id, uri, player_id)` on that instance. The server only checks the kind of item in the `uri`, not that the item exists or that it belongs to your provider, so `handle_menu_action` looks the item up itself. Implement it in your provider: it answers nothing, or a `ConfigActionResult` with a message the app shows and/or a url it opens once (only an `https` url for a provider from the community catalog). To say the action failed, raise a `MusicAssistantError`. The provider registers no command. A provider that allows several instances needs nothing extra: the entries are offered for each instance, and each instance handles the actions chosen for it.
 
 The server checks the declared actions when it reads the manifest. An action that breaks one of the rules above, has the same `id` as an earlier one, or comes after the first ten valid ones is left out with a warning in the log, and the provider loads without it. For a provider in this repository the same rules fail the `check_manifests` check. A provider in its own repository declares menu actions in the same way, with its texts in the `strings.json` and `translations/` of its own folder.
 
@@ -358,8 +363,29 @@ The server adds a required `player` argument (a player name or id) to a tool tha
 
 The server checks the declared tools when it reads the manifest, as it does menu actions: a tool that breaks a rule above, has the same `id` as an earlier one, or comes after the first ten valid ones is left out with a warning in the log, and for a provider in this repository it fails the `check_manifests` check.
 
+## 🌐 Provider pages
+A provider can serve a page of its own, such as a small web interface. It declares the page in `page` in its manifest, and the Music Assistant app offers it as an entry in its main menu, under a heading of its own, for each instance the user may use when the user holds the scope of the page.
+
+```json
+"page": {
+  "label": "Picture frame",
+  "scope": "library.read",
+  "icon": "mdi-image-frame"
+}
+```
+
+* `label`, `scope` and `icon` follow the rules of a [menu action](#-menu-actions). Put the label in the provider's `strings.json` under `page.label` to have it translated. A page that breaks a rule is left out with a warning in the log, and the provider loads without it; for a provider in this repository it fails the `check_manifests` check.
+
+When a user chooses the entry, the app calls the API command `providers/open_page` with the instance. The server checks that the user may use that instance and holds the scope of the page, and answers a fresh, short-lived address of the page's root, which the app opens in a new tab. The provider registers no route: it implements `handle_page_request(request, path)` and returns any aiohttp response, a streamed or WebSocket one included, where `path` is the part of the address after the page's root.
+
+* The server calls it only while that user may still use the instance and holds the scope of the page, and runs it as that user (`get_current_user()`). An address lapses after 15 minutes without a request and after 12 hours in any case.
+* The page runs sandboxed in an origin of its own. It gets no token or cookie and can not reach the app, so it talks to the provider through relative urls to its own sub-paths (a `fetch` with JSON included). The server sets the security headers on every response and removes any cookie.
+* A page may not offer downloads of provider audio (see the [Usage Policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md)); the sandbox blocks downloads.
+
+The demo plugin (`_demo_plugin_provider`) declares a one-line page.
+
 ## 🤝 Contributing a provider
-**Consider the community catalog first.** Instead of adding a provider to the server itself, which comes with the expectations below and a longer wait for reviews, you can publish it in the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md), especially when it covers a limited use case or a small group of users. There you keep it in your own repository and release whenever you want, and users install it from the Marketplace in Music Assistant. The [provider template](https://github.com/music-assistant/community-provider-template) gets you started.
+**Consider the community catalog first.** Instead of adding a provider to the server itself, which comes with the expectations below and a longer wait for reviews, you can publish it in the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md), especially when it covers a limited use case or a small group of users. There you keep it in your own repository and release whenever you want, and an administrator installs it from the Marketplace in Music Assistant. The [provider template](https://github.com/music-assistant/community-provider-template) gets you started.
 
 A provider that ships with Music Assistant is installed for every user and supported by the project. A new one therefore asks for more than working code:
 

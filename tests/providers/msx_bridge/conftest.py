@@ -45,7 +45,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
 @pytest.fixture
 def manifest_mock() -> Mock:
     """Return a mock provider manifest."""
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "msx_bridge"
     manifest.name = "MSX Bridge"
     manifest.type = Mock()

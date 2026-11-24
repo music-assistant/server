@@ -83,8 +83,10 @@ async def test_unload_provider_waits_for_running_sync(
     await mass_minimal.tasks.setup(await mass_minimal.config.get_core_config("tasks"))
     mass_minimal.tasks.initialized.set()
     mass_minimal.music = MusicController(mass_minimal)
-    # discovery is not set up on the minimal instance and plays no part in this test
+    # discovery and the webserver are not set up on the minimal instance and play no part in
+    # this test
     monkeypatch.setattr(mass_minimal.discovery, "on_provider_unload", MagicMock())
+    monkeypatch.setattr(mass_minimal, "webserver", MagicMock(), raising=False)
 
     sync_started = asyncio.Event()
     sync_finished = False
@@ -339,8 +341,10 @@ async def _setup_bare_player_provider(
     mass.music = MagicMock(unschedule_provider_sync=AsyncMock())
     # no queues exist in these tests, so get() must report a miss rather than a mock
     mass.player_queues = MagicMock(on_player_register=AsyncMock(), get=MagicMock(return_value=None))
-    # discovery is not set up on the minimal instance and plays no part in these tests
+    # discovery and the webserver are not set up on the minimal instance and play no part in
+    # these tests
     monkeypatch.setattr(mass.discovery, "on_provider_unload", MagicMock())
+    monkeypatch.setattr(mass, "webserver", MagicMock(), raising=False)
     # an attach reads the player's cached power state, so the cache has to work here
     # for it to run all the way to the point where the protocol enters the registry
     await mass.cache.setup(await mass.config.get_core_config("cache"))
@@ -454,6 +458,7 @@ async def test_unload_cancels_pending_post_load(
     monkeypatch.setattr(mass_minimal, "music", music, raising=False)
     monkeypatch.setattr(mass_minimal, "_update_available_providers_cache", AsyncMock())
     monkeypatch.setattr(mass_minimal.discovery, "on_provider_unload", MagicMock())
+    monkeypatch.setattr(mass_minimal, "webserver", MagicMock(), raising=False)
 
     gate = asyncio.Event()
     resumed = False

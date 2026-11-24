@@ -400,7 +400,7 @@ The lifecycle of players and protocols lives in [lifecycle.py](lifecycle.py).
 | A provider finds a device, or finds it again (`register`) | The protocol is attached to the player of its device, which is created when the device is new. `on_config_updated()` and `on_attach(player)` run. Another object under the same id replaces the attached one. Nothing attaches for a disabled player or an output the user switched off. |
 | A device goes away, or its provider unloads (`unregister`) | The protocol is detached and `on_detach()` runs. The player stays, unavailable while no other protocol is, and keeps its queue; the queue only stops when this protocol was the one that played. A player that only exists while connected and has no record goes with its last protocol, unless its queue has items: then it gets its record first (as `keep_player` gives it) and stays. |
 | A provider forgets a device (`remove_protocol`) | The protocol record goes, and so do the protocols that ride on it. An output or control choice of the player that names it falls back to its default. The player goes for good when no protocol record of it is left. |
-| The user removes a player | The player goes for good, with its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries; `PLAYER_REMOVED` is sent once, also for a disabled player, which is not live. Every protocol gets `on_remove()`, also one whose player is not live. A device still on the network comes back as a new player. |
+| The user removes a player | The player goes for good, with its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries; `PLAYER_REMOVED` is sent once, also for a disabled player, which is not live. Every protocol gets `on_remove()`, also one whose player is not live, and its provider gets `on_protocol_removed()`, also when it holds no object for it. A device still on the network comes back as a new player. |
 | A provider reports the other speakers of a set (`remove_absorbed_players`) | Their players are removed for good, as when the user removes them, except that their providers are not asked to look for their devices again; a speaker that leaves its set later is found again as a new player. The ids of another provider, of the set's own player and of a group are skipped, and a report while the server shuts down removes nothing. |
 | The user removes what is unavailable | Every player that no protocol reaches goes for good, once its providers are loaded and had time to find their devices again. While only players remain whose providers still need that time, the request is refused, also as a dry run. |
 | The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player leaves the registry with a last `PLAYER_UPDATED` that says it is disabled and unavailable, whatever its power control, followed by the `PLAYER_CONFIG_UPDATED` of the save; it is not removed. Its config, its id and its saved queue stay. |
@@ -720,7 +720,11 @@ and still waits for another one, holds that off.
   provider type can deliver them by mixing in `AudioSourceMixin`
   (`music_assistant/models/media_capabilities.py`). The controller keeps the session per player
   and passes the transport commands for it to the provider that owns it; the queue keeps its
-  items and goes inactive meanwhile.
+  items and goes inactive meanwhile. A source carries its own name and the player it belongs to;
+  `get_audio_source_name` composes the name for where it is shown: the name alone on that player,
+  with the player's name after it elsewhere. An input a speaker offers from another speaker of its
+  system, such as the line-in of another Sonos speaker, names that player in `owner_player_id` of
+  its source list entry and is named by the same rule.
 - **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
   player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
   an audio protocol is its active output, its own protocol plays (a paused player keeps its place
@@ -920,7 +924,8 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
    attaches a registered protocol once it knows its player, which can be after `register` returns:
    `on_attach` tells when.
 4. Claim per-device resources in `on_attach` and release them in `on_detach`; forget what the
-   provider keeps about a device in `on_remove`.
+   provider keeps about a device in `on_remove`, or in `on_protocol_removed` for a device it may
+   hold no object for.
 5. `discover_players()` offers every known device that has no attached protocol, and is safe to
    repeat: every discovery request of the controller (see [Lifecycle](#lifecycle)) runs it.
 6. Ask `mass.players.wants_protocol(protocol_id)` before setting up a connection for a device.

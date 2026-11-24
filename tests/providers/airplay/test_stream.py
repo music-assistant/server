@@ -17,9 +17,9 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_PASSWORD
 from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
@@ -36,7 +36,6 @@ from music_assistant.providers.airplay.constants import (
     ClockReadiness,
     StreamingProtocol,
 )
-from music_assistant.providers.airplay.helpers import CLI_CLOCK_OFFSET_NS
 from music_assistant.providers.airplay.stream import AirPlayStream, CliError
 
 START_UNIX_MS = 1_750_000_000_000
@@ -76,6 +75,8 @@ def _make_player() -> MagicMock:
     player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.settings = player.config
+    player.device_password = None
     player.player.active_group = None
     player.streaming_mode = STREAMING_MODE_AUTO
     player.streaming_mode_options = [
@@ -84,6 +85,8 @@ def _make_player() -> MagicMock:
     ]
     player.synced_to = None
     player.group_members = []
+    player.owner = player
+    player.speakers = []
     # A real None: a stream only speaks for the player while it is the published
     # one, and a bare MagicMock reads as some other stream having taken over.
     player.stream = None
@@ -115,6 +118,7 @@ def _make_player() -> MagicMock:
     prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
     prov.mass.streams.get_publish_ip = MagicMock(return_value=None)
     prov.mass.runtime_path = "/ma-runtime"
+    prov.mass.timeline_clock = TimelineClock()
     prov.get_protocol = lambda pid: prov.mass.players.get_protocol(pid)
     player.provider = prov
     return player
@@ -139,22 +143,24 @@ def _acking_write_cli_command(
     stream: AirPlayStream, at_unix_ms: int | None = None
 ) -> Callable[[str], Coroutine[Any, Any, bool]]:
     """
-    Build a ``_write_cli_command`` replacement that acks a START like the binary.
+    Build a ``_write_cli_command`` replacement that acks a START and a STOP like the binary.
 
-    :param stream: The stream whose START commands are answered.
+    :param stream: The stream whose START and STOP commands are answered.
     :param at_unix_ms: Scheduled audible instant to report back; defaults to the
         commanded instant, i.e. the binary found it feasible.
     """
 
     async def write_command(command: str) -> bool:
-        # A START nothing acks otherwise pays the real ack timeout in wall clock;
-        # feeding the ack here leaves start()'s wait already released.
+        # A START or STOP nothing acks otherwise pays the real ack timeout in wall
+        # clock; feeding the ack here leaves the wait for it already released.
         if "ACTION=START" in command:
             requested = int(command.split("START_UNIX_MS=")[1].split("\n", 1)[0])
             stream._handle_status_line(
                 f"[STATUS] started requested_unix_ms={requested} "
                 f"at_unix_ms={requested if at_unix_ms is None else at_unix_ms}"
             )
+        elif "ACTION=STOP" in command:
+            stream._handle_status_line("[STATUS] stopped")
         return True
 
     return write_command
@@ -187,7 +193,9 @@ async def test_cli_args_default_auto() -> None:
     # default format
     assert _arg_value(args, "--samplerate") == "44100"
     assert _arg_value(args, "--bitdepth") == "16"
-    assert _arg_value(args, "--clock-offset-ns") == str(CLI_CLOCK_OFFSET_NS)
+    clock = player.provider.mass.timeline_clock
+    assert _arg_value(args, "--clock-offset-ns") == str(clock.offset_ns + clock.unix_offset_ns)
+    assert _arg_value(args, "--clock-rate-ppb") == str(clock.rate_ppb)
     # no explicit latency override configured
     assert "--latency" not in args
     # PTP daemon is running: stream attaches to the shared clock
@@ -300,6 +308,17 @@ async def test_cli_args_raop_override() -> None:
     assert "--hostname" not in args
     assert "--ptp-shared" not in args
     assert "--encrypt" in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_pass_the_device_password() -> None:
+    """The password the player connects with is handed to the binary."""
+    player = _make_player()
+    player.device_password = "s3cret"
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--password") == "s3cret"
 
 
 @pytest.mark.asyncio
@@ -1455,7 +1474,8 @@ async def test_raop_repeated_starts_anchor_progress_without_metadata() -> None:
             side_effect=_acking_write_cli_command(stream, START_UNIX_MS + 3000),
         ) as write_command,
         patch(
-            "music_assistant.providers.airplay.stream.time.time", return_value=START_UNIX_MS / 1000
+            "music_assistant.providers.airplay.stream.cli_clock_time",
+            return_value=START_UNIX_MS / 1000,
         ),
         patch(
             "music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock
@@ -1481,13 +1501,39 @@ async def test_start_progress_anchor_uses_rebased_position() -> None:
         patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send,
         patch("music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock),
         patch(
-            "music_assistant.providers.airplay.stream.time.time",
+            "music_assistant.providers.airplay.stream.cli_clock_time",
             return_value=START_UNIX_MS / 1000 + 2,
         ),
     ):
         await stream._send_start_progress_anchor(START_UNIX_MS, 0)
     send.assert_awaited_once_with("PROGRESS=14")
     assert stream._last_progress_sent == 14
+
+
+@pytest.mark.asyncio
+async def test_start_progress_anchor_runs_on_the_cliairplay_timeline() -> None:
+    """The anchor waits for and measures the audible start on the timeline, not the wall clock."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    stream._start_position = 12.0
+    audible = START_UNIX_MS / 1000
+    with (
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send,
+        patch(
+            "music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep,
+        # audible 1.5 s from now, and played for 3 s once the wait is over
+        patch(
+            "music_assistant.providers.airplay.stream.cli_clock_time",
+            side_effect=[audible - 1.5, audible + 3],
+        ),
+        # a host clock off the true rate has put the wall clock minutes apart
+        patch("music_assistant.providers.airplay.stream.time.time", return_value=audible + 239),
+    ):
+        await stream._send_start_progress_anchor(START_UNIX_MS, 0)
+    sleep.assert_awaited_once_with(pytest.approx(1.6))
+    send.assert_awaited_once_with("PROGRESS=15")
 
 
 @pytest.mark.asyncio
@@ -1501,7 +1547,7 @@ async def test_start_progress_anchor_without_an_acked_instant() -> None:
         patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send,
         patch("music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock),
         patch(
-            "music_assistant.providers.airplay.stream.time.time",
+            "music_assistant.providers.airplay.stream.cli_clock_time",
             return_value=START_UNIX_MS / 1000,
         ),
     ):
@@ -4584,13 +4630,11 @@ async def test_password_preflight_passes_with_password_or_credentials() -> None:
     player = _make_player()
     player.password_required = True
     player.get_setup_value = MagicMock(return_value=None)
-    player.config.get_value = MagicMock(
-        side_effect=lambda key, default=None: "s3cret" if key == CONF_PASSWORD else default
-    )
+    player.device_password = "s3cret"
     AirPlayStream(player)._check_password_preflight()
 
     # credentials alone are enough: the binary's pair-verify leg may still succeed
-    player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.device_password = None
     player.get_setup_value = MagicMock(
         side_effect=lambda key, default=None: (
             "ab" * 96 if key == CONF_AIRPLAY_CREDENTIALS else default
@@ -4633,3 +4677,180 @@ async def test_accepts_audio_ends_with_the_audio_eof() -> None:
         assert not stream.accepts_audio
     finally:
         await cli_proc.close()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_a_speaker_takes_its_set_out_of_the_group() -> None:
+    """A speaker whose process dies leaves the group with its set, which re-joins it."""
+    speaker = _make_player()
+    speaker.player = None
+    airplay_set = MagicMock(protocol_id="apset", synced_to="leader", group_members=[])
+    airplay_set.player.player_id = "plset"
+    airplay_set.provider = speaker.provider
+    speaker.owner = airplay_set
+    leader = MagicMock()
+    leader.group_members = ["leader", "apset", "sibling"]
+    speaker.provider.mass.players.get_protocol.return_value = leader
+
+    stream = await _run_unexpected_process_death(speaker)
+
+    stream._leave_group.assert_called_once_with(leader.player, "plset")  # type: ignore[attr-defined]
+    airplay_set.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
+    speaker.schedule_group_rejoin.assert_not_called()
+    speaker.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+
+
+def test_current_metadata_of_a_speaker_prefers_the_composition_of_its_set() -> None:
+    """A speaker pushes the media its set's player composed, as the media updates do."""
+    speaker = _make_player()
+    speaker.player = None
+    airplay_set = MagicMock()
+    state_media = MagicMock(queue_item_id="item-1", title="Track (Remastered)")
+    airplay_set.player.current_media = state_media
+    speaker.owner = airplay_set
+    stream = AirPlayStream(speaker)
+    stream.session = MagicMock(media=MagicMock(queue_item_id="item-1", title="Track"))
+
+    assert stream._current_metadata() is state_media
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_a_speaker_ends_the_session_of_its_set() -> None:
+    """A set that plays on its own and loses a speaker stops, as a player that lost its stream."""
+    speaker = _make_player()
+    speaker.player = None
+    airplay_set = MagicMock(protocol_id="apset", synced_to=None, group_members=[])
+    speaker.owner = airplay_set
+    session = MagicMock()
+    session.stop = MagicMock(return_value="stop-coro")
+    speaker.provider.mass.create_task = MagicMock()
+
+    stream = AirPlayStream(speaker)
+    stream.session = session
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
+    speaker.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    speaker.provider.mass.create_task.assert_any_call("stop-coro")
+    airplay_set.schedule_group_rejoin.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_speaker_lost_without_a_rejoin_takes_its_set_out_of_its_group_for_good() -> None:
+    """A speaker of a set lost in a group leaves it with its set, without a return lined up."""
+    speaker = _make_player()
+    speaker.player = None
+    airplay_set = MagicMock(protocol_id="apset", synced_to="leader", group_members=[])
+    airplay_set.provider.get_protocol.return_value = MagicMock(group_members=["leader", "apset"])
+    speaker.owner = airplay_set
+    speaker.provider.mass.create_task = MagicMock()
+    stream = AirPlayStream(speaker)
+    stream.session = MagicMock()
+    stream._leave_group = MagicMock(return_value="leave-coro")  # type: ignore[method-assign]
+
+    assert stream.handle_stream_loss(rejoin=False) is False
+
+    speaker.provider.mass.create_task.assert_called_once_with("leave-coro")
+    airplay_set.schedule_group_rejoin.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receiver_closed", [False, True])
+async def test_the_apple_tv_of_a_set_losing_its_stream_leaves_its_speakers_playing(
+    receiver_closed: bool,
+) -> None:
+    """
+    The Apple TV of a set leaves the music alone: no ungroup, no re-join, no state.
+
+    The session decides whether it is added once more: whether another sender took it over.
+    """
+    apple_tv = _make_player()
+    apple_tv.renders_audio = False
+    apple_tv.synced_to = "leader"
+    session = MagicMock()
+    session.end_silent_member = MagicMock(return_value="leave")
+    apple_tv.provider.mass.create_task = MagicMock()
+
+    stream = AirPlayStream(apple_tv)
+    stream.session = session
+    stream._receiver_closed = receiver_closed
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
+    apple_tv.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    session.end_silent_member.assert_called_once_with(apple_tv, taken_over=receiver_closed)
+    apple_tv.provider.mass.create_task.assert_called_once_with("leave")
+    stream._leave_group.assert_not_called()
+    apple_tv.schedule_group_rejoin.assert_not_called()
+    apple_tv.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_no_volume_to_the_apple_tv_of_a_set() -> None:
+    """An AirPlay volume writes the level of the Apple TV, which is not heard: none is sent."""
+    player = _make_player()
+    player.renders_audio = False
+    player.owns_volume = True
+    player.volume_muted = True
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_stereo_pair_losing_the_stream_of_its_first_homepod_stops() -> None:
+    """A pair plays on both of its HomePods or not at all, whichever one lost its stream."""
+    pair = _make_player()
+    pair.speakers = [MagicMock()]
+    session = MagicMock()
+    session.stop = MagicMock(return_value="stop-coro")
+    pair.provider.mass.create_task = MagicMock()
+
+    stream = AirPlayStream(pair)
+    stream.session = session
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
+    pair.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    pair.provider.mass.create_task.assert_any_call("stop-coro")

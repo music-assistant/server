@@ -28,6 +28,9 @@ PLAYER_FEATURES = (
 
 # Source Mapping
 SOURCE_LINEIN = "Line-in"
+# the line-in of a speaker, followed by the id of that speaker: one id on every speaker, so a
+# group member that follows its coordinator finds it in its own list
+SOURCE_LINEIN_OF = f"{SOURCE_LINEIN}@"
 SOURCE_TV = "TV"
 
 # Line-in and TV are the only sources this provider can report or switch to.
@@ -36,13 +39,12 @@ LINEIN_SOURCE_MAPPING = {
     MUSIC_SRC_LINE_IN: SOURCE_LINEIN,
 }
 
-LINEIN_SOURCE_IDS = (SOURCE_TV, SOURCE_LINEIN)
-
 PLAYER_SOURCE_MAP = {
     SOURCE_LINEIN: PlayerSource(
         id=SOURCE_LINEIN,
         name="Line-in",
         passive=False,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
@@ -51,6 +53,7 @@ PLAYER_SOURCE_MAP = {
         id=SOURCE_TV,
         name="TV",
         passive=False,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,

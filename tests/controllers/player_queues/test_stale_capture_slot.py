@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING
@@ -22,13 +21,13 @@ import pytest
 from music_assistant_models.enums import CrossfadeMode, QueueOption, RepeatMode
 
 import music_assistant.controllers.streams.audio as audio_mod
+import music_assistant.models.music_provider as music_provider_mod
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from tests.controllers.streams.stream_slot_rig import (
     OTHER_QUEUE_ID,
     PCM_FORMAT,
     QUEUE_ID,
     SESSION_ID,
-    SingleStreamProvider,
     SlotRig,
     TwoStreamProvider,
     UnlimitedProvider,
@@ -40,17 +39,6 @@ from tests.controllers.streams.stream_slot_rig import (
 
 if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
-
-
-@pytest.fixture
-async def rig(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> AsyncGenerator[SlotRig]:
-    """Build the rig with every music source open to the queue's playback."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
-    rig = SlotRig(getattr(request, "param", SingleStreamProvider))
-    yield rig
-    await rig.close()
 
 
 # --- the track that plays next after a queue change gets the slot
@@ -765,8 +753,16 @@ async def test_a_track_a_speaker_asks_for_out_of_turn_gets_its_audio(rig: SlotRi
     await stream.aclose()
 
 
-async def test_a_stale_capture_gives_its_slot_to_another_queue(rig: SlotRig) -> None:
-    """A capture nobody needs makes way for playback on another player of the same account."""
+async def test_a_stale_capture_gives_its_slot_to_another_queue(
+    rig: SlotRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A capture nobody needs makes way for playback on another player of the same account.
+
+    Its slot is kept for its own queue first, which goes on playing from that account, and
+    goes to the other player once that queue did not come for it.
+    """
+    monkeypatch.setattr(music_provider_mod, "STREAM_SLOT_RESERVATION", 0.2)
     playing, _prepared, _later = rig.play("track 0", "track 1", "track 2")
     stale_capture = await rig.prepare_next(playing)
     await rig.queues._enqueue_with_option(
@@ -774,7 +770,7 @@ async def test_a_stale_capture_gives_its_slot_to_another_queue(rig: SlotRig) -> 
     )
     (other_track,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
 
-    buffer = await rig.ask(other_track)
+    buffer = await rig.ask(other_track, wait=30)
 
     assert buffer is not None
     assert rig.fills(buffer)

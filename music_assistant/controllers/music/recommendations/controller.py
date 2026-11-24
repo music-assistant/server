@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.media_items import BrowseFolder, UniqueList
+from music_assistant_models.media_items import Audiobook, BrowseFolder, PodcastEpisode, UniqueList
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.music.constants import (
@@ -72,7 +72,11 @@ class RecommendationsController:
         return [item for sublist in zip_longest(*rows_per_source) for item in sublist if item]
 
     async def get_recommendation_items(
-        self, provider: str, item_id: str, providers: list[str] | None = None
+        self,
+        provider: str,
+        item_id: str,
+        providers: list[str] | None = None,
+        hide_played: bool = False,
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Get the items for a single recommendation row.
@@ -82,8 +86,10 @@ class RecommendationsController:
         :param providers: Restrict items to those reachable through one of these provider
             instance ids (OR semantics). Only honored on rows that advertise
             `supports_provider_filter`; ignored on other rows for backwards compatibility.
+        :param hide_played: Leave out the podcast episodes and audiobooks that are fully played.
+            Rows that advertise `supports_hide_played` are the ones to offer this on.
         """
-        return await self._get_row_items(provider, item_id, providers)
+        return await self._get_row_items(provider, item_id, providers, hide_played=hide_played)
 
     async def browse(
         self, sub_path: str, random_seed: int | None = None
@@ -142,6 +148,7 @@ class RecommendationsController:
         providers: list[str] | None = None,
         limit: int | None = None,
         random_seed: int | None = None,
+        hide_played: bool = False,
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Get the items for a single recommendation row, empty when it can not be fetched.
@@ -152,6 +159,7 @@ class RecommendationsController:
             instance ids, on rows that support it.
         :param limit: The maximum number of items a library row returns, None for its default.
         :param random_seed: Keep the order of a random row stable across pages.
+        :param hide_played: Leave out the podcast episodes and audiobooks that are fully played.
         """
         # the rows listing leaves out the music sources the user may not see, and only lists
         # providers declaring the feature; a row of any other provider does not exist, nor
@@ -168,15 +176,18 @@ class RecommendationsController:
             async with asyncio.timeout(RECOMMENDATIONS_ITEMS_TIMEOUT):
                 if isinstance(prov, LibraryRecommendationsProvider):
                     if limit is None:
-                        return await prov.get_recommendation_items(item_id, providers=providers)
-                    return await prov.get_recommendation_items(
-                        item_id, providers=providers, limit=limit, random_seed=random_seed
-                    )
+                        items = await prov.get_recommendation_items(item_id, providers=providers)
+                    else:
+                        items = await prov.get_recommendation_items(
+                            item_id, providers=providers, limit=limit, random_seed=random_seed
+                        )
+                    return _without_played(items) if hide_played else items
                 # external provider rows don't support provider filtering, a limit or a
                 # seed: their SPI signature is unchanged, so those are ignored here
                 items = await cast("RecommendationsMixin", prov).get_recommendation_items(item_id)
             # a plugin or metadata row can list items on any music source
-            return UniqueList(visible_items(self.mass, items, get_current_user()))
+            items = UniqueList(visible_items(self.mass, items, get_current_user()))
+            return _without_played(items) if hide_played else items
         except TimeoutError:
             self.logger.warning(
                 "Timeout while fetching recommendation items for %s/%s; skipping",
@@ -224,3 +235,14 @@ def _row_seed(provider: str, item_id: str) -> int:
     """
     digest = hashlib.blake2s(f"{provider}/{item_id}".encode(), digest_size=4).digest()
     return int.from_bytes(digest, "big")
+
+
+def _without_played(
+    items: UniqueList[MediaItemType | ItemMapping | BrowseFolder],
+) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+    """Return the items without the podcast episodes and audiobooks that are fully played."""
+    return UniqueList(
+        item
+        for item in items
+        if not (isinstance(item, PodcastEpisode | Audiobook) and item.fully_played)
+    )

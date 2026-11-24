@@ -68,6 +68,15 @@ if TYPE_CHECKING:
 
 F = TypeVar("F", bound=Callable[..., Any])
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_AUDIOBOOKS,
+    ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_PODCASTS_EDIT,
+    ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.SEARCH,
+}
+
 
 def _unwrap_single_exception(err: ExceptionGroup[Exception]) -> BaseException:
     """
@@ -210,7 +219,9 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
 
         Accepts the same args/kwargs as the base MusicProvider constructor.
         """
-        super().__init__(mass=mass, manifest=manifest, config=config)
+        super().__init__(
+            mass=mass, manifest=manifest, config=config, supported_features=SUPPORTED_FEATURES
+        )
         self._api: StorytelHelper | None = None
         # Whether to use Kids mode for bookmarks
         self._kids_mode: bool = bool(self.get_setup_value(CONF_KIDS_MODE))
@@ -223,18 +234,6 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         if self._api is None:
             raise SetupFailedError("Storytel provider API not initialized")
         return self._api
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the supported features by this provider."""
-        return {
-            ProviderFeature.LIBRARY_AUDIOBOOKS,
-            ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
-            ProviderFeature.LIBRARY_PODCASTS,
-            ProviderFeature.LIBRARY_PODCASTS_EDIT,
-            ProviderFeature.RECOMMENDATIONS,
-            ProviderFeature.SEARCH,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

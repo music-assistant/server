@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from itertools import groupby
 from time import time
 from typing import TYPE_CHECKING, Any, Final, cast
+from urllib.parse import urlencode
 
 import aiohttp
 from music_assistant_models.auth import Scope
@@ -40,6 +42,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT
 from music_assistant.controllers.music.helpers import (
     fill_track_from_recording,
     metadata_for_update,
@@ -66,12 +69,14 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.logging import log_once
 from music_assistant.helpers.uri import parse_uri, share_url_provider
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
     MusicProvider,
     provider_fetch_log_level,
 )
+from music_assistant.providers.musicbrainz.constants import MAGICISRC_URL
 from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
     relation_urls,
@@ -87,7 +92,7 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Hashable, Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
@@ -135,6 +140,8 @@ class AlbumsController(MediaControllerBase[Album]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
+        # the hints already logged, so each is logged once
+        self._logged_hints: set[Hashable] = set()
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
@@ -1202,43 +1209,78 @@ class AlbumsController(MediaControllerBase[Album]):
             return False
         return True
 
+    def _is_musicbrainz_duplicate(self, db_item: Album, holder: Album) -> bool:
+        """Return True if the album holding a linked album is not identified as another release."""
+        # an identified album is the release whose links are being added
+        return bool(db_item.mbid) and holder.mbid in (None, db_item.mbid)
+
     async def _link_tracks_to_release(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
     ) -> set[str]:
-        """Fill the recording ids and ISRCs of a release in on the library tracks at its positions."""
-        recordings = {
-            (medium.position, track.position): track.recording
+        """
+        Fill the recording ids and ISRCs of a release in on the library tracks at its positions.
+
+        The ISRCs the tracks have that their recordings lack are logged once per release.
+
+        :return: The ids of the library tracks merged away into another one.
+        """
+        by_position = {
+            (medium.position, track.position): track
             for medium in release.media
             for track in medium.tracks
             if track.position and track.recording
         }
-        in_order = await self._recordings_in_order(album, db_tracks, release)
+        # MagicISRC numbers the tracks of a release across its mediums
+        track_numbers = {
+            track.id: number for number, track in enumerate(_release_tracks(release), 1)
+        }
+        in_order = await self._release_tracks_in_order(album, db_tracks, release)
+        missing_isrcs: dict[int, str] = {}
         merged: set[str] = set()
         for db_track in db_tracks:
             if db_track.item_id in merged:
                 continue
-            if (recording := in_order.get(db_track.item_id)) is None:
+            if (release_track := in_order.get(db_track.item_id)) is None:
                 # a digital release stores its single disc as disc 0 or 1
-                recording = recordings.get((db_track.disc_number or 1, db_track.track_number))
-                if recording is None or not _recording_matches_track(recording, db_track):
+                release_track = by_position.get((db_track.disc_number or 1, db_track.track_number))
+                if release_track is None or not _recording_matches_track(release_track, db_track):
                     continue
+            if (recording := release_track.recording) is None:
+                continue
+            if db_track.mbid in (None, recording.id) and (
+                missing := sorted(_isrcs(db_track) - _recording_isrcs(recording))
+            ):
+                # MagicISRC accepts one ISRC per track position
+                missing_isrcs[track_numbers[release_track.id]] = missing[0]
             changed = fill_track_from_recording(db_track, recording)
             if not changed and db_track.metadata.last_musicbrainz_lookup is not None:
                 continue
             db_track.metadata.last_musicbrainz_lookup = int(time())
             merged |= await self.mass.music.tracks.merge_recording_duplicates(db_track)
             await self.mass.music.tracks.update_item_in_library(db_track.item_id, db_track)
+        if missing_isrcs:
+            log_once(
+                self.logger,
+                self._logged_hints,
+                ("release_isrcs", release.id),
+                logging.DEBUG,
+                'Album "%s" has ISRCs MusicBrainz lacks, add them all at once with MagicISRC: %s?%s',
+                release.title,
+                MAGICISRC_URL,
+                urlencode(
+                    {
+                        "mbid": release.id,
+                        **{f"isrc{number}": isrc for number, isrc in sorted(missing_isrcs.items())},
+                    }
+                ),
+            )
         return merged
 
-    async def _recordings_in_order(
+    async def _release_tracks_in_order(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
-    ) -> dict[str, MusicBrainzRecording]:
-        """Return the release recording per library track of a service lining up with the release."""
-        release_tracks = [
-            track
-            for medium in sorted(release.media, key=lambda medium: medium.position)
-            for track in medium.tracks
-        ]
+    ) -> dict[str, MusicBrainzTrack]:
+        """Return the release track per library track of a service lining up with the release."""
+        release_tracks = _release_tracks(release)
         streaming = {
             x.provider_instance
             for track in db_tracks
@@ -1259,7 +1301,7 @@ class AlbumsController(MediaControllerBase[Album]):
         ]
         domains = {x.provider_domain for track in streaming_tracks for x in track.provider_mappings}
         linked_albums = await _linked_albums(release)
-        in_order: dict[str, MusicBrainzRecording] = {}
+        in_order: dict[str, MusicBrainzTrack] = {}
         for domain in sorted(domains):
             service_tracks = sorted(
                 (
@@ -1284,7 +1326,11 @@ class AlbumsController(MediaControllerBase[Album]):
             if differing := [
                 number for number, agrees in enumerate(agreeing, 1) if agrees is False
             ]:
-                self.logger.debug(
+                log_once(
+                    self.logger,
+                    self._logged_hints,
+                    ("release_lengths", release.id, domain),
+                    logging.DEBUG,
                     (
                         'MusicBrainz links album "%s" on %s to release '
                         "https://musicbrainz.org/release/%s, but the lengths of tracks %s (counted "
@@ -1310,7 +1356,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 recording = release_track.recording
                 # the order alone does not outweigh another recording id the track holds
                 if recording and track.mbid in (None, recording.id):
-                    in_order.setdefault(track.item_id, recording)
+                    in_order.setdefault(track.item_id, release_track)
         return in_order
 
     async def _link_tracks_to_provider_album(
@@ -1389,7 +1435,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 if db_album.artists
                 else db_album.name
             )
-            search_results = await self.search(search_str, provider.instance_id)
+            search_results = await self.search(
+                search_str, provider.instance_id, limit=MATCH_SEARCH_LIMIT
+            )
         for search_result_item in search_results:
             if not search_result_item.available:
                 continue
@@ -1775,34 +1823,7 @@ class AlbumsController(MediaControllerBase[Album]):
         An empty set of artists never clears the stored rows: an album that lost its
         artists disappears from their discography and is skipped by provider matching.
         """
-        all_artists = list(artists)
-        if not all_artists:
-            if overwrite:
-                # a caller asking to replace all artists with none is a bug,
-                # so keep the stored rows and make the attempt visible
-                self.logger.warning("Ignoring request to clear all artists of album id %s", db_id)
-            return
-        if overwrite:
-            # on overwrite, clear the album_artists table first
-            await self.mass.music.database.delete(
-                DB_TABLE_ALBUM_ARTISTS,
-                {
-                    "album_id": db_id,
-                },
-            )
-        for artist in all_artists:
-            await self._set_album_artist(db_id, artist=artist)
-
-    async def _set_album_artist(self, db_id: int, artist: Artist | ItemMapping) -> None:
-        """Store Album Artist info."""
-        # write (or update) record in album_artists table
-        await self.mass.music.database.insert_or_replace(
-            DB_TABLE_ALBUM_ARTISTS,
-            {
-                "album_id": db_id,
-                "artist_id": await self.mass.music.artists.get_or_add_library_artist_id(artist),
-            },
-        )
+        await self._set_main_artists(DB_TABLE_ALBUM_ARTISTS, "album_id", db_id, artists, overwrite)
 
     async def _set_album_track(self, db_id: int, db_track_id: int, track: Track) -> None:
         """Store Album Track info."""
@@ -1923,13 +1944,32 @@ def _release_group_ids(
     }
 
 
-def _recording_matches_track(recording: MusicBrainzRecording, track: Track) -> bool:
-    """Return whether a release's recording is the given library track, by title and length."""
-    if not compare_strings(recording.title, track.name, strict=False):
+def _release_tracks(release: MusicBrainzRelease) -> list[MusicBrainzTrack]:
+    """Return the tracks of a release across its mediums, in order."""
+    return [
+        track
+        for medium in sorted(release.media, key=lambda medium: medium.position)
+        for track in medium.tracks
+    ]
+
+
+def _recording_isrcs(recording: MusicBrainzRecording) -> set[str]:
+    """Return a MusicBrainz recording's valid ISRCs in canonical form."""
+    return {
+        normalize_external_id(ExternalID.ISRC, x) for x in recording.isrcs or [] if is_valid_isrc(x)
+    }
+
+
+def _recording_matches_track(release_track: MusicBrainzTrack, track: Track) -> bool:
+    """Return whether a release track's recording is the given library track, by title or ISRC."""
+    recording = release_track.recording
+    if recording is None or _lengths_agree(release_track, track) is False:
         return False
-    if recording.length is None or not track.duration:
-        return True
-    return abs(recording.length / 1000 - track.duration) <= _TRACK_DURATION_TOLERANCE
+    # a streaming title may name only the movement ("I. Allegro con brio") where MusicBrainz
+    # names the work as well, so a shared ISRC identifies the recording too
+    return compare_strings(recording.title, track.name, strict=False) or bool(
+        _recording_isrcs(recording) & _isrcs(track)
+    )
 
 
 async def _linked_albums(release: MusicBrainzRelease) -> set[tuple[str, str]]:

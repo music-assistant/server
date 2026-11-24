@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from aioslimproto.models import ButtonCode, RemoteCode, SlimEvent
@@ -27,16 +27,18 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
-    CONF_OUTPUT_CODEC,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
 )
 from music_assistant.providers.squeezelite.constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
+    CONF_STORED_POWER,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
+    REPEATMODE_MAP,
 )
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
+from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
 from tests.common import use_real_create_task
 
 if TYPE_CHECKING:
@@ -63,15 +65,6 @@ async def test_squeezelite_prefers_wav_for_live_sources_by_default() -> None:
     )
 
 
-def _member_player(*, prefer_wav_for_live_sources: bool) -> MagicMock:
-    """Return a mocked member player with the given effective WAV preference."""
-    member = MagicMock()
-    member.config.get_value.side_effect = lambda key, default=None: (
-        prefer_wav_for_live_sources if key == CONF_PREFER_WAV_FOR_LIVE_SOURCES else default
-    )
-    return member
-
-
 def _player_with_mocked_mass() -> tuple[SqueezelitePlayer, MagicMock]:
     """Return an uninitialized SqueezelitePlayer alongside its mocked mass instance."""
     player = SqueezelitePlayer.__new__(SqueezelitePlayer)
@@ -80,46 +73,6 @@ def _player_with_mocked_mass() -> tuple[SqueezelitePlayer, MagicMock]:
     player._player = None
     player._provider = MagicMock(get_protocol=lambda pid: mass.players.get_protocol(pid))
     return player, mass
-
-
-def test_group_audio_source_uses_wav_when_member_prefers_it() -> None:
-    """A sync group member that opted into low-latency WAV gets WAV for AudioSource media."""
-    player, mass = _player_with_mocked_mass()
-    mass.players.get_protocol.return_value = _member_player(prefer_wav_for_live_sources=True)
-
-    codec = player._get_member_output_codec(
-        "member_1", PlayerMedia(uri="fake://x", media_type=MediaType.AUDIO_SOURCE)
-    )
-
-    assert codec == "wav"
-    mass.config.get_protocol_value.assert_not_called()
-
-
-def test_group_audio_source_falls_back_to_output_codec_when_disabled() -> None:
-    """A sync group member that disabled the WAV preference uses its configured output codec."""
-    player, mass = _player_with_mocked_mass()
-    mass.players.get_protocol.return_value = _member_player(prefer_wav_for_live_sources=False)
-    mass.config.get_protocol_value.return_value = "aac"
-
-    codec = player._get_member_output_codec(
-        "member_1", PlayerMedia(uri="fake://x", media_type=MediaType.AUDIO_SOURCE)
-    )
-
-    assert codec == "aac"
-    mass.config.get_protocol_value.assert_called_once_with("member_1", CONF_OUTPUT_CODEC, "flac")
-
-
-def test_group_regular_track_ignores_wav_preference() -> None:
-    """Regular track playback in a sync group always uses the member's configured codec."""
-    player, mass = _player_with_mocked_mass()
-    mass.config.get_protocol_value.return_value = "flac"
-
-    codec = player._get_member_output_codec(
-        "member_1", PlayerMedia(uri="fake://x", media_type=MediaType.TRACK)
-    )
-
-    assert codec == "flac"
-    mass.players.get_protocol.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -139,11 +92,10 @@ async def test_live_streams_start_on_a_smaller_buffer(
     mass.player_queues.get.return_value = MagicMock(
         repeat_mode=RepeatMode.ONE, shuffle_enabled=False
     )
-    slimplayer = MagicMock()
+    player.client = slimplayer = MagicMock()
     slimplayer.play_url = AsyncMock()
 
     await player._handle_play_url_for_slimplayer(
-        slimplayer,
         url="http://127.0.0.1:8097/stream.flac",
         media=PlayerMedia(uri="fake://x", media_type=media_type, source_id="queue_1"),
     )
@@ -185,194 +137,62 @@ def test_is_protocol_only_device(device_model: str, expected: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    ("url", "mime_type", "expected"),
+    ("url", "expected"),
     [
-        # sync group member urls carry the codec in the query string, not the path
-        (
-            "http://127.0.0.1:8097/slimproto/multi?player_id=x&fmt=flac&child_player_id=y",
-            "audio/flac",
-            "audio/flac",
-        ),
-        (
-            "http://127.0.0.1:8097/slimproto/multi?player_id=x&fmt=mp3&child_player_id=y",
-            "audio/mpeg",
-            "audio/mpeg",
-        ),
-        # without an explicit mime type it is derived from the url extension
-        ("http://127.0.0.1:8097/stream.flac", None, "audio/flac"),
+        ("http://127.0.0.1:8097/single/s1/queue_1/q2/p1.flac", "audio/flac"),
+        ("http://127.0.0.1:8097/flow/s1/queue_1/q2/p1.mp3?seek=4", "audio/mpeg"),
     ],
 )
-async def test_play_url_mime_type_is_explicit_for_sync_members(
-    url: str, mime_type: str | None, expected: str
-) -> None:
-    """Sync group member urls pass the member codec mime type instead of deriving it."""
+async def test_play_url_mime_type_follows_the_url_extension(url: str, expected: str) -> None:
+    """The player is told the codec of the stream its url names."""
     player, mass = _player_with_mocked_mass()
     mass.player_queues.get.return_value = None
-    slimplayer = MagicMock()
+    player.client = slimplayer = MagicMock()
     slimplayer.play_url = AsyncMock()
 
     await player._handle_play_url_for_slimplayer(
-        slimplayer,
         url=url,
         media=PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1"),
-        mime_type=mime_type,
     )
 
     assert slimplayer.play_url.call_args.kwargs["mime_type"] == expected
 
 
 @pytest.mark.parametrize(
-    ("url", "is_group_playback", "duration"),
+    ("media_type", "duration", "stream_duration", "expected"),
     [
-        ("http://127.0.0.1:8097/single/s1/queue_1/q2/p1.flac", False, 4),
-        ("http://127.0.0.1:8097/flow/s1/queue_1/q2/p1.flac", False, 198),
-        (
-            "http://127.0.0.1:8097/slimproto/multi?player_id=x&fmt=flac&child_player_id=y",
-            True,
-            198,
-        ),
+        (MediaType.TRACK, 198, 4, 198),
+        (MediaType.TRACK, None, 4, 4),
+        (MediaType.RADIO, None, None, None),
     ],
-    ids=["single_item", "flow", "sync_group"],
+    ids=["track_after_a_seek", "stream_length_only", "radio"],
 )
-async def test_only_a_single_item_stream_gets_the_seconds_left_after_a_seek(
-    url: str, is_group_playback: bool, duration: int
+async def test_a_stream_gets_the_whole_tracks_duration_also_after_a_seek(
+    media_type: MediaType, duration: int | None, stream_duration: int | None, expected: int | None
 ) -> None:
-    """A flow stream, also the one a sync group plays, carries on into the next track."""
+    """The position reported is the one in the track, so the duration is the track's."""
     player, mass = _player_with_mocked_mass()
     mass.player_queues.get.return_value = None
-    slimplayer = MagicMock()
+    player.client = slimplayer = MagicMock()
     slimplayer.play_url = AsyncMock()
-    slimplayer.pause = AsyncMock()
     media = PlayerMedia(
         uri="fake://x",
-        media_type=MediaType.TRACK,
+        media_type=media_type,
         source_id="queue_1",
-        duration=198,
-        stream_duration=4,
+        duration=duration,
+        stream_duration=stream_duration,
     )
 
     await player._handle_play_url_for_slimplayer(
-        slimplayer, url=url, media=media, is_group_playback=is_group_playback
+        url="http://127.0.0.1:8097/single/s1/queue_1/q2/p1.flac", media=media
     )
 
-    assert slimplayer.play_url.call_args.kwargs["metadata"]["duration"] == duration
-
-
-async def test_grouped_play_media_passes_per_member_mime_type() -> None:
-    """Grouped play_media gives each sync member its own codec's mime type, not a derived one."""
-    player, mass = _player_with_mocked_mass()
-    player._protocol_id = "leader"
-    player._attr_group_members = ["leader", "member_flac", "member_mp3"]
-    player.multi_client_stream = None
-    player.client = MagicMock(elapsed_seconds=0)
-    use_real_create_task(mass)
-
-    mass.player_queues.get_item.return_value = None
-    mass.player_queues.get.return_value = None
-    mass.streams.audio.select_flow_pcm_format = AsyncMock()
-    mass.streams.base_url = "http://127.0.0.1:8097"
-
-    member_codecs = {"member_flac": "flac", "member_mp3": "mp3"}
-    clients = []
-    for member_id in ("member_flac", "member_mp3"):
-        client = MagicMock()
-        client.player_id = member_id
-        client.play_url = AsyncMock()
-        client.pause = AsyncMock()
-        clients.append(client)
-
-    media = PlayerMedia(
-        uri="fake://x",
-        media_type=MediaType.TRACK,
-        source_id="queue_1",
-        queue_item_id="item_1",
-    )
-
-    with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch("music_assistant.providers.squeezelite.player.MultiClientStream"),
-        patch.object(player, "_get_sync_clients", return_value=clients),
-        patch.object(
-            player,
-            "_get_member_output_codec",
-            side_effect=lambda member_player_id, _media: member_codecs[member_player_id],
-        ),
-    ):
-        await player.play_media(media)
-
-    flac_client, mp3_client = clients
-    assert flac_client.play_url.call_args.kwargs["mime_type"] == "audio/flac"
-    assert mp3_client.play_url.call_args.kwargs["mime_type"] == "audio/mpeg"
-
-
-async def test_regroup_supersedes_pending_resume() -> None:
-    """A member removed and re-added while the leader is busy restarts the leader once."""
-    player, mass = _player_with_mocked_mass()
-    player._protocol_id = "leader"
-    player._attr_group_members = ["leader", "member"]
-    player._attr_playback_state = PlaybackState.PLAYING
-    # the protocol is attached to a player with an id of its own, whose queue plays
-    player._player = MagicMock(player_id="pl_leader")
-    player._player.current_media = PlayerMedia(uri="fake://x")
-    use_real_create_task(mass)
-    # the member as the slimproto client of the group and as the protocol it is attached as
-    member = MagicMock()
-    member.player_id = "member"
-    member.state = SlimPlayerState.STOPPED
-    member.client.state = SlimPlayerState.STOPPED
-    mass.players.get_protocol.return_value = member
-    # the playback lock an announcement holds on the leader while it plays
-    leader_busy = asyncio.Event()
-    resumed: list[str] = []
-
-    async def _cmd_resume(player_id: str) -> None:
-        await leader_busy.wait()
-        resumed.append(player_id)
-
-    mass.players.cmd_resume = _cmd_resume
-
-    with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(player, "_get_sync_clients", return_value=[member]),
-        patch.object(player, "update_state"),
-    ):
-        await player.set_members(player_ids_to_remove=["member"])
-        await player.set_members(player_ids_to_add=["member"])
-        leader_busy.set()
-        await asyncio.gather(*mass._tracked_tasks.values(), return_exceptions=True)
-
-    assert resumed == ["pl_leader"]
-
-
-async def test_set_members_removes_several_members_at_once() -> None:
-    """All members passed in one removal call leave the group and are stopped."""
-    player, _mass = _player_with_mocked_mass()
-    player._protocol_id = "leader"
-    player._attr_group_members = ["leader", "member_1", "member_2", "member_3"]
-    player.client = MagicMock(player_id="leader")
-    members = {
-        member_id: MagicMock(player_id=member_id, state=SlimPlayerState.PLAYING, stop=AsyncMock())
-        for member_id in ("member_1", "member_2", "member_3")
-    }
-    player._provider = MagicMock()
-    player._provider.slimproto.get_player.side_effect = members.get
-
-    with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(player, "update_state"),
-    ):
-        await player.set_members(player_ids_to_remove=["member_1", "member_2"])
-
-    assert player.group_members == ["leader", "member_3"]
-    members["member_1"].stop.assert_awaited_once()
-    members["member_2"].stop.assert_awaited_once()
-    members["member_3"].stop.assert_not_called()
+    assert slimplayer.play_url.call_args.kwargs["metadata"]["duration"] == expected
 
 
 async def test_play_media_resets_elapsed_anchor() -> None:
     """A new stream does not carry the previous stream's position."""
     player, mass = _player_with_mocked_mass()
-    player.multi_client_stream = None
     player.client = MagicMock(elapsed_seconds=0)
     player._provider = MagicMock(mass=mass)
     player._attr_elapsed_time = 3.9
@@ -380,10 +200,6 @@ async def test_play_media_resets_elapsed_anchor() -> None:
     mass.streams.resolve_stream_url = AsyncMock(return_value="http://127.0.0.1:8097/x.flac")
 
     with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(
-            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
-        ),
         patch.object(player, "_handle_play_url_for_slimplayer", new=AsyncMock()),
         patch.object(player, "update_attributes"),
         patch.object(player, "update_state"),
@@ -396,216 +212,9 @@ async def test_play_media_resets_elapsed_anchor() -> None:
     assert time.time() - player._attr_elapsed_time_last_updated < 1
 
 
-async def test_play_media_clears_a_stale_resume_state() -> None:
-    """A new stream neither resumes from an older pause nor restarts on its first resume."""
-    player, mass = _player_with_mocked_mass()
-    player.multi_client_stream = None
-    player.client = MagicMock(elapsed_seconds=0)
-    player._provider = MagicMock(mass=mass)
-    player._paused_at = 42.0
-    player._restream_needed = True
-    mass.streams.resolve_stream_url = AsyncMock(return_value="http://127.0.0.1:8097/x.flac")
-
-    with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(
-            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
-        ),
-        patch.object(player, "_handle_play_url_for_slimplayer", new=AsyncMock()),
-        patch.object(player, "update_attributes"),
-        patch.object(player, "update_state"),
-    ):
-        await player.play_media(
-            PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
-        )
-
-    assert player._paused_at == 0.0
-    assert player._restream_needed is False
-
-
-async def test_a_paused_group_resumes_in_sync_from_its_own_pause_only() -> None:
-    """The pause position is used for the resume after that pause, not for a later one."""
-    player, mass = _player_with_mocked_mass()
-    use_real_create_task(mass)
-    player._restream_needed = False
-    player._paused_at = 42.0
-    sync_group = MagicMock(resume=AsyncMock())
-    player._sync_group = sync_group
-    clients = [MagicMock(play=AsyncMock()), MagicMock(play=AsyncMock())]
-
-    with (
-        patch.object(
-            SqueezelitePlayer,
-            "group_members",
-            new_callable=PropertyMock,
-            return_value=["leader", "member"],
-        ),
-        patch.object(player, "_group_needs_restream", return_value=False),
-        patch.object(player, "_get_sync_clients", return_value=clients),
-    ):
-        await player.play()
-        # a pause from a device button bypasses pause(), so no new pause position
-        await player.play()
-
-    sync_group.resume.assert_awaited_once_with(clients, 42.0)
-    for client in clients:
-        client.play.assert_awaited_once()
-
-
-async def test_repeated_play_while_restreaming_restarts_the_group_once() -> None:
-    """A second play before the new stream exists replaces the pending restart."""
-    player, mass = _player_with_mocked_mass()
-    player._protocol_id = "leader"
-    # the protocol is attached to a player with an id of its own, whose queue restarts
-    player._player = MagicMock(player_id="pl_leader")
-    player._restream_needed = True
-
-    with patch.object(
-        SqueezelitePlayer,
-        "group_members",
-        new_callable=PropertyMock,
-        return_value=["leader", "member"],
-    ):
-        await player.play()
-
-    mass.players.cmd_resume.assert_called_once_with("pl_leader")
-    assert mass.create_task.call_args.kwargs == {
-        "task_id": "squeezelite_regroup_resume_leader",
-        "abort_existing": True,
-    }
-
-
-async def test_a_group_changed_while_paused_restarts_the_player_of_its_leader() -> None:
-    """A play after a member joined a paused group restarts the leader's player, not a resume."""
-    player, mass = _player_with_mocked_mass()
-    player._protocol_id = "leader"
-    player._attr_group_members = ["leader", "member"]
-    player._attr_playback_state = PlaybackState.PAUSED
-    player._restream_needed = False
-    player._paused_at = 42.0
-    # the protocol is attached to a player with an id of its own, whose queue is paused
-    player._player = MagicMock(player_id="pl_leader")
-    player._player.current_media = PlayerMedia(uri="fake://x")
-    sync_group = MagicMock(resume=AsyncMock())
-    player._sync_group = sync_group
-    joining = MagicMock()
-    joining.client.state = SlimPlayerState.STOPPED
-    mass.players.get_protocol.return_value = joining
-
-    with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(player, "_group_needs_restream", return_value=False),
-        patch.object(player, "_get_sync_clients", return_value=[]),
-        patch.object(player, "update_state"),
-    ):
-        await player.set_members(player_ids_to_add=["joining"])
-        await player.play()
-
-    mass.players.cmd_resume.assert_called_once_with("pl_leader")
-    sync_group.resume.assert_not_called()
-
-
-@pytest.mark.parametrize(("sync_adjust", "play_delay"), [(30, 30), (None, 0)])
-async def test_sync_delay_setting_is_the_play_delay(
-    sync_adjust: int | None, play_delay: int
-) -> None:
-    """The per-player sync delay setting becomes the player's LMS play delay."""
-    player, _mass = _player_with_mocked_mass()
-    player.client = MagicMock(play_delay=0)
-    config = MagicMock(get_value=MagicMock(return_value=sync_adjust))
-
-    with (
-        patch.object(SqueezelitePlayer, "config", new_callable=PropertyMock, return_value=config),
-        patch.object(player, "_set_preset_items", new=AsyncMock()),
-        patch.object(player, "_set_display", new=AsyncMock()),
-    ):
-        await player.on_config_updated()
-
-    assert player.client.play_delay == play_delay
-
-
-async def test_buffer_ready_starts_the_group_in_sync() -> None:
-    """Once every member has buffered, the group starts at a common instant."""
-    player, _mass = _player_with_mocked_mass()
-    clients = [MagicMock(state=SlimPlayerState.BUFFER_READY) for _ in range(2)]
-    sync_group = MagicMock(start=AsyncMock())
-    player._sync_group = sync_group
-
-    with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(
-            SqueezelitePlayer,
-            "group_members",
-            new_callable=PropertyMock,
-            return_value=["leader", "member"],
-        ),
-        patch.object(player, "_get_sync_clients", side_effect=lambda: iter(clients)),
-        patch("music_assistant.providers.squeezelite.player.asyncio.sleep", new=AsyncMock()),
-    ):
-        await player._handle_buffer_ready()
-
-    sync_group.start.assert_awaited_once_with(clients)
-
-
-async def test_buffer_ready_starts_the_leader_when_its_members_dropped_out() -> None:
-    """A leader left on its own while buffering starts instead of waiting forever."""
-    player, _mass = _player_with_mocked_mass()
-    player.client = leader = MagicMock(
-        state=SlimPlayerState.BUFFER_READY, jiffies=1234, unpause_at=AsyncMock()
-    )
-    sync_group = MagicMock(start=AsyncMock())
-    player._sync_group = sync_group
-
-    with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(
-            SqueezelitePlayer,
-            "group_members",
-            new_callable=PropertyMock,
-            return_value=["leader", "member"],
-        ),
-        patch.object(player, "_get_sync_clients", side_effect=lambda: iter([leader])),
-        patch("music_assistant.providers.squeezelite.player.asyncio.sleep", new=AsyncMock()),
-    ):
-        await player._handle_buffer_ready()
-
-    leader.unpause_at.assert_awaited_once_with(1234)
-    sync_group.start.assert_not_called()
-
-
-def test_sync_members_need_the_stream_of_their_leader() -> None:
-    """Members are moved along when their leader renders through another protocol."""
-    player = SqueezelitePlayer.__new__(SqueezelitePlayer)
-
-    assert player.native_grouping_requires_own_stream is True
-
-
-def test_a_heartbeat_checks_the_group_sync() -> None:
-    """The leader's heartbeat runs the group drift check on all members."""
-    player, mass = _player_with_mocked_mass()
-    clients = [MagicMock(), MagicMock()]
-    sync_group = MagicMock()
-    player._sync_group = sync_group
-
-    with (
-        patch.object(
-            SqueezelitePlayer,
-            "group_members",
-            new_callable=PropertyMock,
-            return_value=["leader", "member"],
-        ),
-        patch.object(player, "_get_sync_clients", return_value=clients),
-    ):
-        player._handle_sync()
-
-    sync_group.check.assert_called_once_with(clients)
-    mass.create_task.assert_called_once_with(sync_group.check.return_value)
-
-
 async def test_play_media_drops_heartbeat_from_before_the_flush() -> None:
     """An old-stream heartbeat that lands before the flush does not survive the restart."""
     player, mass = _player_with_mocked_mass()
-    player.multi_client_stream = None
     player.client = client = MagicMock(elapsed_seconds=0)
     client.play_url = AsyncMock()
     player._provider = MagicMock(mass=mass)
@@ -617,15 +226,9 @@ async def test_play_media_drops_heartbeat_from_before_the_flush() -> None:
 
     mass.streams.resolve_stream_url = _resolve_with_heartbeat
 
-    with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(
-            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
-        ),
-    ):
-        await player.play_media(
-            PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
-        )
+    await player.play_media(
+        PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
+    )
 
     assert player._attr_elapsed_time == 0
 
@@ -643,6 +246,8 @@ def _player_for_volume_restore(
     player, mass = _player_with_mocked_mass()
     player._provider = MagicMock(mass=mass, instance_id="squeezelite_1")
     player.logger = MagicMock()
+    # no power control, so these tests leave the power state alone
+    player._attr_supported_features = set()
     player.client = MagicMock(player_id="p1", muted=False, volume_level=20)
     player.client.stop = AsyncMock()
     player.client.mute = AsyncMock()
@@ -681,22 +286,29 @@ def _player_for_volume_restore(
         ({}, None, DEFAULT_PLAYER_VOLUME),
     ],
 )
-async def test_setup_restores_volume_without_a_valid_cache_entry(
+async def test_connect_restores_volume_without_a_valid_cache_entry(
     stored: dict[str, object],
     legacy_cache: list[object] | None,
     expected_volume: int,
 ) -> None:
-    """Reconnecting restores the last volume even after the cache entry expired."""
-    player, mass = _player_for_volume_restore(stored, legacy_cache)
+    """A reconnecting player starts at its last volume even after the cache entry expired."""
+    _, mass = _player_for_volume_restore(stored, legacy_cache)
+    provider = MagicMock(mass=mass, instance_id="squeezelite_1")
+
+    assert await SqueezelitePlayerProvider._get_initial_volume(provider, "p1") == expected_volume
+
+
+async def test_setup_sends_no_volume() -> None:
+    """The volume goes out once, on connect: a WiiM keeps the first of two quick volume commands."""
+    player, mass = _player_for_volume_restore({CONF_STORED_VOLUME: 35}, None)
 
     with patch.object(player, "update_attributes"):
         await player.setup()
 
     client = cast("MagicMock", player.client)
     client.mute.assert_not_called()
-    client.volume_set.assert_awaited_once_with(expected_volume)
+    client.volume_set.assert_not_called()
     mass.players.register.assert_awaited_once_with(player)
-    assert stored[CONF_STORED_VOLUME] == expected_volume
 
 
 async def test_a_first_connect_stores_the_volume_once_attached() -> None:
@@ -728,6 +340,134 @@ async def test_volume_changed_on_the_player_is_stored() -> None:
         mass.config.set_protocol_value.assert_called_once()
 
 
+def _connecting_player(
+    features: set[PlayerFeature], saved_power: bool | None = None
+) -> tuple[SqueezelitePlayer, MagicMock]:
+    """
+    Return a connecting player whose stored config values are mocked.
+
+    :param features: The supported features of the player.
+    :param saved_power: The power state stored for the player, None when none is stored.
+    """
+    player, mass = _player_with_mocked_mass()
+    stored: dict[str, object] = {CONF_STORED_VOLUME: 50}
+    if saved_power is not None:
+        stored[CONF_STORED_POWER] = saved_power
+    mass.config.get_protocol_value.side_effect = lambda _pid, key, default=None: stored.get(
+        key, default
+    )
+    mass.config.set_protocol_value.side_effect = lambda _pid, key, value: stored.update(
+        {key: value}
+    )
+    client = MagicMock(
+        player_id="p1",
+        connected=True,
+        powered=False,
+        state=SlimPlayerState.STOPPED,
+        current_media=None,
+        device_model="Squeezebox",
+        device_type="touch",
+        device_address="127.0.0.1",
+        volume_level=50,
+        muted=False,
+    )
+    client.name = "Kitchen"
+    client.stop = AsyncMock()
+    client.power = AsyncMock()
+    player.client = client
+    mass.players.register = AsyncMock()
+    mass.players.cmd_power = AsyncMock()
+    player.logger = MagicMock()
+    player._attr_supported_features = features
+    return player, mass
+
+
+def _saved_power_states(mass: MagicMock) -> list[object]:
+    """Return the power states stored, in order."""
+    return [
+        args[2]
+        for args, _kwargs in mass.config.set_protocol_value.call_args_list
+        if args[1] == CONF_STORED_POWER
+    ]
+
+
+@pytest.mark.parametrize("saved_power", [True, None])
+async def test_a_player_that_was_on_or_is_new_comes_up_powered_on(
+    saved_power: bool | None,
+) -> None:
+    """After a boot or a server restart a player that was on, or is new, comes up on."""
+    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power)
+    await player.setup()
+    cast("MagicMock", player.client).power.assert_awaited_once_with(True)
+    mass.players.register.assert_awaited_once_with(player)
+
+
+async def test_powering_on_after_connecting_starts_no_playback() -> None:
+    """The device is powered on itself: Music Assistant's power command would run its auto play."""
+    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=True)
+    await player.setup()
+    mass.players.cmd_power.assert_not_awaited()
+    mass.player_queues.resume.assert_not_called()
+
+
+async def test_a_player_that_was_switched_off_stays_off_after_connecting() -> None:
+    """Rebooting a player does not turn on one that was off, as on LMS."""
+    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=False)
+    await player.setup()
+    cast("MagicMock", player.client).power.assert_not_awaited()
+    mass.players.register.assert_awaited_once_with(player)
+
+
+async def test_a_player_without_power_control_is_not_powered_on() -> None:
+    """Only players that can be powered are asked to, or have a state to restore."""
+    player, _ = _connecting_player(set(), saved_power=True)
+    await player.setup()
+    cast("MagicMock", player.client).power.assert_not_awaited()
+    assert not player._power_tracking
+
+
+async def test_the_power_state_is_saved_when_it_changes_after_connecting() -> None:
+    """Switching a connected player on or off is remembered for the next connection."""
+    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=True)
+    await player.setup()
+    for powered in (True, False):
+        cast("MagicMock", player.client).powered = powered
+        player.update_attributes()
+    assert _saved_power_states(mass) == [True, False]
+
+
+async def test_an_unchanged_power_state_is_not_saved_again() -> None:
+    """Every player event updates the attributes, but only a change is written."""
+    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=True)
+    await player.setup()
+    for _ in range(3):
+        player.update_attributes()
+    assert _saved_power_states(mass) == []
+
+
+async def test_the_state_a_player_starts_with_is_not_saved_over_the_remembered_one() -> None:
+    """A fresh player object is off until restored; that must not overwrite "on"."""
+    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=True)
+    # before setup has restored the state, an event arrives with the player off
+    cast("MagicMock", player.client).powered = True
+    player.update_attributes()
+    cast("MagicMock", player.client).powered = False
+    player.update_attributes()
+    assert _saved_power_states(mass) == []
+
+
+async def test_a_disconnected_player_does_not_save_its_power_state() -> None:
+    """When the connection drops the player reports off, which is not a choice to remember."""
+    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=True)
+    await player.setup()
+    cast("MagicMock", player.client).powered = True
+    player.update_attributes()
+    cast("MagicMock", player.client).powered = False
+    cast("MagicMock", player.client).connected = False
+    player.update_attributes()
+    assert _saved_power_states(mass) == [True]
+
+
 @pytest.mark.parametrize("entry", [CONF_ENTRY_DISPLAY, CONF_ENTRY_VISUALIZATION])
 def test_the_settings_entries_of_a_player_can_be_serialized(entry: ConfigEntry) -> None:
     """The settings page of a player turns its entries into a dict, which a bad default breaks."""
@@ -757,12 +497,71 @@ async def test_the_role_follows_the_device_model(
 
     assert player.role == role
     assert (PlayerFeature.POWER in player.supported_features) is powered_by_client
-    if powered_by_client:
-        client.stop.assert_awaited_once()
-        client.power.assert_not_awaited()
-    else:
-        client.power.assert_awaited_once_with(False)
-        client.stop.assert_not_awaited()
+    client.stop.assert_awaited_once()
+    client.power.assert_not_awaited()
+
+
+def _connected_player(device_model: str = "SqueezeLite") -> tuple[SqueezelitePlayer, MagicMock]:
+    """Return the protocol of a connected client alongside its mocked mass instance."""
+    provider = MagicMock(instance_id="squeezelite")
+    mass = provider.mass
+    mass.config.get_base_protocol_config.return_value = MagicMock()
+    client = MagicMock(device_model=device_model, max_sample_rate=96000, elapsed_seconds=0)
+    client.player_id = "aa:bb:cc:dd:ee:ff"
+    client.play_url = AsyncMock()
+    return SqueezelitePlayer(provider, client.player_id, client), mass
+
+
+@pytest.mark.parametrize("device_model", ["SqueezeLite", "WiiM Player"])
+def test_the_protocol_groups_no_players_itself(device_model: str) -> None:
+    """A group of squeezelite players is one of their Sendspin outputs, never of the protocol."""
+    player, _mass = _connected_player(device_model)
+
+    assert PlayerFeature.SET_MEMBERS not in player.supported_features
+    assert player.can_group_with == set()
+    assert player.group_members == []
+    assert player.synced_to is None
+    assert player.native_grouping_requires_own_stream is False
+
+
+async def test_play_media_plays_the_stream_of_the_player_itself() -> None:
+    """A player on its own gets its own stream, in its own codec, started once it is buffered."""
+    player, mass = _connected_player()
+    mass.player_queues.get.return_value = None
+    mass.streams.resolve_stream_url = AsyncMock(
+        return_value="http://127.0.0.1:8097/single/s1/queue_1/q2/aa:bb:cc:dd:ee:ff.flac"
+    )
+    media = PlayerMedia(
+        uri="library://track/1",
+        media_type=MediaType.TRACK,
+        title="Track",
+        source_id="queue_1",
+        queue_item_id="q2",
+        duration=198,
+    )
+
+    await player.play_media(media)
+
+    mass.streams.resolve_stream_url.assert_awaited_once_with("aa:bb:cc:dd:ee:ff", media)
+    cast("MagicMock", player.client).play_url.assert_awaited_once_with(
+        url="http://127.0.0.1:8097/single/s1/queue_1/q2/aa:bb:cc:dd:ee:ff.flac",
+        mime_type="audio/flac",
+        metadata={
+            "item_id": "library://track/1",
+            "title": "Track",
+            "album": None,
+            "artist": None,
+            "image_url": None,
+            "duration": 198,
+            "source_id": "queue_1",
+            "queue_item_id": "q2",
+        },
+        enqueue=False,
+        send_flush=True,
+        autostart=False,
+        stream_threshold=200,
+        output_threshold=20,
+    )
 
 
 # ---------------------------------------------------------------- Sendspin bridge
@@ -777,67 +576,37 @@ def _player_with_bridge(*, owns_stream: bool = True) -> tuple[SqueezelitePlayer,
 
 
 @pytest.mark.parametrize("owns_stream", [True, False])
-def test_a_stream_of_the_bridge_is_started_by_the_bridge(owns_stream: bool) -> None:
+async def test_a_stream_of_the_bridge_is_started_by_the_bridge(owns_stream: bool) -> None:
     """The bridge starts its stream at an instant of its timeline, the player would start it now."""
     player, _bridge = _player_with_bridge(owns_stream=owns_stream)
+    use_real_create_task(cast("MagicMock", player.mass))
+    client = cast("MagicMock", player.client)
+    client.jiffies = 1234
+    client.unpause_at = AsyncMock()
     event = SlimEvent(type=SlimEventType.PLAYER_BUFFER_READY, player_id="p1")
 
-    with patch.object(player, "_handle_buffer_ready", new=MagicMock()) as handle_buffer_ready:
-        player.handle_slim_event(event)
+    player.handle_slim_event(event)
+    await asyncio.sleep(0)
 
-    assert handle_buffer_ready.call_count == (0 if owns_stream else 1)
-
-
-@pytest.mark.parametrize("members_left", [1, 2])
-async def test_a_group_start_that_waits_leaves_the_player_to_its_bridge(members_left: int) -> None:
-    """A bridge that takes the player over while its sync group buffers decides its start."""
-    player, bridge = _player_with_bridge(owns_stream=False)
-    player.client = leader = MagicMock(
-        state=SlimPlayerState.BUFFER_READY, jiffies=1234, unpause_at=AsyncMock()
-    )
-    clients = [leader, MagicMock(state=SlimPlayerState.BUFFER_READY)][:members_left]
-    player._sync_group = sync_group = MagicMock(start=AsyncMock())
-
-    async def taken_over(_delay: float) -> None:
-        bridge.owns_stream = True
-
-    with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(
-            SqueezelitePlayer,
-            "group_members",
-            new_callable=PropertyMock,
-            return_value=["leader", "member"],
-        ),
-        patch.object(player, "_get_sync_clients", side_effect=lambda: iter(clients)),
-        patch("music_assistant.providers.squeezelite.player.asyncio.sleep", new=taken_over),
-    ):
-        await player._handle_buffer_ready()
-
-    leader.unpause_at.assert_not_awaited()
-    sync_group.start.assert_not_called()
+    if owns_stream:
+        client.unpause_at.assert_not_awaited()
+    else:
+        client.unpause_at.assert_awaited_once_with(1234)
 
 
 @pytest.mark.parametrize("owns_stream", [True, False])
 def test_the_position_of_a_bridge_stream_is_not_that_of_the_protocol(owns_stream: bool) -> None:
-    """Neither the elapsed time nor the sync check of the sync group follows a bridge stream."""
+    """The elapsed time of the protocol does not follow a bridge stream."""
     player, _bridge = _player_with_bridge(owns_stream=owns_stream)
     cast("MagicMock", player.client).elapsed_seconds = 42.0
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 0
     event = SlimEvent(type=SlimEventType.PLAYER_HEARTBEAT, player_id="p1")
 
-    with (
-        patch.object(
-            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=["p1", "m"]
-        ),
-        patch.object(player, "_handle_sync") as handle_sync,
-        patch.object(player, "update_state"),
-    ):
+    with patch.object(player, "update_state"):
         player.handle_slim_event(event)
 
     assert player._attr_elapsed_time == (0 if owns_stream else 42.0)
-    assert handle_sync.call_count == (0 if owns_stream else 1)
 
 
 @pytest.mark.parametrize("owns_stream", [True, False])
@@ -878,37 +647,18 @@ def test_a_track_change_of_the_player_goes_to_its_bridge() -> None:
     player.on_player_media_updated()
 
 
-async def test_a_stream_of_the_protocol_takes_the_players_back_from_their_bridges() -> None:
-    """Before the protocol plays on its players, a bridge that plays on one of them lets go."""
+async def test_a_stream_of_the_protocol_takes_the_player_back_from_its_bridge() -> None:
+    """Before the protocol plays on its player, the bridge that plays on it lets go."""
     player, bridge = _player_with_bridge()
     mass = cast("MagicMock", player.mass)
-    player.multi_client_stream = None
-    member_client = MagicMock(player_id="member")
-    member = MagicMock()
-    without_bridge = MagicMock(player_id="plain")
     player._provider = MagicMock(mass=mass)
-    player._provider.get_protocol.side_effect = {
-        "p1": player,
-        "member": member,
-        "plain": MagicMock(sendspin_bridge=None),
-    }.get
     mass.streams.resolve_stream_url = AsyncMock(return_value="http://127.0.0.1:8097/x.flac")
     steps = MagicMock()
-    steps.attach_mock(bridge.stop_streaming, "own_bridge")
-    steps.attach_mock(member.sendspin_bridge.stop_streaming, "member_bridge")
+    steps.attach_mock(bridge.stop_streaming, "bridge")
     play_url = AsyncMock()
     steps.attach_mock(play_url, "play_url")
 
     with (
-        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(
-            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
-        ),
-        patch.object(
-            player,
-            "_get_sync_clients",
-            side_effect=lambda: iter([player.client, member_client, without_bridge]),
-        ),
         patch.object(player, "_handle_play_url_for_slimplayer", new=play_url),
         patch.object(player, "update_state"),
     ):
@@ -916,7 +666,7 @@ async def test_a_stream_of_the_protocol_takes_the_players_back_from_their_bridge
             PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
         )
 
-    assert [step[0] for step in steps.mock_calls] == ["own_bridge", "member_bridge", "play_url"]
+    assert [step[0] for step in steps.mock_calls] == ["bridge", "play_url"]
 
 
 async def test_a_stop_of_the_protocol_ends_the_stream_of_its_bridge() -> None:
@@ -938,26 +688,16 @@ async def test_a_stop_of_the_protocol_ends_the_stream_of_its_bridge() -> None:
     assert steps.mock_calls == [call.bridge(), call.client()]
 
 
-async def test_a_stream_that_takes_the_player_over_ends_what_the_protocol_plays() -> None:
-    """The player leaves the sync group of its leader and ends the stream of its own group."""
+def test_a_stream_that_takes_the_player_over_ends_the_position_of_the_protocol() -> None:
+    """The protocol reports no position of its own under a stream that takes the player over."""
     player, _mass = _player_with_mocked_mass()
-    leader = MagicMock()
-    player._provider = MagicMock()
-    player._provider.get_protocol.side_effect = {"leader": leader}.get
-    player.multi_client_stream = stream = MagicMock(stop=AsyncMock())
-    player._paused_at = 12.5
     player._attr_elapsed_time = 80.0
+    player._attr_elapsed_time_last_updated = time.time() - 80
 
-    with patch.object(
-        SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value="leader"
-    ):
-        await player.release_native_playback()
+    player.release_native_playback()
 
-    leader.release_member.assert_called_once_with("p1")
-    stream.stop.assert_awaited_once()
-    assert vars(player)["multi_client_stream"] is None
-    assert player._paused_at == 0.0
     assert player._attr_elapsed_time == 0
+    assert time.time() - player._attr_elapsed_time_last_updated < 1
 
 
 @pytest.mark.parametrize(
@@ -980,6 +720,95 @@ async def test_buttons_act_on_the_player_that_leads_the_sendspin_group(
 
     mass.player_queues.get_active_queue.assert_called_once_with(queue_of)
     mass.player_queues.next.assert_awaited_once_with(queue.queue_id)
+
+
+@pytest.mark.parametrize(
+    ("target", "queue_of"), [("living_room", "living_room"), (None, "kitchen")]
+)
+def test_the_client_shows_repeat_and_shuffle_of_the_queue_it_plays(
+    target: str | None, queue_of: str
+) -> None:
+    """While the player plays for its bridge, that is the queue of its Sendspin group."""
+    player, bridge = _player_with_bridge()
+    mass = cast("MagicMock", player.mass)
+    player._player = MagicMock(player_id="kitchen")
+    bridge.transport_command_target.return_value = target
+    queue = mass.player_queues.get_active_queue.return_value
+    queue.repeat_mode = RepeatMode.ONE
+    queue.shuffle_enabled = True
+    client = cast("MagicMock", player.client)
+    client.extra_data = {"playlist repeat": 0, "playlist shuffle": 0}
+
+    player.on_player_media_updated()
+
+    mass.player_queues.get_active_queue.assert_called_once_with(queue_of)
+    assert client.extra_data == {"playlist repeat": 1, "playlist shuffle": 1}
+    client.signal_update.assert_called_once_with()
+
+
+def _queue_of_a_player_alone(player: SqueezelitePlayer) -> MagicMock:
+    """Return the queue of the player itself, for a player without a Sendspin bridge."""
+    mass = cast("MagicMock", player.mass)
+    player._player = MagicMock(player_id="kitchen")
+    player.sendspin_bridge = None
+    player.logger = MagicMock()
+    player.client = MagicMock(extra_data={})
+    mass.player_queues.set_repeat = AsyncMock()
+    mass.player_queues.set_shuffle = AsyncMock()
+    return cast("MagicMock", mass.player_queues.get_active_queue.return_value)
+
+
+def _cli_event(data: str) -> SlimEvent:
+    """Return a CLI request aioslimproto passes on for the client."""
+    return SlimEvent(type=SlimEventType.PLAYER_CLI_EVENT, player_id="p1", data=data)
+
+
+@pytest.mark.parametrize(
+    ("event_data", "before", "after"),
+    [
+        ("playlist repeat 0", RepeatMode.ONE, RepeatMode.OFF),
+        ("playlist repeat 1", RepeatMode.ONE, RepeatMode.ONE),
+        ("playlist repeat 2", RepeatMode.OFF, RepeatMode.ALL),
+        ("playlist repeat", RepeatMode.OFF, RepeatMode.ONE),
+        ("button repeat", RepeatMode.ALL, RepeatMode.OFF),
+    ],
+)
+async def test_a_repeat_from_the_client_sets_its_queue(
+    event_data: str, before: RepeatMode, after: RepeatMode
+) -> None:
+    """A WiiM sets repeat by its LMS number; a button, or a request without one, cycles."""
+    player, mass = _player_with_mocked_mass()
+    queue = _queue_of_a_player_alone(player)
+    queue.repeat_mode = before
+
+    await player._handle_player_cli_event(_cli_event(event_data))
+
+    mass.player_queues.set_repeat.assert_awaited_once_with(queue.queue_id, after)
+    assert player.client.extra_data == {"playlist repeat": REPEATMODE_MAP[after]}
+
+
+@pytest.mark.parametrize(
+    ("event_data", "before", "after"),
+    [
+        ("playlist shuffle 0", True, False),
+        ("playlist shuffle 1", True, True),
+        ("playlist shuffle 2", False, True),
+        ("playlist shuffle", True, False),
+        ("button shuffle", False, True),
+    ],
+)
+async def test_a_shuffle_from_the_client_sets_its_queue(
+    event_data: str, before: bool, after: bool
+) -> None:
+    """A WiiM sets shuffle by its LMS number; a button, or a request without one, toggles."""
+    player, mass = _player_with_mocked_mass()
+    queue = _queue_of_a_player_alone(player)
+    queue.shuffle_enabled = before
+
+    await player._handle_player_cli_event(_cli_event(event_data))
+
+    mass.player_queues.set_shuffle.assert_awaited_once_with(queue.queue_id, after)
+    assert player.client.extra_data == {"playlist shuffle": int(after)}
 
 
 def _button_event(data: dict[str, int | str]) -> SlimEvent:
@@ -1073,11 +902,8 @@ async def test_the_bridge_is_evaluated_when_the_config_of_the_protocol_is_loaded
     """Every attach and config change brings the Sendspin bridge in line."""
     player, mass = _player_with_mocked_mass()
     use_real_create_task(mass)
-    player.client = MagicMock(play_delay=0)
-    config = MagicMock(get_value=MagicMock(return_value=0))
 
     with (
-        patch.object(SqueezelitePlayer, "config", new_callable=PropertyMock, return_value=config),
         patch.object(player, "_set_preset_items", new=AsyncMock()),
         patch.object(player, "_set_display", new=AsyncMock()),
         patch(

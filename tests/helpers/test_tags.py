@@ -36,6 +36,7 @@ from music_assistant.helpers.tags import (
     get_embedded_image,
     parse_tags_mutagen,
     split_artists,
+    split_items,
     write_replaygain_track_gain,
 )
 
@@ -1807,3 +1808,12 @@ def test_replaygain_gain_tags_without_number_are_ignored(value: str) -> None:
     audio_tags = _audio_tags_with({"replaygaintrackgain": value, "replaygainalbumgain": value})
     assert audio_tags.track_loudness is None
     assert audio_tags.track_album_loudness is None
+
+
+def test_split_items_splits_on_nul() -> None:
+    """A NUL-separated tag value (ID3v2.4 style, also seen in Vorbis comments) is split."""
+    assert split_items("Rock\x00Disco;Funk", allow_unsafe_splitters=True) == (
+        "Rock",
+        "Disco",
+        "Funk",
+    )

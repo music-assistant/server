@@ -222,6 +222,75 @@ async def test_reconfigure_keeps_the_existing_paired_session(
     assert setup_data[CONF_SOLOIST_API_KEY] == "k" * 20
 
 
+async def test_a_key_set_up_elsewhere_skips_consent_and_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A key from another Soloist setup is taken over with its consent; pairing still runs."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    monkeypatch.setattr(setup_flow, "find_reusable_api_key", MagicMock(return_value="r" * 20))
+    paired_keys = _record_pairing_keys(monkeypatch)
+    session = _make_session(tmp_path, [{CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}])
+    setup_data: dict[str, Any] = {}
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
+    assert _step_ids(session) == ["playback_backend"]
+    assert paired_keys == ["r" * 20]
+    assert setup_data[CONF_SOLOIST_API_KEY] == "r" * 20
+    assert setup_data[CONF_SOLOIST_CONSENT] is True
+    assert setup_data[CONF_SOLOIST_SESSION_DIR] == "spotify/pairing/flow1"
+
+
+async def test_a_taken_over_key_is_asked_again_when_pairing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed pairing with a taken-over key re-shows the key step, which keeps it."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    monkeypatch.setattr(setup_flow, "find_reusable_api_key", MagicMock(return_value="r" * 20))
+    paired_keys = _record_pairing_keys(monkeypatch, fail_first=True)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            # keep the taken-over key by leaving the field empty
+            {},
+        ],
+    )
+    setup_data: dict[str, Any] = {}
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
+    assert _step_ids(session) == ["playback_backend", "soloist_api_key"]
+    key_call = session.form.await_args_list[1]
+    assert key_call.kwargs["errors"] == {"base": "soloist_pairing_failed"}
+    assert paired_keys == ["r" * 20, "r" * 20]
+    assert setup_data[CONF_SOLOIST_API_KEY] == "r" * 20
+
+
+async def test_a_stored_key_takes_over_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reconfigure with a stored key runs the consent and key steps as before."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    find_key = MagicMock(return_value="r" * 20)
+    monkeypatch.setattr(setup_flow, "find_reusable_api_key", find_key)
+    _record_pairing(monkeypatch)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {},
+        ],
+    )
+    session.context.kind = "reconfigure"
+    setup_data: dict[str, Any] = {
+        CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST,
+        CONF_SOLOIST_CONSENT: True,
+        CONF_SOLOIST_API_KEY: "k" * 20,
+    }
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
+    assert _step_ids(session) == ["playback_backend", "soloist_terms", "soloist_api_key"]
+    find_key.assert_not_called()
+    assert setup_data[CONF_SOLOIST_API_KEY] == "k" * 20
+
+
 def test_the_paired_account_is_read_from_the_session(tmp_path: Path) -> None:
     """The engine records the paired account as its per-user state directory."""
     data_dir = tmp_path / "soloist-data"
@@ -519,6 +588,23 @@ def _record_pairing(monkeypatch: pytest.MonkeyPatch, account: str | None = None)
 
     monkeypatch.setattr(setup_flow, "pair_soloist_session", _fake_pair)
     return paired_dirs
+
+
+def _record_pairing_keys(monkeypatch: pytest.MonkeyPatch, fail_first: bool = False) -> list[str]:
+    """
+    Replace pair_soloist_session with a fake that records the API key of every attempt.
+
+    :param fail_first: Let the first attempt fail the way a rejected key does.
+    """
+    paired_keys: list[str] = []
+
+    async def _fake_pair(_mass: Any, api_key: str, _data_dir: Path) -> None:
+        paired_keys.append(api_key)
+        if fail_first and len(paired_keys) == 1:
+            raise LoginFailed("rejected")
+
+    monkeypatch.setattr(setup_flow, "pair_soloist_session", _fake_pair)
+    return paired_keys
 
 
 def _install_fake_soloist(

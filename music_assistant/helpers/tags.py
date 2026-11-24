@@ -118,6 +118,9 @@ def split_items(
             final_items.extend(split_items(item, allow_unsafe_splitters))
         return tuple(final_items)
     org_str = org_str.strip()
+    if "\x00" in org_str:
+        # NUL is the ID3v2.4 multi-value separator, some taggers also write it into other formats
+        return split_items(org_str.split("\x00"), allow_unsafe_splitters)
     if TAG_SPLITTER in org_str:
         return clean_tuple(org_str.split(TAG_SPLITTER))
     if allow_unsafe_splitters and "/" in org_str:
@@ -1698,7 +1701,7 @@ def parse_tags_mutagen(input_file: str, fd: int | None = None) -> dict[str, Any]
             result = _parse_id3_tags(audio.tags)
 
         return result
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.debug("Error parsing mutagen tags for %s: %s", input_file, err)
         return result
 
@@ -1856,7 +1859,7 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
 
     try:
         audio = mutagen.File(path)
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.debug("mutagen could not open %s: %s", path, err)
         return False
     if audio is None:
@@ -1865,7 +1868,7 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
     if audio.tags is None:
         try:
             audio.add_tags()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
             LOGGER.debug("could not initialise tags on %s: %s", path, err)
             return False
 
@@ -1896,7 +1899,7 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
     except (OSError, PermissionError) as err:
         LOGGER.debug("could not write replaygain tag to %s: %s", path, err)
         return False
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure writing replaygain tag to %s: %s", path, err)
         return False
 
@@ -1941,7 +1944,7 @@ def _open_mutagen_for_write(path: str) -> Any | None:
         audio = mutagen.File(path)
     # Broad: mutagen.File can raise format-specific parse errors, struct errors,
     # and IOError variants whose hierarchy is not stable across mutagen versions.
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.debug("mutagen could not open %s: %s", path, err)
         return None
     if audio is None:
@@ -1950,7 +1953,7 @@ def _open_mutagen_for_write(path: str) -> Any | None:
         try:
             audio.add_tags()
         # Broad: add_tags() can raise per-format exceptions that don't share a base class.
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
             LOGGER.debug("could not initialise tags on %s: %s", path, err)
             return None
     return audio
@@ -1990,7 +1993,7 @@ def _write_identifier_tags_sync(
         return False
     # Broad boundary: mutagen's save() can raise per-format exceptions; logged as
     # warning so unexpected surprises are visible but never crash the scan.
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure saving identifier tags to %s: %s", path, err)
         return False
 
@@ -2024,7 +2027,7 @@ def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
             return False
         return True
     # Broad: mutagen's tag APIs are untyped and per-format exceptions don't share a base.
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure applying MusicBrainz Recording Id: %s", err)
         return False
 
@@ -2055,7 +2058,7 @@ def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
         else:
             return False
         return True
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure applying Acoustid Id: %s", err)
         return False
 
@@ -2083,7 +2086,7 @@ def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
         else:
             return False
         return True
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure applying ISRC: %s", err)
         return False
 
@@ -2114,7 +2117,7 @@ def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
         else:
             return False
         return True
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure applying MusicBrainz Artist Id: %s", err)
         return False
 

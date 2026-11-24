@@ -311,7 +311,7 @@ class SharedPlaybackSession:
             player_id = creation_task.result()
         except asyncio.CancelledError:
             return
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, any failure only skips the cleanup
             LOGGER.debug("Cancelled remote session creation failed: %s", err)
             return
 
@@ -370,13 +370,13 @@ class SharedPlaybackSession:
             return
         try:
             player_id = task.result()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, any failure only skips the cleanup
             LOGGER.debug("Cancelled remote session creation failed: %s", err)
             return
         cleanup = cls._cleanup_cancelled_remote_player(sendspin, player_id)
         try:
             mass.create_task(cleanup, eager_start=False)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a done callback must not raise, the coroutine is closed
             cleanup.close()
             LOGGER.warning(
                 "Could not schedule cancelled remote session cleanup for %s: %s",

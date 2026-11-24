@@ -228,7 +228,8 @@ it computes the next index, pre-resolves that item's stream details via the Stre
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
 of this enqueue path — it is triggered by the Streams Controller near the end of the streamed track,
 via a callback into the queue controller, and always targets the item after the streamed one.
-Stale buffers and crossfade data are cleaned up when the queue stops, is cleared, or advances. Every
+Buffers and crossfade data are released when the queue stops or is cleared; what the queue moves
+away from while it plays goes when it leaves the queue's scope (below). Every
 buffer records the session that claimed it, and a stop leaves alone only what the session playing
 *now* claimed, so playback that restarted before the stop got that far keeps its audio. Everything
 else goes, including what sessions that ended earlier left behind: sessions rotate without a stop,
@@ -253,11 +254,13 @@ is one the queue plays now or next (`plays_now_or_next`: the item the queue is o
 player has started fetching, and the item that follows either of them), one a stream of the queue's
 session claims, or the item right before the one its player fetches, once all of its audio has
 arrived. A queue without a playback session has no scope, and no audio is made for it. Whoever only
-waits for the first audio of a buffer, as the preparation of the next track does, does not keep it.
+waits for the first audio of a buffer, as the preparation of the next track does, does not keep it,
+and a preparation that is cancelled does not take it along: the buffer stays while it is in scope.
 A buffer that is out of scope gives its audio up, whether its source still fills or has delivered
 everything, and whether or not its provider has a slot to spare; whoever waits for it gets no audio.
 The queue asks its buffers whenever its scope can change: when a session starts or ends, when its
-items change, when its player fetches another item or reports another one as playing, when a fade
+items change (an edit, a load, a dynamic queue that rebuilds its upcoming tracks), when its player
+fetches another item or reports another one as playing, when a fade
 takes the next track, when the repeat mode or the sleep timer target changes, and before it gets
 audio for an item. A buffer is
 also asked when a user leaves it, when the claim on its item ends, when another buffer takes its
@@ -271,11 +274,48 @@ change moved away from the head or took off the queue gives up its audio and its
 change, while a track that is in use or about to play keeps both. The releases of a stop, a clear, a
 replace and the start of an item do not ask for users or claims.
 
+A source that delivers at playback pace holds its provider's slot for as long as its track plays.
+When such a source gives the slot back and the playback session of its queue goes on with that
+provider, the slot stays reserved for that queue for a few seconds, and the queue's next source
+takes it at once. The queue goes on with a provider when the track its player fetches or a start is
+loading, the track after it, or a track a stream of that session claims still gets audio from there:
+a track without audio, with audio that still arrives, or without a source yet when that provider is
+one the stream details could take it from (the same compatible accounts, without a copy that account
+no longer finds). The track the source was for only counts once its buffer was taken off it (a seek, a
+restart, a replace), so not after it delivered everything or broke off; a track that repeats itself
+and is longer than its buffer keeps is therefore not covered. So a queue that moves to its next
+track, skips, seeks or replaces its tracks does not lose its stream to a queue that asks in that
+moment.
+
+A reservation refuses nobody: to every other taker the slot is only busy that much longer. A preview
+waits within its budget. A track that needs the slot as its last resort (a start on another queue, a
+track prepared ahead of time) while it is open who keeps the slot (it is reserved for another queue,
+or another queue's realtime source has it and no audio yet) waits in the provider's line, in the
+order it asked, within its budget. It looks again each time a source takes a slot or a holder gets
+its first audio: once a realtime source of another queue holds the slot with audio the start is
+refused, naming the player to a user who may control it, and a paused queue's source that got its
+audio hands its slot over as at any other moment. A source that is being given up holds nothing
+here. When the slot comes free for the start
+it stays reserved for its queue, so its source takes it next, unless the queue no longer wants that
+track or its consumer is gone: then it goes on to whoever waits next.
+
+Nothing is reserved after the last track of a queue, when the tracks the queue goes on with come
+from another provider, for a source that loads ahead of playback, for a queue that is paused or was
+told to pause or stop (`halted_by_command`), or without a session. A play action of the queue (a
+skip, a seek, a resume, a replace, a "play now") keeps its stream until it ends, though its player
+still reports the pause until the new track plays: it keeps its reservation, and its slot is not
+handed over. A pause during it does not end it, as the action still plays its track. A reservation
+ends when its queue is paused outside its own play action (at the pause command, and at a pause its
+player reports by itself), when its session ends, when a start goes to tracks of another provider,
+and when a start has loaded its track without using it.
+
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
-buffer releases its audio). The watcher leaves the queue alone while a command still waits for
-players to start up before it acts on the player of the queue, and counts again from the end of
-that wait: only then can a pause outlast the buffer.
+buffer releases its audio). That goes for a pause command and for a pause its player reports by
+itself while it plays the queue's stream, not for another source paused on the player. The
+watcher leaves the queue alone while a command still waits for players to start up before it
+acts on the player of the queue, and counts again from the end of that wait: only then can a
+pause outlast the buffer.
 When playback on another queue finds no free provider stream slot and one of those buffers holds
 one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
 source stream. Preparing the next track ahead of time never stops a paused queue. A player that
@@ -465,7 +505,7 @@ player_queues/
 ├── playback_tracker.py # PlaybackTrackerMixin: reconciles queue state from player updates, end-of-
 │                   #   queue, playback-progress reporting + user-initiated/album-credit play-counting
 ├── stream_feeder.py # StreamFeederMixin: enqueues the next item on the player, preloads/prepares its
-│                   #   audio buffer, and cleans up stale buffers
+│                   #   audio buffer, and releases a queue's audio when it stops or is cleared
 ├── state.py        # PlayerQueueData: the complete server-side per-queue record (the wire PlayerQueue
 │                   #   snapshot + items, source/enqueued media, user, stream-session + runtime fields)
 │                   #   and the cache (de)serialization the wire model no longer carries

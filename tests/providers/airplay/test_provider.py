@@ -3,15 +3,17 @@
 import asyncio
 import logging
 import time
+from collections.abc import Coroutine
 from contextlib import AbstractContextManager
 from ipaddress import ip_address
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
     PTP_DAEMON_WARN_BURST,
@@ -20,7 +22,6 @@ from music_assistant.providers.airplay.constants import (
     ClockReadiness,
     StreamingProtocol,
 )
-from music_assistant.providers.airplay.helpers import CLI_CLOCK_OFFSET_NS
 from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.airplay.provider import ENV_PYATV_DEBUG, AirPlayProvider
 from music_assistant.providers.airplay.stream import AirPlayStream
@@ -58,6 +59,7 @@ def _remote_command_player(bridge_target: str | None) -> tuple[AirPlayProvider, 
     airplay_player.protocol_id = "apc43875e9e53a"
     airplay_player.player.player_id = "plc43875e9e53a"
     airplay_player.playback_state = PlaybackState.PLAYING
+    airplay_player.owner = airplay_player
     return prov, airplay_player
 
 
@@ -163,6 +165,7 @@ def _ptp_provider() -> AirPlayProvider:
     prov.logger = logging.getLogger("test.airplay.provider")
     prov._ptp_daemon = None
     prov._ptp_daemon_ready = None
+    prov._speakers = {}
     return prov
 
 
@@ -186,6 +189,8 @@ async def test_ptp_daemon_spawn_advertises_dacp_identity() -> None:
     prov.dacp_id = "AABBCCDD11223344"
     prov.mass = MagicMock()
     prov.mass.streams.get_source_ip = AsyncMock(return_value=None)
+    prov.mass.timeline_clock = clock = TimelineClock()
+    clock.set_rate(857_000)
     # The spawn mirrors the live logger level into --debug flags; pin the
     # level so suite ordering (other tests raising verbosity) cannot leak
     # extra args into this assertion.
@@ -214,7 +219,9 @@ async def test_ptp_daemon_spawn_advertises_dacp_identity() -> None:
         "--dacp",
         "AABBCCDD11223344",
         "--clock-offset-ns",
-        str(CLI_CLOCK_OFFSET_NS),
+        str(clock.offset_ns + clock.unix_offset_ns),
+        "--clock-rate-ppb",
+        "857000",
     ]
 
 
@@ -503,6 +510,212 @@ async def test_ptp_daemon_bind_failure_degrades_without_restart() -> None:
     assert "CAP_NET_BIND_SERVICE" in warning.call_args.args[0]
 
 
+def _timeline_provider() -> tuple[AirPlayProvider, TimelineClock, list[asyncio.Task[None]]]:
+    """Build a bare provider registered on a timeline clock as its init does."""
+    prov = _ptp_provider()
+    prov.mass = MagicMock()
+    tasks: list[asyncio.Task[None]] = []
+
+    def _create_task(coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        # eagerly started, as the server does
+        tasks.append(task := asyncio.Task(coro, eager_start=True))
+        return task
+
+    prov.mass.create_task.side_effect = _create_task
+    prov.get_players = MagicMock(return_value=[])  # type: ignore[method-assign]
+    prov._ptp_daemon_stop_requested = False
+    prov._ptp_daemon_stdout_task = None
+    prov.mass.timeline_clock = clock = TimelineClock()
+    prov._unsub_timeline_rate = clock.add_rate_listener(
+        prov._on_timeline_rate_changed, pinned=prov._has_running_streams
+    )
+    return prov, clock, tasks
+
+
+async def test_new_timeline_rate_restarts_the_running_ptp_daemon() -> None:
+    """A new rate of the timeline brings up a fresh daemon, which takes it on."""
+    prov, clock, tasks = _timeline_provider()
+    prov._ptp_daemon = daemon = _live_ptp_daemon()
+    daemon.close = AsyncMock()
+    prov._ptp_daemon_ready = ready = asyncio.Event()
+    ready.set()
+
+    with patch.object(prov, "_start_ptp_daemon", new_callable=AsyncMock) as start:
+        clock.set_rate(857_000)
+        # no stream may attach to the daemon on its way out
+        assert not ready.is_set()
+        await asyncio.gather(*tasks)
+
+    daemon.close.assert_awaited_once()
+    start.assert_awaited_once_with()
+    # the old daemon's monitor takes its exit for a wanted one
+    assert prov._ptp_daemon is None
+
+
+async def test_new_timeline_rate_leaves_a_stopped_ptp_daemon_alone() -> None:
+    """A daemon that is not running starts on the current timeline whenever it starts."""
+    prov, clock, tasks = _timeline_provider()
+
+    with patch.object(prov, "_start_ptp_daemon", new_callable=AsyncMock) as start:
+        clock.set_rate(857_000)
+        await asyncio.gather(*tasks)
+
+    start.assert_not_awaited()
+
+
+async def test_ptp_daemon_restart_stops_at_unload() -> None:
+    """A restart that the unload of the provider overtakes leaves no daemon behind."""
+    prov, _, _ = _timeline_provider()
+    prov._ptp_daemon = daemon = _live_ptp_daemon()
+
+    async def _close() -> None:
+        prov._ptp_daemon_stop_requested = True
+
+    daemon.close = AsyncMock(side_effect=_close)
+
+    with patch.object(prov, "_start_ptp_daemon", new_callable=AsyncMock) as start:
+        await prov._restart_ptp_daemon()
+
+    start.assert_not_awaited()
+
+
+async def test_unload_waits_for_a_running_ptp_daemon_restart() -> None:
+    """Unload returns only once a restart in flight is done, so no daemon outlives it."""
+    prov, clock, _ = _timeline_provider()
+    prov._dacp_server = MagicMock()
+    prov._dacp_server.__bool__.return_value = False
+    prov._dacp_info = MagicMock()
+    prov._dacp_info.__bool__.return_value = False
+    prov._ptp_daemon = daemon = _live_ptp_daemon()
+    release = asyncio.Event()
+    daemon.close = AsyncMock(side_effect=release.wait)
+
+    with patch.object(prov, "_start_ptp_daemon", new_callable=AsyncMock) as start:
+        # the restart runs up to closing the old daemon
+        clock.set_rate(857_000)
+        unload = asyncio.create_task(prov.unload())
+        await asyncio.sleep(0)
+        unloaded_early = unload.done()
+        release.set()
+        await unload
+
+    assert not unloaded_early
+    start.assert_not_awaited()
+
+
+def _spawning_provider() -> tuple[AirPlayProvider, TimelineClock]:
+    """Build a bare provider that spawns its PTP daemon on a timeline clock."""
+    prov = _ptp_provider()
+    prov.dacp_id = "AABBCCDD11223344"
+    prov.mass = MagicMock()
+    prov.mass.streams.get_source_ip = AsyncMock(return_value=None)
+    prov.mass.timeline_clock = clock = TimelineClock()
+    prov.logger.setLevel(logging.INFO)
+
+    def _consume_task(coro: object) -> MagicMock:
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        return MagicMock()
+
+    prov.mass.create_task.side_effect = _consume_task
+    return prov, clock
+
+
+def _spawned_ptp_daemon() -> MagicMock:
+    """Build a process mock for a daemon the provider spawns."""
+    daemon = _live_ptp_daemon()
+    daemon.start = AsyncMock(return_value=None)
+    daemon.close = AsyncMock(return_value=None)
+    return daemon
+
+
+async def test_ptp_daemon_spawned_on_an_old_rate_starts_over() -> None:
+    """A new rate while the daemon spawns, with no daemon yet to restart, starts it over."""
+    prov, clock = _spawning_provider()
+    first, second = _spawned_ptp_daemon(), _spawned_ptp_daemon()
+
+    async def _keeper_applies_a_rate() -> None:
+        clock.set_rate(857_000)
+
+    first.start = AsyncMock(side_effect=_keeper_applies_a_rate)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.get_cli_binary",
+            AsyncMock(return_value="/bin/cliairplay"),
+        ),
+        patch(
+            "music_assistant.providers.airplay.provider.AsyncProcess", side_effect=[first, second]
+        ) as process_cls,
+    ):
+        await prov._start_ptp_daemon()
+
+    first_args, second_args = (call.args[0] for call in process_cls.call_args_list)
+    assert first_args[first_args.index("--clock-rate-ppb") + 1] == "0"
+    assert second_args[second_args.index("--clock-rate-ppb") + 1] == "857000"
+    first.close.assert_awaited_once()
+    assert prov._ptp_daemon is second
+
+
+async def test_ptp_daemon_spawned_during_unload_is_closed() -> None:
+    """A daemon that the unload of the provider overtakes while it spawns is closed again."""
+    prov, _ = _spawning_provider()
+    daemon = _spawned_ptp_daemon()
+
+    async def _provider_unloads() -> None:
+        prov._ptp_daemon_stop_requested = True
+
+    daemon.start = AsyncMock(side_effect=_provider_unloads)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.get_cli_binary",
+            AsyncMock(return_value="/bin/cliairplay"),
+        ),
+        patch("music_assistant.providers.airplay.provider.AsyncProcess", return_value=daemon),
+    ):
+        await prov._start_ptp_daemon()
+
+    daemon.close.assert_awaited_once()
+    assert prov._ptp_daemon is None
+    cast("MagicMock", prov.mass.create_task).assert_not_called()
+
+
+def test_running_stream_pins_the_timeline_rate() -> None:
+    """The rate of the timeline waits while a cliairplay stream process runs."""
+    prov, clock, _ = _timeline_provider()
+    player = MagicMock()
+    player.stream = MagicMock(running=True)
+    speaker = MagicMock()
+    speaker.stream = None
+    prov.get_players.return_value = [player]  # type: ignore[attr-defined]
+    prov._speakers = {"speaker": speaker}
+
+    pinned = [clock.rate_pinned]
+    player.stream.running = False
+    pinned.append(clock.rate_pinned)
+    speaker.stream = MagicMock(running=True)
+    pinned.append(clock.rate_pinned)
+
+    assert pinned == [True, False, True]
+
+
+async def test_unload_unregisters_from_the_timeline_clock() -> None:
+    """An unloaded provider no longer acts on, or holds back, a new rate."""
+    prov, clock, _ = _timeline_provider()
+    prov._dacp_server = MagicMock()
+    prov._dacp_server.__bool__.return_value = False
+    prov._dacp_info = MagicMock()
+    prov._dacp_info.__bool__.return_value = False
+    prov._speakers = {"speaker": MagicMock(stream=MagicMock(running=True))}
+
+    await prov.unload()
+
+    assert not clock.rate_pinned
+    clock.set_rate(857_000)
+    cast("MagicMock", prov.mass.create_task).assert_not_called()
+
+
 async def test_wait_ptp_daemon_ready_true_when_signalled() -> None:
     """wait_ptp_daemon_ready returns True once readiness has been signalled."""
     prov = _ptp_provider()
@@ -585,6 +798,7 @@ def _ap2_player() -> MagicMock:
     """Return a mock player that resolves to native AirPlay 2."""
     player = MagicMock()
     player.protocol = StreamingProtocol.AIRPLAY2
+    player.sync_offset_ms = 0
     return player
 
 
@@ -592,6 +806,7 @@ def _raop_player() -> MagicMock:
     """Return a mock player that resolves to legacy RAOP."""
     player = MagicMock()
     player.protocol = StreamingProtocol.RAOP
+    player.sync_offset_ms = 0
     return player
 
 
@@ -736,7 +951,6 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
         player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
         player.stream.buffered_route = False
-        player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)
     now = 100.0
 
@@ -749,7 +963,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         patch.object(session, "_resolve_shared_ptp", new=_resolve_shared_ptp),
         patch(
             "music_assistant.providers.airplay.stream_session.cli_clock_time",
-            side_effect=lambda: now,
+            side_effect=lambda _clock: now,
         ),
         patch.object(session, "_start_client", new_callable=AsyncMock),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
@@ -784,6 +998,7 @@ def _stream_player(*, ptp_daemon_ready: bool) -> MagicMock:
     player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(return_value=None)
+    player.device_password = None
     # Keep the arg build on its shortest path: no discovery records to expand.
     player.airplay_discovery_info = None
     player.raop_discovery_info = None
@@ -1094,6 +1309,8 @@ async def test_setup_player_flags_shairport_on_this_host(
     prov.mass.players.register = AsyncMock()
     prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
     prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+    prov._pair_records = {}
+    prov._pair_carriers = {}
     info = _discovery_info([address], properties={"am": model})
     info.type = "_airplay._tcp.local."
     info.ip_addresses_by_version.return_value = [ip_address(address)]
@@ -1105,6 +1322,98 @@ async def test_setup_player_flags_shairport_on_this_host(
         await prov._setup_player("apdb1ff0aae80e", "Shairport", info)
 
     assert player_cls.call_args.kwargs["is_local_shairport"] is expected
+
+
+HOMEPOD_RAOP_NAME = "AA11BB22CC33@Office._raop._tcp.local."
+HOMEPOD_AIRPLAY_NAME = "Office (2)._airplay._tcp.local."
+SONOS_AIRPLAY_NAME = "Office._airplay._tcp.local."
+
+
+def _record(name: str, properties: dict[str, str]) -> MagicMock:
+    """
+    Build an mdns record of a device on 192.168.1.40.
+
+    :param name: The full service name of the record.
+    :param properties: The TXT properties of the record.
+    """
+    info = _discovery_info(["192.168.1.40"], properties=properties)
+    info.name = name
+    info.type = name.split(".", 1)[1]
+    info.async_request = AsyncMock(return_value=True)
+    return info
+
+
+@pytest.mark.parametrize(
+    ("by_name", "cached", "expected"),
+    [
+        # the name lookup finds the record of the device itself
+        ("homepod", ["sonos", "homepod"], "homepod"),
+        # the name lookup finds another device that took the name
+        ("sonos", ["sonos", "homepod"], "homepod"),
+        ("sonos", ["sonos"], None),
+        (None, ["sonos", "homepod"], "homepod"),
+    ],
+    ids=["own-record", "foreign-record", "foreign-record-own-missing", "nothing-by-name"],
+)
+async def test_raop_first_setup_takes_the_airplay_record_of_the_device_itself(
+    by_name: str | None, cached: list[str], expected: str | None
+) -> None:
+    """A device set up from its RAOP record never takes the _airplay record of another device."""
+    records = {
+        "homepod": _record(
+            HOMEPOD_AIRPLAY_NAME,
+            {"deviceid": "AA:11:BB:22:CC:33", "model": "AudioAccessory5,1"},
+        ),
+        "sonos": _record(
+            SONOS_AIRPLAY_NAME,
+            {"deviceid": "54:2A:1B:00:11:22", "manufacturer": "Sonos", "model": "Era 100"},
+        ),
+    }
+    raop_info = _record(HOMEPOD_RAOP_NAME, {"am": "AudioAccessory5,1"})
+    prov = AirPlayProvider.__new__(AirPlayProvider)
+    prov.mass = MagicMock()
+    prov.logger = logging.getLogger("test.airplay.provider")
+    prov.mass.config.get_protocol_value.side_effect = lambda _player_id, _key, default=None: default
+    prov.mass.discovery.async_find_mdns_service = AsyncMock(
+        return_value=records[by_name] if by_name else None
+    )
+    prov.mass.discovery.aiozc.zeroconf.cache.cache = {
+        "_airplay._tcp.local.": {},
+        **{records[key].name.lower(): {} for key in cached},
+    }
+    prov.mass.players.wants_protocol.return_value = True
+    prov.mass.players.get_protocol.return_value = None
+    prov.mass.players.register = AsyncMock()
+    prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    prov._get_related_discovery_info = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    prov._companion_info_by_address = {}
+    prov._mrp_info_by_address = {}
+    prov._set_carriers = {}
+    prov._pair_records = {}
+    prov._pair_carriers = {}
+    prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+    prov.dashboards = MagicMock()
+    cached_by_name = {record.name.lower(): record for record in records.values()}
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.AsyncServiceInfo",
+            side_effect=lambda _type, name: cached_by_name[name],
+        ),
+        patch(
+            "music_assistant.providers.airplay.provider.get_primary_ip_address_from_zeroconf",
+            return_value="192.168.1.40",
+        ),
+        patch("music_assistant.providers.airplay.provider.AirPlayControlPlayer") as control_cls,
+        patch("music_assistant.providers.airplay.provider.GenericAirPlayPlayer") as generic_cls,
+    ):
+        await prov._setup_player("apaa11bb22cc33", "Office", raop_info)
+
+    generic_cls.assert_not_called()
+    kwargs = control_cls.call_args.kwargs
+    assert kwargs["airplay_discovery_info"] is (records[expected] if expected else None)
+    assert kwargs["raop_discovery_info"] is raop_info
+    assert (kwargs["manufacturer"], kwargs["model"]) == ("Apple", "HomePod Mini")
 
 
 def _password_marker_provider(
@@ -1234,3 +1543,16 @@ def test_a_failed_compat_pin_reset_is_retried_on_the_next_load() -> None:
         prov._reset_auto_pinned_compat_modes()
 
     config.set_raw_provider_config_value.assert_not_called()
+
+
+def test_a_remote_command_of_a_speaker_controls_its_set() -> None:
+    """A command a HomePod of a set reports acts on the player of the set."""
+    prov, airplay_set = _remote_command_player(None)
+    speaker = MagicMock(owner=airplay_set)
+    speaker.player = None
+
+    prov.handle_remote_command(speaker, AirPlayRemoteCommand.PAUSE)
+
+    bridge_manager = cast("MagicMock", prov._bridge_manager)
+    bridge_manager.get_transport_command_target.assert_called_once_with("apc43875e9e53a")
+    cast("MagicMock", prov.mass).players.cmd_pause.assert_called_once_with("plc43875e9e53a")

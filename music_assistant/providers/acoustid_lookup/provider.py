@@ -1027,7 +1027,7 @@ def _downconvert_to_s16(pcm_chunk: bytes, sample_width: int) -> bytes:
     if sample_width == 3:
         raw = np.frombuffer(pcm_chunk, dtype="<u1")
         trimmed = raw[: (raw.size // 3) * 3].reshape(-1, 3).astype("<i4")
-        samples = trimmed[:, 0] | (trimmed[:, 1] << 8) | (trimmed[:, 2] << 16)
+        samples: np.ndarray = trimmed[:, 0] | (trimmed[:, 1] << 8) | (trimmed[:, 2] << 16)
         samples = np.where(samples & 0x800000, samples - 0x1000000, samples)
         return (samples >> 8).astype("<i2").tobytes()
     if sample_width == 1:

@@ -65,7 +65,7 @@ def mass_mock() -> Mock:
 @pytest.fixture
 def provider(mass_mock: Mock) -> TidalProvider:
     """Return a TidalProvider instance for provider-level tests."""
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "tidal"
 
     config = Mock()

@@ -6,6 +6,7 @@ import asyncio
 import codecs
 import functools
 import html
+import http.client
 import importlib
 import inspect
 import logging
@@ -1017,8 +1018,8 @@ IP_ADDRESSES_CACHE_TTL = 30
 _ip_addresses_cache: dict[tuple[bool, bool], tuple[float, tuple[str, ...]]] = {}
 _ip_addresses_pending: dict[tuple[bool, bool], asyncio.Task[tuple[str, ...]]] = {}
 
-# Interfaces that only ever carry container, VM or VPN traffic, so a device on the local
-# network can never reach us on their addresses.
+# Interfaces that only ever carry container, VM, VPN or Thread traffic, so a device on the
+# local network can never reach us on their addresses.
 _VIRTUAL_INTERFACE_PREFIXES = (
     "cali",
     "cni",
@@ -1040,6 +1041,8 @@ _VIRTUAL_INTERFACE_PREFIXES = (
     "virbr",
     "vmnet",
     "wg",
+    "wpan",
+    "wt",
     "zt",
 )
 # Docker names its user-defined bridges br-<12 hex> and the macOS host-only bridges of
@@ -1067,8 +1070,8 @@ async def get_publish_ip_candidates(include_ipv6: bool = False) -> tuple[str, ..
     """
     Return the IP addresses a device on the local network may reach this host on.
 
-    Same as get_ip_addresses, minus the addresses of container, VM and VPN interfaces -
-    unless the host holds no other address at all.
+    Same as get_ip_addresses, minus the addresses of container, VM, VPN and Thread
+    interfaces - unless the host holds no other address at all.
 
     :param include_ipv6: Whether to include IPv6 addresses in the result.
     """
@@ -1128,7 +1131,7 @@ def _enumerate_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
         # doesn't even have to be reachable
         _sock.connect(("10.254.254.254", 1))
         primary_ip = _sock.getsockname()[0]
-    except Exception:
+    except OSError:
         primary_ip = ""
     finally:
         _sock.close()
@@ -1139,7 +1142,7 @@ def _enumerate_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
         try:
             _sock6.connect(("2001:db8::1", 1))
             primary_ip = _sock6.getsockname()[0]
-        except Exception:
+        except OSError:
             primary_ip = ""
         finally:
             _sock6.close()
@@ -1186,7 +1189,7 @@ def _enumerate_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
 
 
 def _is_virtual_interface(name: str) -> bool:
-    """Return whether the named interface belongs to a container, VM or VPN network."""
+    """Return whether the named interface belongs to a container, VM, VPN or Thread network."""
     name = name.lower()
     return name.startswith(_VIRTUAL_INTERFACE_PREFIXES) or bool(
         _VIRTUAL_INTERFACE_NAMES.fullmatch(name)
@@ -1198,8 +1201,8 @@ def interface_name_for_ip(ip: str) -> str | None:
     Return the name of the network interface that holds the given IP, or None.
 
     Used to map a bind/publish IP to its interface name for components that select
-    their mDNS/zeroconf advertisement interface by name (e.g. shairport-sync and
-    go-librespot), so the advertisement stays on the intended network.
+    their mDNS/zeroconf advertisement interface by name (e.g. go-librespot), so the
+    advertisement stays on the intended network.
 
     :param ip: The IPv4/IPv6 address to look up, in any notation; None is returned for a
         value that is not an IP address.
@@ -1297,7 +1300,7 @@ async def get_ip_from_host(dns_name: str) -> str | None:
             results = socket.getaddrinfo(dns_name, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
             if results:
                 return str(results[0][4][0])
-        except Exception:
+        except OSError, ValueError:
             # fail gracefully!
             return None
         return None
@@ -1313,28 +1316,7 @@ async def get_source_ip_for_target(target_ip: str) -> str:
 
     :param target_ip: IP address of the device the traffic is meant for.
     """
-
-    def _routing_lookup() -> str:
-        try:
-            is_ipv6_target = ip_address(target_ip).version == 6
-        except ValueError:
-            is_ipv6_target = False
-        route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
-        route_target: tuple[str, int] | tuple[str, int, int, int] = (
-            (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
-        )
-        with socket.socket(route_family, socket.SOCK_DGRAM) as _sock:
-            try:
-                _sock.settimeout(1.0)
-                _sock.connect(route_target)
-                routed_ip = str(_sock.getsockname()[0])
-                if routed_ip and routed_ip not in WILDCARD_BIND_IPS:
-                    return routed_ip
-            except OSError:
-                pass
-        return ""
-
-    return await asyncio.to_thread(_routing_lookup)
+    return await asyncio.to_thread(_get_source_ip, target_ip)
 
 
 async def get_ip_pton(ip_string: str) -> bytes:
@@ -1491,7 +1473,7 @@ async def is_hass_supervisor() -> bool:
         except urllib.error.URLError as err:
             # this should return a 401 unauthorized if it exists
             return getattr(err, "code", 999) == 401
-        except Exception:
+        except OSError, http.client.HTTPException:
             return False
         return False
 
@@ -1704,18 +1686,22 @@ def get_zeroconf_args(
     use_all_interfaces: bool = False,
 ) -> dict[str, Any]:
     """
-    Determine optimal zeroconf IPVersion and interfaces from system adapters.
+    Determine the zeroconf IPVersion and interfaces from the system adapters.
 
-    Inspects available network adapters to determine the correct IP version
-    and interface configuration, similar to Home Assistant's approach.
+    By default only the interfaces of the local network(s) are used: container, VM, VPN
+    and Thread interfaces, and self-assigned IPv4 addresses, are left out.
 
-    :param use_all_interfaces: If True, use all interfaces (user override).
+    :param use_all_interfaces: Use every interface of the host instead.
     """
-    adapters = ifaddr.get_adapters()
     has_ipv4 = False
     has_ipv6 = False
+    ipv4_interfaces: set[str] = set()
     interface_ips: list[str] = []
-    for adapter in adapters:
+    for adapter in ifaddr.get_adapters():
+        if not use_all_interfaces and (
+            _is_virtual_interface(adapter.name) or _is_virtual_interface(adapter.nice_name)
+        ):
+            continue
         for ip_config in adapter.ips:
             if ip_config.is_IPv6:
                 ip_tuple = cast("tuple[str, int, int]", ip_config.ip)
@@ -1731,8 +1717,13 @@ def get_zeroconf_args(
             else:
                 ip_str = cast("str", ip_config.ip)
                 addr = ip_address(ip_str)
-                if isinstance(addr, IPv4Address) and not addr.is_loopback:
+                if (
+                    isinstance(addr, IPv4Address)
+                    and not addr.is_loopback
+                    and (use_all_interfaces or not addr.is_link_local)
+                ):
                     has_ipv4 = True
+                    ipv4_interfaces.add(adapter.name)
                     interface_ips.append(ip_str)
 
     # Determine IP version based on available addresses.
@@ -1749,17 +1740,17 @@ def get_zeroconf_args(
     else:
         ip_version = IPVersion.V4Only
 
-    if use_all_interfaces:
-        # User explicitly requested all interfaces — pass explicit IP list
-        # to avoid issues with InterfaceChoice.Default on multi-interface hosts.
-        if interface_ips:
-            return {"ip_version": ip_version, "interfaces": interface_ips}
-        return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
-
-    # Default mode: use InterfaceChoice.Default for IPv4-only single-interface,
-    # otherwise pass explicit interface list for reliability.
     if ip_version == IPVersion.V4Only:
-        return {"ip_version": ip_version, "interfaces": InterfaceChoice.Default}
+        # a dual-stack macOS/FreeBSD host runs IPv4-only: leave out its IPv6 addresses,
+        # which zeroconf can not join then
+        interface_ips = [ip for ip in interface_ips if ":" not in ip]
+        if not use_all_interfaces and (
+            not ipv4_interfaces
+            or (len(ipv4_interfaces) == 1 and _get_source_ip("224.0.0.251") in interface_ips)
+        ):
+            # one network that mDNS (224.0.0.251) is routed to, not e.g. a full-tunnel VPN:
+            # let the OS pick it, which unlike an explicit address survives an address change
+            return {"ip_version": ip_version, "interfaces": InterfaceChoice.Default}
     if interface_ips:
         return {"ip_version": ip_version, "interfaces": interface_ips}
     return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
@@ -1826,7 +1817,7 @@ async def detect_charset(data: bytes, fallback: str = "utf-8", preferred: str | 
             prefer_superset=True,
             no_match_encoding=fallback,
         )
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - chardet raises undocumented errors
         LOGGER.debug("Failed to detect charset: %s", err)
         return fallback
     if not (encoding := detected["encoding"]):
@@ -1908,7 +1899,7 @@ def validate_announcement_chime_url(url: str) -> bool:
 
         return any(path_lower.endswith(ext) for ext in audio_extensions)
 
-    except Exception:
+    except ValueError:
         return False
 
 
@@ -1928,7 +1919,7 @@ async def get_mac_address(ip_address: str) -> str | None:
     except TimeoutError:
         LOGGER.debug("Timed out resolving MAC address for %s", ip_address)
         return None
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - getmac raises undocumented errors
         LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
         return None
 
@@ -2397,3 +2388,25 @@ def _on_mac_lookup_done(ip_address: str, lookup: asyncio.Future[str | None]) -> 
     _PENDING_MAC_LOOKUPS.pop(ip_address, None)
     if not lookup.cancelled():
         lookup.exception()
+
+
+def _get_source_ip(target_ip: str) -> str:
+    """Return the local address the routing table would egress to the target from, or empty."""
+    try:
+        is_ipv6_target = ip_address(target_ip).version == 6
+    except ValueError:
+        is_ipv6_target = False
+    route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
+    route_target: tuple[str, int] | tuple[str, int, int, int] = (
+        (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
+    )
+    with socket.socket(route_family, socket.SOCK_DGRAM) as _sock:
+        try:
+            _sock.settimeout(1.0)
+            _sock.connect(route_target)
+            routed_ip = str(_sock.getsockname()[0])
+            if routed_ip and routed_ip not in WILDCARD_BIND_IPS:
+                return routed_ip
+        except OSError:
+            pass
+    return ""

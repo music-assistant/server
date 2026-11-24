@@ -126,3 +126,22 @@ def test_audio_requirements_follow_the_group_channel_resolver() -> None:
     assert second_requirements is not None
     assert second_requirements.channel_id == client.group.get_channel_for_player.return_value
     assert second_requirements.channel_id != first_requirements.channel_id
+
+
+def test_a_stream_clear_reaches_the_bridge_that_takes_it() -> None:
+    """A clear of the stream is handed to the bridge, and one wired without a callback ignores it."""
+    role, _, _, _ = _make_role()
+    role.on_stream_clear()
+
+    on_stream_clear = MagicMock()
+    role.set_callbacks(
+        on_audio_chunk=MagicMock(),
+        on_volume_change=MagicMock(),
+        on_mute_change=MagicMock(),
+        on_stream_start=MagicMock(),
+        on_stream_end=MagicMock(),
+        on_stream_clear=on_stream_clear,
+    )
+    role.on_stream_clear()
+
+    on_stream_clear.assert_called_once_with()

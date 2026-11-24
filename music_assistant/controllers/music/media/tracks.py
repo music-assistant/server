@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import time
+from collections import Counter
 from collections.abc import Iterable
 from contextlib import suppress
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from itertools import groupby
-from typing import TYPE_CHECKING, Any, Never, cast
+from typing import TYPE_CHECKING, Any, Final, Never, cast
 
 from aiohttp import ClientError
 from music_assistant_models.auth import Scope
@@ -24,10 +26,13 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderID,
+    LoginFailed,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderPermissionDenied,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -49,7 +54,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
 )
 from music_assistant.controllers.metadata.constants import MUSICBRAINZ_LINK_DOMAINS
-from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT, SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.helpers import (
     provider_mappings_for_update,
     search_name_match_clause,
@@ -73,6 +78,7 @@ from music_assistant.helpers.external_ids import is_valid_isrc, normalize_extern
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.helpers.provider_access import visible_items
+from music_assistant.helpers.throttle_retry import is_rate_limit_error
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.provider import recording_matches_track
 
@@ -90,6 +96,30 @@ if TYPE_CHECKING:
     from music_assistant.models.media_capabilities import MusicDiscoveryMixin
     from music_assistant.providers.musicbrainz.models import MusicBrainzRecording
     from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
+
+
+# a provider that fails this many items in a row is dropped from the rest of a matching
+# run, so the remaining items do not each pay the same timeout or retry cycle
+MAX_CONSECUTIVE_PROVIDER_FAILURES: Final[int] = 3
+# how long a rate limited provider is left alone when it named no Retry-After
+DEFAULT_RATE_LIMIT_PAUSE: Final[int] = 60
+# the failures that say the provider itself can serve no item at all: it is unreachable
+# or it does not accept our credentials. A caller that walks many items stops asking it
+# instead of paying the same failure once per remaining item
+PROVIDER_UNUSABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    LoginFailed,
+    ProviderUnavailableError,
+)
+# the ways a match attempt on one provider is expected to fail
+PROVIDER_MATCH_ERRORS: Final[tuple[type[Exception], ...]] = (
+    *PROVIDER_UNUSABLE_ERRORS,
+    ClientError,
+    OSError,
+    ProviderPermissionDenied,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+    TimeoutError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +143,93 @@ class TrackProviderMatchResult:
     ambiguous_confidence: TrackMatchConfidence | None = None
 
 
+@dataclass
+class ProviderMatchFailures:
+    """
+    Per-provider failure state shared by every item of one matching run.
+
+    A failed attempt marks the item it happened on, while a provider that can serve no
+    item at all is dropped for the rest of the run.
+    """
+
+    unusable: set[str] = field(default_factory=set)
+    consecutive_failures: Counter[str] = field(default_factory=Counter)
+    # monotonic deadline until which a rate limited provider is not asked again
+    rate_limited_until: dict[str, float] = field(default_factory=dict)
+
+    def blocked(self, provider_instance_id: str) -> bool:
+        """
+        Return whether a provider may no longer be asked for a match.
+
+        :param provider_instance_id: Provider instance to check.
+        """
+        return provider_instance_id in self.unusable
+
+    def mark_unusable(self, provider_instance_id: str) -> None:
+        """
+        Drop a provider from the remainder of this matching run.
+
+        :param provider_instance_id: Provider instance that can serve no further item.
+        """
+        self.unusable.add(provider_instance_id)
+
+    def rate_limited(self, provider_instance_id: str) -> bool:
+        """
+        Return whether a provider is still held back by a rate limit.
+
+        :param provider_instance_id: Provider instance to check.
+        """
+        deadline = self.rate_limited_until.get(provider_instance_id)
+        if deadline is None:
+            return False
+        if deadline <= time.monotonic():
+            # the wait is over, the provider takes part in the run again
+            del self.rate_limited_until[provider_instance_id]
+            return False
+        return True
+
+    def record_success(self, provider_instance_id: str) -> None:
+        """
+        Clear the failure streak of a provider that answered.
+
+        :param provider_instance_id: Provider instance that answered an attempt.
+        """
+        self.consecutive_failures.pop(provider_instance_id, None)
+
+    def record_failure(self, provider_instance_id: str, error: BaseException) -> None:
+        """
+        Record one failed attempt.
+
+        :param provider_instance_id: Provider instance the attempt was made on.
+        :param error: Error the attempt failed with.
+        """
+        if is_rate_limit_error(error):
+            # a rate limit lifts by itself, so the provider is held back for the wait it
+            # asked for rather than dropped. Not every provider paces itself behind a
+            # cooldown of its own, so the remaining items must not keep asking it
+            pause = getattr(error, "backoff_time", 0) or DEFAULT_RATE_LIMIT_PAUSE
+            self.rate_limited_until[provider_instance_id] = max(
+                self.rate_limited_until.get(provider_instance_id, 0.0),
+                time.monotonic() + pause,
+            )
+            return
+        if isinstance(error, PROVIDER_UNUSABLE_ERRORS):
+            self.mark_unusable(provider_instance_id)
+            return
+        self.consecutive_failures[provider_instance_id] += 1
+        if self.consecutive_failures[provider_instance_id] >= MAX_CONSECUTIVE_PROVIDER_FAILURES:
+            self.mark_unusable(provider_instance_id)
+
+
+def rate_limit_issue(provider_name: str) -> str:
+    """
+    Return the report text for an item a rate limited provider was not asked about.
+
+    :param provider_name: Display name of the rate limited provider.
+    """
+    return f"Rate limited on {provider_name}"
+
+
 @dataclass(frozen=True, slots=True)
 class TrackProviderEnrichment:
     """Track enriched with provider matches without changing the library."""
@@ -122,6 +239,7 @@ class TrackProviderEnrichment:
     ambiguous_providers: tuple[str, ...]
     failed_providers: tuple[str, ...]
     used_library_item: bool
+    rate_limited_providers: tuple[str, ...] = ()
 
 
 class TracksController(MediaControllerBase[Track]):
@@ -1010,7 +1128,7 @@ class TracksController(MediaControllerBase[Track]):
         minimum_confidence: TrackMatchConfidence = TrackMatchConfidence.LIKELY,
         provider_instance_ids: set[str] | None = None,
         trust_track_mappings: bool = True,
-        failed_provider_instances: set[str] | None = None,
+        provider_failures: ProviderMatchFailures | None = None,
         evidence_provider_instances: set[str] | None = None,
         known_dead_mappings: frozenset[tuple[str, str]] | None = None,
         search_non_streaming_without_mapping: bool = False,
@@ -1022,7 +1140,8 @@ class TracksController(MediaControllerBase[Track]):
         :param minimum_confidence: Lowest confidence that may be accepted.
         :param provider_instance_ids: Provider instances to search for a match.
         :param trust_track_mappings: Treat mappings attached to the source track as exact.
-        :param failed_provider_instances: Provider instances already known unavailable.
+        :param provider_failures: Per-provider failure state shared with the other items
+            of this matching run.
         :param evidence_provider_instances: Provider instances allowed for album-evidence
             hydration. Defaults to ``provider_instance_ids``.
         :param known_dead_mappings: Exact ``(instance_id, item_id)`` pairs already
@@ -1050,13 +1169,15 @@ class TracksController(MediaControllerBase[Track]):
         if evidence_provider_instances is None:
             evidence_provider_instances = provider_instance_ids
         matches: list[TrackProviderMatch] = []
+        failures = provider_failures if provider_failures is not None else ProviderMatchFailures()
         providers, failed_providers = self._resolve_allowed_providers(
-            provider_instance_ids, failed_provider_instances
+            provider_instance_ids, failures
         )
         (
             provider_matches,
             ambiguous_providers,
             ambiguous_confidence,
+            rate_limited_providers,
         ) = await self._query_provider_matches(
             track,
             providers,
@@ -1065,7 +1186,7 @@ class TracksController(MediaControllerBase[Track]):
             evidence_provider_instances=evidence_provider_instances,
             trust_track_mappings=trust_track_mappings,
             existing_domains=existing_domains,
-            failed_provider_instances=failed_provider_instances,
+            provider_failures=failures,
             failed_providers=failed_providers,
             known_dead_mappings=known_dead_mappings,
             search_non_streaming_without_mapping=search_non_streaming_without_mapping,
@@ -1100,6 +1221,7 @@ class TracksController(MediaControllerBase[Track]):
             ambiguous_providers=tuple(ambiguous_providers),
             failed_providers=tuple(failed_providers),
             used_library_item=library_track is not None,
+            rate_limited_providers=tuple(rate_limited_providers),
         )
 
     async def match_provider(
@@ -1132,7 +1254,7 @@ class TracksController(MediaControllerBase[Track]):
             if matches:
                 break
             search_str = f"{artist.name} - {base_track.name}"
-            search_result = await self.search(search_str, provider.domain)
+            search_result = await self.search(search_str, provider.domain, limit=MATCH_SEARCH_LIMIT)
             for search_result_item in search_result:
                 if not search_result_item.available:
                     continue
@@ -1279,8 +1401,10 @@ class TracksController(MediaControllerBase[Track]):
                     limit=5,
                     allowed_provider_instances=allowed_provider_instances,
                 )
-            except ResourceTemporarilyUnavailable:
-                if candidates:
+            except ResourceTemporarilyUnavailable as err:
+                # a rate limit is raised even with a candidate in hand, so the caller
+                # pauses the provider instead of asking it again for the next item
+                if candidates and not is_rate_limit_error(err):
                     break
                 raise
             for search_result in search_results.tracks:
@@ -1483,6 +1607,8 @@ class TracksController(MediaControllerBase[Track]):
                 MediaNotFoundError,
                 ProviderUnavailableError,
                 ResourceTemporarilyUnavailable,
+                # a rate limit the retry helper gave up on, album evidence is optional
+                RetriesExhausted,
                 ClientError,
                 OSError,
                 TimeoutError,
@@ -1598,28 +1724,30 @@ class TracksController(MediaControllerBase[Track]):
         evidence_provider_instances: set[str] | None,
         trust_track_mappings: bool,
         existing_domains: set[str],
-        failed_provider_instances: set[str] | None,
+        provider_failures: ProviderMatchFailures,
         failed_providers: list[str],
         known_dead_mappings: frozenset[tuple[str, str]] | None = None,
         search_non_streaming_without_mapping: bool = False,
     ) -> tuple[
-        list[tuple[MusicProvider, TrackProviderMatch]], list[str], TrackMatchConfidence | None
+        list[tuple[MusicProvider, TrackProviderMatch]],
+        list[str],
+        TrackMatchConfidence | None,
+        list[str],
     ]:
         """
         Query every allowed provider for a match, deferring accept/reject decisions.
 
-        Returns matches plus ambiguous providers and the highest ambiguous tier.
+        Returns matches plus ambiguous providers, the highest ambiguous tier and the
+        providers that are rate limiting us.
         """
         base_album: Album | ItemMapping | None = None
         base_album_loaded = False
         provider_matches: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
         ambiguous_confidence: TrackMatchConfidence | None = None
+        rate_limited_providers: list[str] = []
         for provider in providers:
-            if (
-                failed_provider_instances is not None
-                and provider.instance_id in failed_provider_instances
-            ):
+            if provider_failures.blocked(provider.instance_id):
                 continue
             if provider.domain in existing_domains:
                 continue
@@ -1628,6 +1756,11 @@ class TracksController(MediaControllerBase[Track]):
                 and not search_non_streaming_without_mapping
                 and not self._get_provider_mapping(mapping_source, provider)
             ):
+                continue
+            if provider_failures.rate_limited(provider.instance_id):
+                # the provider asked to be left alone, so this item is reported as
+                # skipped instead of costing a request the provider would refuse
+                rate_limited_providers.append(provider.name)
                 continue
             if not base_album_loaded:
                 base_album = await self._get_full_track_album(
@@ -1645,15 +1778,17 @@ class TracksController(MediaControllerBase[Track]):
                     trust_base_mapping=trust_track_mappings,
                     known_dead_mappings=known_dead_mappings,
                 )
-            except (
-                ResourceTemporarilyUnavailable,
-                ProviderUnavailableError,
-                ClientError,
-                OSError,
-                TimeoutError,
-            ) as err:
-                if failed_provider_instances is not None:
-                    failed_provider_instances.add(provider.instance_id)
+            except PROVIDER_MATCH_ERRORS as err:
+                provider_failures.record_failure(provider.instance_id, err)
+                if is_rate_limit_error(err):
+                    self.logger.info(
+                        "Rate limited matching %s on provider %s: %s",
+                        track.name,
+                        provider.name,
+                        err,
+                    )
+                    rate_limited_providers.append(provider.name)
+                    continue
                 self.logger.warning(
                     "Failed to match %s on provider %s: %s",
                     track.name,
@@ -1671,6 +1806,7 @@ class TracksController(MediaControllerBase[Track]):
                 )
                 failed_providers.append(provider.name)
                 continue
+            provider_failures.record_success(provider.instance_id)
             if result.match:
                 provider_matches.append((provider, result.match))
             elif result.ambiguous:
@@ -1680,46 +1816,43 @@ class TracksController(MediaControllerBase[Track]):
                     or result.ambiguous_confidence > ambiguous_confidence
                 ):
                     ambiguous_confidence = result.ambiguous_confidence
-        return provider_matches, ambiguous_providers, ambiguous_confidence
+        return provider_matches, ambiguous_providers, ambiguous_confidence, rate_limited_providers
 
     def _resolve_allowed_providers(
         self,
         provider_instance_ids: set[str] | None,
-        failed_provider_instances: set[str] | None,
+        provider_failures: ProviderMatchFailures,
     ) -> tuple[list[MusicProvider], list[str]]:
         """
         Return the providers to query and any allowed instance that cannot be queried.
 
         :param provider_instance_ids: Allowed provider instances, or ``None`` for all.
-        :param failed_provider_instances: Instances already known failed; updated in
-            place with any new failures found here.
+        :param provider_failures: Failure state of this matching run, updated in place
+            with any new failure found here.
         """
         if provider_instance_ids is None:
             return list(self.mass.music.providers), []
         providers: list[MusicProvider] = []
         failed_providers: list[str] = []
         for provider_instance_id in sorted(provider_instance_ids):
-            if (
-                failed_provider_instances is not None
-                and provider_instance_id in failed_provider_instances
-            ):
-                # Keep reporting a known-failed instance for each skipped entry.
-                failed_providers.append(provider_instance_id)
-                continue
             candidate = self.mass.get_provider(provider_instance_id, return_unavailable=True)
+            if provider_failures.blocked(provider_instance_id):
+                # Keep reporting a known-failed instance for each skipped entry.
+                failed_providers.append(
+                    candidate.name if candidate is not None else provider_instance_id
+                )
+                continue
             if not (
                 isinstance(candidate, MusicProvider)
                 and candidate.instance_id == provider_instance_id
             ):
                 # Treat fully missing instances as failed instead of silently dropping them.
-                if failed_provider_instances is not None:
-                    failed_provider_instances.add(provider_instance_id)
+                provider_failures.mark_unusable(provider_instance_id)
                 failed_providers.append(provider_instance_id)
                 continue
             if not candidate.available:
                 # Report unavailable instances so callers can retry them.
-                if failed_provider_instances is not None:
-                    failed_provider_instances.add(candidate.instance_id)
+                provider_failures.mark_unusable(candidate.instance_id)
                 failed_providers.append(candidate.name)
                 continue
             providers.append(candidate)
@@ -1990,34 +2123,7 @@ class TracksController(MediaControllerBase[Track]):
         An empty set of artists never clears the stored rows: a track without any
         artist can not be played or resolved.
         """
-        all_artists = list(artists)
-        if not all_artists:
-            if overwrite:
-                # a caller asking to replace all artists with none is a bug,
-                # so keep the stored rows and make the attempt visible
-                self.logger.warning("Ignoring request to clear all artists of track id %s", db_id)
-            return
-        if overwrite:
-            # on overwrite, clear the track_artists table first
-            await self.mass.music.database.delete(
-                DB_TABLE_TRACK_ARTISTS,
-                {
-                    "track_id": db_id,
-                },
-            )
-        for artist in all_artists:
-            await self._set_track_artist(db_id, artist=artist)
-
-    async def _set_track_artist(self, db_id: int, artist: Artist | ItemMapping) -> None:
-        """Store Track Artist info."""
-        # write (or update) record in track_artists table
-        await self.mass.music.database.insert_or_replace(
-            DB_TABLE_TRACK_ARTISTS,
-            {
-                "track_id": db_id,
-                "artist_id": await self.mass.music.artists.get_or_add_library_artist_id(artist),
-            },
-        )
+        await self._set_main_artists(DB_TABLE_TRACK_ARTISTS, "track_id", db_id, artists, overwrite)
 
     @staticmethod
     def _library_filter_parts(explicit: bool | None) -> list[str]:

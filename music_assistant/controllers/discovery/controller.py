@@ -305,7 +305,9 @@ class DiscoveryController(CoreController):
     def _configure_library_loggers(self) -> None:
         """Align third-party discovery logging with the discovery controller log level."""
         library_log_level = (
-            logging.DEBUG if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else self.logger.level + 10
+            logging.DEBUG
+            if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL)
+            else self.logger.getEffectiveLevel() + 10
         )
         for logger_name in ("async_upnp_client", "zeroconf"):
             logging.getLogger(logger_name).setLevel(library_log_level)
@@ -646,7 +648,7 @@ class DiscoveryController(CoreController):
                 "Successfully announced to Home Assistant. Discovery UUID: %s",
                 result.get("uuid") if isinstance(result, dict) else None,
             )
-        except Exception as err:
+        except (SupervisorError, ValueError) as err:
             self.logger.warning("Failed to announce to Home Assistant: %s", err)
         await self._announce_mcp_server()
 

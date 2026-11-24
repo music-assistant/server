@@ -6,7 +6,7 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import aiofiles
 from music_assistant_models.enums import AlbumType
@@ -425,10 +425,10 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
         raise InvalidDataError(msg)
 
 
-async def read_json(path: str) -> dict[str, Any]:
+async def read_json(path: str) -> object:
     """Read a JSON file and return its contents."""
     async with aiofiles.open(path, encoding="utf-8") as fh:
-        return cast("dict[str, Any]", json_loads(await fh.read()))
+        return json_loads(await fh.read())
 
 
 def _atomic_write(path: str, payload: str) -> None:

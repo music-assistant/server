@@ -2,7 +2,8 @@
 UPnP of the Sonos speakers: the settings the websocket api cannot change, and their events.
 
 The websocket api reads most settings but sets only the home theater options, and sends no
-event when a setting changes. The UPnP services of a speaker (port 1400) do both. Events are
+event when a setting changes. The UPnP services of a speaker (port 1400, a port per zone on an
+Amp Multi) do both, and also report whether something is connected to its line-in. Events are
 received on Music Assistant's stream server, which the speakers reach anyway to fetch the audio.
 """
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -27,7 +29,6 @@ from .const import (
     EVENT_SUBSCRIPTION_TIMEOUT,
     EVENTS_PATH,
     RENDERING_CONTROL_SERVICE,
-    UPNP_PORT,
     UPNP_TIMEOUT,
     UPNP_TIMEOUT_LIMIT,
 )
@@ -91,37 +92,37 @@ class SonosUpnp(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
 
 class SonosSpeakerUpnp:
     """
-    The UPnP services of one speaker: action calls and the RenderingControl events.
+    The UPnP services of one speaker: action calls and the events of its services.
 
     After UPNP_TIMEOUT_LIMIT timeouts in a row nothing is sent until reset_timeouts.
     """
 
-    def __init__(self, upnp: SonosUpnp, player_ip: str, logger: logging.Logger) -> None:
+    def __init__(self, upnp: SonosUpnp, player_ip: str, port: int, logger: logging.Logger) -> None:
         """
         Initialize; the speaker's description is read on first use.
 
         :param upnp: The UPnP of all speakers.
         :param player_ip: The speaker's IP address.
+        :param port: The port of the speaker's UPnP services.
         :param logger: The player's logger.
         """
         self._upnp = upnp
         self._logger = logger
         self.player_ip = player_ip
-        self.location = f"http://{player_ip}:{UPNP_PORT}/xml/device_description.xml"
+        self.location = f"http://{player_ip}:{port}/xml/device_description.xml"
         self._device: UpnpDevice | None = None
         self._device_lock = asyncio.Lock()
         self._timeouts = 0
-        # kept here because the event handler holds the service only weakly
-        self._events_service: UpnpService | None = None
-        self._renew_at = 0.0
-        self._events_live = False
+        # by service type
+        self._subscriptions: dict[str, _Subscription] = {}
         # one subscribe/renew at a time
         self._events_lock = asyncio.Lock()
 
     @property
     def follows(self) -> bool:
-        """Return whether the speaker's events come in: false until the first one arrived."""
-        return self._events_service is not None and self._events_live
+        """Return whether the RenderingControl events come in: false until the first arrived."""
+        subscription = self._subscriptions.get(RENDERING_CONTROL_SERVICE)
+        return subscription is not None and subscription.live
 
     @property
     def answers(self) -> bool:
@@ -157,31 +158,39 @@ class SonosSpeakerUpnp:
         """
         return await self.call(RENDERING_CONTROL_SERVICE, action, InstanceID=0, **arguments)
 
-    async def follow(self, on_change: ChangeCallback) -> None:
+    async def follow(self, on_change: ChangeCallback, service_types: Sequence[str]) -> None:
         """
-        Subscribe to the RenderingControl events, or renew the subscription when due.
+        Subscribe to the events of services of the speaker, or renew the subscriptions when due.
 
         A subscription that fails is tried again on the next call.
 
         :param on_change: Called with the state variables an event changed.
+        :param service_types: The services to follow, e.g. RENDERING_CONTROL_SERVICE.
         """
         async with self._events_lock:
-            if self._events_service is None:
-                await self._subscribe(on_change)
-            elif self._renew_at <= time.time():
-                await self._renew()
+            for service_type in service_types:
+                if (subscription := self._subscriptions.get(service_type)) is None:
+                    await self._subscribe(service_type, on_change)
+                elif subscription.renew_at <= time.time():
+                    await self._renew(subscription)
 
     async def unfollow(self) -> None:
-        """End the subscription; a speaker that is gone keeps it until it runs out."""
+        """End the subscriptions; a speaker that is gone keeps them until they run out."""
         async with self._events_lock:
-            if (service := self._events_service) is None:
-                return
-            self._events_service = None
-            self._events_live = False
-            try:
-                await self._counting_timeouts(self._upnp.event_handler.async_unsubscribe(service))
-            except UPNP_ERRORS as err:
-                self._logger.debug("Ending the events of %s failed: %r", self.location, err)
+            subscriptions = list(self._subscriptions.values())
+            self._subscriptions.clear()
+            for subscription in subscriptions:
+                try:
+                    await self._counting_timeouts(
+                        self._upnp.event_handler.async_unsubscribe(subscription.service)
+                    )
+                except UPNP_ERRORS as err:
+                    self._logger.debug(
+                        "Ending the %s events of %s failed: %r",
+                        subscription.service.service_type,
+                        self.location,
+                        err,
+                    )
 
     async def _counting_timeouts[T](self, request: Awaitable[T]) -> T:
         if not self.answers:
@@ -214,53 +223,66 @@ class SonosSpeakerUpnp:
             raise UpnpError(msg)
         return service
 
-    async def _subscribe(self, on_change: ChangeCallback) -> None:
+    async def _subscribe(self, service_type: str, on_change: ChangeCallback) -> None:
         try:
-            service = await self._service(RENDERING_CONTROL_SERVICE)
-            service.on_event = lambda _service, variables: self._handle_event(variables, on_change)
+            service = await self._service(service_type)
+            subscription = _Subscription(service)
+            service.on_event = lambda _service, variables: self._handle_event(
+                subscription, variables, on_change
+            )
             # set before subscribing: the first event can come in before the answer
-            self._events_service = service
-            self._renew_at = float("inf")
+            self._subscriptions[service_type] = subscription
             _, timeout = await self._counting_timeouts(
                 self._upnp.event_handler.async_subscribe(
                     service, timeout=timedelta(seconds=EVENT_SUBSCRIPTION_TIMEOUT)
                 )
             )
         except UPNP_ERRORS as err:
-            self._events_service = None
-            self._logger.debug("Subscribing to the events of %s failed: %r", self.location, err)
+            self._subscriptions.pop(service_type, None)
+            self._logger.debug(
+                "Subscribing to the %s events of %s failed: %r", service_type, self.location, err
+            )
             return
-        self._renew_at = time.time() + timeout.total_seconds() / 2
-        self._logger.debug("Subscribed to the events of %s", self.location)
+        subscription.renew_at = time.time() + timeout.total_seconds() / 2
+        self._logger.debug("Subscribed to the %s events of %s", service_type, self.location)
 
-    async def _renew(self) -> None:
-        assert self._events_service is not None  # checked by follow
+    async def _renew(self, subscription: _Subscription) -> None:
+        service_type = subscription.service.service_type
         try:
             _, timeout = await self._counting_timeouts(
                 self._upnp.event_handler.async_resubscribe(
-                    self._events_service, timeout=timedelta(seconds=EVENT_SUBSCRIPTION_TIMEOUT)
+                    subscription.service, timeout=timedelta(seconds=EVENT_SUBSCRIPTION_TIMEOUT)
                 )
             )
         except UPNP_ERRORS as err:
             # lost: made again on the next follow
-            self._events_service = None
-            self._events_live = False
-            self._logger.debug("Renewing the events of %s failed: %r", self.location, err)
+            self._subscriptions.pop(service_type, None)
+            self._logger.debug(
+                "Renewing the %s events of %s failed: %r", service_type, self.location, err
+            )
             return
-        self._renew_at = time.time() + timeout.total_seconds() / 2
+        subscription.renew_at = time.time() + timeout.total_seconds() / 2
 
     def _handle_event(
-        self, variables: Sequence[UpnpStateVariable[Any]], on_change: ChangeCallback
+        self,
+        subscription: _Subscription,
+        variables: Sequence[UpnpStateVariable[Any]],
+        on_change: ChangeCallback,
     ) -> None:
-        if self._events_service is None:
+        if self._subscriptions.get(subscription.service.service_type) is not subscription:
+            # ended, or made again since
             return
-        if not self._events_live:
-            self._logger.debug("Events of %s come in", self.location)
-            self._events_live = True
+        if not subscription.live:
+            self._logger.debug(
+                "%s events of %s come in", subscription.service.service_type, self.location
+            )
+            subscription.live = True
         changes: dict[str, str] = {}
         for variable in variables:
             if variable.name == "LastChange":
                 changes.update(parse_last_change(variable.upnp_value))
+            else:
+                changes[variable.name] = variable.upnp_value
         if changes:
             on_change(changes)
 
@@ -289,3 +311,14 @@ def parse_last_change(last_change_xml: str | None) -> dict[str, str]:
             name = f"{name}_{channel}"
         changes[name] = value
     return changes
+
+
+@dataclass
+class _Subscription:
+    """The events of one service of a speaker."""
+
+    # kept here because the event handler holds the service only weakly
+    service: UpnpService
+    renew_at: float = float("inf")
+    # false until its first event came in: events may not reach MA at all
+    live: bool = False

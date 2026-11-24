@@ -56,7 +56,7 @@ from music_assistant.constants import (
     GENRE_ICONS_DIR_NAME,
     RESOURCES_DIR,
 )
-from music_assistant.controllers.music.helpers import search_name_match_clause
+from music_assistant.controllers.music.helpers import genre_lookup_cte, search_name_match_clause
 from music_assistant.controllers.music.listing import resolve_listing_sort
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.database import UNSET
@@ -1652,12 +1652,7 @@ class GenreController(MediaControllerBase[Genre]):
 
             # Build CTE with (raw_name, genre_id) pairs and INSERT mappings for this bucket's
             # tables. One raw name can produce multiple rows when it maps to multiple genres.
-            cte_values = ", ".join(
-                f"(LOWER('{name.replace(chr(39), chr(39) + chr(39))}'), {gid})"
-                for name, gids in raw_name_to_genres.items()
-                for gid in gids
-            )
-            cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
+            cte, cte_params = genre_lookup_cte(raw_name_to_genres)
 
             for table, media_type in tables:
                 full_query = (
@@ -1676,7 +1671,7 @@ class GenreController(MediaControllerBase[Genre]):
                     f"AND e.media_id = {table}.item_id "
                     f"AND e.media_type = '{media_type.value}')"
                 )
-                await db.execute(full_query)
+                await db.execute(full_query, cte_params)
             await db.commit()
 
         self.logger.info(
@@ -1849,12 +1844,7 @@ class GenreController(MediaControllerBase[Genre]):
                 await self._ensure_aliases(gid, new_aliases)
 
             # Build CTE with n:n pairs and INSERT only for unmapped items
-            cte_values = ", ".join(
-                f"(LOWER('{name.replace(chr(39), chr(39) + chr(39))}'), {gid})"
-                for name, gids in raw_name_to_genres.items()
-                for gid in gids
-            )
-            cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
+            cte, cte_params = genre_lookup_cte(raw_name_to_genres)
 
             for table, media_type in tables:
                 full_query = (
@@ -1879,7 +1869,7 @@ class GenreController(MediaControllerBase[Genre]):
                     f"AND e.media_id = {table}.item_id "
                     f"AND e.media_type = '{media_type.value}')"
                 )
-                await db.execute(full_query)
+                await db.execute(full_query, cte_params)
             mapped_any = True
 
         if mapped_any:

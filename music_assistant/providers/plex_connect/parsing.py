@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import requests
+from music_assistant_models.errors import MusicAssistantError
+from plexapi.exceptions import PlexApiException
+
+# what resolving or fetching an item through the Plex provider or plexapi can raise
+PLEX_FETCH_ERRORS = (MusicAssistantError, PlexApiException, requests.exceptions.RequestException)
+
 
 def plex_item_fields(item: Any) -> tuple[str | None, int | None]:
     """

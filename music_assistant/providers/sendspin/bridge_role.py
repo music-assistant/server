@@ -69,6 +69,7 @@ class BridgePlayerRole(Role):
         self._on_volume_change_cb: Callable[[int], None] | None = None
         self._on_mute_change_cb: Callable[[bool], None] | None = None
         self._on_stream_start_cb: Callable[[], None] | None = None
+        self._on_stream_clear_cb: Callable[[], None] | None = None
         self._on_stream_end_cb: Callable[[], None] | None = None
         self._on_explicit_stop_cb: Callable[[], None] | None = None
         self._audio_requirements: AudioRequirements | None = None
@@ -87,6 +88,7 @@ class BridgePlayerRole(Role):
         on_mute_change: Callable[[bool], None],
         on_stream_start: Callable[[], None],
         on_stream_end: Callable[[], None],
+        on_stream_clear: Callable[[], None] | None = None,
         on_explicit_stop: Callable[[], None] | None = None,
         initial_volume: int = 100,
         initial_muted: bool = False,
@@ -99,6 +101,8 @@ class BridgePlayerRole(Role):
         :param on_mute_change: Callback when mute state changes.
         :param on_stream_start: Callback when the stream starts.
         :param on_stream_end: Callback when the stream ends.
+        :param on_stream_clear: Callback when the audio delivered so far is cleared while the
+            stream goes on (a seek or track change), so the bridge drops what it still holds.
         :param on_explicit_stop: Callback when playback was ended by an explicit
             user command (stop, or removal from the group), so the bridge can
             silence its player at once instead of keeping its transport warm.
@@ -110,6 +114,7 @@ class BridgePlayerRole(Role):
         self._on_mute_change_cb = on_mute_change
         self._on_stream_start_cb = on_stream_start
         self._on_stream_end_cb = on_stream_end
+        self._on_stream_clear_cb = on_stream_clear
         self._on_explicit_stop_cb = on_explicit_stop
         self.update_player_state(volume=initial_volume, muted=initial_muted)
 
@@ -255,6 +260,12 @@ class BridgePlayerRole(Role):
         LOGGER.debug("BridgePlayerRole stream started for client %s", self._client.client_id)
         if self._on_stream_start_cb:
             self._on_stream_start_cb()
+
+    def on_stream_clear(self) -> None:
+        """Log a stream clear and invoke the stream-clear callback."""
+        LOGGER.debug("BridgePlayerRole stream cleared for client %s", self._client.client_id)
+        if self._on_stream_clear_cb:
+            self._on_stream_clear_cb()
 
     def on_stream_end(self) -> None:
         """Log stream end and invoke the stream-end callback."""

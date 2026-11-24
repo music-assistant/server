@@ -194,9 +194,8 @@ class AudioBuffer:
         self._release_task: asyncio.Task[None] | None = None
         # whether this buffer may give up its audio while nobody reads it; None means never
         self.may_release: Callable[[AudioBuffer], bool] | None = None
-        # the queue and the queue item this buffer was made for, if any
+        # the queue this buffer was made for, if any
         self.queue_id: str | None = None
-        self.queue_item_id: str | None = None
 
     # -- Properties --
 
@@ -610,7 +609,7 @@ class AudioBuffer:
                     and provider.max_concurrent_streams is not None
                     and not provider.has_available_stream_slot
                 )
-                if must_release_slot or time.time() - existing_buffer._last_access_time > 30:
+                if must_release_slot:
                     await asyncio.shield(existing_buffer.clear())
                 else:
                     # nothing reads it through the stream details any more; a consumer
@@ -1187,7 +1186,7 @@ async def _probe_source_format(
     # the probe opens the source just like the producer does, so it needs a slot as well
     provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
     stream_slot = (
-        provider.acquire_stream_slot(source_wait_timeout)
+        provider.acquire_stream_slot(source_wait_timeout, queue_id=streamdetails.queue_id)
         if isinstance(provider, MusicProvider)
         else nullcontext()
     )
@@ -1198,7 +1197,7 @@ async def _probe_source_format(
             try:
                 async with asyncio.timeout(AUDIO_PROBE_TIMEOUT):
                     input_path = (await mass.streams.audio.get_hls_substream(input_path)).path
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the source just stays unprobed
                 LOGGER.debug("Unable to resolve HLS substream of %s: %s", streamdetails.uri, err)
                 return
         try:

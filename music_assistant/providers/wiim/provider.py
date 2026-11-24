@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 # mDNS-advertised port: 49152 serves the description, 59152 is the advertised UPnP port.
 LINKPLAY_UPNP_PORTS = (49152, 59152)
 
+# A follower whose leader was not read yet is looked at again after this long, when its
+# leader had the time to be set up; it is added then even if its leader is still unknown.
+FOLLOWER_DECISION_DELAY = 30
+
 
 class WiimProvider(PlayerProvider):
     """
@@ -61,6 +65,7 @@ class WiimProvider(PlayerProvider):
         self.wiim_controller = WiimController(self.mass.http_session_no_ssl)
         # The single native multiroom topology authority shared by both backends.
         self.native_groups = NativeGroupCoordinator(self)
+        await self.native_groups.load_native_sets()
         # UPnP identity probe used to classify a discovered device (official WiiM/Audio Pro
         # vs a generic LinkPlay device such as Edifier). The description.xml is served over
         # plain HTTP; no UPnP eventing is used by the generic backend.
@@ -220,8 +225,17 @@ class WiimProvider(PlayerProvider):
         ip_address: str,
         locations: tuple[str, ...],
         mac_address: str | None = None,
+        follower_deferred: bool = False,
     ) -> None:
-        """Probe a device's UPnP identity once and route it to the right backend."""
+        """
+        Probe a device's UPnP identity once and route it to the right backend.
+
+        :param ip_address: The address of the device.
+        :param locations: The description URLs to probe.
+        :param mac_address: The MAC address the device advertises, if any.
+        :param follower_deferred: Whether this is the second look at a follower whose leader
+            was not read at the first one.
+        """
         upnp_device, matched_location = await self._probe_locations(locations)
         if upnp_device is None or matched_location is None:
             # No reachable UPnP description; leave the backend undecided and retry later.
@@ -233,6 +247,34 @@ class WiimProvider(PlayerProvider):
             # moved device here using the description we just probed.
             await self._reconcile_player_address(
                 existing, ip_address, upnp_device, matched_location
+            )
+            return
+        if not self.mass.players.wants_protocol(protocol_id):
+            return
+        # a speaker of a stereo pair made in the WiiM app is part of the player of the pair's
+        # leader. Only the slave list of that leader tells, so a follower whose leader was not
+        # read yet is looked at again later.
+        if (
+            not self.native_groups.is_native_set_member(protocol_id)
+            and not follower_deferred
+            and await self.native_groups.follows_unread_leader(
+                WiiMClient(ip_address, session=self.mass.http_session)
+            )
+        ):
+            self.mass.call_later(
+                FOLLOWER_DECISION_DELAY,
+                self._discover_device,
+                ip_address,
+                locations,
+                mac_address,
+                task_id=f"wiim_follower_{ip_address}",
+                follower_deferred=True,
+            )
+            return
+        # checked after the speaker was asked: its leader can have been read meanwhile
+        if self.native_groups.is_native_set_member(protocol_id):
+            self.logger.debug(
+                "Not adding %s: it is part of the speaker set of its leader", ip_address
             )
             return
 

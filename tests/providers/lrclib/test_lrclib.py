@@ -10,6 +10,7 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.lrclib import SUPPORTED_FEATURES, LrclibProvider
 from tests.common import use_real_create_task
+from tests.controllers.music.helpers import create_track
 
 
 @pytest.fixture
@@ -37,6 +38,53 @@ def _response_cm(*, response: MagicMock | None = None, exc: Exception | None = N
     cm.__aenter__ = AsyncMock(return_value=response, side_effect=exc)
     cm.__aexit__ = AsyncMock(return_value=False)
     return cm
+
+
+async def test_get_track_metadata_looks_up_lrc_when_plain_lyrics_exist(
+    provider: LrclibProvider,
+) -> None:
+    """Existing plain lyrics do not prevent looking up synchronized lyrics."""
+    track = create_track("spotify", "track")
+    track.metadata.lyrics = "plain lyrics"
+    provider._get_data = AsyncMock(  # type: ignore[method-assign]
+        return_value={"syncedLyrics": "[00:01.00]sync"}
+    )
+
+    metadata = await provider.get_track_metadata(track)
+
+    assert metadata is not None
+    assert metadata.lrc_lyrics == "[00:01.00]sync"
+    provider._get_data.assert_awaited_once_with(
+        track_name="Test Track", artist_name="Test Artist", album_name="", duration=200
+    )
+
+
+async def test_get_track_metadata_skips_when_lrc_lyrics_exist(provider: LrclibProvider) -> None:
+    """Existing synchronized lyrics do not trigger another lookup."""
+    track = create_track("spotify", "track")
+    track.metadata.lrc_lyrics = "[00:01.00]existing"
+    provider._get_data = AsyncMock(  # type: ignore[method-assign]
+        return_value={"syncedLyrics": "[00:02.00]later"}
+    )
+
+    assert await provider.get_track_metadata(track) is None
+    provider._get_data.assert_not_awaited()
+
+
+async def test_get_track_metadata_returns_plain_lyrics_without_lrc(
+    provider: LrclibProvider,
+) -> None:
+    """Plain lyrics returned by LRCLIB remain available when no synchronized lyrics exist."""
+    track = create_track("spotify", "track")
+    provider._get_data = AsyncMock(  # type: ignore[method-assign]
+        return_value={"plainLyrics": "plain lyrics"}
+    )
+
+    metadata = await provider.get_track_metadata(track)
+
+    assert metadata is not None
+    assert metadata.lyrics == "plain lyrics"
+    assert metadata.lrc_lyrics is None
 
 
 async def test_get_data_returns_none_when_not_found(provider: LrclibProvider) -> None:

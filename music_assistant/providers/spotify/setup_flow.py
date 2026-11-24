@@ -31,6 +31,7 @@ from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExp
 from music_assistant.providers.spotify_connect.soloist import (
     SoloistError,
     UnsupportedPlatformError,
+    find_reusable_api_key,
     verify_platform_supported,
 )
 
@@ -426,12 +427,18 @@ async def _authorize_soloist(
     """
     Run the soloist branch: consent, API key and account pairing.
 
+    The consent and API key steps are skipped when this setup has no key yet and
+    another Soloist setup on the server has one to take over.
+
     :param session: The setup session driving the flow.
     :param setup_data: The setup data collected so far, updated in place.
     :param account_id: The signed-in Spotify user id, to pair against.
     :return: True when the branch completed, False when consent was refused.
     """
-    if not await _ask_soloist_consent(session, bool(setup_data.get(CONF_SOLOIST_CONSENT))):
+    reused_key = None if setup_data.get(CONF_SOLOIST_API_KEY) else find_reusable_api_key(session)
+    if reused_key:
+        setup_data[CONF_SOLOIST_API_KEY] = reused_key
+    elif not await _ask_soloist_consent(session, bool(setup_data.get(CONF_SOLOIST_CONSENT))):
         return False
     setup_data[CONF_SOLOIST_CONSENT] = True
     # an existing paired session can be kept on reconfigure; the API key can
@@ -441,7 +448,9 @@ async def _authorize_soloist(
     )
     errors: dict[str, str | SetupFlowError] | None = None
     while True:
-        await _ask_soloist_api_key(session, setup_data, errors)
+        # a key taken over is only asked for again once pairing with it failed
+        if errors or not reused_key:
+            await _ask_soloist_api_key(session, setup_data, errors)
         if keep_session:
             if await _paired_account_differs(_instance_data_dir(session), account_id):
                 # the kept pairing belongs to another Spotify account, so it

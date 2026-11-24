@@ -51,10 +51,12 @@ from music_assistant.providers.musiccast.constants import (
     MC_DEVICE_UPNP_CTRL_ENDPOINT,
     MC_DEVICE_UPNP_PORT,
     MC_DEVICE_UPNP_USER_AGENT,
+    MC_LINK_SOURCES,
     MC_NETUSB_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
     MC_POLL_INTERVAL,
     MC_SOUND_MODE_FRIENDLY_NAMES,
+    MC_SOURCE_CD,
     MC_SOURCE_MAIN_SYNC,
     MC_SOURCE_MC_LINK,
     PLAYER_CONFIG_ENTRIES,
@@ -246,6 +248,9 @@ class MusicCastPlayer(PlayerProtocol):
                     id=source_id,
                     name=source_name,
                     passive=passive,
+                    # what the device plays itself (network, USB, tuner, its CD drive) or
+                    # takes from another MusicCast device is not an input
+                    is_input=not control and source_id not in (*MC_LINK_SOURCES, MC_SOURCE_CD),
                     can_play_pause=control,
                     can_seek=False,
                     can_next_previous=control,
@@ -399,6 +404,7 @@ class MusicCastPlayer(PlayerProtocol):
                     artist=_server.media_artist,
                     album=_server.media_album_name,
                     image_url=_server.media_image_url,
+                    clear_all=True,
                 )
         else:
             self.set_current_media(
@@ -407,6 +413,7 @@ class MusicCastPlayer(PlayerProtocol):
                 artist=self.zone_device.media_artist,
                 album=self.zone_device.media_album_name,
                 image_url=self.zone_device.media_image_url,
+                clear_all=True,
             )
 
         # SOURCE
@@ -897,7 +904,7 @@ class MusicCastPlayer(PlayerProtocol):
             if str(capability.id) != option_key:
                 continue
             if not isinstance(capability, MCBinarySetter | MCNumberSetter | MCOptionSetter):
-                self.logger.error(f"Option {capability.name} is read only!")
+                self.logger.error("Option %s is read only!", capability.name)
                 return
             if isinstance(capability, MCBinarySetter):
                 await capability.set(bool(option_value))
@@ -906,8 +913,10 @@ class MusicCastPlayer(PlayerProtocol):
                 max_value = capability.value_range.maximum
                 if not min_value <= int(option_value) <= max_value:
                     self.logger.error(
-                        f"Option {capability.name} has numeric range of"
-                        f"{min_value} <= value <= {max_value}"
+                        "Option %s has numeric range of %s <= value <= %s",
+                        capability.name,
+                        min_value,
+                        max_value,
                     )
                     return
                 await capability.set(int(option_value))
@@ -917,7 +926,7 @@ class MusicCastPlayer(PlayerProtocol):
                 with suppress(ValueError):
                     _option_value = int(_option_value)
                 if _option_value not in capability.options:
-                    self.logger.error(f"Option {_option_value} is not allowed for {option_key}")
+                    self.logger.error("Option %s is not allowed for %s", _option_value, option_key)
                     return
                 await capability.set(_option_value)
             break

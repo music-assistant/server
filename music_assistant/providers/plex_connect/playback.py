@@ -48,7 +48,7 @@ class PlaybackMixin:
         if queue and queue.current_item:
             try:
                 await self.provider.mass.players.cmd_seek(player_id, offset // 1000)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - player provider code, seeking is best effort
                 LOGGER.debug("Could not seek to offset %sms: %s", offset, e)
         else:
             LOGGER.warning("Queue not ready for seeking after timeout")

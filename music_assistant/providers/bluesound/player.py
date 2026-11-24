@@ -25,6 +25,7 @@ from music_assistant.models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.bluesound.const import (
     IDLE_POLL_INTERVAL,
+    INPUT_URL_PREFIXES,
     MAX_CONNECTING_POLLS,
     PLAYBACK_POLL_INTERVAL,
     PLAYBACK_STATE_MAP,
@@ -61,12 +62,15 @@ class BluesoundPlayer(PlayerProtocol):
         self.ip_address = ip_address
         self.connected: bool = True
         self.client = BluosPlayer(self.ip_address, self.port, self.mass.http_session)
-        self.sync_status: SyncStatus
+        # None until the player first answers a status call
+        self.sync_status: SyncStatus | None = None
         self.status: Status
         self.poll_state = POLL_STATE_STATIC
         self.dynamic_poll_count: int = 0
         self._connecting_polls: int = 0
         self._listen_task: asyncio.Task[None] | None = None
+        # the entries of the inputs of the player, by their BluOS id and by their url
+        self._input_source_ids: dict[str, str] = {}
         # Set base player attributes
         self._attr_supported_features = PLAYER_FEATURES_BASE.copy()
         self._attr_name = name
@@ -239,7 +243,7 @@ class BluesoundPlayer(PlayerProtocol):
                         paired_player.ip, paired_player.port, timeout=3
                     )
                 except (PlayerUnexpectedResponseError, PlayerUnreachableError) as err:
-                    self.logger.debug(f"Could not remove players: {err!s}")
+                    self.logger.debug("Could not remove players: %s", err)
                     continue
                 removed_player = self.provider.get_protocol(player_id)
                 if removed_player:
@@ -253,7 +257,7 @@ class BluesoundPlayer(PlayerProtocol):
                 try:
                     await self.client.add_follower(paired_player.ip, paired_player.port, timeout=5)
                 except (PlayerUnexpectedResponseError, PlayerUnreachableError) as err:
-                    self.logger.debug(f"Could not add player {paired_player}: {err!s}")
+                    self.logger.debug("Could not add player %s: %s", paired_player, err)
                     continue
                 self._attr_group_members.append(player_id)
                 added_player = self.provider.get_protocol(player_id)
@@ -266,7 +270,7 @@ class BluesoundPlayer(PlayerProtocol):
 
     async def ungroup(self) -> None:
         """Handle UNGROUP command for BluOS player."""
-        if not (leader := self.sync_status.leader):
+        if not self.sync_status or not (leader := self.sync_status.leader):
             return
         provider = cast("BluesoundPlayerProvider", self.provider)
         if (leader_player_id := provider.player_map.get((leader.ip, leader.port))) and (
@@ -287,6 +291,7 @@ class BluesoundPlayer(PlayerProtocol):
                 id=source_name,
                 name=source_name,
                 passive=True,
+                is_input=True,
                 can_play_pause=False,
                 can_next_previous=False,
                 can_seek=False,
@@ -296,6 +301,12 @@ class BluesoundPlayer(PlayerProtocol):
         mass_url = self.mass.streams.base_url
         if self.status.stream_url and mass_url in self.status.stream_url:
             self._attr_active_source = None
+        elif source_id := (
+            self._input_source_ids.get(self.status.input_id or "")
+            or self._input_source_ids.get(self.status.stream_url or "")
+        ):
+            # an input of the player, already listed with its own entry
+            self._attr_active_source = source_id
         elif player_source := PLAYER_SOURCE_MAP.get(cast("str", self.status.input_id)):
             self._attr_active_source = self.status.input_id
             self._attr_source_list.append(player_source)
@@ -360,7 +371,7 @@ class BluesoundPlayer(PlayerProtocol):
 
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
-        self.logger.debug(f"updating {self.protocol_id} attributes")
+        self.logger.debug("updating %s attributes", self.protocol_id)
         if self.dynamic_poll_count > 0:
             self.dynamic_poll_count -= 1
 
@@ -368,14 +379,14 @@ class BluesoundPlayer(PlayerProtocol):
             self.status = await self.client.status()
             self._attr_available = True
         except (PlayerUnreachableError, PlayerUnexpectedResponseError) as err:
-            self.logger.debug(f"Player {self.name} status check failed: {err}")
+            self.logger.debug("Player %s status check failed: %s", self.name, err)
             self._attr_available = False
             self._attr_poll_interval = IDLE_POLL_INTERVAL
             self.update_state()
             return
 
         if self.poll_state == POLL_STATE_DYNAMIC and self.dynamic_poll_count <= 0:
-            self.logger.debug(f"Changing bluos poll state from {self.poll_state} to static")
+            self.logger.debug("Changing bluos poll state from %s to static", self.poll_state)
             self.poll_state = POLL_STATE_STATIC
 
         self._attr_playback_state = self._resolve_playback_state()
@@ -409,7 +420,9 @@ class BluesoundPlayer(PlayerProtocol):
         self._attr_volume_muted = self.status.mute
 
         self.logger.debug(
-            f"Volume from sync_status: {self.sync_status.volume}, from status: {self.status.volume}"
+            "Volume from sync_status: %s, from status: %s",
+            self.sync_status.volume,
+            self.status.volume,
         )
 
         provider = cast("BluesoundPlayerProvider", self.provider)
@@ -478,14 +491,28 @@ class BluesoundPlayer(PlayerProtocol):
                 id=f"input-{bluos_input.url}",
                 name=f"Input: {bluos_input.text}",
                 passive=False,
+                # the list also holds Bluetooth and services such as Spotify
+                is_input=bluos_input.url.startswith(INPUT_URL_PREFIXES),
                 can_play_pause=False,
                 can_seek=False,
                 can_next_previous=False,
             )
 
-        presets = await self.client.presets(timeout=timeout)
+        try:
+            presets = await self.client.presets(timeout=timeout)
+        except PlayerUnexpectedResponseError as err:
+            # the secondary of a stereo pair answers with an empty body
+            self.logger.debug("Could not read the presets of %s: %s", self.name, err)
+            presets = []
         inputs = await self.client.inputs(timeout=timeout)
         inputs_as_sources = [_input_to_ma_source(bluos_input) for bluos_input in inputs]
+        self._input_source_ids = {
+            key: source.id
+            for bluos_input, source in zip(inputs, inputs_as_sources, strict=True)
+            if source.is_input
+            for key in (bluos_input.id, bluos_input.url)
+            if key
+        }
         return [_preset_to_ma_source(preset) for preset in presets] + inputs_as_sources
 
     def _set_polling_dynamic(self, poll_count: int = 6, poll_interval: float = 0.5) -> None:
@@ -503,8 +530,7 @@ class BluesoundPlayer(PlayerProtocol):
         this should return None.
         If it is part of a (permanent) group, this should also return None.
         """
-        if self.sync_status.leader:
-            leader = self.sync_status.leader
+        if self.sync_status and (leader := self.sync_status.leader):
             return cast("BluesoundPlayerProvider", self.provider).player_map.get(
                 (leader.ip, leader.port), None
             )

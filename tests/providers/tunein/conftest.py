@@ -13,7 +13,7 @@ from music_assistant.providers.tunein import SUPPORTED_FEATURES, TuneInProvider
 def provider() -> TuneInProvider:
     """Create a real TuneInProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "tunein"
     config = Mock()
     config.instance_id = "tunein--test123"

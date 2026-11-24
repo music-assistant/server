@@ -58,6 +58,7 @@ from .constants import (
     DASHBOARD_KEEPALIVE_SUFFIXES,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
+    get_cast_output_codec_entry,
 )
 from .helpers import (
     CastStatusListener,
@@ -89,6 +90,9 @@ class ChromecastPlayer(PlayerProtocol):
     # a quit that is already on the wire cannot be recalled, so a receiver that
     # still reports our app is no longer proof that the session is usable
     app_quit_sent: bool = False
+    # whether the playback the receiver last reported was a Music Assistant session,
+    # taken while it plays: once it ends the receiver may no longer say what it played
+    _playing_own_session: bool = False
     # Cast reports the running app accurately, and only a foreign app is listed as source
     _attr_trusts_reported_source = True
     # the client of the device, connected at every attach
@@ -170,13 +174,16 @@ class ChromecastPlayer(PlayerProtocol):
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        output_codec_entry = get_cast_output_codec_entry(self.cast_info.model_name)
         if self.type == PlayerType.GROUP:
             return [
+                output_codec_entry,
                 *CAST_PLAYER_CONFIG_ENTRIES,
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
+            output_codec_entry,
             *CAST_PLAYER_CONFIG_ENTRIES,
             CONF_ENTRY_SAMPLE_RATES_CAST,
             CONF_ENTRY_DEFER_IDLE_VOLUME,
@@ -841,6 +848,8 @@ class ChromecastPlayer(PlayerProtocol):
         :param is_playing: Whether the receiver is really playing audio.
         """
         prev_state = self._attr_playback_state
+        if is_playing or status.player_is_paused:
+            self._playing_own_session = self._is_own_session(status)
         if is_playing:
             self._attr_playback_state = PlaybackState.PLAYING
             self.set_current_media(uri=status.content_id or "", clear_all=True)
@@ -856,11 +865,15 @@ class ChromecastPlayer(PlayerProtocol):
                 prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
                 and self.type != PlayerType.GROUP
                 and self.active_cast_group is None
+                and self._playing_own_session
             ):
                 # Playback that ends on its own never gets a stop command (the queue ran
                 # out, or an announcement finished), so without this the device would stay
                 # claimed forever. A cast group is left alone: quitting its app is what its
                 # power control does, and a group member follows the group's session.
+                # Playback another party cast through the Default Media Receiver is left
+                # to the receiver's own idle timeout: quitting it ends that party's session,
+                # and its next cast then has to start a new one, with the connect chime.
                 self._schedule_app_release()
 
     def _update_elapsed_time(self, status: MediaStatus, is_playing: bool) -> None:

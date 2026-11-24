@@ -24,7 +24,7 @@ STRINGS = Path(__file__).parents[3] / "music_assistant/providers/deezer/strings.
 
 
 def _provider(mass: Mock) -> DeezerProvider:
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "deezer"
     config = Mock()
     config.instance_id = "deezer--test"

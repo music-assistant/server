@@ -24,7 +24,7 @@ def _setup_values(provider: SoundcloudMusicProvider, **values: str) -> None:
 
 async def test_setup_returns_provider() -> None:
     """Setting up returns a provider instance."""
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "soundcloud"
     config = Mock()
     config.get_value.return_value = "GLOBAL"

@@ -22,7 +22,7 @@ import asyncio
 import builtins
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
 from music_assistant_models.config_entries import ConfigValueType
@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_control import PlayerControl
 
     from music_assistant import MusicAssistant
+    from music_assistant.controllers.players.audio_sources import AudioSourceSession
 
 # TypeVar for config value type inference
 _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
@@ -2407,6 +2408,7 @@ class Player:
             if own_protocol is not None
             else _absent_protocol_snapshot(self.player_id, self._missing_provider_reason())
         )
+        own.source_list = self._name_inputs_of_other_players(own.source_list)
         peers: dict[str, PeerSnapshot] = {}
         linked, active_protocol, foreign_app = self._collect_protocols(
             peers, probe_synced_to=not own.synced_to
@@ -2423,15 +2425,19 @@ class Player:
         can_group_with: set[str] = set()
         protocol_can_group_with: set[str] = set()
         grouping_locked = own_protocol.grouping_locked if own_protocol else False
+        synced_to = resolve_synced_to(own, linked, peers)
         # a player that is synced or keeps its grouping locked has nothing to group with,
         # which saves looking up all protocols of the providers it can group through
-        if not grouping_locked and resolve_synced_to(own, linked, peers) is None:
+        if not grouping_locked and synced_to is None:
             if own_protocol is not None:
                 can_group_with = self._collect_can_group_with(peers, own_protocol)
             for protocol in self._audio_protocols:
                 protocol_can_group_with |= self._collect_can_group_with(peers, protocol)
         groups = self._collect_groups(peers)
         session = self.mass.players.get_audio_source_session(self.player_id)
+        followed_sessions = self._collect_followed_sessions(groups, synced_to)
+        standing_sources = self._collect_standing_sources()
+        input_sources = self._collect_input_sources()
         source_ids = {self._active_mass_source, own.active_source}
         queues = {
             queue_id: QueueSnapshot(queue=queue)
@@ -2508,7 +2514,20 @@ class Player:
                 and not (session.stream_metadata and session.stream_metadata.image_url)
                 else None
             ),
-            standing_sources=self._collect_standing_sources(),
+            followed_sessions=followed_sessions,
+            followed_source_names={
+                holder_id: self.mass.players.get_audio_source_name(x.source, self.player_id)
+                for holder_id, x in followed_sessions.items()
+            },
+            standing_sources=standing_sources,
+            input_sources=input_sources,
+            source_names=self._source_names(
+                [
+                    *standing_sources,
+                    *input_sources,
+                    *([session.source] if session is not None else []),
+                ]
+            ),
         )
         # stream metadata and artwork are only looked up for the queue the player takes its
         # media from
@@ -2603,14 +2622,72 @@ class Player:
         return tuple(groups)
 
     def _collect_standing_sources(self) -> tuple[AudioSource, ...]:
-        """Collect the audio sources providers bound to the player or report as its inputs."""
+        """Collect the audio sources providers bound to the player."""
         sources: list[AudioSource] = []
         for prov in self.mass.players.get_audio_source_providers():
             sources += prov.get_player_audio_sources(self.player_id) or ()
+        return tuple(sources)
+
+    def _collect_input_sources(self) -> tuple[AudioSource, ...]:
+        """Collect the audio sources providers report as inputs of the player's own device."""
+        sources: list[AudioSource] = []
+        for prov in self.mass.players.get_audio_source_providers():
             # a device's own inputs may be reported for one of its protocols
             for device_id in {self.player_id, *self._protocols}:
                 sources += prov.get_player_input_sources(device_id)
         return tuple(sources)
+
+    def _collect_followed_sessions(
+        self, groups: Iterable[GroupSnapshot], synced_to: str | None
+    ) -> dict[str, AudioSourceSession]:
+        """
+        Collect the live audio sources playing on the players the player can follow.
+
+        Every group player counts, as a group can hold the group that holds the player.
+        Returned by the id of the player each plays on.
+
+        :param groups: The group players.
+        :param synced_to: Id of the player it is synced to.
+        """
+        sessions: dict[str, AudioSourceSession] = {}
+        for parent_id in {*(group.player_id for group in groups), synced_to}:
+            if (
+                parent_id
+                and parent_id != self.player_id
+                and (session := self.mass.players.get_audio_source_session(parent_id))
+            ):
+                sessions[parent_id] = session
+        return sessions
+
+    def _source_names(self, sources: Iterable[AudioSource]) -> dict[str, str]:
+        """Return the names of the given audio sources as shown on the player, by uri."""
+        return {
+            source.uri: self.mass.players.get_audio_source_name(source, self.player_id)
+            for source in sources
+            if source.uri
+        }
+
+    def _name_inputs_of_other_players(self, sources: list[PlayerSource]) -> list[PlayerSource]:
+        """
+        Return the sources of the device, an input of another player named as shown on this one.
+
+        Such an input names its player by the id the provider knows it by. It is left out when
+        that names no player Music Assistant has, such as a disabled one.
+        """
+        players = self.mass.players
+        named: list[PlayerSource] = []
+        for source in sources:
+            if source.owner_player_id is None:
+                named.append(source)
+            elif owner := players.get_audio_source_owner(source):
+                named.append(
+                    replace(
+                        source,
+                        name=players.get_audio_source_name(source, self.player_id),
+                        owner_player_id=owner.player_id,
+                    )
+                )
+        return named
 
     def _collect_peer(
         self,

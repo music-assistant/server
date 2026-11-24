@@ -339,6 +339,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # Cleared after restore finishes.
             # Resume during announce still needs the parked position while this is set.
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
+            self.mass.player_queues.release_after_announcement(player.player_id)
             # the idle power off counts from here, also after a native announcement that
             # leaves the playback state as it was
             player.extra_data.pop(ATTR_IDLE_SINCE, None)
@@ -748,6 +749,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # _handle_stop skips the user permission check on this internal path.
             if active_queue := self.get_active_queue(player):
                 await self.mass.player_queues._handle_stop(active_queue.queue_id)
+                self.mass.player_queues.hold_for_announcement(player.player_id)
             else:
                 await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
@@ -865,7 +867,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             elif restore_playback:
                 # player was playing something before the announcement - try to resume that here
                 await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # deliberately broad: set_members is a raw provider call that is not wrapped
             # into a MusicAssistantError, so it can surface anything its client library
             # raises. CancelledError is a BaseException and still propagates.

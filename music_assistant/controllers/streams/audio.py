@@ -9,6 +9,7 @@ that do not need controller interaction live in helpers/audio.py.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import re
@@ -38,6 +39,9 @@ from music_assistant_models.dsp import (
     DSPConfig,
     DSPFilter,
     DSPState,
+    HighLowPassFilter,
+    HighLowPassMode,
+    HighLowPassSlope,
 )
 from music_assistant_models.enums import (
     ContentType,
@@ -47,6 +51,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
     ProviderType,
+    SpeakerChannel,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -68,11 +73,15 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
+    CONF_CROSSOVER_FREQUENCY,
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_FLOW_MODE_SAMPLE_RATE,
+    CONF_HIGH_PASS_MAIN_SPEAKERS,
     CONF_OUTPUT_CHANNELS,
     CONF_PLAYER_QUEUES,
+    CONF_SUBWOOFER_LEVEL,
+    CONF_SUBWOOFER_OWN_CROSSOVER,
     CONF_VALUE_DISABLED,
     CONF_VALUE_ENABLED,
     CONF_VOLUME_NORMALIZATION,
@@ -81,6 +90,10 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DEFAULT_CROSSOVER_FREQUENCY,
+    DEFAULT_HIGH_PASS_MAIN_SPEAKERS,
+    DEFAULT_SUBWOOFER_LEVEL,
+    DEFAULT_SUBWOOFER_OWN_CROSSOVER,
     DSP_IRS_DIRNAME,
     EXTERNAL_ID_PROVIDER,
     FLOW_MODE_SAMPLE_RATE_48000,
@@ -271,6 +284,14 @@ _EXTINF_DURATION = re.compile(r"^#EXTINF:\s*(\d+(?:\.\d+)?)", re.MULTILINE)
 RADIO_MAX_FAILED_RESTARTS = 3
 RADIO_RESTART_MIN_PLAYTIME = 60
 RADIO_RESTART_DELAY = 1.0
+
+# The output channels that play the channel of a speaker of a multi-channel player.
+SPEAKER_CHANNEL_OUTPUT = {
+    SpeakerChannel.FRONT_LEFT: "left",
+    SpeakerChannel.FRONT_RIGHT: "right",
+    SpeakerChannel.FRONT_CENTER: "mono",
+    SpeakerChannel.LFE: "mono",
+}
 
 
 @dataclass
@@ -632,7 +653,7 @@ class _IncomingFadePrefetcher:
             # the target is kept clear of the track's end, so running out here means the
             # source gave up early and the flow stream is better off opening it again
             self._failed = True
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # the flow stream opens the track itself rather than inheriting a dead stream
             self._failed = True
             self._audio.logger.warning("Failed to prefetch the incoming fade-in: %s", err)
@@ -688,7 +709,7 @@ class _SourceAnalysisTap:
             self._session_key = audio_analysis.start_source_analysis(
                 source_session, stream_session_id, streamdetails, pcm_format
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - analysis must never break playback
             self._log_failure(err)
 
     def feed(self, chunk: bytes) -> None:
@@ -697,7 +718,7 @@ class _SourceAnalysisTap:
             return
         try:
             self._audio_analysis.feed_source_analysis(self._session_key, chunk)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - analysis must never break playback
             self._log_failure(err)
             self.stop()
 
@@ -708,7 +729,7 @@ class _SourceAnalysisTap:
             return
         try:
             self._audio_analysis.stop_source_analysis(session_key)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - analysis must never break playback
             self._log_failure(err)
 
     def _log_failure(self, err: Exception) -> None:
@@ -912,8 +933,21 @@ class StreamsAudio:
         # resolve the exact owning instance (even when flagged unavailable) so the
         # slot is charged to the account that issued the streamdetails
         provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+        # taken for the queue the audio is for, to which a slot kept for it is free
+        queue_id = slot_holder.queue_id if slot_holder is not None else streamdetails.queue_id
         stream_slot = (
-            provider.acquire_stream_slot(source_wait_timeout, slot_holder)
+            provider.acquire_stream_slot(
+                source_wait_timeout,
+                slot_holder,
+                queue_id=queue_id,
+                # asked when the slot goes back: the queue of the buffer may go on with the
+                # provider, and then finds the slot there for its next source
+                reserve=partial(
+                    self.mass.player_queues.keeps_stream_slot, slot_holder, streamdetails.provider
+                )
+                if slot_holder is not None
+                else None,
+            )
             if isinstance(provider, MusicProvider)
             else nullcontext()
         )
@@ -1366,6 +1400,8 @@ class StreamsAudio:
         queue_id: str | None = None,
         session_id: str | None = None,
         queue_item_id: str | None = None,
+        channel: SpeakerChannel | None = None,
+        with_subwoofer: bool = False,
     ) -> AudioOutputPlan:
         """
         Return executable filters and matching output details for a player.
@@ -1380,6 +1416,10 @@ class StreamsAudio:
         :param queue_id: Explicit queue identifier for the processing snapshot.
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
+        :param channel: The channel a speaker of the multi-channel player plays, in place
+            of the configured output channels.
+        :param with_subwoofer: Whether the subwoofer of that multi-channel player plays along,
+            which takes over the bass of this speaker.
         """
         filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_output_protocol(protocol_id)
@@ -1432,7 +1472,11 @@ class StreamsAudio:
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
-        channel_value = self._get_output_channels(player, protocol_id)
+        channel_value = (
+            SPEAKER_CHANNEL_OUTPUT.get(channel, "stereo")
+            if channel is not None
+            else self._get_output_channels(player, protocol_id)
+        )
         source_channel = None
         channel_mix = ""
         # a single channel source is already the downmix and holds no FL/FR to select
@@ -1457,6 +1501,13 @@ class StreamsAudio:
                 filter_params.append(f"pan=mono|c0={channel_mix}")
             else:
                 filter_params.append(f"pan=stereo|c0={channel_mix}|c1={channel_mix}")
+        splits_bass = channel == SpeakerChannel.LFE or with_subwoofer
+        if splits_bass:
+            filter_params.extend(
+                self._get_crossover_params(
+                    protocol_id, input_format, subwoofer=channel == SpeakerChannel.LFE
+                )
+            )
 
         output_details = AudioOutputDetails(
             player_ids=sorted(destination_player_ids),
@@ -1467,12 +1518,23 @@ class StreamsAudio:
                 output_gain=dsp.output_gain if dsp.enabled else 0.0,
                 preset_id=dsp.preset_id,
             ),
-            source_channel=source_channel,
+            # together the speakers of a multi-channel player play every channel, so of a
+            # speaker only the mono sum is reported
+            source_channel=(
+                source_channel if channel is None or source_channel == AudioChannel.ALL else None
+            ),
             output_format=output_format,
         )
         output_plan = AudioOutputPlan(
             filter_params=filter_params,
             output_details=output_details,
+            # the crossover is no filter of the user, so it is not listed with those. It
+            # counts for every speaker of the player, also for one it leaves as it is
+            alters_audio=splits_bass
+            and any(
+                self._get_crossover_params(protocol_id, input_format, subwoofer=subwoofer)
+                for subwoofer in (True, False)
+            ),
             input_format=input_format,
             handoff_format=handoff_format,
             dsp_config_id=dsp_config_id,
@@ -1915,6 +1977,10 @@ class StreamsAudio:
                     )
             except AudioError as err:
                 streamdetails.stream_error = True
+                # a prepared buffer that is gone, or a stream slot that is taken, is no failure
+                # of the source
+                if prepared_buffer is None and not isinstance(err, ProviderStreamLimitError):
+                    self.mass.player_queues.report_source_failure(queue_item, session_id)
                 if raise_on_error:
                     raise
                 logger.error(
@@ -2083,6 +2149,9 @@ class StreamsAudio:
                 # revoke availability when the stream never produced any audio
                 if bytes_received == 0 and not isinstance(err, ProviderStreamLimitError):
                     queue_item.available = False
+                # the source failed, as opposed to the reading of the audio it delivered
+                if audio_buffer.has_error and not isinstance(err, ProviderStreamLimitError):
+                    self.mass.player_queues.report_source_failure(queue_item, session_id)
                 if raise_on_error:
                     raise
                 logger.error(
@@ -3348,6 +3417,9 @@ class StreamsAudio:
                         queue_track.streamdetails.uri if queue_track.streamdetails else "unknown",
                         queue.display_name,
                     )
+                    if not queue_track.streamdetails.stream_error:
+                        # its source ended without audio; an error is reported where it occurred
+                        self.mass.player_queues.report_source_failure(queue_track, flow_session_id)
                     queue_track.streamdetails.stream_error = True
                     play_log_entry.seconds_streamed = 0
                     if last_fadeout_part:
@@ -3564,6 +3636,13 @@ class StreamsAudio:
                     next_sample_rate,
                 )
                 return False
+            if not self._player_has_next_item(protocol_id, flow_mode, next_item):
+                self.logger.debug(
+                    "Skipping the tail overlap of %s: the player has not received %s yet",
+                    queue_item.name,
+                    next_item.name,
+                )
+                return False
             return True
         if crossfade_mode == CrossfadeMode.DISABLED:
             return False
@@ -3602,6 +3681,13 @@ class StreamsAudio:
                 "with different sample rates (%s vs %s)",
                 sample_rate,
                 next_sample_rate,
+            )
+            return False
+
+        if not self._player_has_next_item(protocol_id, flow_mode, next_item):
+            self.logger.debug(
+                "Skipping crossfade: the player has not received %s as its next item yet",
+                next_item.name,
             )
             return False
 
@@ -3660,6 +3746,20 @@ class StreamsAudio:
         self._claim_item(claim, queue_item)
         return partial(self._claim_item, claim, None)
 
+    def claimed_items(self, queue_id: str) -> list[QueueItem]:
+        """
+        Return the items a stream of the given queue's playback session decided to play.
+
+        :param queue_id: The queue to look at.
+        """
+        return [
+            queue_item
+            for claim in self._item_claims
+            if (queue_item := claim.queue_item) is not None
+            and queue_item.queue_id == queue_id
+            and self._claim_holds(claim, queue_item)
+        ]
+
     def get_stream_providers(
         self, mapping: ProviderMapping, allowed: list[str] | None
     ) -> list[Provider]:
@@ -3670,6 +3770,48 @@ class StreamsAudio:
         :param allowed: Music sources the playback user may use, or None for all of them.
         """
         return self._get_mapping_providers(mapping, allowed)
+
+    def get_stream_candidates(
+        self,
+        provider_mappings: Iterable[ProviderMapping],
+        allowed: list[str] | None,
+        excluded_provider_instances: set[str] | None = None,
+    ) -> list[tuple[ProviderMapping, Provider]]:
+        """
+        Return the mappings of an item with the loaded providers that may stream them, unranked.
+
+        :param provider_mappings: Mappings attached to the media item.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        :param excluded_provider_instances: Provider instances to leave out, if any.
+        """
+        mappings = list(provider_mappings)
+        candidates: dict[tuple[str, str], tuple[ProviderMapping, Provider]] = {}
+        # an account that no longer finds an item id is no stand-in for it either
+        unavailable = {
+            (mapping.provider_instance, mapping.item_id)
+            for mapping in mappings
+            if not mapping.available
+        }
+        # best mapping first, so an account standing in for a sibling's item id is backed by
+        # the sibling's best mapping
+        for mapping in rank_provider_mappings(mappings):
+            if not mapping.available:
+                self.logger.debug("Skipping unavailable %s", mapping)
+                continue
+            for provider in self._get_mapping_providers(mapping, allowed):
+                if excluded_provider_instances and (
+                    provider.instance_id in excluded_provider_instances
+                ):
+                    continue
+                candidate_id = (provider.instance_id, mapping.item_id)
+                if candidate_id in unavailable:
+                    continue
+                # a sibling account only stands in for an item id when the item has no
+                # mapping of its own on that account
+                if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
+                    continue
+                candidates[candidate_id] = (mapping, provider)
+        return list(candidates.values())
 
     def has_alternative_match_providers(
         self, media_item: Playlist | Album | Track, allowed: list[str] | None
@@ -4281,10 +4423,27 @@ class StreamsAudio:
             )
             if last_resort and not resumes:
                 # a realtime source keeps its slot until its item ends, so the budget would
-                # run out with nothing to show for it: refuse right away instead
+                # run out with nothing to show for it: refused as soon as one holds it instead
                 self.mass.player_queues.refuse_held_stream_slot(
                     streamdetails.provider, queue_item.queue_id
                 )
+                provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+                if isinstance(provider, MusicProvider) and self._stream_slot_undecided(
+                    provider, queue_item.queue_id
+                ):
+                    await provider.wait_for_stream_slot(
+                        remaining,
+                        queue_item.queue_id,
+                        partial(
+                            self._leaves_stream_slot_line,
+                            streamdetails.provider,
+                            queue_item.queue_id,
+                            stop_paused_queues,
+                        ),
+                        partial(self._wants_stream_slot, queue_item, consumer_connected),
+                    )
+                    # the slot is kept for the queue now, or a paused queue hands its slot over
+                    continue
             source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the
             # buffers of the session it is tearing down, and details resolved by an earlier
@@ -4345,7 +4504,7 @@ class StreamsAudio:
                                 preferred,
                                 "all known sources are at their stream limit",
                             )
-                        except Exception as err:
+                        except Exception as err:  # noqa: BLE001 - see the comment below
                             # discovery is best-effort: any failure falls back to the
                             # final blocking wait instead of replacing the typed error
                             self.logger.warning(
@@ -4420,6 +4579,60 @@ class StreamsAudio:
         """
         queue_data = self.mass.player_queues.queue_data_or_none(queue_item.queue_id)
         return queue_data.session_id if queue_data is not None else None
+
+    def _leaves_stream_slot_line(
+        self, provider_instance: str, queue_id: str, stop_paused_queues: bool
+    ) -> bool:
+        """
+        Return whether a start that waits for a slot takes a paused queue's slot over instead.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        :param stop_paused_queues: Whether a paused queue may be stopped to hand its slot over.
+        :raises ProviderStreamLimitError: When another queue's realtime playback holds the slot.
+        """
+        self.mass.player_queues.refuse_held_stream_slot(provider_instance, queue_id)
+        return stop_paused_queues and self.mass.player_queues.has_paused_stream_slot_holder(
+            provider_instance, queue_id
+        )
+
+    def _wants_stream_slot(
+        self, queue_item: QueueItem, consumer_connected: Callable[[], bool] | None
+    ) -> bool:
+        """
+        Return whether a start that waited in line still wants the slot for its item.
+
+        :param queue_item: The queue item the slot is for.
+        :param consumer_connected: Reports whether the consumer of the audio is still
+            connected, or None when there is no consumer to lose.
+        """
+        if consumer_connected is not None and not consumer_connected():
+            return False
+        return self.mass.player_queues.wants_audio(queue_item)
+
+    def _stream_slot_undecided(self, provider: MusicProvider, queue_id: str) -> bool:
+        """
+        Return whether it is open if another queue's realtime playback keeps the only slot.
+
+        That is open while the slot is reserved for another queue, and while a realtime
+        source of another queue has the slot and no audio yet.
+
+        :param provider: The provider a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        """
+        # one realtime holder says nothing about the other slots of a larger budget
+        if provider.max_concurrent_streams != 1:
+            return False
+        if provider.has_available_stream_slot:
+            # no source is open: the next source of that queue takes the slot, or it lapses
+            return any(
+                reserved_for != queue_id for reserved_for in provider.stream_slot_reservations
+            )
+        # a source that has its slot and no audio yet can still fail and give it back
+        return any(
+            holder.is_realtime and holder.queue_id != queue_id and not holder.ready.is_set()
+            for holder in provider.stream_slot_holders
+        )
 
     async def _release_unneeded_sources(
         self, queue_item: QueueItem, provider_instance: str
@@ -4518,38 +4731,18 @@ class StreamsAudio:
         :param pinned: The (provider instance, item id) the item is to be played from, if any.
         :return: Ordered provider mapping candidates.
         """
-        mappings = list(provider_mappings)
-        candidates: dict[tuple[str, str], SourceCandidate] = {}
-        # an account that no longer finds an item id is no stand-in for it either
-        unavailable = {
-            (mapping.provider_instance, mapping.item_id)
-            for mapping in mappings
-            if not mapping.available
-        }
-        # best mapping first, so an account standing in for a sibling's item id is backed by
-        # the sibling's best mapping
-        for mapping in rank_provider_mappings(mappings):
-            if not mapping.available:
-                self.logger.debug("Skipping unavailable %s", mapping)
-                continue
-            for provider in self._get_mapping_providers(mapping, allowed):
-                if provider.instance_id in excluded_provider_instances:
-                    continue
-                candidate_id = (provider.instance_id, mapping.item_id)
-                if candidate_id in unavailable:
-                    continue
-                # a sibling account only stands in for an item id when the item has no
-                # mapping of its own on that account
-                if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
-                    continue
-                candidates[candidate_id] = SourceCandidate(
-                    mapping=mapping,
-                    provider=provider,
-                    is_streaming=isinstance(provider, MusicProvider)
-                    and provider.is_streaming_provider,
-                )
+        candidates = [
+            SourceCandidate(
+                mapping=mapping,
+                provider=provider,
+                is_streaming=isinstance(provider, MusicProvider) and provider.is_streaming_provider,
+            )
+            for mapping, provider in self.get_stream_candidates(
+                provider_mappings, allowed, excluded_provider_instances
+            )
+        ]
         ranked = rank_stream_sources(
-            candidates.values(), pinned=pinned, preferred=preferred_providers, policy=policy
+            candidates, pinned=pinned, preferred=preferred_providers, policy=policy
         )
         if ranked and self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(
@@ -4728,7 +4921,7 @@ class StreamsAudio:
                         found = await self.mass.music.tracks.match_provider(
                             media_item, provider, strict=True, ref_albums=ref_albums
                         )
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - one failing provider must not end the search
                         self.logger.debug("Searching a match on %s failed: %s", provider.name, err)
                         continue
                     if not found and library_track:
@@ -5451,6 +5644,23 @@ class StreamsAudio:
             )
         )
 
+    def _player_has_next_item(
+        self, protocol_id: str | None, flow_mode: bool, next_item: QueueItem
+    ) -> bool:
+        """
+        Return whether the player of the item streams holds the item after the boundary.
+
+        :param protocol_id: The protocol that plays the item streams; not needed for a flow
+            stream.
+        :param flow_mode: Whether the items play on one flow stream.
+        :param next_item: The queue item that plays after the boundary.
+        """
+        # a flow stream carries the next item itself
+        if flow_mode or protocol_id is None:
+            return True
+        protocol = self.mass.players.get_protocol(protocol_id)
+        return protocol is None or protocol.has_received_next_item(next_item)
+
     @staticmethod
     def _same_album(queue_item: QueueItem, next_item: QueueItem) -> bool:
         """
@@ -5707,9 +5917,9 @@ class StreamsAudio:
         self, streamdetails: StreamDetails, metadata: dict[str, str]
     ) -> None:
         """Handle metadata extracted from a chained Ogg stream."""
-        title = metadata.get("title", "")
-        artist = metadata.get("artist", "")
-        album = metadata.get("album", "")
+        title = html.unescape(metadata.get("title", ""))
+        artist = html.unescape(metadata.get("artist", ""))
+        album = html.unescape(metadata.get("album", ""))
         if not artist and " - " in title:
             artist, title = title.split(" - ", 1)
         if not (title or artist):
@@ -5793,6 +6003,7 @@ class StreamsAudio:
         except UnicodeDecodeError:
             # fallback to iso-8859-1
             stream_title = stream_title_re.group(1).decode("iso-8859-1", errors="replace")
+        stream_title = html.unescape(stream_title)
 
         cleaned_stream_title = clean_stream_title(stream_title)
 
@@ -6005,6 +6216,52 @@ class StreamsAudio:
         return self.mass.config.get_protocol_value(
             player.protocol_id if player else protocol_id, CONF_OUTPUT_CHANNELS, fallback
         )
+
+    def _get_crossover_params(
+        self, protocol_id: str, audio_format: AudioFormat, *, subwoofer: bool
+    ) -> list[str | ComplexFilter]:
+        """
+        Return the filters that split the bass between a subwoofer and the main speakers.
+
+        :param protocol_id: The id of the protocol of the multi-channel player.
+        :param audio_format: The PCM format the filters run at.
+        :param subwoofer: True for the subwoofer, False for a main speaker that plays with it.
+        """
+        config = self.mass.config
+        frequency = config.get_protocol_value(
+            protocol_id, CONF_CROSSOVER_FREQUENCY, DEFAULT_CROSSOVER_FREQUENCY
+        )
+        high_pass_mains = config.get_protocol_value(
+            protocol_id, CONF_HIGH_PASS_MAIN_SPEAKERS, DEFAULT_HIGH_PASS_MAIN_SPEAKERS
+        )
+        # two 12 dB/oct sections make the Linkwitz-Riley low-pass and high-pass that sum
+        # flat; next to main speakers that play the full range, one section adds the least
+        # bass around the crossover
+        if subwoofer:
+            mode = HighLowPassMode.LOW_PASS
+            own_crossover = config.get_protocol_value(
+                protocol_id, CONF_SUBWOOFER_OWN_CROSSOVER, DEFAULT_SUBWOOFER_OWN_CROSSOVER
+            )
+            sections = 0 if own_crossover else 2 if high_pass_mains else 1
+        else:
+            mode = HighLowPassMode.HIGH_PASS
+            sections = 2 if high_pass_mains else 0
+        section = HighLowPassFilter(
+            enabled=True, mode=mode, frequency=frequency, slope=HighLowPassSlope.DB12
+        )
+        # a high-pass or low-pass reads no impulse response
+        params = filter_to_ffmpeg_params(section, audio_format, ir_dir="") * sections
+        if subwoofer and (
+            # a gain above 0 dB clips loud bass
+            level := min(
+                config.get_protocol_value(
+                    protocol_id, CONF_SUBWOOFER_LEVEL, DEFAULT_SUBWOOFER_LEVEL
+                ),
+                0,
+            )
+        ):
+            params.append(f"volume={level}dB")
+        return params
 
     def _pick_pcm_bit_depth(
         self,
@@ -6282,7 +6539,7 @@ class StreamsAudio:
                     substream = await self.get_hls_substream(streamdetails.path)
                     media_playlist_url = substream.path
                     streamdetails.data["hls_media_playlist_url"] = media_playlist_url
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - metadata polling must never break playback
                     self.logger.warning(
                         "Failed to resolve HLS substream for metadata monitoring: %s", err
                     )
@@ -6319,8 +6576,8 @@ class StreamsAudio:
             metadata = parse_extinf_metadata(line)
 
             # Build stream title from title and artist
-            title = metadata.get("title", "")
-            artist = metadata.get("artist", "")
+            title = html.unescape(metadata.get("title", ""))
+            artist = html.unescape(metadata.get("artist", ""))
             image_url = metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
             if not artist and " - " in title:
                 artist, title = title.split(" - ", 1)
@@ -6349,7 +6606,7 @@ class StreamsAudio:
                         image_url=image_url,
                     )
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - metadata polling must never break playback
             self.logger.debug("Error fetching HLS metadata: %s", err)
 
     @staticmethod
@@ -6384,7 +6641,7 @@ class StreamsAudio:
                 streamdetails = await stream_prov.get_stream_details(
                     mapping.item_id, MediaType.SOUND_EFFECT
                 )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, playback goes on without the overlay
             self.logger.warning(
                 "Audio overlay source %s is unavailable (%s) - continuing without overlay",
                 mapping.uri,

@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 122
+API_SCHEMA_VERSION: Final[int] = 125
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -134,6 +134,8 @@ CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
 CONF_AI_DEFAULT_ENGINES_MIGRATED: Final[str] = "ai_default_engines_migrated"
 CONF_PLAYER_SPLIT_SESSION_ONLY: Final[str] = "player_split_session_only"
 CONF_PLAYER_SPLIT_TREE: Final[str] = "player_split_tree"
+# the rate correction the timeline clock runs on, as measured on this host
+CONF_TIMELINE_RATE_PPB: Final[str] = "timeline_rate_ppb"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
 # the registered folders that were a mountpoint when they were registered
 CONF_STORAGE_FOLDER_MOUNTS: Final[str] = "storage_folder_mounts"
@@ -161,6 +163,15 @@ DSP_IRS_DIRNAME: Final[str] = "dsp_irs"
 # validating against this keeps a caller-supplied id from escaping the storage dir
 DSP_IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
+# How a multi-channel player splits the bass between its subwoofer and its main speakers.
+CONF_CROSSOVER_FREQUENCY: Final[str] = "crossover_frequency"
+CONF_SUBWOOFER_LEVEL: Final[str] = "subwoofer_level"
+CONF_SUBWOOFER_OWN_CROSSOVER: Final[str] = "subwoofer_own_crossover"
+CONF_HIGH_PASS_MAIN_SPEAKERS: Final[str] = "high_pass_main_speakers"  # noqa: S105 - config key
+DEFAULT_CROSSOVER_FREQUENCY: Final[int] = 80
+DEFAULT_SUBWOOFER_LEVEL: Final[int] = 0
+DEFAULT_SUBWOOFER_OWN_CROSSOVER: Final[bool] = False
+DEFAULT_HIGH_PASS_MAIN_SPEAKERS: Final[bool] = True
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
 CONF_LOG_LEVEL: Final[str] = "log_level"
@@ -170,8 +181,6 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - the wildcard addresses themselves
-# Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
-SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_IDLE_POWER_OFF: Final[str] = "idle_power_off"
 CONF_POWER_CONTROL_CUTS_POWER: Final[str] = "power_control_cuts_power"
@@ -446,7 +455,6 @@ CONF_ENTRY_MAX_CONCURRENT_TASKS = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(1, 10),
     default_value=2,
-    advanced=True,
     requires_reload=False,
 )
 
@@ -580,7 +588,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(-30, -5),
     default_value=-14,
-    category="playback",
+    category="volume_normalization",
     advanced=True,
     requires_reload=True,
 )
@@ -685,6 +693,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY = ConfigEntry(
     ],
     default_value="percentual",
     category="announcements",
+    advanced=True,
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
@@ -692,6 +701,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     default_value=85,
     category="announcements",
+    advanced=True,
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
@@ -699,6 +709,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     default_value=15,
     category="announcements",
+    advanced=True,
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
@@ -706,6 +717,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     default_value=75,
     category="announcements",
+    advanced=True,
 )
 
 

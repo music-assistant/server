@@ -833,10 +833,8 @@ async def test_get_buffer_releases_a_slot_limited_producer_before_replacing_it(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     streamdetails.buffer = stale_buffer
-    # the producer is still charging a source slot and the consumer is active right now,
-    # so the 30s inactivity heuristic must not be what decides this
+    # the producer is still charging a source slot
     assert stale_buffer.is_buffering
-    assert time.time() - stale_buffer._last_access_time < 30
 
     # a forward seek far past the buffered window can not be served by this buffer
     assert not stale_buffer.is_valid((SEEK_WAIT_THRESHOLD + 60) * 1000)
@@ -1580,6 +1578,7 @@ async def mass_minimal(mass_minimal: MusicAssistant) -> MusicAssistant:
         queue_data_or_none=lambda _queue_id: None,
         has_paused_stream_slot_holder=lambda _provider_instance, _queue_id: False,
         refuse_held_stream_slot=lambda _provider_instance, _queue_id: None,
+        report_source_failure=lambda _queue_item, _session_id: False,
     )
     mass_minimal.streams = MagicMock()
     return mass_minimal
@@ -1823,7 +1822,7 @@ def _make_unknown_format_details() -> StreamDetails:
 
 
 def _make_slot_limited_provider(
-    acquire_stream_slot: Callable[[float | None], Any],
+    acquire_stream_slot: Callable[..., Any],
 ) -> MagicMock:
     """Build a slot-limited music provider that hands out slots as given."""
     provider = MagicMock(spec=MusicProvider)
@@ -1950,15 +1949,23 @@ async def test_get_buffer_keeps_the_defaults_when_the_probe_fails() -> None:
 
 
 async def test_get_buffer_probes_while_holding_a_source_stream_slot() -> None:
-    """The probe opens the source, so it is charged a slot on the issuing provider."""
+    """
+    The probe opens the source, so it is charged a slot on the issuing provider.
+
+    It takes that slot for the queue the stream details are for.
+    """
     mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
     slot_waits: list[float | None] = []
+    slot_queues: list[str | None] = []
     slot_held = False
 
     @asynccontextmanager
-    async def _acquire_stream_slot(wait_timeout: float | None) -> AsyncGenerator[None]:
+    async def _acquire_stream_slot(
+        wait_timeout: float | None, queue_id: str | None = None
+    ) -> AsyncGenerator[None]:
         nonlocal slot_held
         slot_waits.append(wait_timeout)
+        slot_queues.append(queue_id)
         slot_held = True
         try:
             yield
@@ -1973,12 +1980,14 @@ async def test_get_buffer_probes_while_holding_a_source_stream_slot() -> None:
         return PROBED_FLAC
 
     details = _make_unknown_format_details()
+    details.queue_id = "queue_a"
     with patch.object(audio_buffer_mod, "probe_audio_stream", _probe):
         buffer = await AudioBuffer.get_buffer(mass, details, reason="test", source_wait_timeout=7.0)
     try:
         mass.get_provider.assert_called_with(details.provider, return_unavailable=True)
         assert held_during_probe == [True]
         assert slot_waits == [7.0]
+        assert slot_queues == ["queue_a"]
         assert not slot_held
     finally:
         await asyncio.gather(*scheduled_tasks)
@@ -2001,7 +2010,7 @@ async def test_get_buffer_surfaces_a_saturated_provider_before_probing() -> None
     ):
         await AudioBuffer.get_buffer(mass, details, reason="test", source_wait_timeout=0)
 
-    provider.acquire_stream_slot.assert_called_once_with(0)
+    provider.acquire_stream_slot.assert_called_once_with(0, queue_id=details.queue_id)
     probe.assert_not_awaited()
     assert details.buffer is None
 

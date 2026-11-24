@@ -47,8 +47,8 @@ on:
 
 env:
   BASE_IMAGE_VERSION_STABLE: "1.6.3"
-  BASE_IMAGE_VERSION_BETA: "1.7.1"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.7.1"
+  BASE_IMAGE_VERSION_BETA: "1.7.2"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.7.2"
   EXPECTED_APP_SLUG: musicassistant-bot
   EXPECTED_APP_INSTALLATION_ID: "146062122"
 
@@ -1682,3 +1682,65 @@ jobs:
           gh api --method POST \
             "repos/music-assistant/app.music-assistant.io/dispatches" \
             --input "$RUNNER_TEMP/dispatch.json"
+
+  notify_docs:
+    name: Notify music-assistant.io
+    runs-on: ubuntu-latest
+    needs: [resolve, publish_release]
+    if: inputs.channel != 'nightly'
+    permissions: {}
+    steps:
+      # The docs site also checks for new releases daily, so a failed dispatch only delays
+      # merging its waiting docs pull requests and must never fail the release.
+      - name: Create docs repository token
+        id: docs_token
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: music-assistant.io
+          permission-contents: write
+
+      - name: Verify GitHub App identity
+        id: identity
+        if: steps.docs_token.outcome == 'success'
+        continue-on-error: true
+        env:
+          APP_SLUG: ${{ steps.docs_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.docs_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+
+      - name: Dispatch server release
+        id: dispatch
+        if: steps.identity.outcome == 'success'
+        continue-on-error: true
+        env:
+          CHANNEL: ${{ inputs.channel == 'rc' && 'beta' || inputs.channel }}
+          GH_TOKEN: ${{ steps.docs_token.outputs.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          jq -n \
+            --arg channel "$CHANNEL" \
+            --arg server_version "$VERSION" \
+            '{
+              event_type: "server-release",
+              client_payload: {
+                channel: $channel,
+                server_version: $server_version
+              }
+            }' > "$RUNNER_TEMP/dispatch.json"
+          gh api --method POST \
+            "repos/music-assistant/music-assistant.io/dispatches" \
+            --input "$RUNNER_TEMP/dispatch.json"
+
+      - name: Warn when the docs site was not notified
+        if: steps.dispatch.outcome != 'success'
+        run: |
+          echo "::warning title=Docs site not notified::music-assistant.io was not told about this release; its daily check will merge the waiting docs pull requests instead. The failed step above says why."

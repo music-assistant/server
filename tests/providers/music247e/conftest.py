@@ -22,7 +22,7 @@ def background_tasks() -> list[asyncio.Future[Any]]:
 def provider(background_tasks: list[asyncio.Future[Any]]) -> Music247eProvider:
     """Create a real Music247eProvider with mocked mass and a dict-backed cache."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "music247e"
     config = Mock()
     config.instance_id = "music247e--test123"

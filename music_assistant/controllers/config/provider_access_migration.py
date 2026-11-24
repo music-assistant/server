@@ -71,7 +71,7 @@ async def migrate_provider_access(mass: MusicAssistant) -> None:
         for instance_id, raw_conf in mass.config.get(CONF_PROVIDERS, {}).items():
             try:
                 access = _access_for_source(mass, instance_id, raw_conf, users)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - stored data of any shape, one bad source must not stop the rest
                 # fail closed: the source stays hidden until an admin sets its access
                 LOGGER.warning(
                     "Unable to convert the access of music source %s, it is hidden until an "

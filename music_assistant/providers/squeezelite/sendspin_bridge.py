@@ -10,7 +10,9 @@ Every Sendspin stream is a session: one stream over HTTP that the player starts
 at an instant of its own clock, on silence. A player starts later than it is told, by
 an amount that differs from start to start: the bridge measures that from the first
 positions the player reports and corrects it in the silence, so the first audio is
-heard on the timeline. The sync loop holds it there from the positions the player
+heard on the timeline. A stream whose audio is already due at its start, such as a
+restart, gets that audio at once and has its start corrected in it. The sync loop holds
+it there from the positions the player
 reports, and once it has little left to correct the bridge keeps the stream seconds ahead
 of what the player plays, as far as Sendspin delivered its audio, so the player plays on
 through a stall of its network.
@@ -551,6 +553,25 @@ class SendspinSqueezeliteBridge:
         return self._session is not None
 
     @property
+    def position_in_track(self) -> float | None:
+        """
+        Return the position in the track the player plays or holds for the bridge, in seconds.
+
+        It is the position Music Assistant shows for its player: the elapsed time of the
+        player counts from the start of a stream of the bridge, which starts mid-track and
+        plays on from track to track. None while the player has nothing of the bridge.
+        """
+        if (player := self.protocol.player) is None or (media := player.current_media) is None:
+            return None
+        if self._session is not None:
+            return media.corrected_elapsed_time
+        if self._holds_bridge_track():
+            # a stopped group stays where it stopped, and corrected_elapsed_time runs on
+            # whatever the playback state is
+            return media.elapsed_time
+        return None
+
+    @property
     def shared_group(self) -> SendspinGroup | None:
         """Return the Sendspin group the bridge shares with other clients or is to return to."""
         if self._rejoin_group is not None:
@@ -653,6 +674,8 @@ class SendspinSqueezeliteBridge:
         self._cancel_rejoin()
         if (session := self._session) is not None:
             self._close_session(session, stop_player=True)
+        else:
+            self._clear_stopped_track()
         if self.protocol.sendspin_bridge is self:
             self.protocol.sendspin_bridge = None
         if self._unsub_client_events is not None:
@@ -845,6 +868,9 @@ class SendspinSqueezeliteBridge:
             # nothing about the player there. A return of the bridge itself is noted once
             # the client is in its group.
             self._rejoined = False
+            # Sendspin ends the stream of a client before it moves it: what is left on the
+            # player is of the group it was in
+            self._clear_stopped_track()
 
     def _on_role_stream_start(self) -> None:
         """Start a session for a stream that begins without a stream start request."""
@@ -888,7 +914,8 @@ class SendspinSqueezeliteBridge:
             # nothing is left playing, or a new stream took the bridge over already
             return
         self.logger.debug("Explicit stop for %s", self.protocol.display_name)
-        self._close_session(session, stop_player=True)
+        # the player keeps the stopped track: its play key does nothing on an empty playlist
+        self._close_session(session, stop_player=True, keep_media=True)
 
     def _on_volume_change(self, volume: int) -> None:
         """Forward a volume change to the squeezelite player."""
@@ -920,7 +947,7 @@ class SendspinSqueezeliteBridge:
         """
         if (old := self._session) is not None:
             # no stop for the player: the stream request of the new session flushes it
-            self._close_session(old, replaced=True)
+            self._close_session(old, keep_media=True)
         if not self.protocol.available:
             self.logger.warning(
                 "Cannot start Sendspin stream for %s: player not available",
@@ -930,8 +957,8 @@ class SendspinSqueezeliteBridge:
         if self._clock.now_us() - self._clock_sampled_us > CLOCK_MAX_AGE_US:
             self._player_clock = PlayerClock()
         sync_adjust = self.protocol.config.get_value(CONF_SYNC_ADJUST, 0)
-        # A positive sync adjust plays earlier, as it does for the squeezelite protocol
-        # itself, where it is the time the player takes to make its audio heard.
+        # A positive sync adjust plays earlier: it is the time the player takes to make
+        # its audio heard.
         shift_us = -sync_adjust * 1000 if isinstance(sync_adjust, int) else 0
         if audio_format is None:
             audio_format = self._role_format()
@@ -952,14 +979,15 @@ class SendspinSqueezeliteBridge:
         ]
 
     def _close_session(
-        self, session: BridgeSession, *, stop_player: bool = False, replaced: bool = False
+        self, session: BridgeSession, *, stop_player: bool = False, keep_media: bool = False
     ) -> None:
         """
         End a session and let go of the player.
 
         :param session: The session to end.
         :param stop_player: Stop the player at once instead of leaving it to what follows.
-        :param replaced: Another session takes over: the player shows what plays on.
+        :param keep_media: Leave the track on the player: another session takes over, or
+            its group stopped.
         """
         session.close()
         if self._session is session:
@@ -968,10 +996,19 @@ class SendspinSqueezeliteBridge:
         if stop_player:
             # never a power or mute command: those switch the output of the player off
             self.mass.create_task(self._client.stop())
-        if not replaced:
+        if not keep_media:
             # a stop keeps the media that played: the player would go on showing the
             # track of a group it left
             self.mass.create_task(self._client.clear_media())
+
+    def _clear_stopped_track(self) -> None:
+        """Clear the track a stop of its group left on the player."""
+        if self._holds_bridge_track():
+            self.mass.create_task(self._client.clear_media())
+
+    def _holds_bridge_track(self) -> bool:
+        """Return whether the track on the player is that of a stream of the bridge."""
+        return (media := self._client.current_media) is not None and BRIDGE_STREAM_PATH in media.url
 
     def _bit_depth_limit(self) -> int | None:
         """
@@ -1019,7 +1056,7 @@ class SendspinSqueezeliteBridge:
             async with asyncio.timeout(CLOCK_TIMEOUT_SECONDS):
                 await session.clock_mapped.wait()
         try:
-            await self.protocol.release_native_playback()
+            self.protocol.release_native_playback()
             url = (
                 f"{self.mass.streams.base_url}{BRIDGE_STREAM_PATH}"
                 f"?player_id={self.protocol.protocol_id}&sid={session.session_id}"
@@ -1049,7 +1086,7 @@ class SendspinSqueezeliteBridge:
             session.started = True
         except TimeoutError:
             self._recover(session, "it did not get ready to play")
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure recovers the player
             self.logger.warning(
                 "Failed to start the Sendspin stream on %s: %s", self.protocol.display_name, err
             )
@@ -1097,11 +1134,14 @@ class SendspinSqueezeliteBridge:
         session.start_us = start_us
         # the player starts a little later than it is told to, which was learned before
         session.command_us = start_us - offset_us
+        # audio that is due by the start leaves no silence to correct the start in: it
+        # goes out from the first write, and the start is corrected in it
+        session.aligning = session.first_audible_us > start_us
         session.loop = SyncLoop(
             session.sample_rate,
             session.frame_size,
             start_us,
-            start_jump_ms=ALIGN_JUMP_MS,
+            start_jump_ms=ALIGN_JUMP_MS if session.aligning else START_JUMP_MS,
             told_us=session.command_us,
         )
         # the preroll went out before the timeline was known: it holds frame 0 and on
@@ -1264,9 +1304,6 @@ class SendspinSqueezeliteBridge:
         sent_us = loop.frames_consumed * 1_000_000 // session.sample_rate
         left_out_ms = max(0, session.start_us + sent_us - session.first_audible_us) / 1000
         if (start_error_ms := loop.start_error_ms) is None:
-            # whatever it reports from here on is measured, so a start that is far off
-            # still restarts the stream
-            loop.lift_start_bound()
             self.logger.debug(
                 "%s did not show where it plays in time: its audio goes out with its start "
                 "not corrected, %.0f ms of it left out",
@@ -1341,6 +1378,13 @@ class SendspinSqueezeliteBridge:
             self._rejoined = False
         if (server_us := self._player_clock.to_server_us(status.jiffies)) is None:
             return
+        if (
+            loop.start_error_ms is None
+            and self._clock.now_us() - session.start_us > ALIGN_TIMEOUT_US
+        ):
+            # a start that is not measured in time: whatever it reports from here on is
+            # measured, so a start that is far off still restarts the stream
+            loop.lift_start_bound()
         start_reports = loop.start_reports
         report_ms = loop.on_report(
             server_us, status.elapsed_milliseconds, self._player_clock.generation
@@ -1499,7 +1543,7 @@ class SendspinSqueezeliteBridge:
         rejoined = self._rejoined
         try:
             previous_group_id = await client.quiesce_to_solo_stopped()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - library code, the player stays registered
             self.logger.warning(
                 "Could not take %s out of its Sendspin session: %s",
                 self.protocol.display_name,
@@ -1563,7 +1607,7 @@ class SendspinSqueezeliteBridge:
                     return
                 try:
                     await group.add_client(client)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - a failed re-join attempt is retried
                     self.logger.warning(
                         "Could not re-join %s to its Sendspin group (attempt %d/%d): %s",
                         name,
@@ -1689,6 +1733,10 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         if bridge := self._bridges.get(protocol_id):
             return bridge.stop_streaming()
         return False
+
+    def has_stream(self) -> bool:
+        """Return whether any bridge has a stream on its player."""
+        return any(bridge.owns_stream for bridge in self._bridges.values())
 
     def get_start_offset_us(self, protocol_id: str) -> int:
         """
