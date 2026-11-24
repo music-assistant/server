@@ -755,6 +755,55 @@ async def _switch_off_command(scenario: Scenario, _group: Player, leader: Player
     await scenario.mass.players.cmd_power(leader.player_id, False)
 
 
+@pytest.mark.parametrize("leader", [True, False], ids=["leader", "member"])
+async def test_a_lost_player_the_user_plays_on_is_not_taken_back(
+    scenario: Scenario, provider: AirPlayProvider, leader: bool
+) -> None:
+    """A lost player that the user plays something else on keeps playing that."""
+    a, b, c = await _receivers(scenario, provider, native=True)
+    group = await _play_group(scenario, [a, b, c])
+    lost = a if leader else c
+    player = _player_of(lost)
+
+    _cli(lost).end()
+    await scenario.advance(1)
+    await scenario.command(scenario.mass.player_queues.play_media(player.player_id, TEST_TRACK_URI))
+    await scenario.advance(AFTER_REJOIN)
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.active_group is None
+    assert b.session is not None
+    assert lost not in b.session.sync_clients
+    assert _state(group) == PlaybackState.PLAYING
+    await scenario.command(scenario.mass.players.cmd_stop(player.player_id))
+    await _stop(scenario, group)
+
+
+@pytest.mark.parametrize("leader", [True, False], ids=["leader", "member"])
+async def test_a_lost_player_the_user_switches_off_stays_off(
+    scenario: Scenario, provider: AirPlayProvider, leader: bool
+) -> None:
+    """A lost player that the user switches off does not come back to its group."""
+    a, b, c = await _receivers(scenario, provider)
+    lost = a if leader else c
+    player = _player_of(lost)
+    await scenario.configure_player(player.player_id, **{CONF_POWER_CONTROL: PLAYER_CONTROL_FAKE})
+    group = await _play_group(scenario, [a, b, c])
+
+    _cli(lost).end()
+    await scenario.advance(2)
+    task = await scenario.command(scenario.mass.players.cmd_power(player.player_id, False))
+    await scenario.advance(AFTER_REJOIN)
+    await task
+
+    assert player.powered is False
+    assert player.playback_state == PlaybackState.IDLE
+    assert b.session is not None
+    assert lost not in b.session.sync_clients
+    assert _state(group) == PlaybackState.PLAYING
+    await _stop(scenario, group)
+
+
 @pytest.mark.parametrize("command", [_remove_command, _ungroup_command, _switch_off_command])
 async def test_a_leader_the_user_takes_out_is_handed_over_without_a_gap(
     scenario: Scenario,

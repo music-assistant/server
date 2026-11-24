@@ -1732,6 +1732,16 @@ class AirPlayPlayer(PlayerProtocol):
         )
 
     @property
+    def _plays_outside_group(self) -> bool:
+        """Return whether the player plays something of its own, on any of its protocols."""
+        return (
+            (player := self.player) is not None
+            and player.playback_state != PlaybackState.IDLE
+            and not player.synced_to
+            and not player.active_group
+        )
+
+    @property
     def _lost_session(self) -> AirPlayStreamSession | None:
         """Return the session that still counts this player in after its own stream was lost."""
         for endpoint in self.session_endpoints:
@@ -1771,6 +1781,7 @@ class AirPlayPlayer(PlayerProtocol):
                 # Still pointing at an original candidate is fine: a static group
                 # keeps the sync membership while only the session lost this player.
                 or (self.synced_to and self.synced_to not in candidate_ids)
+                or self._plays_outside_group
             ):
                 # the player was grouped or repurposed by other means meanwhile
                 self.logger.debug(
@@ -1786,7 +1797,9 @@ class AirPlayPlayer(PlayerProtocol):
                     self.display_name,
                 )
                 return
-            if self.player is not None and self.player.offline_by_power_control:
+            if self.player is not None and (
+                self.player.powered is False or self.player.offline_by_power_control
+            ):
                 # the protocol may read available long after the power was cut
                 self.logger.debug(
                     "Automatic group re-join for %s cancelled: player is switched off",
