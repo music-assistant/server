@@ -872,6 +872,10 @@ class PlaybackMixin(_PlayerControllerBase):
                 await protocol_player.stop()
                 if len(protocol_player.group_members) <= 1:
                     self.schedule_active_output_protocol_clear(player)
+            elif (own := player.own_protocol) is not None and own.is_active_session:
+                # a group that plays nothing can still hold its members, and can be about to
+                # play on by itself with another leader: the stop ends that as well
+                await own.stop()
             return
         player.mark_stop_called()
         # Delegate to the active audio protocol if one is active

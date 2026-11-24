@@ -2065,6 +2065,34 @@ against a first member that can not lead the others.
   - `test_grouping.py::test_a_sync_group_whose_leader_leaves_is_led_by_a_member_that_can_group_with_the_others`
   - `test_grouping.py::test_a_player_added_to_an_idle_sync_group_is_checked_against_the_member_that_leads`
 
+### GROUP-68 · A sync group that is stopped between two leaders stays silent
+
+Downstairs plays with Kitchen leading Office and Den. Kitchen leaves the group, which is silent and
+plays on two seconds later, with Office leading Den. When Downstairs, Office or the queue of
+Downstairs is stopped before that, or Downstairs is ungrouped, nothing plays later and Office and
+Den are free again. With fake power control, Downstairs is still on after the stop and keeps Office
+and Den. A play on Downstairs plays on from where the music stopped.
+
+- End-to-end: **possible with** three speakers that group on a protocol without a hand-over of the
+  playing leader, such as Sonos.
+- Proven by:
+  - `test_group_stop.py::test_a_sync_group_that_is_stopped_between_two_leaders_stays_silent`
+  - `test_group_stop.py::test_a_powered_sync_group_that_is_stopped_between_two_leaders_stays_on_and_silent`
+  - `test_group_stop.py::test_a_sync_group_stopped_between_two_leaders_plays_on_from_there_when_it_is_played`
+
+### GROUP-69 · A group whose music just ended lets its members go when it is stopped
+
+Downstairs, a sync group or a universal group of Kitchen and Office, plays its music to the end and
+holds its members for 10 s more. When Downstairs or Office is stopped in that time, or Downstairs
+is ungrouped, Kitchen and Office are free at once. Music that is played on Office in that time
+starts at once when Downstairs is a sync group with a fixed member list: Downstairs lets Office go
+first.
+
+- End-to-end: **yes**. Two virtual Squeezelite players.
+- Proven by:
+  - `test_group_stop.py::test_a_group_that_is_stopped_after_its_music_ended_frees_its_members`
+  - `test_group_stop.py::test_a_member_of_a_fixed_group_whose_music_ended_plays_its_own_music_at_once`
+
 ### GROUP-50 · What a member does elsewhere does not cost it its place in a sync group
 
 Downstairs is a sync group of Kitchen, Office and Den, in that order. Members that follow a
