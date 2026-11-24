@@ -258,6 +258,10 @@ class AbortFlowStream(Exception):
     """Raised to end a flow response whose session rotated during its setup."""
 
 
+class AudioSourceRefusedError(AudioError):
+    """Raised when the plugin of a live source refuses a consumer; the refusal is logged already."""
+
+
 # the probe route answers any origin: a browser on the local network calls it cross-origin
 _INFO_CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -2086,6 +2090,7 @@ class StreamsController(CoreController):
         :param media: The media about to be played.
         :param consumer_player_id: The id of the output protocol that will consume the stream.
         :return: None when ``media`` is not a live source playing on a player.
+        :raises AudioSourceRefusedError: When the plugin of the source refuses this consumer.
         """
         if not (session := self._get_live_audio_source_session(media)):
             return None
@@ -2411,7 +2416,13 @@ class StreamsController(CoreController):
                 )
             except RuntimeError as err:
                 # the plugin refuses this consumer, e.g. it just redirected playback
-                raise AudioError(str(err)) from err
+                self.logger.info(
+                    "AudioSource %s aborted stream for player %s: %s",
+                    session.source_id,
+                    consumer_player_id,
+                    err,
+                )
+                raise AudioSourceRefusedError(str(err)) from err
             if not self.mass.players.claim_audio_source_session(
                 session, playback_session_id, stream_session_id
             ):
