@@ -84,6 +84,7 @@ from music_assistant.helpers.util import (
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
+from .constants import UPLOAD_ALBUM_ID_PREFIX, UPLOAD_ARTIST_ID_PREFIX
 from .helpers import (
     YTMSearchFilter,
     add_remove_playlist_tracks,
@@ -438,6 +439,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 yield self._parse_track(track)
             except InvalidDataError:
                 full_track = await self.get_track(track["videoId"])
+                if "entityId" in track:
+                    for mapping in full_track.provider_mappings:
+                        mapping.is_unique = True
                 yield full_track
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
@@ -1235,6 +1239,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                         if (playlist_id := album_obj.get("audioPlaylistId"))
                         else f"{YTM_DOMAIN}/browse/{album_id}"
                     ),
+                    is_unique=str(album_id).startswith(UPLOAD_ALBUM_ID_PREFIX) or None,
                 )
             },
             favorite=_favorite_from_like_status(album_obj),
@@ -1279,6 +1284,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not artist_id:
             msg = "Artist does not have a valid ID"
             raise InvalidDataError(msg)
+        is_upload = str(artist_id).startswith(UPLOAD_ARTIST_ID_PREFIX)
         artist = Artist(
             item_id=artist_id,
             name=artist_obj["name"],
@@ -1288,7 +1294,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     item_id=str(artist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{YTM_DOMAIN}/channel/{artist_id}",
+                    url=f"{YTM_DOMAIN}/browse/{artist_id}"
+                    if is_upload
+                    else f"{YTM_DOMAIN}/channel/{artist_id}",
+                    is_unique=is_upload or None,
                 )
             },
             favorite=_favorite_from_like_status(artist_obj),
@@ -1364,6 +1373,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     audio_format=AudioFormat(
                         content_type=ContentType.M4A,
                     ),
+                    # only uploads carry an entityId; they exist on this account only
+                    is_unique="entityId" in track_obj or None,
                 )
             },
             favorite=_favorite_from_like_status(track_obj),
@@ -1722,7 +1733,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             artists sections, which ytmusicapi finds by their translated title.
         """
         return await get_artist(
-            prov_artist_id=prov_artist_id, headers=self._headers, language=language
+            prov_artist_id=prov_artist_id,
+            headers=self._headers,
+            language=language,
+            user=self._yt_user,
         )
 
     @use_cache(3600)  # Cache for 1 hour
