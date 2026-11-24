@@ -32,6 +32,10 @@ APP_QUIT_DELAY = 10.0
 # moves to another track, before that is taken as the end of its playback.
 APP_TRACK_CHANGE_TIME = 5.0
 
+# Seconds the computed start of a track within a flow stream may differ from the start the
+# receiver was told before it is told again.
+SECTION_START_TOLERANCE = 3.0
+
 # keepalive media the cast receiver plays while showing a dashboard
 DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
 
