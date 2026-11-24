@@ -2445,10 +2445,14 @@ has no level of its own; only its members count.
 Lounge leads Study over AirPlay and the user stops the group. Lounge's AirPlay receiver stays its
 output for the group, but plays nothing, and an AirPlay receiver only takes a volume command while
 it streams. A volume or mute command goes to Lounge's own protocol, and the receiver gets none.
+The user turns Study down and mutes it meanwhile, which reaches Study's own protocol; when the
+group plays again, Study's receiver gets that level and mute before the music starts.
 
 - End-to-end: **possible with** two virtual players of different kinds that each also run an
   AirPlay receiver on their host.
-- Proven by: `test_outputs.py::test_a_stopped_leader_takes_volume_on_its_own_protocol_while_it_keeps_its_group`
+- Proven by:
+  - `test_outputs.py::test_a_stopped_leader_takes_volume_on_its_own_protocol_while_it_keeps_its_group`
+  - `test_outputs.py::test_a_member_plays_again_at_the_level_it_got_while_its_group_was_stopped`
 
 ## A pause, a stop and the end of a queue
 

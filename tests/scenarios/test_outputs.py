@@ -131,6 +131,35 @@ async def test_a_stopped_leader_takes_volume_on_its_own_protocol_while_it_keeps_
     assert _state(scenario, lounge_id).active_output_protocol == "airplay_lounge"
 
 
+async def test_a_member_plays_again_at_the_level_it_got_while_its_group_was_stopped(
+    scenario: Scenario,
+) -> None:
+    """
+    A member whose level and mute changed while its group was stopped plays again at them.
+
+    Its AirPlay receiver stayed its output for the group, and the level and mute went to its
+    own protocol meanwhile. The receiver gets them before the group plays again: an AirPlay
+    receiver sends the level it holds when its stream starts.
+    """
+    _, _, lounge_id, study_id = await _stopped_airplay_group(scenario)
+    study, study_airplay = scenario.protocol("wiim_study"), scenario.protocol("airplay_study")
+    study.commands.clear()
+    await scenario.mass.players.cmd_volume_set(study_id, 20)
+    await scenario.mass.players.cmd_volume_mute(study_id, True)
+    await scenario.idle()
+    assert _volume_commands(study) == [("volume_set", 20), ("volume_mute", True)]
+    study_airplay.commands.clear()
+    scenario.timeline.clear()
+
+    await scenario.play(lounge_id)
+
+    assert _volume_commands(study_airplay) == [("volume_set", 20), ("volume_mute", True)]
+    commands = [(protocol_id, command[0]) for protocol_id, command in scenario.timeline]
+    assert commands.index(("airplay_study", "volume_mute")) < commands.index(
+        ("airplay_lounge", "play_media")
+    )
+
+
 async def test_a_stopped_leader_lets_go_of_its_output_once_its_group_ended(
     scenario: Scenario,
 ) -> None:

@@ -563,7 +563,8 @@ protocol. The `volume_control` and `mute_control` of the player state name where
 goes right now, so while another output than the own protocol renders the audio they are the id of
 that protocol. A client only reads from them whether the player has a control (`none` if not).
 When the output changes, the protocol that becomes the control gets the level and mute of the
-player before it is made the active output and before the stream starts.
+player before it is made the active output and before the stream starts. So does the output a
+group member kept while its group played nothing, before the group starts again.
 
 While its own protocol is attached but can not be reached, a player keeps the level and mute it had
 when that began: what any of its protocols reports may be stale then. It is shown as the quieter of
