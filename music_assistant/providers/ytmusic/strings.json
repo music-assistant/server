@@ -11,6 +11,10 @@
       "label": "PO Token Server URL",
       "description": "The URL to the PO Token server. Can be left as default for most people. \n\n**Note that this does require you to have the 'YT Music PO Token Generator' addon installed!**"
     },
+    "authenticated_search": {
+      "label": "Authenticate on search",
+      "description": "Search with your YouTube Music account instead of signed out. This can fix missing search results, such as songs, in regions where signed-out YouTube Music hides them. Your searches are then added to your YouTube search history."
+    },
     "include_videos_in_search": {
       "label": "Include videos in search results",
       "description": "Search YouTube Music videos as well as songs, including covers, remixes and live performances. This does not change radio or library imports."
