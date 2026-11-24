@@ -401,8 +401,37 @@ async def test_member_that_fails_does_not_keep_the_group_silent() -> None:
     for _ in range(5):
         await asyncio.sleep(0)
     member_ready.set_exception(PlayerCommandFailed("the Cast receiver refused the launch"))
+    # as the bridge does: nobody else retrieves it
+    member_ready.exception()
     await call
 
+    session.start.assert_awaited_once()
+
+
+async def test_member_whose_app_turns_out_to_be_gone_is_launched() -> None:
+    """A member's app that the device no longer runs is launched, whatever was known before."""
+    loop = asyncio.get_running_loop()
+    ready: asyncio.Future[None] = loop.create_future()
+    ready.set_result(None)
+    running: asyncio.Future[None] = loop.create_future()
+    running.set_result(None)
+    gone: asyncio.Future[None] = loop.create_future()
+    player, session, _, _ = _player(ready)
+    member = _add_member(player, "member", running)
+
+    async def app_turns_out_to_be_gone() -> None:
+        member.reset_cast_app_ready.return_value = gone
+
+    member.refresh_cast_app_state = AsyncMock(side_effect=app_turns_out_to_be_gone)
+
+    call = asyncio.create_task(_play_media(player))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    member.launch_cast_app.assert_called_once_with()
+    session.start.assert_not_awaited()
+
+    gone.set_result(None)
+    await call
     session.start.assert_awaited_once()
 
 
