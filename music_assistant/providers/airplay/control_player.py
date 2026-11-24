@@ -55,6 +55,7 @@ from music_assistant.models.setup_flow import AbortFlow
 from .constants import (
     CONF_COMPANION_CREDENTIALS,
     CONF_COMPANION_PAIRING_PIN,
+    CONF_IGNORE_VOLUME,
     CONF_MRP_CREDENTIALS,
     CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
@@ -65,6 +66,7 @@ from .constants import (
 )
 from .helpers import (
     get_decoded_property,
+    is_homepod,
     supports_companion_pairing,
     supports_mrp_service,
     supports_mrp_tunnel,
@@ -749,6 +751,15 @@ class AirPlayControlPlayer(AirPlayPlayer):
         return active
 
     @property
+    def _follows_stream_volume(self) -> bool:
+        """Return whether a level the device reports now is taken over while it streams."""
+        return (
+            is_homepod(self.device_info.manufacturer, self.device_info.model)
+            and not self.volume_echo_pending
+            and not self.settings.get_value(CONF_IGNORE_VOLUME)
+        )
+
+    @property
     def _external_state_blocked(self) -> bool:
         """
         Return whether externally observed playback state must be ignored.
@@ -1121,10 +1132,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if self.carries_home_theater:
             return
         # While Music Assistant streams, volume_set drives the stream volume and
-        # deliberately leaves the native device volume alone. The two are separate
-        # knobs on a different scale, so a report about the native one must not
-        # overwrite (or persist) the level the user just set on the stream.
-        if source != "command" and self._stream_active:
+        # deliberately leaves the native device volume alone. On an Apple TV the two are
+        # separate knobs on a different scale, so a report about the native one must not
+        # overwrite (or persist) the level the user just set on the stream. A HomePod plays
+        # the stream at its one volume.
+        if source != "command" and self._stream_active and not self._follows_stream_volume:
             return
         volume_level = max(0, min(100, round(volume)))
         if volume_level == 0:

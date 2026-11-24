@@ -476,13 +476,15 @@ A volume is still sent when the AirPlay output itself is the resolved volume con
 
 ### Volume Feedback
 
-Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. Genuine Apple devices are auto-set to ignore these reports (they manage volume internally).
+Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. The DACP volume reports of Apple devices are always ignored: a HomePod holds its reports back for 5 seconds for every connected sender whose DACP service it can not find, such as the control connection, so an old level can arrive long after a newer one.
+
+The volume of a HomePod is followed over its control connection (MRP) instead, idle and while it plays from Music Assistant. That is the volume the stream plays at, and its reports arrive in order. They are only taken over, never sent back to the device, and a 0 never mutes the player. A HomePod that plays as a speaker of an Apple TV has no control connection, so its changes are not followed. On an Apple TV the native volume is separate from the one of the stream, and is ignored while it plays from Music Assistant.
 
 A receiver also echoes back every level it is handed, and an echo that arrives after the next level was sent would be read as the user reaching for the volume and written straight back to the device. Reports are therefore ignored for a short window after Music Assistant sends a volume itself, and for the whole span of an announcement.
 
-**Config option**: `ignore_volume` (default: `False`, auto-enabled for Apple devices)
+**Config option**: `ignore_volume` (default: `False`)
 - Useful when device volume reports are unreliable
-- Apple devices always ignore volume feedback (handled internally)
+- On a HomePod it ignores the reports that arrive while it plays from Music Assistant
 
 ### Device Source Switching
 

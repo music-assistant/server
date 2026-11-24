@@ -39,6 +39,7 @@ from music_assistant.providers.airplay.constants import (
     COMPANION_DISCOVERY_TYPE,
     CONF_COMPANION_CREDENTIALS,
     CONF_HOMEPODS_ONLY,
+    CONF_IGNORE_VOLUME,
     CONF_MRP_CREDENTIALS,
     CONF_NATIVE_MRP_CREDENTIALS,
     CONF_STORED_VOLUME,
@@ -352,7 +353,7 @@ def test_native_volume_update_ignored_while_streaming() -> None:
     # volume_set routes to the stream while streaming and leaves the native device
     # volume alone, so a report about that separate knob must not clobber (or persist)
     # the level the user just set.
-    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player = _make_control_player()
     player.stream = MagicMock(running=True)
     player._attr_volume_level = 62
     player._attr_volume_muted = False
@@ -385,27 +386,78 @@ def test_transient_mrp_volume_report_never_latches_mute() -> None:
     update_state.assert_not_called()
 
 
+@pytest.mark.parametrize("muted", [False, True], ids=["audible", "muted"])
 @pytest.mark.parametrize("streaming", [False, True], ids=["idle", "streaming"])
-def test_transient_mrp_volume_report_follows_the_homepod_while_idle(streaming: bool) -> None:
-    """A level a HomePod reports over its transient MRP tunnel is applied while it is idle."""
+def test_transient_mrp_volume_report_follows_the_homepod(streaming: bool, muted: bool) -> None:
+    """A level a HomePod reports over its transient MRP tunnel is taken over, never sent back."""
     player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
     assert player._uses_transient_mrp is True
     assert player._companion_device is None
     player.stream = MagicMock(running=streaming)
     player._attr_volume_level = 62
-    player._attr_volume_muted = False
+    player._attr_volume_muted = muted
 
     with patch.object(player, "update_state"):
         player._handle_volume_update("mrp", 30)
 
     assert player.volume_muted is False
-    set_protocol_value = cast("MagicMock", player.mass.config).set_protocol_value
-    if streaming:
-        assert player.volume_level == 62
-        set_protocol_value.assert_not_called()
-    else:
-        assert player.volume_level == 30
-        set_protocol_value.assert_called_once_with(PLAYER_ID, CONF_STORED_VOLUME, 30)
+    assert player.volume_level == 30
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_called_once_with(
+        PLAYER_ID, CONF_STORED_VOLUME, 30
+    )
+    cast("MagicMock", player.provider).bridge_manager.sync_volume.assert_called_with(PLAYER_ID)
+    player.stream.send_cli_command.assert_not_called()
+
+
+def test_homepod_echo_of_our_own_volume_is_ignored_while_streaming() -> None:
+    """A level a HomePod echoes back while a later one was sent already does not win."""
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_volume_level = 40
+    player._attr_volume_muted = False
+
+    with patch("music_assistant.providers.airplay.player.time.time", return_value=100.0):
+        player.suppress_volume_reports(2)
+        player._handle_volume_update("mrp", 30)
+    assert player.volume_level == 40
+
+    with (
+        patch("music_assistant.providers.airplay.player.time.time", return_value=102.0),
+        patch.object(player, "update_state"),
+    ):
+        player._handle_volume_update("mrp", 30)
+    assert player.volume_level == 30
+
+
+def test_homepod_volume_reports_can_be_ignored_while_streaming() -> None:
+    """The setting to ignore the volume reports of a device covers a streaming HomePod."""
+    player = _make_control_player(
+        model="HomePod Mini",
+        companion_flags="0x62792",
+        config_values={CONF_IGNORE_VOLUME: True},
+    )
+    player.stream = MagicMock(running=True)
+    player._attr_volume_level = 62
+
+    player._handle_volume_update("mrp", 30)
+
+    assert player.volume_level == 62
+
+
+@pytest.mark.parametrize("muted", [False, True], ids=["audible", "muted"])
+def test_a_zero_a_streaming_homepod_reports_changes_nothing(muted: bool) -> None:
+    """A 0 a HomePod reports while it streams leaves the level and the mute alone."""
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = muted
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("mrp", 0)
+
+    assert player.volume_muted is muted
+    assert player.volume_level == 62
+    update_state.assert_not_called()
 
 
 def test_mrp_volume_report_is_ignored_while_companion_owns_the_volume() -> None:

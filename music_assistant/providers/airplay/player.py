@@ -1044,13 +1044,16 @@ class AirPlayPlayer(PlayerProtocol):
     @property
     def ignore_volume_reports(self) -> bool:
         """Return True if the device's own volume reports must not be acted on."""
-        if self._volume_reports_ignored_until > time.time():
-            # a level we sent ourselves is still echoing back
-            return True
         return bool(
-            self.settings.get_value(CONF_IGNORE_VOLUME)
+            self.volume_echo_pending
+            or self.settings.get_value(CONF_IGNORE_VOLUME)
             or self.device_info.manufacturer.lower() == "apple"
         )
+
+    @property
+    def volume_echo_pending(self) -> bool:
+        """Return whether the device may still echo back a level we sent ourselves."""
+        return self._volume_reports_ignored_until > time.time()
 
     def suppress_volume_reports(self, seconds: float = AIRPLAY_VOLUME_ECHO_GRACE_S) -> None:
         """
