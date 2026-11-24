@@ -1317,6 +1317,38 @@ async def test_a_member_taken_out_while_its_silent_old_leader_holds_it_does_not_
     assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
 
 
+@pytest.mark.parametrize("through_queue", [False, True])
+@pytest.mark.parametrize("seconds", [4, 14, 20, 30])
+async def test_a_sync_group_stopped_while_its_silent_old_leader_holds_a_member_stays_silent(
+    scenario: Scenario, seconds: float, through_queue: bool
+) -> None:
+    """
+    A group that is stopped while it waits for a member starts nothing once that member is free.
+
+    :param seconds: How long after its leader left the group is stopped.
+    :param through_queue: Whether the queue of the group is stopped instead of the group.
+    """
+    kitchen, office, _, group_id = await _group_behind_an_airplay_leader(scenario)
+    _fall_silent(scenario, kitchen, 36)
+    scenario.expect_log("Could not ungroup the members of Kitchen")
+    scenario.expect_log("Player Office still reports synced_to")
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(_player_id(scenario, kitchen)))
+    await scenario.advance(seconds)
+
+    stop = await scenario.command(
+        scenario.mass.player_queues.stop(group_id)
+        if through_queue
+        else scenario.mass.players.cmd_stop(group_id)
+    )
+    await scenario.advance(90)
+    await leave
+    await stop
+    await scenario.idle()
+
+    assert "play_media" not in [command[0] for command in office.commands]
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+
+
 async def test_a_player_added_to_an_idle_sync_group_is_checked_against_the_member_that_leads(
     scenario: Scenario,
 ) -> None:

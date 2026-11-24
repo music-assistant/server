@@ -2274,12 +2274,13 @@ plays on all three once they have started up.
 Downstairs plays with Kitchen leading over AirPlay, and Office following Kitchen on their own
 protocol. Kitchen leaves the group and answers no group command for 36 s, after which its device
 lets Office go: Downstairs then plays on, on Office. When Office leaves the group during the wait,
-it leaves at once, and nothing plays later.
+it leaves at once, and nothing plays later. Nor does it when Downstairs is stopped during the wait.
 
 - End-to-end: **no**: the device has to be silent for that long.
 - Proven by:
   - `test_grouping.py::test_a_sync_group_plays_on_once_its_silent_old_leader_lets_the_member_go`
   - `test_grouping.py::test_a_member_taken_out_while_its_silent_old_leader_holds_it_does_not_start`
+  - `test_grouping.py::test_a_sync_group_stopped_while_its_silent_old_leader_holds_a_member_stays_silent`
 
 ### GROUP-67 · A leader that plays over another protocol lets its followers go before it stops
 
