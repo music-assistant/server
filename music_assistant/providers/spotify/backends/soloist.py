@@ -2088,11 +2088,13 @@ class _EngineRun:
         """
         self._engine_uri = uri
         if details is not None and (duration_ms := _decorated_duration_ms(details)):
-            # only the full playback state carries the exact length
-            self._engine_length = (uri, duration_ms)
+            # only a playing report carries the exact length, the others may round it
+            # to whole seconds
+            if announced or self._engine_length is None or self._engine_length[0] != uri:
+                self._engine_length = (uri, duration_ms)
             for candidate in (self._next, self._item):
                 if candidate is not None and candidate.spotify_uri == uri:
-                    if candidate.engine_duration_ms is None:
+                    if announced or candidate.engine_duration_ms is None:
                         candidate.engine_duration_ms = duration_ms
                     break
         if self._moving:
