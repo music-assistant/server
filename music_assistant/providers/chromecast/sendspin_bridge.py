@@ -1078,7 +1078,10 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 cast_player.on_app_status_changed = None
 
         def _on_cast_status_changed(app_id: str | None) -> None:
+            nonlocal cast_app_was_active
             if app_id == SENDSPIN_CAST_APP_ID:
+                # the claim usually comes before the first status of the device
+                cast_app_was_active = True
                 return
             if not cast_app_was_active:
                 return
