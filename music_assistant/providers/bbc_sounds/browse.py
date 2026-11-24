@@ -224,7 +224,7 @@ class BrowseManager:
         # bbc_sounds://stations
         return await self._station_list_as_folders(path_parts=path_parts)
 
-    @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
+    @use_cache(expiration=Constants.SHORT_EXPIRATION, allow_expired_cache=True)
     async def _get_playlist(self, pid: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Get a playlist from the API.
@@ -519,7 +519,7 @@ class BrowseManager:
                     items.append(new_folder)
         return items
 
-    @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
+    @use_cache(expiration=Constants.SHORT_EXPIRATION, allow_expired_cache=True)
     async def _get_category(
         self, category_name: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -535,7 +535,7 @@ class BrowseManager:
             ]
         return []
 
-    @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
+    @use_cache(expiration=Constants.SHORT_EXPIRATION, allow_expired_cache=True)
     async def _get_collection(
         self, pid: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
