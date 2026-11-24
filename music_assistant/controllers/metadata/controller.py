@@ -19,7 +19,6 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
-    AlbumType,
     ConfigEntryType,
     EventType,
     ExternalID,
@@ -53,10 +52,6 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import system_auth_context
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.compare import (
-    ALBUM_RETAIL_SUFFIX_KEYS,
-    album_retail_suffix_sql_match,
-)
 from music_assistant.helpers.images import cleanup_thumb_cache
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.helpers.throttle_retry import Throttler
@@ -65,7 +60,6 @@ from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
-    ALBUM_RECONCILIATION_TASK_ID,
     CONF_ENABLE_ONLINE_METADATA,
     CONF_ENABLE_RADIO_METADATA_LOOKUP,
     CONF_LANGUAGE_CHANGED,
@@ -607,19 +601,7 @@ class MetaDataController(
             metadata={"task_domain": "metadata_thumb_cache_cleanup"},
             allow_retry=True,
         )
-        # runs every hour rather than spread across the day: it is bounded to a small
-        # batch of albums per run, so there is no shared-mirror stampede to avoid
-        self.mass.tasks.register_scheduled_task(
-            task_id=ALBUM_RECONCILIATION_TASK_ID,
-            name="Reconcile duplicate albums",
-            handler=self._reconcile_duplicate_albums,
-            schedule=TaskSchedule.hourly(),
-            translation_key="reconcile_duplicate_albums",
-            translation_owner=self.translation_owner,
-            metadata={"task_domain": "metadata_album_reconciliation"},
-            allow_retry=True,
-        )
-        # bounded to a small batch per run and paced, so it can run hourly as well
+        # bounded to a small batch per run and paced, so it can run hourly
         self.mass.tasks.register_scheduled_task(
             task_id=MUSICBRAINZ_LINK_TASK_ID,
             name="Link library to MusicBrainz",
@@ -737,60 +719,6 @@ class MetaDataController(
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
         update_current_task_progress(100, f"Processed {len(playlists)} playlist(s)")
-
-    async def _reconcile_duplicate_albums(self) -> None:
-        """Enrich and re-match a small batch of sparse or possibly duplicated albums."""
-        update_current_task_progress_text("Searching for albums needing reconciliation")
-        # candidates are selected again once their refresh is due (sooner after a temporary
-        # provider failure), rather than only ever once
-        refresh_before = int(time() - REFRESH_INTERVAL)
-        query = (
-            f"({DB_TABLE_ALBUMS}.album_type = '{AlbumType.UNKNOWN.value}' "
-            f"OR {_duplicate_album_sibling_guard()}) AND ("
-            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
-            f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {refresh_before})"
-        )
-        albums = await self._get_scan_batch(self.mass.music.albums, DB_TABLE_ALBUMS, query)
-        if not albums:
-            update_current_task_progress_text("No albums require reconciliation")
-            return
-        skipped = 0
-        for index, album in enumerate(albums, 1):
-            if self._metadata_rate_limited(ProviderFeature.ALBUM_METADATA):
-                # the album stays untouched, so the next run selects it again
-                skipped += 1
-                continue
-            try:
-                update_current_task_progress_from_index(
-                    index,
-                    len(albums),
-                    f"Reconciling album {index}/{len(albums)}: {album.name}",
-                )
-                # enrich sparse provider data (type/year/metadata) first so the follow-up
-                # match has full album details to work with, then re-fetch the now-enriched
-                # library row before re-matching: match_providers merges a confirmed mapping
-                # into an existing duplicate through the safe add_provider_mappings path
-                try:
-                    await self._update_album_metadata(album, force_refresh=False)
-                    reconciled_album = await self.mass.music.albums.get_library_item(album.item_id)
-                except MediaNotFoundError:
-                    # both rows of a duplicate pair can share a batch, so this row may
-                    # already have been merged into its duplicate earlier in the run
-                    continue
-                await self.mass.music.albums.match_providers(reconciled_album)
-            except _SCAN_ITEM_ERRORS as err:
-                report_current_task_failure(f"{album.name}: {err}")
-                self.logger.warning(
-                    "Error while reconciling album %s: %s",
-                    album.name,
-                    str(err),
-                    exc_info=err if self.logger.isEnabledFor(10) else None,
-                )
-        summary = f"Processed {len(albums) - skipped} album(s)"
-        if skipped:
-            summary += f", skipped {skipped} while a metadata provider is rate limiting"
-            self.logger.debug("Album reconciliation: %s", summary)
-        update_current_task_progress(100, summary)
 
     async def _cleanup_thumb_cache(self) -> None:
         """Remove oldest thumbnails when the cache folder exceeds the configured limit."""
@@ -1156,55 +1084,6 @@ class MetaDataController(
         lyrics = fallback[0] or candidate.lyrics or None
         lrc_lyrics = candidate.lrc_lyrics or extract_lrc_lyrics(candidate.lyrics)
         return bool(lrc_lyrics), (lyrics, lrc_lyrics)
-
-
-def _duplicate_album_sibling_guard() -> str:
-    """Return a query part that selects albums which may be a duplicate of another library row."""
-    # An album pairs up when one of its "own" keys equals a "dup" key of another album by the
-    # same artist. Matching artist and title key at once keeps large same-title groups cheap.
-    # A provider that spells out the retail suffix stores the album under the plain name
-    # plus that suffix, so the pair is related from either side. The raw title decides
-    # which side spelled it out, so an ordinary title that merely ends in those letters
-    # ("Step") is left alone.
-    own_keys = ["'=' || a.search_name"]
-    dup_keys = ["'=' || a.search_name"]
-    for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
-        spelled_out = album_retail_suffix_sql_match("a.name", suffix)
-        own_keys.append(f"'{suffix}:' || a.search_name || '{suffix}'")
-        dup_keys.append(f"CASE WHEN {spelled_out} THEN '{suffix}:' || a.search_name END")
-        own_keys.append(
-            f"CASE WHEN {spelled_out} THEN '=' || "
-            f"substr(a.search_name, 1, length(a.search_name) - {len(suffix)}) END"
-        )
-    # a title that normalizes to nothing (e.g. Ed Sheeran's '+', '=' and '÷') matches every
-    # other such title, so those fall back to their raw spelling like the album comparison does
-    raw_name = "'|' || REPLACE(a.name,' ','')"
-    own_keys = [
-        f"CASE WHEN a.search_name != '' THEN {key} ELSE {key} || {raw_name} END" for key in own_keys
-    ]
-    dup_keys += [f"{key} || {raw_name}" for key in dup_keys]
-
-    def keyed(keys: list[str]) -> str:
-        return " UNION ALL ".join(
-            f"SELECT aa.album_id, aa.artist_id, {key} AS key "
-            f"FROM {DB_TABLE_ALBUM_ARTISTS} aa JOIN {DB_TABLE_ALBUMS} a ON a.item_id = aa.album_id"
-            for key in keys
-        )
-
-    # deliberately an identity-only pre-filter: which editions may be merged is decided by
-    # the album comparison, which escalates an ambiguous edition to tracklists and
-    # MusicBrainz and rejects a recording-changing one (live, remix, ...) outright.
-    # A group whose lowest and highest album are both this album holds no other album.
-    # CROSS JOIN keeps own as the outer loop, so dup is probed by artist and key.
-    return (
-        f"{DB_TABLE_ALBUMS}.item_id IN ("
-        f"WITH own AS ({keyed(own_keys)}), dup AS MATERIALIZED ("
-        "SELECT artist_id, key, MIN(album_id) AS first_id, MAX(album_id) AS last_id "
-        f"FROM ({keyed(dup_keys)}) GROUP BY artist_id, key) "
-        "SELECT own.album_id FROM own CROSS JOIN dup "
-        "ON dup.artist_id = own.artist_id AND dup.key = own.key "
-        "WHERE dup.first_id != own.album_id OR dup.last_id != own.album_id)"
-    )
 
 
 def _missing_metadata_query(table: str, *, description: bool = False) -> str:
