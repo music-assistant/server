@@ -309,19 +309,26 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
     assert mock_ytmusic.call_args.kwargs["language"] == "en"
 
 
-async def test_search_does_not_use_account(provider: YoutubeMusicProvider) -> None:
-    """A search must not use the account, so MA lookups stay out of its search history."""
+@pytest.mark.parametrize("authenticated", [False, True])
+async def test_search_uses_account_only_when_enabled(
+    provider: YoutubeMusicProvider, authenticated: bool
+) -> None:
+    """A search stays signed out, out of the account's search history, unless the user opts in."""
     provider._headers = {"cookie": "abc"}
     provider._yt_user = "123"
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        authenticated if key == "authenticated_search" else False
+    )
     mock_ytm = MagicMock()
     mock_ytm.search.return_value = []
     search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
         await search(provider, "test", [MediaType.TRACK])
 
-    assert not mock_ytmusic.call_args.args
-    assert "auth" not in mock_ytmusic.call_args.kwargs
-    assert "user" not in mock_ytmusic.call_args.kwargs
+    if authenticated:
+        mock_ytmusic.assert_called_once_with(auth={"cookie": "abc"}, language="en", user="123")
+    else:
+        mock_ytmusic.assert_called_once_with(language="en")
 
 
 async def test_album_versions_with_versions(provider: YoutubeMusicProvider) -> None:
@@ -879,7 +886,11 @@ async def test_video_search_setting_defaults_off(provider: YoutubeMusicProvider)
 
 @pytest.mark.parametrize(
     ("changed_key", "cleared"),
-    [("values/include_videos_in_search", True), ("values/log_level", False)],
+    [
+        ("values/include_videos_in_search", True),
+        ("values/authenticated_search", True),
+        ("values/log_level", False),
+    ],
 )
 async def test_video_search_setting_change_clears_search_caches(
     provider: YoutubeMusicProvider, changed_key: str, cleared: bool
@@ -943,7 +954,9 @@ async def test_search_fetches_videos_only_for_song_searches(
     provider: YoutubeMusicProvider, media_types: list[MediaType], ytm_filter: str | None
 ) -> None:
     """Other filtered searches skip videos and unfiltered searches already include them."""
-    cast("MagicMock", provider.config.get_value).return_value = True
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        key == "include_videos_in_search"
+    )
     search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch("music_assistant.providers.ytmusic.search", AsyncMock(return_value=[])) as backend:
         await search(provider, "query", media_types, 5)

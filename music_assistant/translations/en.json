@@ -3360,6 +3360,8 @@
   "provider.yousee.config_entries.yousee_quality.options.320": "\"High\" - MP4 320kbps",
   "provider.yousee.errors.playlist_create_failed": "Could not create playlist {0}.",
   "provider.yousee.manifest.description": "YouSee Musik, a Danish music streaming service.",
+  "provider.ytmusic.config_entries.authenticated_search.description": "Search with your YouTube Music account instead of signed out. This can fix missing search results, such as songs, in regions where signed-out YouTube Music hides them. Your searches are then added to your YouTube search history.",
+  "provider.ytmusic.config_entries.authenticated_search.label": "Authenticate on search",
   "provider.ytmusic.config_entries.cookie.description": "The Login cookie you grabbed from an existing session, see the documentation.",
   "provider.ytmusic.config_entries.cookie.label": "Login Cookie",
   "provider.ytmusic.config_entries.include_videos_in_search.description": "Search YouTube Music videos as well as songs, including covers, remixes and live performances. This does not change radio or library imports.",
