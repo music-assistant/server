@@ -125,24 +125,19 @@ Its nqptp and MA's PTP engine both need UDP 319/320, so the native lane can't wo
 The only user override is the advanced per-player `streaming_mode` selector. It
 pins the protocol/timing lane for a device whose automatic route misbehaves, and
 each option is offered only when the device can actually use it: the AirPlay 2
-lanes need AirPlay 2 support, legacy RAOP needs an advertised `_raop` service,
-and Apple receivers get every lane except NTP timing (they render silence on an
-NTP-timed realtime stream). The modes map
-onto the binary's `--protocol`/`--timing` arguments. Music Assistant never
-writes the setting itself: when an automatic route conclusively fails (a device
-that advertises PTP but never answers a clock probe, or a native control
-channel that fails after its keepalive retries) it logs a warning pointing at
-this selector and leaves the choice to the user. The usual cause of a control
-channel failure is a network dropout, and a persisted automatic switch would
-outlive it and pin the player to a lane the device may not even accept.
+lanes need AirPlay 2 support and legacy RAOP needs an advertised `_raop`
+service. The modes map onto the binary's `--protocol`/`--timing` arguments.
+Music Assistant never writes the setting itself: when an automatic route
+conclusively fails (a device that advertises PTP but never answers a clock
+probe, or a native control channel that fails after its keepalive retries) it
+logs a warning pointing at this selector and leaves the choice to the user. The
+usual cause of a control channel failure is a network dropout, and a persisted
+automatic switch would outlive it and pin the player to a lane the device may
+not even accept.
 
 The selector is hidden only for RAOP-only devices (no alternative lane; a
-stray persisted value is ignored). Apple devices (HomePod / Apple TV) get
-every lane except NTP timing — they render silence on an NTP-timed realtime
-stream (hardware-measured) — leaving pinned PTP, the compatibility flow and
-legacy RAOP as escape hatches for networks where the PTP ports are blocked.
-AirPlay-2-only devices get the AirPlay 2 lanes without RAOP: they are the
-class the NTP escape exists for.
+stray persisted value is ignored). AirPlay-2-only devices get the AirPlay 2
+lanes without RAOP: they are the class the NTP escape exists for.
 
 ## Discovery and Player Setup
 
