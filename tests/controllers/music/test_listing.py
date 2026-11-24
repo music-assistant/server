@@ -188,6 +188,18 @@ def test_release_date_sort_fallback_and_ties(direction: SortDirection) -> None:
     )
 
 
+def test_release_date_sort_on_audiobooks() -> None:
+    """Audiobooks sort on their release date, an audiobook without one as the oldest."""
+    books = [
+        Audiobook(item_id=name, provider="deezer", name=name, provider_mappings=set())
+        for name in ("Missing", "Old", "New")
+    ]
+    books[1].metadata.release_date = datetime(1996, 2, 1, tzinfo=UTC)
+    books[2].metadata.release_date = datetime(2026, 11, 13, tzinfo=UTC)
+    result = apply_listing(books, ListingType.ARTIST_AUDIOBOOKS, sort_field=SortField.RELEASE_DATE)
+    assert [book.item_id for book in result] == ["New", "Old", "Missing"]
+
+
 @pytest.fixture
 def tracks() -> list[Track]:
     """Return a listing of tracks, in the order their source lists them."""

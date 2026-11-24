@@ -55,6 +55,7 @@ def _album_node(album_id: str, *artists: SimpleNamespace) -> SimpleNamespace:
         cover=None,
         is_explicit=False,
         contributors=SimpleNamespace(edges=edges),
+        release_date=None,
     )
 
 
@@ -98,6 +99,8 @@ def test_audiobook_authors_are_artists(provider: DeezerProvider) -> None:
         duration=3600,
         publisher=None,
         is_favorite=False,
+        release_date=None,
+        original_release_date=None,
     )
 
     parsed = parse_audiobook(provider, audiobook)  # type: ignore[arg-type]
@@ -270,6 +273,51 @@ async def test_search_lists_an_author_without_music_only_as_author(
 
     assert [artist.item_id for artist in result.artists] == listed
     author_only.assert_awaited_once_with("32067711")
+
+
+@pytest.mark.parametrize(
+    ("media_types", "checked", "tracks", "audiobooks"),
+    [
+        ([MediaType.TRACK, MediaType.AUDIOBOOK], ["1", "album", "2"], ["song"], ["1", "2"]),
+        ([MediaType.TRACK], None, ["song", "c1", "c2", "c3"], []),
+    ],
+    ids=["with audiobooks", "tracks only"],
+)
+async def test_search_leads_from_a_chapter_to_its_audiobook(
+    provider: DeezerProvider,
+    gql: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    media_types: list[MediaType],
+    checked: list[str] | None,
+    tracks: list[str],
+    audiobooks: list[str],
+) -> None:
+    """A chapter found leads to its audiobook if audiobooks are asked for, else it is a track."""
+    monkeypatch.setattr(media, "parse_track", lambda _provider, node: node.id)
+    conni = _artist_node("75255", "Conni")
+
+    def _track(track_id: str, album_id: str) -> SimpleNamespace:
+        album = SimpleNamespace(id=album_id, display_title=f"Release {album_id}", cover=None)
+        edges = [SimpleNamespace(roles=["MAIN"], node=conni)]
+        return SimpleNamespace(id=track_id, album=album, contributors=SimpleNamespace(edges=edges))
+
+    hits = _search_hits(conni)
+    nodes = [_track("song", "album"), _track("c1", "1"), _track("c2", "2"), _track("c3", "2")]
+    hits.results.tracks = SimpleNamespace(edges=[SimpleNamespace(node=n) for n in nodes])
+    gql.search.return_value = hits
+    gql.check_audiobook_ids.return_value = {"1", "2"}
+
+    result = await _unwrap(DeezerMediaManager.search)(provider.media_manager, "conni", media_types)
+
+    assert result.tracks == tracks
+    assert [book.item_id for book in result.audiobooks] == audiobooks
+    for book in result.audiobooks:
+        assert [a.item_id for a in book.authors] == ["author_75255"]
+        provider._validate_audiobook_author_narrator_types(book)
+    if checked is None:
+        gql.check_audiobook_ids.assert_not_awaited()
+    else:
+        gql.check_audiobook_ids.assert_awaited_once_with(checked)
 
 
 @pytest.mark.parametrize(
