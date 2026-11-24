@@ -11,7 +11,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import AudioError
 
-from music_assistant.controllers.streams.controller import AudioSourceRefusedError
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 

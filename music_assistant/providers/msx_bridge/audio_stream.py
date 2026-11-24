@@ -17,6 +17,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 
 from .constants import PRE_BUFFER_BYTES
 
@@ -242,6 +243,9 @@ class AudioPipeline:
         try:
             await stream_task
         except asyncio.CancelledError:
+            raise
+        except AudioSourceRefusedError:
+            # the streams controller logs a source refusing this player itself
             raise
         except MusicAssistantError, OSError:
             logger.exception("Stream error for player %s", player_id)

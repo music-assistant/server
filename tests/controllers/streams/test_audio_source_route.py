@@ -25,7 +25,7 @@ from music_assistant.controllers.players.audio_sources import (
 )
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import StreamsController
-from music_assistant.controllers.streams.controller import AudioSourceRefusedError
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider
 

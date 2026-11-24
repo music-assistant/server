@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import SearchResults, UniqueList
 
 from .provider import Provider
@@ -295,6 +296,10 @@ class AudioStreamMixin(Provider):
         :raises MediaNotFoundError: If the file can not or may not be read.
         """
         return None
+
+
+class AudioSourceRefusedError(AudioError):
+    """Raised when the plugin of a live source refuses a consumer; the refusal is logged already."""
 
 
 class AudioSourceMixin(AudioStreamMixin):

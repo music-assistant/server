@@ -143,7 +143,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.media_capabilities import AudioSourceMixin
+from music_assistant.models.media_capabilities import AudioSourceMixin, AudioSourceRefusedError
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
@@ -256,10 +256,6 @@ def _log_not_found(
 
 class AbortFlowStream(Exception):
     """Raised to end a flow response whose session rotated during its setup."""
-
-
-class AudioSourceRefusedError(AudioError):
-    """Raised when the plugin of a live source refuses a consumer; the refusal is logged already."""
 
 
 # the probe route answers any origin: a browser on the local network calls it cross-origin
