@@ -1448,6 +1448,35 @@ async def test_an_end_pause_leaves_a_sink_held_on_purpose(tmp_path: Path, hold: 
     _sink(run).resume.assert_not_called()
 
 
+async def test_the_exact_length_replaces_the_rounded_one(tmp_path: Path) -> None:
+    """Only while it plays an item does the engine report its length beyond whole seconds."""
+    run = _live_run(tmp_path)
+    item = run.current_item
+    await run._handle_event(
+        _playback_event("buffering", uri=TRACK_A, position_ms=0, duration_ms=2_000)
+    )
+    assert item.engine_duration_ms == 2_000
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=2_400)
+    )
+    await _capture(run, _audio(2.3))
+    await run._handle_event(_track_event(TRACK_B))
+    assert item.end_at == int(2.4 * _BYTES_PER_SECOND)
+
+
+async def test_a_rounded_length_does_not_replace_the_exact_one(tmp_path: Path) -> None:
+    """The pause at an item's end reports the rounded length again, which a replay must not take."""
+    run = _live_run(tmp_path)
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=2_400)
+    )
+    await run._handle_event(
+        _playback_event("paused", uri=TRACK_A, position_ms=0, duration_ms=2_000)
+    )
+    assert run.current_item.engine_duration_ms == 2_400
+    assert run._new_item(TRACK_A, 0, switched=False).engine_duration_ms == 2_400
+
+
 @pytest.mark.parametrize(
     ("short_s", "status"),
     [
