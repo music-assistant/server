@@ -13,7 +13,10 @@ from music_assistant_models.auth import User
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InsufficientPermissions
 
-from music_assistant.controllers.music.constants import LIVE_SOURCES_BROWSE_SCHEME
+from music_assistant.controllers.music.constants import (
+    LIVE_SOURCES_BROWSE_SCHEME,
+    RECOMMENDATIONS_BROWSE_SCHEME,
+)
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES, _parse_share_url
 
@@ -318,7 +321,9 @@ def queue_visible(user: Any, queue: Any) -> bool:
 _PLAYER_KINDS = frozenset({TargetKind.PLAYER, TargetKind.PLAYERS})
 _SEQUENCE_KINDS = frozenset({TargetKind.PLAYERS, TargetKind.MUSIC_PROVIDERS})
 _REFERENCE_KINDS = frozenset({TargetKind.MUSIC_REFERENCE, TargetKind.MUSIC_REFERENCES})
-_INTERNAL_MUSIC_TARGETS = frozenset({"builtin", "library", LIVE_SOURCES_BROWSE_SCHEME})
+_INTERNAL_MUSIC_TARGETS = frozenset(
+    {"builtin", "library", LIVE_SOURCES_BROWSE_SCHEME, RECOMMENDATIONS_BROWSE_SCHEME}
+)
 _UNRESOLVED_SHARE_URL = "<unresolved share url>"
 
 
@@ -338,6 +343,14 @@ def _filter_rows(result: Any, allowed: set[str], attributes: tuple[str, ...]) ->
 
 def _row_ids(item: Any, attributes: tuple[str, ...]) -> set[str]:
     """Collect declared identifiers from the row and any provider mappings."""
+    if attributes == _MUSIC_PROVIDER_ATTRIBUTES:
+        # the core lists only the live sources of the user's players and the Discover
+        # folders of the user's sources; the items in a Discover folder are rows of their own
+        if _is_live_source(item):
+            return {LIVE_SOURCES_BROWSE_SCHEME}
+        path = item.get("path") if isinstance(item, Mapping) else getattr(item, "path", None)
+        if isinstance(path, str) and path.startswith(f"{RECOMMENDATIONS_BROWSE_SCHEME}://"):
+            return {RECOMMENDATIONS_BROWSE_SCHEME}
     ids = _attribute_ids(item, attributes)
     mappings = (
         item.get("provider_mappings")
@@ -386,6 +399,9 @@ def _reference_provider_ids(value: Any) -> set[str]:
                 return {share_url[1]}
         if value.startswith(BUILTIN_URL_SCHEMES):
             return {"builtin"}
+        if _is_live_source_uri(value):
+            # the core checks a live source against the player it belongs to
+            return {LIVE_SOURCES_BROWSE_SCHEME}
         provider, separator, _remainder = value.partition("://")
         if separator and provider:
             return {provider}
@@ -399,6 +415,8 @@ def _reference_provider_ids(value: Any) -> set[str]:
         return set()
     if isinstance(value, list | tuple | set | frozenset):
         return set().union(*(_reference_provider_ids(item) for item in value), set())
+    if _is_live_source(value):
+        return {LIVE_SOURCES_BROWSE_SCHEME}
 
     providers = _attribute_ids(value, _MUSIC_PROVIDER_ATTRIBUTES)
     uri = value.get("uri") if isinstance(value, Mapping) else getattr(value, "uri", None)
@@ -413,6 +431,23 @@ def _reference_provider_ids(value: Any) -> set[str]:
         for mapping in mappings:
             providers.update(_reference_provider_ids(mapping))
     return providers
+
+
+def _is_live_source(value: Any) -> bool:
+    """Return whether a listing row or media reference object is a live source."""
+    if isinstance(value, Mapping):
+        media_type, uri = value.get("media_type"), value.get("uri")
+    else:
+        media_type, uri = getattr(value, "media_type", None), getattr(value, "uri", None)
+    return media_type == MediaType.AUDIO_SOURCE and _is_live_source_uri(uri)
+
+
+def _is_live_source_uri(value: Any) -> bool:
+    """Return whether a value is the uri of a live source."""
+    if not isinstance(value, str):
+        return False
+    provider, separator, remainder = value.partition("://")
+    return bool(provider and separator) and remainder.startswith(f"{MediaType.AUDIO_SOURCE}/")
 
 
 def _target_values(value: Any, *, sequence: bool) -> set[str]:

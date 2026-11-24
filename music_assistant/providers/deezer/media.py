@@ -62,6 +62,7 @@ from .parsers import (
     parse_audiobook,
     parse_audiobook_chapters,
     parse_audiobook_from_album,
+    parse_audiobook_from_chapter,
     parse_author,
     parse_bookmark_time,
     parse_date,
@@ -506,33 +507,52 @@ class DeezerMediaManager:
         search_results = SearchResults()
         if result is None:
             return search_results
+        track_nodes = (
+            [e.node for e in result.results.tracks.edges if e.node is not None]
+            if MediaType.TRACK in media_types
+            else []
+        )
+        album_nodes = (
+            [e.node for e in result.results.albums.edges if e.node is not None]
+            if need_albums or find_audiobooks
+            else []
+        )
+        check_ids: list[str] = []
+        if find_audiobooks:
+            # chapters of an audiobook count as tracks on Deezer
+            check_ids = [n.id for n in album_nodes]
+            check_ids += [n.album.id for n in track_nodes if n.album is not None]
+        audiobook_ids = (
+            await self.provider.gql_client.check_audiobook_ids(list(dict.fromkeys(check_ids)))
+            if check_ids
+            else set()
+        )
         if MediaType.TRACK in media_types:
             search_results.tracks = [
-                parse_track(self.provider, edge.node)
-                for edge in result.results.tracks.edges
-                if edge.node is not None
+                parse_track(self.provider, n)
+                for n in track_nodes
+                if not need_audiobooks or n.album is None or n.album.id not in audiobook_ids
             ]
-        audiobooks: list[Audiobook] = []
-        if need_albums or find_audiobooks:
-            album_nodes = [e.node for e in result.results.albums.edges if e.node is not None]
-            if album_nodes and find_audiobooks:
-                album_ids = [n.id for n in album_nodes]
-                audiobook_ids = await self.provider.gql_client.check_audiobook_ids(album_ids)
-                if need_albums:
-                    search_results.albums = [
-                        parse_album(self.provider, n)
-                        for n in album_nodes
-                        if not need_audiobooks or n.id not in audiobook_ids
-                    ]
-                audiobooks = [
-                    parse_audiobook_from_album(self.provider, n)
-                    for n in album_nodes
-                    if n.id in audiobook_ids
-                ]
-                if need_audiobooks:
-                    search_results.audiobooks = audiobooks
-            elif need_albums:
-                search_results.albums = [parse_album(self.provider, n) for n in album_nodes]
+        if need_albums:
+            search_results.albums = [
+                parse_album(self.provider, n)
+                for n in album_nodes
+                if not need_audiobooks or n.id not in audiobook_ids
+            ]
+        audiobooks = [
+            parse_audiobook_from_album(self.provider, n)
+            for n in album_nodes
+            if n.id in audiobook_ids
+        ]
+        # a chapter found leads to its audiobook
+        known = {audiobook.item_id for audiobook in audiobooks}
+        for node in track_nodes:
+            if node.album is None or node.album.id not in audiobook_ids - known:
+                continue
+            known.add(node.album.id)
+            audiobooks.append(parse_audiobook_from_chapter(self.provider, node))
+        if need_audiobooks:
+            search_results.audiobooks = audiobooks
         if MediaType.ARTIST in media_types:
             author_ids = {
                 author.item_id

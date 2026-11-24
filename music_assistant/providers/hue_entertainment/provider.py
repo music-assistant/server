@@ -138,7 +138,7 @@ class HueEntertainmentProvider(PluginProvider):
                 )
             await self._bridge_manager.setup_bridges([HueAreaTarget(self, a) for a in areas])
             self.available = True
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure marks the bridge unavailable
             self.logger.error("Failed to initialize Hue bridge at %s: %s", host, err)
             self.available = False
 
@@ -217,7 +217,7 @@ class HueEntertainmentProvider(PluginProvider):
                     await self._bridge_manager.setup_bridges(
                         [HueAreaTarget(self, a) for a in areas]
                     )
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - a failed reinit must not break the update
                     self.logger.warning("Failed to reinitialize bridges: %s", err)
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:

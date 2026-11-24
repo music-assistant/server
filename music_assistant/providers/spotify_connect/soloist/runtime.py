@@ -939,7 +939,7 @@ class SoloistClient:
         if (model := _EVENT_MODELS.get(event_type)) is not None:
             try:
                 data = model.from_dict(payload)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # tolerance to malformed events is a hard requirement: whatever
                 # the decode error, log it and keep the stream alive
                 self.logger.debug("Ignoring malformed %s event: %s (%s)", event_type, raw, err)

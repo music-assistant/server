@@ -177,9 +177,22 @@ class SqueezelitePlayerProvider(PlayerProvider):
         return mass_player.name if mass_player else None
 
     def _lookup_elapsed(self, player_id: str) -> float | None:
-        """Return the position in the track of a player as its Sendspin bridge has it, else None."""
+        """Return a player's position in the track from its Sendspin bridge or queue, else None."""
         bridge = self.bridge_manager.get_bridge(player_id)
-        return bridge.position_in_track if bridge else None
+        if bridge and (position := bridge.position_in_track) is not None:
+            return position
+        slimclient = self.slimproto.get_player(player_id) if self.slimproto else None
+        media = slimclient.current_media if slimclient else None
+        if media and (source_id := media.metadata.get("source_id")):
+            queue = self.mass.player_queues.get(cast("str", source_id))
+            # the end of the previous track can still play while the queue is on the next one
+            if (
+                queue
+                and queue.current_item
+                and queue.current_item.queue_item_id == media.metadata.get("queue_item_id")
+            ):
+                return queue.corrected_elapsed_time
+        return None
 
     async def _validate_all_ports(
         self, control_port: int, telnet_port: int | None, json_port: int | None

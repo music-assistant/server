@@ -21,7 +21,8 @@ implements them on the provider's own client connections.
 ### How it works
 
 Every connected Sendspin client whose negotiated roles include the `source`
-family shows up as one AudioSource under Live Inputs. The source role only
+family shows up as one AudioSource under Live Inputs, unless the user disabled
+its player or switched its Sendspin output off. The source role only
 activates on paired connections, so an unpaired device never appears here.
 
 When a user plays a source, the provider sends the client a

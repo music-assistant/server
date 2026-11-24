@@ -615,6 +615,11 @@ class RaumfeldPlayer(PlayerProtocol):
             # Spotify Connect plays on the room's own renderer, outside any zone
             await self._external_command("Stop")
         elif (zone := self._active_zone()) is not None:
+            if self.raumfeld.zone_location(zone) is None:
+                # the rooms of the zone changed a moment ago (a group dissolved, say): the
+                # host publishes the zone's renderer again a few seconds after that
+                await self._wait_for_zone([self.room], addressable=True)
+                zone = self._active_zone() or zone
             if self._presented_external() is not None:
                 # MA may replay this source later (after an announcement, say), when the
                 # zone has something else loaded
@@ -927,12 +932,14 @@ class RaumfeldPlayer(PlayerProtocol):
                     # not one that is in standby
                     if self._attr_playback_state == PlaybackState.PLAYING:
                         await self._wake_rooms(add_rooms)
-                for pid in player_ids_to_remove or []:
-                    # only a room in this leader's zone is this leader's to take out
-                    if (room := self._protocol_id_to_room(pid)) is not None and room in (
-                        self._active_zone() or [self.room]
-                    ):
-                        await self.raumfeld.drop_room(room)
+                # only a room in this leader's zone is this leader's to take out
+                zone = self._active_zone() or [self.room]
+                if drop_rooms := [
+                    room
+                    for pid in player_ids_to_remove or []
+                    if (room := self._protocol_id_to_room(pid)) is not None and room in zone
+                ]:
+                    await self._drop_rooms_from_zone(drop_rooms)
             except HOST_ERRORS as err:
                 raise PlayerCommandFailed(
                     f"Failed to change Raumfeld group for {self.room}: {err!r}"
@@ -2593,6 +2600,23 @@ class RaumfeldPlayer(PlayerProtocol):
             raise PlayerCommandFailed(
                 f"The Raumfeld host did not add {', '.join(missing)} to the zone of {self.room}"
             )
+
+    async def _drop_rooms_from_zone(self, rooms: list[str]) -> None:
+        """Take the given rooms out of this leader's zone, waiting until the host lists them out."""
+        for room in rooms:
+            await self.raumfeld.drop_room(room)
+        # the host's drop call does not wait either: a command right after it (the queue handed
+        # to a room just taken out, say) would still find the old zone, and fail on it
+        started = time.time()
+        while (zone := self._active_zone()) is not None and (
+            remaining := [room for room in rooms if room in zone]
+        ):
+            if time.time() - started >= ZONE_WAIT_TIMEOUT:
+                raise PlayerCommandFailed(
+                    f"The Raumfeld host did not take {', '.join(remaining)} out of the zone of "
+                    f"{self.room}"
+                )
+            await asyncio.sleep(ZONE_WAIT_INTERVAL)
 
     async def _create_zone(self, rooms: list[str]) -> None:
         """

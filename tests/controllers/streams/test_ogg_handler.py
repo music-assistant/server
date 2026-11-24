@@ -207,6 +207,25 @@ def test_ogg_metadata_handoff_requires_explicit_opt_in() -> None:
     assert legacy.stream_metadata.artist == "Some Artist"
 
 
+def test_ogg_metadata_decodes_html_entities() -> None:
+    """Entity-encoded Ogg fields reach the player metadata decoded."""
+    audio = StreamsAudio(MagicMock())
+    audio_mass = cast("Any", audio.mass)
+    audio_mass.metadata.normalize_radio_artist_name.side_effect = lambda artist: artist
+    audio_mass.metadata.get_radio_stream_station_image.return_value = None
+    details = _stream_details(opt_in=False)
+
+    audio._handle_inband_metadata(
+        details,
+        {"title": "I&apos;m Losing You", "artist": "John Lennon", "album": "Milk &amp; Honey"},
+    )
+
+    assert details.stream_title == "John Lennon - I'm Losing You"
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.title == "I'm Losing You"
+    assert details.stream_metadata.album == "Milk & Honey"
+
+
 async def test_vorbis_comment_page_emits_metadata() -> None:
     """Vorbis comment header pages should emit metadata."""
     # Setup

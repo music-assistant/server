@@ -939,7 +939,7 @@ class MusicQuizPlugin(PluginProvider):
         for source_uri in source_uris:
             try:
                 source_media_type, provider_instance, item_id = await parse_uri(source_uri)
-            except Exception as err:
+            except InvalidProviderURI as err:
                 self.logger.warning("Ignoring invalid Music Quiz source %s: %s", source_uri, err)
                 continue
             if not is_supported_source(source_media_type, provider_instance):
@@ -956,7 +956,7 @@ class MusicQuizPlugin(PluginProvider):
                     provider_instance_id_or_domain=provider_instance,
                     allow_update_metadata=False,
                 )
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # the real failure otherwise only surfaces at round start,
                 # minutes later and far from the cause
                 self.logger.warning("Could not resolve Music Quiz source %s: %s", source_uri, err)
@@ -1431,7 +1431,7 @@ class MusicQuizPlugin(PluginProvider):
                 current_task = asyncio.current_task()
                 if current_task is None or current_task.cancelling():
                     raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any failed prefetch gets a fresh round
                 self.logger.warning(
                     "Prefetched Music Quiz round failed, preparing a fresh one: %s", err
                 )
@@ -1478,7 +1478,7 @@ class MusicQuizPlugin(PluginProvider):
                     playback,
                     eager_start=False,
                 )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - reveal playback is optional
             playback.close()
             self.logger.warning(
                 "Could not start Music Quiz reveal playback for %s: %s",
@@ -1508,7 +1508,7 @@ class MusicQuizPlugin(PluginProvider):
                 await self._play_track(track_uri)
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - player code, reveal playback is optional
                 self.logger.warning(
                     "Could not play Music Quiz reveal track %s: %s",
                     track_uri,
@@ -1554,7 +1554,7 @@ class MusicQuizPlugin(PluginProvider):
             track = await self.mass.music.get_item_by_uri(track_uri)
             if isinstance(track, Track):
                 await self.mass.metadata.get_track_lyrics(track)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - lyrics prefetch is best effort
             self.logger.debug("Lyrics prefetch failed for %s: %s", track_uri, err)
 
     # ---------- playback ----------
@@ -1665,7 +1665,7 @@ class MusicQuizPlugin(PluginProvider):
             game_round = await track_known
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - see the comment below
             # a failed prefetch is reported when the round is actually requested
             return
         if game_round.track_uri is None:
@@ -1781,7 +1781,7 @@ class MusicQuizPlugin(PluginProvider):
                 return
             try:
                 await self.mass.player_queues.stop(self._playback_session.queue_id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - player code, cleanup must carry on
                 self.logger.warning("Could not stop Music Quiz playback: %s", err)
 
     def _snapshot_venue_queue(self, session: SharedPlaybackSession) -> None:
@@ -1800,7 +1800,7 @@ class MusicQuizPlugin(PluginProvider):
             return
         try:
             await self.mass.player_queues.restore(snapshot.queue_id, snapshot)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - player code, cleanup must carry on
             self.logger.warning("Could not restore the queue of the Music Quiz venue: %s", err)
 
     def _venue_played_on(self, queue_id: str) -> bool:
@@ -2159,7 +2159,7 @@ class MusicQuizPlugin(PluginProvider):
             )
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - saving the preference is best effort
             self.logger.warning("Could not persist Music Quiz playback preference: %s", err)
 
     async def _migrate_legacy_playback_preference(self) -> None:

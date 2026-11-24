@@ -1978,7 +1978,7 @@ class _EngineRun:
                     await sink.resume()
                 else:
                     await sink.suspend()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # fail closed: a sink with unknown suspend state would leak stall
                 # silence into (or withhold audio from) the delivered PCM
                 self._fail(f"Spotify playback could not be controlled: {err}")
@@ -2002,7 +2002,7 @@ class _EngineRun:
                 await client.listen_events(self._handle_event)
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any connection loss is retried
                 if self._engine_exited or proc.returncode is not None:
                     # the daemon exited; the socket dying with it is not an error
                     return
