@@ -4125,6 +4125,12 @@ class StreamsAudio:
         # may not use at all are dropped
         allowed, preferred_providers = await playback_sources(mass, queue_item.queue_id)
 
+        # reuse if the buffer can serve this seek position (fast seek path)
+        buffered = bool(
+            queue_item.streamdetails
+            and queue_item.streamdetails.buffer
+            and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
+        )
         if (
             queue_item.streamdetails
             # cached details of an excluded instance are exactly what we select away from
@@ -4132,17 +4138,17 @@ class StreamsAudio:
             # nor of a source that is no longer one of the playback user's
             and self._may_serve_playback(queue_item.streamdetails.provider, allowed)
             and (
-                # reuse if the buffer can serve this seek position (fast seek path)
-                (
-                    queue_item.streamdetails.buffer
-                    and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
-                )
+                buffered
                 # or reuse if streamdetails hasn't expired yet (new buffer will be created)
                 or (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
                 > time.time()
             )
         ):
             streamdetails = queue_item.streamdetails
+            if not buffered:
+                # a radio station whose check failed earlier is checked again for the new
+                # buffer; a station checked fine answers from the cache
+                await self._resolve_radio_stream_details(streamdetails)
         else:
             # need to (re)create streamdetails
             # retrieve streamdetails from provider

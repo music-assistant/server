@@ -8,10 +8,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import StreamType
+from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import AudioFormat, ProviderMapping, Radio
+from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
+from tests.common import set_music_source_access
 
 PLS_BODY = b"[playlist]\nNumberOfEntries=1\nFile1=http://radio.example.com/stream\n"
 HLS_BODY = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:10,\nsegment0.aac\n"
@@ -235,3 +239,56 @@ async def test_failed_connection_streams_directly_without_caching(
 
     assert result == ("http://radio.example.com/stream", StreamType.HTTP)
     assert cast("MagicMock", audio.mass).cache.set.called is cached
+
+
+@pytest.mark.asyncio
+async def test_resumed_station_is_checked_again_after_a_failed_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Stopping and starting the same radio item checks the station again.
+
+    Its stream details are reused for a while, so a check that failed on a connection error
+    would otherwise keep the station playing without track information until they expire.
+    """
+    audio = _streams_audio()
+    mass = cast("MagicMock", audio.mass)
+    mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=None)
+    mass.webserver.auth.get_user = AsyncMock(return_value=None)
+    set_music_source_access(mass, {"radiobrowser": None})
+    url = "http://radio.example.com/stream"
+    station = Radio(
+        item_id="station",
+        provider="radiobrowser",
+        name="Station",
+        provider_mappings={
+            ProviderMapping(
+                item_id="station", provider_domain="radiobrowser", provider_instance="radiobrowser"
+            )
+        },
+    )
+    queue_item = QueueItem(
+        queue_id="q1", queue_item_id="qi1", name="Station", duration=0, media_item=station
+    )
+    queue_item.streamdetails = StreamDetails(
+        provider="radiobrowser",
+        item_id="station",
+        audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+        media_type=MediaType.RADIO,
+        stream_type=StreamType.HTTP,
+        path=url,
+    )
+    responses: list[Any] = [
+        _FailingConnCtx(aiohttp.ClientConnectorDNSError(MagicMock(), OSError("DNS timeout"))),
+        _FakeConnCtx({"icy-metaint": "16000"}),
+    ]
+    monkeypatch.setattr(audio, "_connect_radio_stream", lambda *_args, **_kwargs: responses.pop(0))
+    monkeypatch.setattr(audio, "_validate_shoutcast_stream", AsyncMock(return_value=False))
+
+    # the first start falls back to the plain stream, the start after DNS is back finds ICY
+    first = await audio.get_stream_details(queue_item=queue_item)
+    assert first.stream_type == StreamType.HTTP
+    second = await audio.get_stream_details(queue_item=queue_item)
+
+    assert second is first
+    assert second.stream_type == StreamType.ICY
