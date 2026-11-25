@@ -97,8 +97,8 @@ stored record or when a device is new. It holds:
 - the ids of all protocols that belong to it, also those that are away;
 - its own config (name, controls, volume limits, announcements, icon, ...);
 - what it keeps for itself while it lives: the active output, the active MA source and when an
-  idle player forgets it, the sleep timer, the stop flag, the external-pause bookkeeping, a power
-  on or power off under way, the palette, `extra_data`;
+  idle player forgets it, the sleep timer, the stop flag, the fake pause, the external-pause
+  bookkeeping, a power on or power off under way, the palette, `extra_data`;
 - the resolution of its power, volume and mute control and of the output that renders.
 
 A player gives the final value of every field of its state under the name of that field:
@@ -723,7 +723,11 @@ and still waits for another one, holds that off.
   provider type can deliver them by mixing in `AudioSourceMixin`
   (`music_assistant/models/media_capabilities.py`). The controller keeps the session per player
   and passes the transport commands for it to the provider that owns it; the queue keeps its
-  items and goes inactive meanwhile. A source carries its own name and the player it belongs to;
+  items and goes inactive meanwhile. A source that pauses upstream ends its stream: its provider
+  has the player silenced (`PlayerProtocol.hold`) and shown as paused with `pause_audio_source`,
+  and plays on by selecting the source again. This fake pause (`Player.fake_paused`) is the
+  player's: it shows over an idle output and ends when the player plays again, is stopped, loses
+  the source, or after the pause timeout of the queues. The session outlives it. A source carries its own name and the player it belongs to;
   `get_audio_source_name` composes the name for where it is shown: the name alone on that player,
   with the player's name after it elsewhere. An input a speaker offers from another speaker of its
   system, such as the line-in of another Sonos speaker, names that player in `owner_player_id` of

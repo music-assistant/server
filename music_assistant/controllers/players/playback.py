@@ -29,6 +29,7 @@ from music_assistant_models.errors import (
     InvalidCommand,
     MusicAssistantError,
     PlayerCommandFailed,
+    PlayerUnavailableError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import Track
@@ -84,8 +85,13 @@ class PlaybackMixin(_PlayerControllerBase):
             if active_queue := self.get_active_queue(player):
                 await self.mass.player_queues.stop(active_queue.queue_id)
                 return
+            session = self._source_sessions.get(player.player_id)
             # Delegate to internal handler for actual implementation
             await self._handle_cmd_stop(player.player_id)
+            if session is not None and session.paused:
+                # the stream of a paused source ended already, so no end of it tells its
+                # provider that the player is done with it
+                await self._release_audio_source(player.player_id)
 
     @api_command("players/cmd/play", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(
@@ -752,6 +758,9 @@ class PlaybackMixin(_PlayerControllerBase):
         # resume — and one that cannot be re-selected once its plugin has let go.
         if media.media_type not in (MediaType.AUDIO_SOURCE, MediaType.ANNOUNCEMENT):
             await self._release_audio_source(player_id)
+        if player.playback_state == PlaybackState.PLAYING:
+            # its output did not stop for the pause yet, so it can not show that it plays on
+            player.set_fake_paused(False)
         # set active source if media has a source_id (e.g. plugin source or mass queue source)
         if media.source_id:
             player.set_active_mass_source(media.source_id)
@@ -869,6 +878,7 @@ class PlaybackMixin(_PlayerControllerBase):
         :param player_id: player_id of the player to handle the command.
         """
         player = self._get_reachable_player(player_id)
+        player.set_fake_paused(False)
         protocol_player = player.foreign_protocol
         if player.active_output_protocol and player.active_output_protocol != "native":
             protocol_player = player.attached_protocols.get(player.active_output_protocol)
@@ -1038,6 +1048,48 @@ class PlaybackMixin(_PlayerControllerBase):
             player.name,
         )
         await self._stop_player_or_its_queue(player, keep_sleep_timer=True)
+
+    async def _handle_fake_pause(self, player_id: str) -> None:
+        """
+        Silence a player without pausing its stream, and show it as paused.
+
+        It shows as paused until it plays again, is stopped or the pause timeout passes.
+        Skips permission checks and locking (internal use only).
+
+        :param player_id: player_id of the player to silence.
+        """
+        player = self._get_reachable_player(player_id)
+        # set before the output is silent, so the player never shows as idle in between
+        player.set_fake_paused(True)
+        player.mark_stop_called()
+        self.mass.call_later(
+            self.mass.player_queues._get_pause_timeout(),
+            self._end_fake_pause,
+            player_id,
+            task_id=f"fake_pause_{player_id}",
+        )
+        try:
+            if (output := player.resolve_output_protocol()) is not None:
+                await output.hold()
+        except Exception:
+            # the output plays on
+            player.set_fake_paused(False)
+            raise
+
+    async def _end_fake_pause(self, player_id: str) -> None:
+        """
+        Stop a player that is still shown as paused once the pause timeout passed.
+
+        :param player_id: player_id of the player.
+        """
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            if (player := self.get_player(player_id)) is None or not player.fake_paused:
+                return
+            player.set_fake_paused(False)
+            # a player that joined a group since plays what that plays
+            if self._resolve_playback_owner(player) is player:
+                with suppress(PlayerUnavailableError):
+                    await self._handle_cmd_stop(player_id)
 
     async def _resolve_currently_playing(
         self, player: Player, mass_queue: PlayerQueue | None, library_only: bool = False

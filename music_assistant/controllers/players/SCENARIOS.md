@@ -47,6 +47,7 @@ once and that every test it names exists.
 - [Where playback goes](#where-playback-goes) (OUTPUT)
 - [Volume](#volume) (VOLUME)
 - [A pause, a stop and the end of a queue](#a-pause-a-stop-and-the-end-of-a-queue) (PAUSE)
+- [A live source that pauses](#a-live-source-that-pauses) (SOURCE)
 
 ## A device appears
 
@@ -2637,3 +2638,73 @@ such as Spotify, that took the speaker over, before or during the pause, and is 
   - `test_paused_queue.py::test_a_queue_played_on_at_the_speaker_within_the_pause_timeout_is_not_stopped`
   - `test_paused_queue.py::test_another_source_paused_at_the_speaker_is_not_stopped`
   - `test_paused_queue.py::test_a_source_that_takes_over_a_paused_speaker_is_not_stopped`
+
+## A live source that pauses
+
+A live source of a plugin, such as Spotify Connect, has no audio while it is paused, so its stream
+ends and the speaker is stopped. The player stays paused for a client, as with a queue. In the
+examples a Spotify Connect session plays on the Kitchen speaker, which has no pause of its own.
+
+### SOURCE-1 · A live source that pauses leaves its player paused
+
+Spotify is paused, in its app or on the Kitchen player. The speaker is silent at once, and clients
+see the player go from playing to paused, never idle in between, with the song and the source it
+had. A speaker that can stay connected while it waits is held instead of stopped.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
+- Proven by:
+  - `test_paused_live_source.py::test_a_paused_live_source_leaves_its_player_paused`
+  - `test_paused_live_source.py::test_a_speaker_that_can_be_held_keeps_its_connection`
+
+### SOURCE-2 · Play on a player with a paused live source resumes the source
+
+Spotify is paused on the Kitchen player and the user presses play there. The command goes to
+Spotify, which plays on: clients see the player go from paused to playing, never idle in between.
+Playback goes on past the pause timeout of that pause.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
+- Proven by:
+  `test_paused_live_source.py::test_play_on_a_paused_live_source_goes_to_the_source`
+
+### SOURCE-3 · A paused live source goes idle at the pause timeout and can still be resumed
+
+Spotify stays paused on the Kitchen player. After the pause timeout of 30 s the player is idle, as
+after the pause of a queue. It keeps the source and the song, and play still resumes Spotify.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
+- Proven by:
+  `test_paused_live_source.py::test_a_paused_live_source_goes_idle_at_the_pause_timeout`
+
+### SOURCE-4 · A paused live source that ends or is stopped leaves its player idle
+
+Spotify is paused on the Kitchen player. The user stops the player, within the pause timeout or
+after it, or Spotify itself ends the session: the player is idle and back on its own queue, and
+Spotify lets go of it.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
+- Proven by:
+  - `test_paused_live_source.py::test_a_stop_of_a_paused_live_source_lets_it_go`
+  - `test_paused_live_source.py::test_a_source_that_ends_while_paused_leaves_its_player_idle`
+
+### SOURCE-5 · Other audio on a player with a paused live source plays at once
+
+Spotify is paused on the Kitchen player. Music played on its queue starts at once and takes the
+place of Spotify. An announcement plays without waiting for the player to go idle and leaves
+Spotify on it: the player is idle after the clip, and play resumes Spotify.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
+- Proven by:
+  - `test_paused_live_source.py::test_other_media_takes_the_place_of_a_paused_live_source`
+  - `test_paused_live_source.py::test_an_announcement_on_a_paused_live_source_leaves_the_source`
+
+### SOURCE-6 · A pause that did not reach the speaker is not shown
+
+Spotify is paused and plays on before the Kitchen speaker has stopped, or the speaker refuses to
+stop: the player shows as playing, and as idle once the speaker stops later. A pause of a source
+that does not play on the Kitchen player does nothing there.
+
+- End-to-end: **no**: it needs a speaker that refuses a stop or reports it late.
+- Proven by:
+  - `test_paused_live_source.py::test_a_source_that_plays_on_before_the_speaker_stopped_is_not_paused`
+  - `test_paused_live_source.py::test_a_speaker_that_refuses_the_pause_is_not_paused`
+  - `test_paused_live_source.py::test_a_pause_of_another_source_leaves_the_player_alone`

@@ -706,6 +706,16 @@ class PlayerProtocol(ABC):
         """
         raise NotImplementedError("pause needs to be implemented when PlayerFeature.PAUSE is set")
 
+    async def hold(self) -> None:
+        """
+        Silence the player while what it plays is paused, ready for a play_media to play on.
+
+        Called instead of pause for a stream that ends with the pause, so the player does not
+        have to support pausing. A player that can stay connected meanwhile keeps its connection;
+        by default it is stopped.
+        """
+        await self.stop()
+
     async def next_track(self) -> None:
         """
         Handle NEXT_TRACK command on the player.

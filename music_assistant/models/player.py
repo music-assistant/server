@@ -600,6 +600,7 @@ class Player:
         # when (monotonic) Music Assistant issued a power off the player has not reported yet
         self._power_off_issued_at: float | None = None
         self._stop_called: bool = False
+        self._fake_paused: bool = False
         self._external_pause_since: float | None = None
         self._ended_external_source: str | None = None
         self._foreign_protocol_id: str | None = None
@@ -1416,6 +1417,9 @@ class Player:
             self.logger.info("Clearing active output protocol on %s", self.name)
             self._active_output_protocol = None
         # track stop called state
+        if effects.fake_pause_ended:
+            self._fake_paused = False
+            self._stop_called = False
         if effects.left_idle:
             self._stop_called = False
             self._active_mass_source_expires_at = None
@@ -1677,6 +1681,23 @@ class Player:
         self._active_mass_source_expires_at = None
         self._active_mass_source = value
         self.update_state()
+
+    @property
+    def fake_paused(self) -> bool:
+        """Return whether the player shows as paused while its output is idle."""
+        return self._fake_paused
+
+    def set_fake_paused(self, value: bool) -> None:
+        """
+        Set whether the player shows as paused while its output is idle.
+
+        May only be called by the PlayerController. It ends by itself once the player plays.
+
+        :param value: Whether to show the idle player as paused.
+        """
+        if self._fake_paused != value:
+            self._fake_paused = value
+            self.update_state()
 
     def set_sleep_timer(self, mode: SleepTimerMode | None, expires_at: float | None) -> None:
         """
@@ -2365,6 +2386,7 @@ class Player:
             extra_data.get(ATTR_FAKE_MUTE),
             self._active_output_protocol,
             self._active_mass_source,
+            self._fake_paused,
             self._sleep_timer_expires_at,
             self._sleep_timer_mode,
         )
@@ -2514,6 +2536,7 @@ class Player:
             protocols=self._protocol_infos(),
             active_output_protocol=self._active_output_protocol,
             active_mass_source=self._active_mass_source,
+            fake_paused=self._fake_paused,
             sleep_timer_expires_at=self._sleep_timer_expires_at,
             sleep_timer_mode=self._sleep_timer_mode,
             extra_attributes=self._extra_attributes,
