@@ -194,12 +194,12 @@ def test_playback_state_churn_does_not_force_control_reconnect() -> None:
     """A receiver toggling volatile TXT state must not change the reconnect signature."""
     idle = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
-        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x4"},
+        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x4", "pgid": "idle"},
     )
-    # Same device while receiving a stream: only the session `flags` bit differs.
+    # Same device while receiving a stream: only the session `flags` bit and the group differ.
     streaming = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
-        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x404"},
+        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x404", "pgid": "session"},
     )
     assert AirPlayControlPlayer._service_signature(idle) == AirPlayControlPlayer._service_signature(
         streaming

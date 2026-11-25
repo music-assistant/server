@@ -103,6 +103,7 @@ _VOLATILE_DISCOVERY_KEYS: Final = frozenset(
         "gpn",
         "igl",
         "pgcgl",
+        "pgid",
         "rpad",
         "rpba",
         "rpha",
