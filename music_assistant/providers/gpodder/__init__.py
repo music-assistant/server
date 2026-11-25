@@ -45,6 +45,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
+from music_assistant.controllers.cache import forget_cached, use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
@@ -100,6 +101,8 @@ CACHE_CATEGORY_OTHER = 1
 CACHE_KEY_TIMESTAMP = "sync_timestamps"
 CACHE_KEY_FEEDS = "feeds"  # list[str] : rss feed urls of the last completed sync
 
+# lets one pass over the library share the account's episode actions; cleared on every save
+ACTIONS_CACHE_SECONDS = 60
 # feeds refreshed at the same time during a library sync
 FEED_REFRESH_CONCURRENCY = 5
 
@@ -346,7 +349,7 @@ class GPodder(MusicProvider):
         podcast_id, guid_or_stream_url = item_id.split(" ", 1)
         try:
             # only the library sync moves this timestamp, as it writes the actions to the playlog
-            progresses, _ = await self._client.get_episode_actions(since=self.timestamp_actions)
+            progresses = await self._episode_actions(self.timestamp_actions)
         except RuntimeError:
             self.logger.warning("Was unable to obtain progresses.")
             raise NotImplementedError  # fallback to internal position.
@@ -406,6 +409,7 @@ class GPodder(MusicProvider):
                 duration_s=duration,
             )
             self.logger.debug("Updated progress to %s of %s s", position, duration)
+            await forget_cached(self._episode_actions)
         except RuntimeError as exc:
             self.logger.debug(exc)
             self.logger.debug("Failed to update progress.")
@@ -485,10 +489,15 @@ class GPodder(MusicProvider):
         """Return the podcast's actions the playlog lacks."""
         # only the sync writes them to the playlog, a listing would credit plays again on each open
         synced = bool(self.timestamp_actions) and podcast_id in self.feeds
-        episode_actions, _ = await self._client.get_episode_actions(
-            since=self.timestamp_actions if synced else 0
-        )
+        episode_actions = await self._episode_actions(self.timestamp_actions if synced else 0)
         return index_actions(episode_actions).get(podcast_id, {})
+
+    @use_cache(ACTIONS_CACHE_SECONDS, category=CACHE_CATEGORY_OTHER)
+    async def _episode_actions(self, since: int) -> list[EpisodeAction]:
+        """Return the account's episode actions since the given time, 0 for all of them."""
+        # typed as the base class, which restores each action as its own subclass from the cache
+        episode_actions, _ = await self._client.get_episode_actions(since=since)
+        return list(episode_actions)
 
     async def _write_playlog(self, mass_episode: PodcastEpisode, action: EpisodeAction) -> None:
         # the playlog writes must not be reported back to gPodder
