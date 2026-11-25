@@ -293,7 +293,9 @@ class SonosPlayer(PlayerProtocol):
             # Sonos really does not like FLAC streams without duration
             stream_url = stream_url.replace(".flac", ".mp3")
 
-        didl_metadata = create_didl_metadata(media, stream_url)
+        didl_metadata = create_didl_metadata(
+            media, stream_url, self.mass.streams.stream_url_serves_as_file(stream_url)
+        )
         is_announcement = media.media_type == MediaType.ANNOUNCEMENT
         force_radio = False if is_announcement else not media.duration
 
@@ -318,7 +320,9 @@ class SonosPlayer(PlayerProtocol):
             )
 
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
-        didl_metadata = create_didl_metadata(media, stream_url)
+        didl_metadata = create_didl_metadata(
+            media, stream_url, self.mass.streams.stream_url_serves_as_file(stream_url)
+        )
 
         def add_to_queue() -> None:
             self.soco.avTransport.SetNextAVTransportURI(

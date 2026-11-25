@@ -40,6 +40,16 @@ def test_the_gapless_burst_covers_a_gapless_players_opening_chunk() -> None:
     assert _value(output_pacing_args(PacingProfile.GAPLESS_BURST), "-readrate_initial_burst") >= 60
 
 
+def test_a_stream_with_a_burst_of_its_own_keeps_the_pace_of_its_profile() -> None:
+    """Only the burst is replaced: the pace and the catch-up stay those of every stream."""
+    args = output_pacing_args(burst=11.5)
+
+    assert _value(args, "-readrate_initial_burst") == 11.5
+    assert _value(args, "-readrate") == _value(output_pacing_args(), "-readrate")
+    assert _value(args, "-readrate_catchup") == _value(output_pacing_args(), "-readrate_catchup")
+    assert _value(output_pacing_args(burst=0), "-readrate_initial_burst") == 0
+
+
 def test_the_realtime_profile_leaves_room_for_a_source_to_bank_ahead() -> None:
     """
     A just-in-time source delivers ~1.1x at best, and its bank is what a crossfade mixes.
