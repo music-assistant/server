@@ -151,3 +151,79 @@ async def test_announcement_skips_restore_without_target_stream() -> None:
     await player.play_announcement(PlayerMedia(uri="announce.mp3"))
 
     assert group.set_stream.await_args_list[-1].args == ("announcement",)
+
+
+def _make_leader() -> tuple[SnapCastPlayer, MagicMock, list[tuple[object, ...]]]:
+    """
+    Return a player that leads a group with a member, and the log of what changes the group.
+
+    Each entry of the log records the clients and the stream of the group at that moment.
+    """
+    player, group = _make_player(_queue())
+    group.name = "ma_kitchen"
+    group.clients = ["kitchen-client", "living-client"]
+    events: list[tuple[object, ...]] = []
+
+    async def set_stream(stream_id: str) -> None:
+        group.stream = stream_id
+        events.append(("set_stream", stream_id, list(group.clients)))
+
+    async def add_client(client_id: str) -> None:
+        group.clients.append(client_id)
+        events.append(("add_client", client_id, group.stream))
+
+    async def isolate(player_id: str, **kwargs: object) -> None:
+        group.clients.remove("living-client")
+        events.append(("isolate", player_id, kwargs))
+
+    group.set_stream = AsyncMock(side_effect=set_stream)
+    group.add_client = AsyncMock(side_effect=add_client)
+    cast("MagicMock", player.snap_provider).isolate_player_to_dedicated_group = AsyncMock(
+        side_effect=isolate
+    )
+    return player, group, events
+
+
+@pytest.mark.asyncio
+async def test_leader_plays_the_announcement_alone() -> None:
+    """
+    A leader plays the clip alone; its (muted) member plays on and joins it again afterwards.
+
+    The member leaves the group before the clip is set on it, so it never gets the clip and
+    its mute is left alone. Its music is heard meanwhile, so the leader rejoins it on the live
+    stream instead of restarting the music where the clip began.
+    """
+    player, _group, events = _make_leader()
+    provider = cast("MagicMock", player.snap_provider)
+
+    await player.play_announcement(PlayerMedia(uri="announce.mp3"))
+
+    assert events == [
+        ("isolate", "ma_kitchen", {"others_stream_id": "music"}),
+        ("set_stream", "announcement", ["kitchen-client"]),
+        ("set_stream", "music", ["kitchen-client"]),
+        ("add_client", "living-client", "music"),
+    ]
+    player.mass.player_queues.play_index.assert_not_awaited()  # type: ignore[attr-defined]
+    provider._snapserver.client_volume.assert_not_called()
+    provider._update_group_callbacks.assert_called_once_with(poke=True)
+
+
+@pytest.mark.asyncio
+async def test_leader_gets_its_members_back_when_the_announcement_fails() -> None:
+    """A clip that fails still puts the leader back on the music and lets its member rejoin."""
+    player, _group, events = _make_leader()
+    provider = cast("MagicMock", player.snap_provider)
+    clip = provider.get_snapcast_media_stream.side_effect(PlayerMedia(uri="announce.mp3"))
+    clip.wait_for_stopped.side_effect = RuntimeError("clip stream died")
+
+    with pytest.raises(RuntimeError, match="clip stream died"):
+        await player.play_announcement(PlayerMedia(uri="announce.mp3"))
+
+    assert events == [
+        ("isolate", "ma_kitchen", {"others_stream_id": "music"}),
+        ("set_stream", "announcement", ["kitchen-client"]),
+        ("set_stream", "music", ["kitchen-client"]),
+        ("add_client", "living-client", "music"),
+    ]
+    provider._update_group_callbacks.assert_called_once_with(poke=True)
