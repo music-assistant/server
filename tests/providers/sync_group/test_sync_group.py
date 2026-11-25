@@ -4756,6 +4756,18 @@ class TestStaticMemberRejoin:
 
         mass.call_later.assert_not_called()
 
+    def test_a_member_that_comes_back_by_itself_is_not_rejoined(self) -> None:
+        """A member whose own protocol brings it back is left to that protocol."""
+        mass = _make_mock_mass()
+        sgp, leader, display = _static_group_with_a_member_away(mass)
+        protocol = next(iter(display.attached_protocols.values()))
+
+        with patch.object(protocol, "rejoins_group", MagicMock(return_value=True)) as rejoins:
+            sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+
+        mass.call_later.assert_not_called()
+        rejoins.assert_called_with(_group_id(sgp))
+
     def test_a_member_this_group_holds_is_rejoined(self) -> None:
         """A member that names this group as its active group is still recovered."""
         mass = _make_mock_mass()

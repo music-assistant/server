@@ -2009,6 +2009,27 @@ async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
     leader.set_members.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_rejoins_the_group_it_fell_out_of_until_it_is_done() -> None:
+    """A player brings itself back to the group player it fell out of, and to no other one."""
+    player = _make_idle_player()
+    _players_mock(player).get_player.return_value = None
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+    assert not player.rejoins_group("group")
+
+    with patch(_NO_DELAYS, (0,)):
+        player.schedule_group_rejoin(["leader"], "group")
+        assert player.rejoins_group("group")
+        assert not player.rejoins_group("other_group")
+        # the group is gone
+        assert player._rejoin_task is not None
+        await player._rejoin_task
+
+    assert not player.rejoins_group("group")
+
+
 def test_resolve_rejoin_target_finds_promoted_sibling() -> None:
     """When the old leader is gone, a promoted (now leading) sibling is the target."""
     player = _make_idle_player()

@@ -284,7 +284,9 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # recovering from a network dropout typically needs tens of seconds to come
 # back, so the ladder stretches to a few minutes; every attempt re-validates
 # that the group still plays and the player was not repurposed meanwhile, and
-# the whole schedule is abandoned as soon as either no longer holds.
+# the whole schedule is abandoned as soon as either no longer holds. A device that
+# is away for longer announces itself on the network once it is back, which is what
+# a member of a group player waits for after the last delay.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
 # Seconds before the one re-add of the Apple TV of a set that left the session of its
 # speakers: a session opened 5 s after the Apple TV reset one stayed up (measured).

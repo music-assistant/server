@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from typing import NamedTuple, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -621,6 +622,20 @@ async def test_a_set_heals_the_group_session_it_fell_out_of_with_its_speakers() 
         await apple_tv._group_rejoin_attempts([leader.protocol_id])
 
     session.add_client.assert_awaited_once_with(speaker)
+
+
+async def test_a_set_that_waits_for_its_speaker_tries_once_that_announces_itself() -> None:
+    """A set tries to join its group again when one of its speakers shows up on the network."""
+    apple_tv, speaker, _provider = _home_theater()
+
+    with patch("music_assistant.providers.airplay.player.AIRPLAY_REJOIN_ATTEMPT_DELAYS", (0,)):
+        attempt = asyncio.create_task(apple_tv._wait_rejoin_attempt(1, "group"))
+        await asyncio.sleep(0.01)
+        assert not attempt.done()
+        assert speaker.airplay_discovery_info is not None
+        speaker.set_discovery_info(speaker.airplay_discovery_info, "HomePod Study")
+
+        assert await asyncio.wait_for(attempt, 1)
 
 
 async def test_a_stereo_pair_plays_on_both_of_its_speakers() -> None:
