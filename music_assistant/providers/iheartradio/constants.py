@@ -166,6 +166,8 @@ CACHE_TTL_CATALOG: Final[int] = 3600 * 24 * 7
 CACHE_TTL_PODCAST: Final[int] = 3600 * 24
 CACHE_TTL_EPISODES: Final[int] = 3600
 CACHE_TTL_SEARCH: Final[int] = 3600
+# Bridges the resume lookup and the episode lookup of one playback; cleared on every save.
+PROGRESS_CACHE_TTL: Final[int] = 30
 
 # -- Browse paths --
 

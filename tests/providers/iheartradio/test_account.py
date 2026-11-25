@@ -569,3 +569,17 @@ async def test_on_played_saves_no_episode_progress_without_an_account(
     """A guest session has nowhere to save the progress of an episode."""
     await provider.on_played(MediaType.PODCAST_EPISODE, EPISODE_ITEM_ID, False, 300, Mock())
     assert api.requests == []
+
+
+async def test_progress_is_reused_until_it_is_saved(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """Back to back lookups share one progress request, and saving progress asks again."""
+    _sign_in(provider)
+    api.responses[EPISODE_METADATA_PATH] = {"progress": []}
+    await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+    await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+    assert [path for path, _ in api.calls] == [EPISODE_METADATA_PATH]
+    await provider.on_played(MediaType.PODCAST_EPISODE, EPISODE_ITEM_ID, False, 0, Mock())
+    await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+    assert [path for path, _ in api.calls] == [EPISODE_METADATA_PATH] * 2

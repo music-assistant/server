@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -21,6 +22,7 @@ from .constants import (
     DEFAULT_COUNTRY,
     PATH_PODCAST_EPISODE_METADATA,
     PATH_PODCAST_EPISODE_PROGRESS,
+    PROGRESS_CACHE_TTL,
 )
 from .library import IHeartRadioLibraryManager
 from .parsers import (
@@ -78,6 +80,8 @@ class IHeartRadioProvider(MusicProvider):
     library_manager: IHeartRadioLibraryManager
     stations: IHeartRadioStationManager
     streaming_manager: IHeartRadioStreamingManager
+    # podcast id -> (monotonic fetch time, progress per episode id)
+    _progress_cache: dict[str, tuple[float, dict[str, tuple[bool, int]]]]
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -108,6 +112,7 @@ class IHeartRadioProvider(MusicProvider):
         self.stations = IHeartRadioStationManager(self)
         self.streaming_manager = IHeartRadioStreamingManager(self)
         self.auth = IHeartRadioAuthManager(self)
+        self._progress_cache = {}
         await self.auth.login()
 
     async def get_library_radios(self) -> AsyncGenerator[Radio]:
@@ -436,11 +441,17 @@ class IHeartRadioProvider(MusicProvider):
             PATH_PODCAST_EPISODE_PROGRESS.format(podcast_id=podcast_id, episode_id=episode_id),
             json={"secondsPlayed": position, "completed": completed},
         )
+        self._progress_cache.pop(podcast_id, None)
 
     async def _episode_progress(self, podcast_id: str) -> dict[str, tuple[bool, int]] | None:
         """Return the account's progress per episode id as (finished, position in ms)."""
         if not self._signed_in:
             return None
+        # playing an episode looks up its resume point and its details right after each other,
+        # the short cache saves the second, identical request
+        cached = self._progress_cache.get(podcast_id)
+        if cached and time.monotonic() - cached[0] < PROGRESS_CACHE_TTL:
+            return cached[1]
         try:
             # one request holds the progress of every episode of the podcast
             payload = await self.api.get_json(
@@ -459,6 +470,7 @@ class IHeartRadioProvider(MusicProvider):
                 bool(entry.get("completed")),
                 int(position * 1000),
             )
+        self._progress_cache[podcast_id] = (time.monotonic(), progress)
         return progress
 
     async def _episode_position(self, podcast_id: str, episode_id: str) -> int:

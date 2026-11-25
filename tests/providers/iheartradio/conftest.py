@@ -164,6 +164,7 @@ def provider(api: FakeApi) -> IHeartRadioProvider:
     provider.streaming_manager = IHeartRadioStreamingManager(provider)
     provider.auth = IHeartRadioAuthManager(provider)
     provider.auth.session = IHeartRadioSession(PROFILE_ID, SESSION_ID, "")
+    provider._progress_cache = {}
     provider.api.request = api.request  # type: ignore[method-assign]
     provider.api.get_json = api.get_json  # type: ignore[method-assign]
     # treat every lookup as a cache miss so the tests see the real behaviour
