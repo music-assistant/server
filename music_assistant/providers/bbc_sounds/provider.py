@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import AsyncGenerator, Sequence
+from datetime import datetime as dt
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,7 @@ from auntie_sounds.content import MAX_PODCAST_EPISODES
 from auntie_sounds.models import (
     EpisodeTypes,
     Menu,
+    PlayableItem,
     RadioShow,
     ScheduleItem,
 )
@@ -380,6 +382,28 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         raise MediaNotFoundError(
             f"Programme {programme_id.pid} not found in the {episode_date} schedule"
         )
+
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, dt | None]:
+        """
+        If logged in, get the API's version of the episode's resume position.
+
+        :param item_id: The pid of the episode.
+        :param media_type: The media type of the item.
+        """
+        if not self.client.is_signed_in or LiveProgrammeId.parse(item_id):
+            raise NotImplementedError
+        try:
+            episode = await self.client.content.get_by_pid(item_id)
+        except exceptions.SoundsException as err:
+            self.logger.debug("No progress from BBC Sounds for %s: %s", item_id, err)
+            raise NotImplementedError from err
+        progress = episode.progress if isinstance(episode, PlayableItem) else None
+        if progress:
+            self.logger.debug("Got progress from BBC Sounds for %s: %s", item_id, progress)
+        # the API doesn't say when the progress was set, or that an episode was finished
+        return False, progress.value * 1000 if progress else 0, None
 
     async def _listen_from_start(
         self, uri: str, player_id: str | None

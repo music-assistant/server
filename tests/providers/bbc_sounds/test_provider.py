@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
+from auntie_sounds import exceptions
 from auntie_sounds.models import (
     Container,
     Duration,
@@ -14,6 +15,7 @@ from auntie_sounds.models import (
     Network,
     Playlist,
     Podcast,
+    Progress,
     RadioClip,
     RadioShow,
     Schedule,
@@ -232,6 +234,51 @@ class TestOnDemandEpisodes:
 
         with pytest.raises(Exception, match="Unexpected type Container for episode pid"):
             await provider.get_podcast_episode("pid")
+
+
+class TestResumePosition:
+    """Tests for reading the signed-in listener's progress through an episode."""
+
+    @pytest.mark.parametrize(
+        ("progress", "position_ms"),
+        [(Progress(label="11 mins left", value=1011), 1_011_000), (None, 0)],
+        ids=["part_played", "not_played"],
+    )
+    async def test_progress_is_returned_in_milliseconds(
+        self, provider: BBCSoundsProvider, progress: Progress | None, position_ms: int
+    ) -> None:
+        """Test the seconds played from the API are returned as a resume position."""
+        _mock(provider.client.content).get_by_pid.return_value = RadioClip(
+            id="vpid", pid="clip_pid", titles=Titles(), progress=progress
+        )
+
+        result = await provider.get_resume_position("clip_pid", MediaType.PODCAST_EPISODE)
+
+        assert result == (False, position_ms, None)
+
+    @pytest.mark.parametrize(
+        ("signed_in", "item_id", "lookup_error"),
+        [
+            (False, "clip_pid", None),
+            (True, LiveProgrammeId(RADIO_FOUR_SERVICE_ID, "m0031hzl", 0, 3600).item_id, None),
+            (True, "clip_pid", exceptions.NotFoundError("Not found")),
+        ],
+        ids=["signed_out", "live_programme", "not_found"],
+    )
+    async def test_unknown_progress_is_not_implemented(
+        self,
+        provider: BBCSoundsProvider,
+        monkeypatch: pytest.MonkeyPatch,
+        signed_in: bool,
+        item_id: str,
+        lookup_error: exceptions.SoundsException | None,
+    ) -> None:
+        """Test a position the API can't give raises NotImplementedError, so MA uses its own."""
+        monkeypatch.setattr(provider.client, "is_signed_in", signed_in)
+        _mock(provider.client.content).get_by_pid.side_effect = lookup_error
+
+        with pytest.raises(NotImplementedError):
+            await provider.get_resume_position(item_id, MediaType.PODCAST_EPISODE)
 
 
 class TestMenuActionsListenFromStart:
