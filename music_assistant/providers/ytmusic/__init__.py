@@ -7,6 +7,7 @@ import gettext
 import importlib
 import logging
 import secrets
+import sys
 import time
 from collections import Counter
 from collections.abc import AsyncGenerator, Iterable, Sequence
@@ -76,6 +77,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.helpers.playlists import validate_playlist_block_move
 from music_assistant.helpers.util import (
+    get_package_version,
     import_module_in_thread,
     infer_album_type,
     install_package,
@@ -168,7 +170,8 @@ YT_PERSONAL_PLAYLISTS = (
 )
 DYNAMIC_PLAYLIST_TRACK_LIMIT = 300
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
-PACKAGES_TO_INSTALL = ("yt-dlp[default]", "bgutil-ytdlp-pot-provider")
+YTDLP_PACKAGE = "yt-dlp[default]"
+PACKAGES_TO_INSTALL = ("bgutil-ytdlp-pot-provider",)
 DEFAULT_STREAM_URL_EXPIRATION = 3600  # 1 hour
 
 SUPPORTED_FEATURES = {
@@ -1775,6 +1778,13 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         # NOTE: Google breaks things quite often which requires us to update
         # some packages very frequently. Installing them dynamically prevents
         # us from having to update MA to ensure this provider works.
+        try:
+            await install_package(YTDLP_PACKAGE, upgrade=True)
+        except RuntimeError as err:
+            # e.g. PyPI unreachable, an already installed yt-dlp is still usable
+            if await get_package_version("yt-dlp") is None:
+                raise
+            self.logger.warning("Failed to upgrade yt-dlp, using the installed version: %s", err)
         for package_name in PACKAGES_TO_INSTALL:
             await install_package(package_name)
         # verify if the yt_dlp package is usable
@@ -1782,6 +1792,21 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")
+        await self._warn_if_ytdlp_outdated_in_process()
+
+    async def _warn_if_ytdlp_outdated_in_process(self) -> None:
+        """Warn when the yt_dlp loaded in this process is older than the installed package."""
+        loaded = sys.modules.get("yt_dlp.version")
+        installed = await get_package_version("yt-dlp")
+        if loaded is None or installed is None:
+            return
+        # yt_dlp reports zero padded dates (2026.06.09), package metadata doesn't (2026.6.9)
+        if _version_parts(loaded.__version__) != _version_parts(installed):
+            self.logger.warning(
+                "yt-dlp was updated from %s to %s, restart the server to use the new version",
+                loaded.__version__,
+                installed,
+            )
 
     @use_cache(3600)  # Cache for 1 hour
     async def _get_artist_obj(self, prov_artist_id: str, language: str) -> dict[str, Any]:
@@ -1882,3 +1907,8 @@ def _album_type_labels(language: str) -> dict[str, AlbumType]:
 async def _no_results() -> list[dict[str, Any]]:
     """Stand in for a search that is not needed."""
     return []
+
+
+def _version_parts(version: str) -> list[int]:
+    """Return the numeric parts of a yt-dlp version."""
+    return [int(part) for part in version.split(".")]
