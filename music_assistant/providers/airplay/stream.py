@@ -206,8 +206,8 @@ class AirPlayStream:
         # post-commit correction log level (a corrected join is the routine
         # landing path, a corrected origin start is a loud signal).
         self._start_was_join = False
-        # Whether a START still waits for the binary's first state report. A receiver can
-        # echo a play command for that start before it arrives.
+        # Whether the stream awaits its first state report since connecting or the last
+        # START. A receiver can echo a play command for that start before it arrives.
         self.start_pending: bool = False
         # Receiver storm guard state: last-honored monotonic time per remote
         # transport command, plus a counter of suppressed repeats.
@@ -341,6 +341,9 @@ class AirPlayStream:
         # A fresh cliairplay process re-anchors from scratch, so drop any shift
         # carried on this stream object.
         self.reset_reanchor_shift()
+        # Covers the echo a receiver sends before START, e.g. while the group awaits
+        # its members' clock readiness.
+        self.start_pending = True
         args = await self._build_cli_args(use_shared_ptp)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
