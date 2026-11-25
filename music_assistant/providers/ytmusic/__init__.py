@@ -359,20 +359,19 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         account: dict[str, Any] = (
             {"headers": self._headers, "user": self._yt_user} if authenticated else {}
         )
-        uploads: list[dict[str, Any]] = []
-        if authenticated and UPLOAD_MEDIA_TYPES & set(media_types):
+        include_videos = ytm_filter == "songs" and bool(self.config.get_value(CONF_INCLUDE_VIDEOS))
+        results, videos, uploads = await asyncio.gather(
+            search(query=search_query, ytm_filter=ytm_filter, limit=limit, **account),
+            search(query=search_query, ytm_filter="videos", limit=limit, **account)
+            if include_videos
+            else _no_results(),
             # uploads only come back from their own scope, which needs the account
-            results, uploads = await asyncio.gather(
-                search(query=search_query, ytm_filter=ytm_filter, limit=limit, **account),
-                search(query=search_query, scope="uploads", limit=limit, **account),
-            )
-        else:
-            results = await search(
-                query=search_query, ytm_filter=ytm_filter, limit=limit, **account
-            )
-        if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
+            search(query=search_query, scope="uploads", limit=limit, **account)
+            if authenticated and UPLOAD_MEDIA_TYPES & set(media_types)
+            else _no_results(),
+        )
+        if include_videos:
             # some tracks only exist as a video; interleave so videos survive the limit cut
-            videos = await search(query=search_query, ytm_filter="videos", limit=limit, **account)
             results = [item for pair in zip_longest(results, videos) for item in pair if item]
             results = results[:limit]
         upload_items = await asyncio.gather(
@@ -383,12 +382,29 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             with suppress(InvalidDataError):
                 if item := self._parse_search_result(result, media_types):
                     items.append(item)
+        artists: list[Artist] = []
+        albums: list[Album] = []
+        playlists: list[Playlist] = []
+        tracks: list[Track] = []
+        podcasts: list[Podcast] = []
+        for item in items:
+            match item:
+                case Artist():
+                    artists.append(item)
+                case Album():
+                    albums.append(item)
+                case Playlist():
+                    playlists.append(item)
+                case Track():
+                    tracks.append(item)
+                case Podcast():
+                    podcasts.append(item)
         # uploads come first, so the user's own items survive the limit cut
-        parsed_results.artists = [i for i in items if isinstance(i, Artist)][:limit]
-        parsed_results.albums = [i for i in items if isinstance(i, Album)][:limit]
-        parsed_results.playlists = [i for i in items if isinstance(i, Playlist)][:limit]
-        parsed_results.tracks = [i for i in items if isinstance(i, Track)][:limit]
-        parsed_results.podcasts = [i for i in items if isinstance(i, Podcast)][:limit]
+        parsed_results.artists = artists[:limit]
+        parsed_results.albums = albums[:limit]
+        parsed_results.playlists = playlists[:limit]
+        parsed_results.tracks = tracks[:limit]
+        parsed_results.podcasts = podcasts[:limit]
         return parsed_results
 
     async def sync_library(self, media_type: MediaType) -> None:
@@ -1861,3 +1877,8 @@ def _album_type_labels(language: str) -> dict[str, AlbumType]:
     # a label shared by several types (e.g. Spanish) can't tell them apart, so it stays unknown
     counts = Counter(translated.values())
     return labels | {text: labels[label] for label, text in translated.items() if counts[text] == 1}
+
+
+async def _no_results() -> list[dict[str, Any]]:
+    """Stand in for a search that is not needed."""
+    return []
