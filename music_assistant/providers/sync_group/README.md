@@ -264,6 +264,7 @@ When `SET_MEMBERS` is called on a dynamic group:
 1. Remove from the internal member list (static members cannot be removed)
 2. If removing the **sync leader** while playing:
    - If the active protocol supports dynamic leader switching (provider domain is in `PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH` — currently AirPlay, Snapcast, Sendspin), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_session_protocol_id])` on the protocol that carries the session and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol of the same domain. Remaining members keep playing.
+     Members the old leader holds outside that session (e.g. a Sonos speaker that follows it natively) are released before its stream ends. Those that can be reached on the session's protocol join it once the new leader has taken over, the others leave the group.
    - If no remaining member is part of the live session (e.g. only freshly-added players are left), or the protocol doesn't support handoff: fall back to **dissolve + re-form** (brief audio gap)
 3. If removing a non-leader member: forward to `cmd_set_members` on the leader
 
