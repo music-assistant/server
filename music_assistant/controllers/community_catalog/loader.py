@@ -164,11 +164,11 @@ class ProviderLoader:
             for path, manifest in (await self._read_dev_providers(location)).items():
                 if manifest.domain in loaded_at:
                     self.logger.warning(
-                        "Not loading the provider in %s: the provider in %s loads "
-                        "under the same domain %s",
+                        "Not loading the provider in %s: a provider with domain %s "
+                        "is already loaded from %s",
                         path,
-                        loaded_at[manifest.domain],
                         manifest.domain,
+                        loaded_at[manifest.domain],
                     )
                     continue
                 loaded_at[manifest.domain] = path

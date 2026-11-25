@@ -80,7 +80,7 @@ def get_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--dev-providers-dir",
         action="append",
-        metavar="path_to_providers_dir",
+        metavar="path_to_provider_folder",
         help=(
             "Directory with provider folders to load, only used in dev mode. "
             "Pass more than once to load from several directories; on a name "
@@ -270,8 +270,10 @@ def main() -> None:
         except (ValueError, OSError) as err:
             LOGGER.warning("Could not raise open-file limit: %s", err)
 
+    # dict.fromkeys preserves order and drops exact duplicates so passing the flag
+    # twice with the same path reads as one entry downstream
     dev_providers_dirs = (
-        tuple(str(Path(d).resolve()) for d in args.dev_providers_dir)
+        tuple(dict.fromkeys(str(Path(d).resolve()) for d in args.dev_providers_dir))
         if args.dev_providers_dir
         else None
     )

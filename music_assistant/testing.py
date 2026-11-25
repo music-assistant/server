@@ -47,6 +47,7 @@ async def full_mass_context(
     tmp_path: pathlib.Path,
     *,
     safe_mode: bool = False,
+    dev_providers_path: pathlib.Path | None = None,
     dev_providers_paths: Sequence[pathlib.Path] | None = None,
 ) -> AsyncGenerator[MusicAssistant]:
     """
@@ -57,9 +58,18 @@ async def full_mass_context(
 
     :param tmp_path: Temporary directory for test data.
     :param safe_mode: Boot the server in safe mode.
+    :param dev_providers_path: Folder of providers to load as community providers; kept for
+        callers that predate ``dev_providers_paths``. Combined with ``dev_providers_paths``
+        when both are given, with ``dev_providers_path`` first.
     :param dev_providers_paths: Folders of providers to load as community providers. The
         server then runs in dev mode and is handed over once these are loaded.
     """
+    paths: list[pathlib.Path] = []
+    if dev_providers_path is not None:
+        paths.append(dev_providers_path)
+    if dev_providers_paths is not None:
+        paths.extend(dev_providers_paths)
+
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
     storage_path.mkdir(parents=True, exist_ok=True)
@@ -71,9 +81,9 @@ async def full_mass_context(
         str(storage_path),
         str(cache_path),
         safe_mode,
-        tuple(str(p) for p in dev_providers_paths) if dev_providers_paths else None,
+        tuple(str(p) for p in paths) if paths else None,
     )
-    if dev_providers_paths:
+    if paths:
         # the server only loads a local provider folder in dev mode
         mass_instance.dev_mode = True
 
@@ -112,7 +122,7 @@ async def full_mass_context(
     ):
         try:
             await mass_instance.start()
-            if dev_providers_paths:
+            if paths:
                 # the server loads the providers of the local folders in a task of its own
                 for task in list(mass_instance._tracked_tasks.values()):
                     if task.get_name() == "community_catalog_start":
