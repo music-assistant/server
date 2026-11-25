@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, EventType, ProviderType
 from music_assistant_models.event import MassEvent
@@ -80,6 +81,59 @@ async def test_backend_start_probes_api_port_on_ipv4_loopback() -> None:
     select_port.assert_awaited_once_with(API_PORT_RANGE_START, API_PORT_RANGE_END, host="127.0.0.1")
     assert backend._client is not None
     assert backend._client.base_url == "http://127.0.0.1:38801"
+
+
+@pytest.mark.parametrize(
+    ("daemon_events", "expected"),
+    [
+        pytest.param(
+            ["active", "playing", "paused", "playing"],
+            [
+                BackendEventType.SESSION_ACTIVE,
+                BackendEventType.PLAYING,
+                BackendEventType.PAUSED,
+                BackendEventType.PLAYING,
+            ],
+            id="transfer",
+        ),
+        pytest.param(
+            ["playing", "paused", "playing"],
+            [
+                BackendEventType.SESSION_ACTIVE,
+                BackendEventType.PLAYING,
+                BackendEventType.PAUSED,
+                BackendEventType.PLAYING,
+            ],
+            id="play_request",
+        ),
+        pytest.param(
+            ["active", "playing", "inactive", "stopped", "playing"],
+            [
+                BackendEventType.SESSION_ACTIVE,
+                BackendEventType.PLAYING,
+                BackendEventType.SESSION_INACTIVE,
+                BackendEventType.STOPPED,
+                BackendEventType.SESSION_ACTIVE,
+                BackendEventType.PLAYING,
+            ],
+            id="play_request_after_deselect",
+        ),
+    ],
+)
+async def test_go_librespot_reports_an_active_session_once(
+    daemon_events: list[str], expected: list[BackendEventType]
+) -> None:
+    """A session is reported as active once, also when playback started on request."""
+    backend = object.__new__(GoLibrespotBackend)
+    backend.logger = MagicMock()
+    backend.name = "Spotify Test"
+    backend._session_active = False
+    backend._event_callback = event_callback = AsyncMock()
+
+    for event_type in daemon_events:
+        await backend._handle_event(event_type, {})
+
+    assert [call.args[0].type for call in event_callback.await_args_list] == expected
 
 
 async def test_daemon_runner_reselects_api_port_when_taken(tmp_path: Path) -> None:
