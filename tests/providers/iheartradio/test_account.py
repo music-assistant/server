@@ -575,6 +575,20 @@ async def test_progress_is_reused_until_it_is_saved(
     provider: IHeartRadioProvider, api: FakeApi
 ) -> None:
     """Back to back lookups share one progress request, and saving progress asks again."""
+    stored: dict[str, Any] = {}
+
+    async def get_with_freshness(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        return (stored[key], True, True) if key in stored else (None, False, False)
+
+    async def store(key: str, data: Any, **_kwargs: Any) -> None:
+        stored[key] = data
+
+    async def drop(key: str, **_kwargs: Any) -> None:
+        stored.pop(key, None)
+
+    provider.mass.cache.get_with_freshness = get_with_freshness
+    provider.mass.cache.set = store
+    provider.mass.cache.delete = drop
     _sign_in(provider)
     api.responses[EPISODE_METADATA_PATH] = {"progress": []}
     await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)

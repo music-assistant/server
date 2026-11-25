@@ -164,12 +164,13 @@ def provider(api: FakeApi) -> IHeartRadioProvider:
     provider.streaming_manager = IHeartRadioStreamingManager(provider)
     provider.auth = IHeartRadioAuthManager(provider)
     provider.auth.session = IHeartRadioSession(PROFILE_ID, SESSION_ID, "")
-    provider._progress_cache = {}
     provider.api.request = api.request  # type: ignore[method-assign]
     provider.api.get_json = api.get_json  # type: ignore[method-assign]
     # treat every lookup as a cache miss so the tests see the real behaviour
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    provider.mass.cache.delete = AsyncMock()
+    provider.mass.cache.delete_prefix = AsyncMock()
     # nothing configured or persisted yet
     provider.get_setup_value = Mock(return_value=None)  # type: ignore[method-assign]
     provider._update_setup_data = Mock()  # type: ignore[method-assign]
