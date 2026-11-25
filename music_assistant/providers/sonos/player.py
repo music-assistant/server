@@ -1138,9 +1138,9 @@ class SonosPlayer(PlayerProtocol):
 
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
-        Return whether the last cloud queue window the speaker read holds the given item.
+        Return whether the last cloud queue window the speaker read holds the item's position.
 
-        Only the item at its own queue position, served for the current load, counts.
+        Only a window served for the current load counts.
 
         :param queue_item: The queue item that follows the one playing out.
         """
@@ -1149,10 +1149,8 @@ class SonosPlayer(PlayerProtocol):
         index = self.mass.player_queues.index_by_id(queue_item.queue_id, queue_item.queue_item_id)
         if index is None or (wire_id := self._window_item_ids.get(index)) is None:
             return False
-        return (
-            self.from_current_load(wire_id)
-            and self.bare_item_id(wire_id) == queue_item.queue_item_id
-        )
+        # whichever item it read there: a held position gets the audio the queue has there now
+        return self.from_current_load(wire_id)
 
     async def set_members(
         self,
