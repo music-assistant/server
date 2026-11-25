@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import ytmusicapi
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MediaNotFoundError
 
+from music_assistant.models.music_provider import SYNC_RUN_STATE, SyncRunState
 from music_assistant.providers.ytmusic import YoutubeMusicProvider, helpers
 from tests.common import use_real_create_task
 
@@ -128,6 +130,47 @@ async def test_library_tracks_include_uploads(
     # an untagged upload has no artist credit, so it is resolved by its video id
     get_track.assert_awaited_once_with("herz2_yiP-w")
     assert tracks[1] is untagged_track
+
+
+async def test_an_upload_that_cannot_be_resolved_is_skipped(
+    provider: YoutubeMusicProvider, ytm: MagicMock
+) -> None:
+    """An untagged upload that YouTube can not resolve is skipped, not the rest of the sync."""
+    error = MediaNotFoundError("Item herz2_yiP-w not found")
+    state = SyncRunState()
+    token = SYNC_RUN_STATE.set(state)
+    try:
+        with (
+            patch.object(ytmusicapi, "YTMusic", return_value=ytm),
+            patch.object(provider, "get_track", AsyncMock(side_effect=error)),
+        ):
+            tracks = [track async for track in provider.get_library_tracks()]
+    finally:
+        SYNC_RUN_STATE.reset(token)
+
+    assert [track.item_id for track in tracks] == ["2AcuBnPRv9s"]
+    assert state.skipped_item_ids == {MediaType.TRACK: {"herz2_yiP-w"}}
+
+
+async def test_get_track_resolves_as_the_brand_account(ytm: MagicMock) -> None:
+    """A track is resolved as the brand account, which owns that account's uploads."""
+    ytm.get_song.return_value = {
+        "videoDetails": {
+            "videoId": "herz2_yiP-w",
+            "title": "leva-eternity-149473.mp3",
+            "channelId": "UCE_krt2fFtgx3nJbI8HGAEg",
+            "author": "Music Library Uploads",
+            "lengthSeconds": "145",
+        },
+        "microformat": {"microformatDataRenderer": {"thumbnail": {"thumbnails": THUMBNAILS}}},
+        "playabilityStatus": {"status": "OK"},
+    }
+    with patch.object(ytmusicapi, "YTMusic", return_value=ytm) as ytm_cls:
+        track = await helpers.get_track("herz2_yiP-w", headers={}, user="brand-id")
+
+    assert track is not None
+    assert track["videoId"] == "herz2_yiP-w"
+    ytm_cls.assert_called_once_with(auth={}, language="en", user="brand-id")
 
 
 async def test_library_albums_and_artists_include_uploads(
