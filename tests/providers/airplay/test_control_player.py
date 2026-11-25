@@ -224,6 +224,29 @@ def test_playback_state_churn_does_not_force_control_reconnect() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("service_type", "rotating_keys"),
+    [
+        (AIRPLAY_DISCOVERY_TYPE, ("btaddr",)),
+        (COMPANION_DISCOVERY_TYPE, ("rpAD", "rpBA", "rpHA", "rpHI", "rpHN")),
+    ],
+)
+def test_rotating_privacy_ids_do_not_force_control_reconnect(
+    service_type: str, rotating_keys: tuple[str, ...]
+) -> None:
+    """The privacy identifiers Apple devices rotate must not change the reconnect signature."""
+    before = _service_info(
+        service_type, properties={"rpFl": "0x36782"} | dict.fromkeys(rotating_keys, "1")
+    )
+    after = _service_info(
+        service_type, properties={"rpFl": "0x36782"} | dict.fromkeys(rotating_keys, "2")
+    )
+
+    assert AirPlayControlPlayer._service_signature(before) == (
+        AirPlayControlPlayer._service_signature(after)
+    )
+
+
 def test_power_feature_requires_credentials_or_connection() -> None:
     """POWER is advertised for stored Companion credentials or a live channel."""
     paired = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "companion-creds"})
