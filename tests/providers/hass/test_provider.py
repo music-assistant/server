@@ -163,6 +163,7 @@ class _HomeAssistantClient:
         self.subscriptions: list[list[str]] = []
         self.unsubscribed: list[list[str]] = []
         self.active_subscriptions = 0
+        self._state_callback: Callable[[dict[str, Any]], None] | None = None
         # (event_type, callback) per subscribe_events call
         self.event_subscriptions: list[tuple[str, Callable[[dict[str, Any]], None]]] = []
         self.active_event_subscriptions = 0
@@ -174,9 +175,8 @@ class _HomeAssistantClient:
         self.disabled_entities: set[str] = set()
         # devices as returned in full by the device registry listing
         self.devices: list[dict[str, Any]] = []
-        # supported languages per tts entity as listed by tts/engine/list, which fails
-        # (as on a Home Assistant without the command) when None
-        self.tts_languages = tts_languages
+        # supported languages per tts entity that is loaded in Home Assistant
+        self.tts_languages = tts_languages or {}
         # events delivered ahead of a subscription's initial state message
         self.leading_events: list[dict[str, Any]] = []
         self.deliver_initial_states = True
@@ -220,6 +220,7 @@ class _HomeAssistantClient:
         self.calls.append("subscribe_entities")
         self.subscriptions.append(list(entity_ids))
         self.active_subscriptions += 1
+        self._state_callback = cb_func
         self.subscribed.set()
         loop = asyncio.get_running_loop()
         for event in self.leading_events:
@@ -259,6 +260,11 @@ class _HomeAssistantClient:
         self.calls.append(DEVICE_REGISTRY_LIST)
         return list(self.devices)
 
+    def push_states(self, event: dict[str, Any]) -> None:
+        """Deliver a state message to the most recent entity subscription."""
+        assert self._state_callback is not None
+        self._state_callback(event)
+
     def fire_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Deliver an event to every subscriber of the given event type."""
         for subscribed_type, cb_func in self.event_subscriptions:
@@ -278,15 +284,11 @@ class _HomeAssistantClient:
         self.calls.append(command)
         if command == REGISTRY_ENTRIES_COMMAND:
             return self._registry_entries(cast("list[str]", kwargs["entity_ids"]))
-        if command == "tts/engine/list":
-            if self.tts_languages is None:
-                raise FailedCommand("Unknown command.")
-            return {
-                "providers": [
-                    {"engine_id": entity_id, "supported_languages": languages}
-                    for entity_id, languages in self.tts_languages.items()
-                ]
-            }
+        if command == "tts/engine/get":
+            entity_id = cast("str", kwargs["engine_id"])
+            if (languages := self.tts_languages.get(entity_id)) is None:
+                raise FailedCommand(f"tts engine {entity_id} not found")
+            return {"provider": {"engine_id": entity_id, "supported_languages": languages}}
         return {"response": {"data": "answer"}}
 
     async def _registry_for_display(self) -> dict[str, Any]:
@@ -346,7 +348,7 @@ async def _start_provider(
     Start the provider with a connected mocked Home Assistant client.
 
     :param states: The entity states Home Assistant reports.
-    :param tts_languages: The supported languages per tts entity, for tts/engine/list.
+    :param tts_languages: The supported languages per tts entity loaded in Home Assistant.
     :param stateless_entities: The registered entities without a state.
     :param config_values: Provider config values overriding the test defaults.
     """
@@ -1036,7 +1038,7 @@ async def test_tts_not_advertised_without_entity() -> None:
     async with _start_provider([_state("sensor.example", "Example")]) as (provider, hass):
         assert ProviderFeature.TTS not in provider.supported_features
 
-        assert "tts/engine/list" not in hass.calls
+        assert "tts/engine/get" not in hass.calls
         with pytest.raises(UnsupportedFeaturedException):
             await provider.get_tts_message("Hello")
 
@@ -1067,19 +1069,28 @@ async def test_tts_omits_options_from_the_payload_when_empty() -> None:
         assert post.call_args.kwargs["json"] == {"engine_id": "tts.first", "message": "Hello"}
 
 
-async def test_tts_engine_languages_are_read_once_per_refresh() -> None:
-    """Read the engines' languages when the engines are listed, never per request."""
-    states = [_state("tts.cloud", "Cloud"), _state("tts.piper", "Piper")]
-    languages = {"tts.cloud": ["nl-NL"], "tts.piper": ["nl_NL"]}
+async def test_tts_engine_languages_follow_home_assistant() -> None:
+    """Speak in the languages an engine has right now, also when it loads or changes later."""
+    async with _start_provider([_state("tts.late", "Late")]) as (provider, hass):
+        post = _mock_tts_response(provider)
 
-    async with _start_provider(states, languages) as (provider, hass):
-        assert hass.calls.count("tts/engine/list") == 1
+        hass.tts_languages["tts.late"] = ["nl-BE"]
+        await provider.get_tts_message("Hallo", language="nl")
+        assert post.call_args.kwargs["json"]["language"] == "nl-BE"
+
+        hass.tts_languages["tts.late"] = ["nl-BE", "nl-NL"]
+        await provider.get_tts_message("Hallo", language="nl-NL")
+        assert post.call_args.kwargs["json"]["language"] == "nl-NL"
+
+
+async def test_tts_without_language_does_not_read_the_languages() -> None:
+    """Only a request for a language needs the languages of the engine."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, hass):
         _mock_tts_response(provider)
 
-        await provider.get_tts_message("Hallo", language="nl", engine_id="tts.cloud")
-        await provider.get_tts_message("Hallo", language="nl", engine_id="tts.piper")
+        await provider.get_tts_message("Hello")
 
-        assert hass.calls.count("tts/engine/list") == 1
+        assert "tts/engine/get" not in hass.calls
 
 
 async def test_tts_bare_language_is_sent_as_the_engines_regional_code() -> None:
@@ -1134,11 +1145,11 @@ async def test_tts_unknown_language_is_left_out_of_the_payload() -> None:
 async def test_tts_language_passes_through_when_the_languages_cannot_be_read() -> None:
     """An engine whose languages could not be read gets the requested language unchanged."""
     async with _start_provider([_state("tts.first", "First")]) as (provider, hass):
-        assert "tts/engine/list" in hass.calls
         post = _mock_tts_response(provider)
 
         await provider.get_tts_message("Hallo", language="nl")
 
+        assert "tts/engine/get" in hass.calls
         assert post.call_args.kwargs["json"]["language"] == "nl"
 
 
@@ -2123,6 +2134,26 @@ async def test_control_role_change_is_applied() -> None:
         control = (provider._player_controls or {})["media_player.kitchen"]
         assert control.supports_volume is True
         assert control.supports_power is False
+
+
+async def test_control_takes_over_the_name_home_assistant_reports() -> None:
+    """Name a control after its entity once that has a name, and follow a rename."""
+    async with _start_provider(
+        [], None, ["switch.amp"], **{CONF_POWER_CONTROLS: ["switch.amp"]}
+    ) as (provider, hass):
+        await provider.loaded_in_mass()
+        control = (provider._player_controls or {})["switch.amp"]
+        assert control.name == "switch.amp"
+
+        hass.push_states({"a": {"switch.amp": _compressed(_state("switch.amp", "Amp"))}})
+        assert control.name == "Amp (switch.amp)"
+
+        # a change only carries the attributes it touched
+        hass.push_states({"c": {"switch.amp": {"+": {"s": "on", "a": {"icon": "mdi:power"}}}}})
+        assert control.name == "Amp (switch.amp)"
+
+        hass.push_states({"c": {"switch.amp": {"+": {"a": {"friendly_name": "Amplifier"}}}}})
+        assert control.name == "Amplifier (switch.amp)"
 
 
 async def test_control_selection_drops_a_value_that_is_no_entity_id() -> None:

@@ -198,9 +198,6 @@ class HomeAssistantProvider(PluginProvider):
     _ai_engines: list[AIEngine]
     _image_engines: list[ImageEngine]
     _tts_engines: list[TTSEngine]
-    # languages per TTS entity, as Home Assistant reports them; an entity whose list could
-    # not be read is absent and gets the requested language passed through unchanged
-    _tts_languages: dict[str, tuple[str, ...]]
     _startup_complete: bool = False
     _entity_registry: Mapping[str, HassRegistryEntity] | None = None
     _entity_registry_generation: int = 0
@@ -269,7 +266,7 @@ class HomeAssistantProvider(PluginProvider):
 
         return (*base_entries, *_control_config_entries())
 
-    async def handle_async_init(self) -> None:  # noqa: PLR0915
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""
         if self._listen_task and not self._listen_task.done():
             msg = "Home Assistant listener is already running"
@@ -281,7 +278,6 @@ class HomeAssistantProvider(PluginProvider):
         self._ai_engines = []
         self._image_engines = []
         self._tts_engines = []
-        self._tts_languages = {}
         url = get_websocket_url(cast("str", self.get_setup_value(CONF_URL)))
         token = self.get_setup_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
@@ -822,7 +818,8 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._tts_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("TTS entity is not available")
-        if language and (supported := self._tts_languages.get(entity_id)) is not None:
+        # an engine whose languages cannot be read gets the requested language unchanged
+        if language and (supported := await self._fetch_tts_languages(entity_id)) is not None:
             # Home Assistant only accepts a language spelled exactly as the entity lists it
             country = self.mass.metadata.locale.partition("_")[2] or None
             matched = match_tts_language(language, supported, country)
@@ -971,7 +968,9 @@ class HomeAssistantProvider(PluginProvider):
         control = PlayerControl(
             id=entity_id,
             provider=self.instance_id,
-            name=get_control_name(entity_id, hass_state),
+            name=get_control_name(
+                entity_id, hass_state["attributes"].get("friendly_name") if hass_state else None
+            ),
         )
         if capabilities.power:
             control.supports_power = True
@@ -1079,6 +1078,8 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_volume and entity_platform != "media_player":
                 player_control.volume_level = try_parse_int(state["s"]) or 0
         if "a" in state and (attributes := state["a"]):
+            if "friendly_name" in attributes:
+                player_control.name = get_control_name(entity_id, attributes["friendly_name"])
             if player_control.supports_volume and "volume_level" in attributes:
                 player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
             if player_control.supports_mute and "is_volume_muted" in attributes:
@@ -1272,14 +1273,12 @@ class HomeAssistantProvider(PluginProvider):
         tts_engines.sort(key=lambda engine: engine.name)
         ai_engines.sort(key=lambda engine: engine.name)
         image_engines.sort(key=lambda engine: engine.name)
-        tts_languages = await self._fetch_tts_languages() if tts_engines else {}
         changed = (self._tts_engines, self._ai_engines, self._image_engines) != (
             tts_engines,
             ai_engines,
             image_engines,
         )
         self._tts_engines = tts_engines
-        self._tts_languages = tts_languages
         self._ai_engines = ai_engines
         self._image_engines = image_engines
         self._supported_features.discard(ProviderFeature.TTS)
@@ -1295,20 +1294,20 @@ class HomeAssistantProvider(PluginProvider):
         if changed and self._startup_complete:
             self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
-    async def _fetch_tts_languages(self) -> dict[str, tuple[str, ...]]:
-        """Return the languages each TTS entity accepts, leaving out the ones without a list."""
+    # read when speaking rather than mirrored: Home Assistant announces neither an entity that
+    # loads long after its restart nor a language that is added to an engine
+    async def _fetch_tts_languages(self, entity_id: str) -> list[str] | None:
+        """
+        Return the languages a TTS entity accepts, or None when they cannot be read.
+
+        :param entity_id: The TTS entity to read the languages of.
+        """
         try:
-            result = await self.hass.send_command("tts/engine/list")
+            result = await self.hass.send_command("tts/engine/get", engine_id=entity_id)
         except BaseHassClientError as err:
-            self.logger.debug("Could not read the languages of the TTS engines: %s", err)
-            return {}
-        providers = result.get("providers") if isinstance(result, dict) else None
-        languages: dict[str, tuple[str, ...]] = {}
-        for provider in providers or ():
-            supported = provider.get("supported_languages")
-            if isinstance(supported, list):
-                languages[str(provider["engine_id"])] = tuple(str(code) for code in supported)
-        return languages
+            self.logger.debug("Could not read the languages of TTS engine %s: %s", entity_id, err)
+            return None
+        return cast("list[str]", result["provider"]["supported_languages"])
 
     async def _subscribe_entity_registry(self) -> None:
         """Watch the Home Assistant entity registry to keep the engine lists up to date."""
