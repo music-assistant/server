@@ -14,13 +14,14 @@ import logging
 import os
 import secrets
 from functools import partial
+from ipaddress import IPv6Address, ip_address
 from itertools import batched
 from sys import intern
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, TypedDict, cast
 from urllib.parse import unquote, urlsplit
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientConnectionError, ClientResponseError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import (
     BaseHassClientError,
@@ -55,6 +56,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_VERIFY_SSL, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
+from music_assistant.helpers.hassio import SupervisorError, supervisor_request
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError, match_tts_language
 from music_assistant.helpers.util import lock, try_parse_int
@@ -766,9 +768,8 @@ class HomeAssistantProvider(PluginProvider):
             msg = f"AI Task returned an unexpected image link: {parts.path}"
             raise MusicAssistantError(msg)
         try:
-            return await self._fetch_image(
-                f"{parts.path}?{parts.query}" if parts.query else parts.path
-            )
+            path = f"{parts.path}?{parts.query}" if parts.query else parts.path
+            return await self._fetch_image(path)
         except ClientResponseError as err:
             # its message names the full (signed) URL
             msg = f"Home Assistant answered the image request with {err.status}"
@@ -780,6 +781,10 @@ class HomeAssistantProvider(PluginProvider):
                 # Home Assistant is down or overloaded, rather than refusing this image
                 raise ProviderUnavailableError(msg) from None
             raise MusicAssistantError(msg) from None
+        except ClientConnectionError, TimeoutError:
+            raise ProviderUnavailableError(
+                "Home Assistant could not be reached to fetch the generated image"
+            ) from None
 
     async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
         """
@@ -1123,7 +1128,7 @@ class HomeAssistantProvider(PluginProvider):
         # the HTTP client resolves percent-encoded dot segments, so check the decoded form
         if ".." in unquote(path.split("?", 1)[0]).split("/"):
             raise FileNotFoundError("Image not found")
-        ha_url, headers, http_session = self._get_ha_http()
+        ha_url, headers, http_session = await self._get_ha_http_for(path)
         async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
             response.raise_for_status()
             if not response.content_type.startswith("image/"):
@@ -1137,6 +1142,31 @@ class HomeAssistantProvider(PluginProvider):
                 if len(data) > IMAGE_MAX_BYTES:
                     raise FileNotFoundError("Image too large")
             return bytes(data)
+
+    async def _get_ha_http_for(self, path: str) -> tuple[str, dict[str, str], ClientSession]:
+        """Return the HA connection that can serve the image path."""
+        if not self.mass.running_as_hass_addon or path.startswith("/api/"):
+            return self._get_ha_http()
+        try:
+            core = await supervisor_request(self.mass, "GET", "/core/info")
+        except SupervisorError as err:
+            msg = f"Supervisor could not report Home Assistant's address: {err.message}"
+            raise ProviderUnavailableError(msg) from err
+        if not isinstance(core, dict):
+            raise ProviderUnavailableError("Supervisor returned invalid Home Assistant address")
+        try:
+            address = ip_address(core["ip_address"])
+            port = core["port"]
+            ssl = core["ssl"]
+        except KeyError, TypeError, ValueError:
+            raise ProviderUnavailableError(
+                "Supervisor returned invalid Home Assistant address"
+            ) from None
+        if type(port) is not int or not 0 < port <= 65535 or type(ssl) is not bool:
+            raise ProviderUnavailableError("Supervisor returned invalid Home Assistant address")
+        host = f"[{address}]" if isinstance(address, IPv6Address) else str(address)
+        scheme = "https" if ssl else "http"
+        return f"{scheme}://{host}:{port}", {}, self.mass.http_session_no_ssl
 
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""

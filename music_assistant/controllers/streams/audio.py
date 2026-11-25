@@ -4086,6 +4086,10 @@ class StreamsAudio:
         self.logger.warning(
             "Failed to parse radio URL %s: %s - attempting direct stream", validate_url, str(err)
         )
+        # a connection that failed, such as a DNS lookup, says nothing about the stream itself,
+        # so it is probed again on the next start rather than streamed without metadata for hours
+        if isinstance(err, aiohttp.ClientConnectionError):
+            return (validate_url, fallback_stream_type)
         return await self._cache_radio_result(url, fallback_stream_type, resolved_url=validate_url)
 
     async def _get_stream_details(
@@ -4122,6 +4126,12 @@ class StreamsAudio:
         # may not use at all are dropped
         allowed, preferred_providers = await playback_sources(mass, queue_item.queue_id)
 
+        # reuse if the buffer can serve this seek position (fast seek path)
+        buffered = bool(
+            queue_item.streamdetails
+            and queue_item.streamdetails.buffer
+            and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
+        )
         if (
             queue_item.streamdetails
             # cached details of an excluded instance are exactly what we select away from
@@ -4129,17 +4139,21 @@ class StreamsAudio:
             # nor of a source that is no longer one of the playback user's
             and self._may_serve_playback(queue_item.streamdetails.provider, allowed)
             and (
-                # reuse if the buffer can serve this seek position (fast seek path)
-                (
-                    queue_item.streamdetails.buffer
-                    and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
-                )
+                buffered
                 # or reuse if streamdetails hasn't expired yet (new buffer will be created)
                 or (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
                 > time.time()
             )
         ):
             streamdetails = queue_item.streamdetails
+            if not buffered:
+                # a radio station whose check failed earlier is checked again for the new
+                # buffer; a station checked fine answers from the cache
+                try:
+                    await self._resolve_radio_stream_details(streamdetails)
+                except MusicAssistantError as err:
+                    # the stored details played before, a failed re-check is no reason to drop them
+                    self.logger.debug("Radio re-check failed for %s: %s", streamdetails.uri, err)
         else:
             # need to (re)create streamdetails
             # retrieve streamdetails from provider

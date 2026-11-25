@@ -152,7 +152,7 @@ def _bounded_event_data(value: Any) -> Any:
             string_cap=1024,
             max_depth=4,
         ).value
-    except Exception:
+    except Exception:  # noqa: BLE001 - event payloads are arbitrary objects
         return "<unserializable event data>"
 
 
@@ -176,7 +176,7 @@ def _event_data(event: Any) -> Any:
         value = event.data
     except AttributeError:
         value = None
-    except Exception:
+    except Exception:  # noqa: BLE001 - event payloads are arbitrary objects
         return "<unserializable event data>"
     return _bounded_event_data(value)
 
@@ -185,7 +185,7 @@ def _safe_attr(value: Any, name: str, default: Any) -> Any:
     """Read one event attribute while isolating custom descriptors."""
     try:
         return getattr(value, name, default)
-    except Exception:
+    except Exception:  # noqa: BLE001 - event attributes can run arbitrary code
         return default
 
 
@@ -193,6 +193,6 @@ def _safe_text(value: Any) -> str:
     """Convert event metadata to a bounded string without invoking a failing repr."""
     try:
         text = str(value)
-    except Exception:
+    except Exception:  # noqa: BLE001 - event values can run arbitrary code
         return "<unavailable>"
     return text if len(text) <= 1024 else f"{text[:1024]}…({len(text) - 1024} more chars)"

@@ -91,8 +91,26 @@ _WAKE_TIMEOUT: Final[float] = 10.0
 # stream. They never affect how the control connection is established, so a
 # change must not force a reconnect: doing so made Apple TVs tear down and
 # re-establish the control channel on every stream start and stop, each time
-# surfacing the on-screen pairing code. Compared case-insensitively (RFC 6763).
-_VOLATILE_DISCOVERY_KEYS: Final = frozenset({"flags", "gcgl", "gid", "igl", "gpn", "pgcgl"})
+# surfacing the on-screen pairing code. Apple devices also rotate the privacy
+# identifiers `btaddr` (AirPlay) and `rpAD`/`rpBA`/`rpHA`/`rpHI`/`rpHN`
+# (Companion) several times per hour. Compared case-insensitively (RFC 6763).
+_VOLATILE_DISCOVERY_KEYS: Final = frozenset(
+    {
+        "btaddr",
+        "flags",
+        "gcgl",
+        "gid",
+        "gpn",
+        "igl",
+        "pgcgl",
+        "pgid",
+        "rpad",
+        "rpba",
+        "rpha",
+        "rphi",
+        "rphn",
+    }
+)
 
 _CONNECTION_ERRORS = (
     pyatv_exceptions.AuthenticationError,

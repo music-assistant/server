@@ -627,7 +627,7 @@ class YandexMusicStreamingManager:
                 return result
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except aiohttp.ClientError, TimeoutError, ValueError:
             self.logger.debug("Stream probe failed for codec=%s", codec)
             return 0, 0
 

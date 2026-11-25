@@ -19,6 +19,7 @@ from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import MASS_USER_AGENT
+from music_assistant.helpers.audio import create_streaming_wave_header
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
@@ -781,6 +782,39 @@ async def test_ffmpeg_stream_surfaces_stdin_feeder_error(source_error: Exception
         )
 
     assert err.value.__cause__ is source_error
+
+
+@pytest.mark.parametrize("bit_depth", [16, 24])
+async def test_ffmpeg_stream_writes_plain_wave_header(bit_depth: int) -> None:
+    """A WAV stream starts with the plain PCM header, also above 16 bit."""
+    frames = 4410
+    output_format = AudioFormat(
+        content_type=ContentType.WAV, sample_rate=44100, bit_depth=bit_depth, channels=2
+    )
+
+    async def audio_input() -> AsyncGenerator[bytes]:
+        yield b"\x01\x02\x03\x04" * frames
+
+    data = b"".join(
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=audio_input(),
+                input_format=AudioFormat(
+                    content_type=ContentType.PCM_S16LE,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    channels=2,
+                ),
+                output_format=output_format,
+            )
+        )
+    )
+
+    header = create_streaming_wave_header(output_format)
+    assert data[: len(header)] == header
+    # format tag 1 (PCM): players such as Sonos refuse WAVE_FORMAT_EXTENSIBLE (0xFFFE)
+    assert int.from_bytes(data[20:22], "little") == 1
+    assert len(data) - len(header) == frames * 2 * bit_depth // 8
 
 
 def _limit_error() -> ProviderStreamLimitError:

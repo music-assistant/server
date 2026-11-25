@@ -706,14 +706,14 @@ class DynamicAPIAdapter:
             return None
         try:
             user = await self.mass.webserver.auth.authenticate_with_token(token.token)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any auth failure rejects the request
             return None
         if user is None or getattr(user, "enabled", True) is False:
             return None
         identity = self._identity_provider(token.token)
         try:
             live_token_id = await self.mass.webserver.auth.get_token_id_from_token(token.token)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any lookup failure rejects the request
             return None
         if not request_identity_holds(token, user, identity, live_token_id=live_token_id):
             return None

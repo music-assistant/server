@@ -41,7 +41,7 @@ async def fetch_playlist_options(mass: MusicAssistant) -> list[ConfigValueOption
             options.append(ConfigValueOption(title=title, value=playlist.uri))
     except asyncio.CancelledError:
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - see the comment below
         # Fail-soft: this runs on every config-form render and races with
         # provider/database startup. Don't spam stack traces — debug-level
         # is enough for diagnostics, normal renders stay quiet.

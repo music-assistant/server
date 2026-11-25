@@ -260,7 +260,7 @@ def test_stamp_qr_on_cover_does_not_change_pillow_limit_when_concurrent() -> Non
     def _stamp() -> None:
         try:
             stamp_qr_on_cover(cover, qr)
-        except BaseException as err:
+        except BaseException as err:  # noqa: BLE001 - any worker error must fail the test
             errors.append(err)
 
     workers = [threading.Thread(target=_stamp) for _ in range(8)]
