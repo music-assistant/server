@@ -45,6 +45,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers import datetime
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor, ConversionError
@@ -53,7 +54,7 @@ from music_assistant.providers.bbc_sounds.constants import Constants
 from music_assistant.providers.bbc_sounds.live_rewind import (
     LiveProgrammeId,
 )
-from music_assistant.providers.bbc_sounds.naming import TitleParts
+from music_assistant.providers.bbc_sounds.naming import TitleParts, release_date, season_number
 from music_assistant.providers.bbc_sounds.now_playing import NowPlayingManager
 from music_assistant.providers.bbc_sounds.streaming import StreamManager
 
@@ -172,22 +173,42 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     ) -> AsyncGenerator[PodcastEpisode]:
         """Get all PodcastEpisodes for given podcast id."""
         self.logger.debug("Getting podcast episodes for %s", prov_podcast_id)
-        podcast_episodes = await self.client.content.get_podcast_episodes(
-            prov_podcast_id, max_items=MAX_PODCAST_EPISODES
+        podcast = await self.client.content.get_podcast(
+            pid=prov_podcast_id, include_episodes=True, max_episodes=MAX_PODCAST_EPISODES
         )
-        if podcast_episodes:
-            for episode in podcast_episodes:
-                try:
-                    this_episode = await self.adaptor.new_object(
-                        source_obj=episode,
-                        force_type=PodcastEpisode,
-                        title_parts=TitleParts.PODCAST,
-                    )
-                    if this_episode and isinstance(this_episode, PodcastEpisode):
-                        yield this_episode
-                except ConversionError:
-                    self.logger.error("Couldn't convert podcast episode %s", episode)
-                    continue
+
+        # Episodes outside any season have no season number
+        listed: list[tuple[int | None, EpisodeTypes]] = []
+        listed.extend(
+            (None, episode)
+            for episode in podcast.sub_items or []
+            if isinstance(episode, EpisodeTypes)
+        )
+
+        seasons = podcast.seasons or []
+        named = [season_number(season.titles.secondary) for season in seasons]
+        # Mixing named numbers with list positions could give two seasons one number
+        if None in named:
+            named = list(range(1, len(seasons) + 1))
+        for number, season in zip(named, seasons, strict=True):
+            listed.extend((number, episode) for episode in season.sub_items or [])
+
+        # Oldest first. Episodes released on the same day keep the API's sequential order
+        positions = rank_episodes_by_date([release_date(episode) for _, episode in listed])
+        for (season_num, episode), position in zip(listed, positions, strict=True):
+            try:
+                ma_episode = await self.adaptor.new_object(
+                    source_obj=episode,
+                    force_type=PodcastEpisode,
+                    title_parts=TitleParts.PODCAST,
+                )
+            except ConversionError:
+                self.logger.error("Couldn't convert podcast episode %s", episode)
+                continue
+            if isinstance(ma_episode, PodcastEpisode):
+                ma_episode.season = season_num
+                ma_episode.position = position
+                yield ma_episode
 
     @use_cache(expiration=Constants.SHORT_EXPIRATION)
     async def get_radio(self, prov_radio_id: str) -> Radio:
@@ -410,7 +431,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         """Get the episode of a programme that is (or was) played from the live stream."""
         return await self.adaptor.new_live_programme(await self.live_programme(programme_id))
 
-    @use_cache(expiration=Constants.DEFAULT_EXPIRATION, cache_checksum="v2")
+    @use_cache(expiration=Constants.DEFAULT_EXPIRATION, cache_checksum="v3")
     async def _get_on_demand_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get the details of an on-demand podcast episode or radio show by id."""
         self.logger.debug("Getting podcast episode for %s", prov_episode_id)
@@ -430,7 +451,9 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 episode.start, episode.end = (
                     datetime.from_iso_string(time) if time else None for time in broadcast_time
                 )
-        ma_episode = await self.adaptor.new_object(episode, force_type=PodcastEpisode)
+        ma_episode = await self.adaptor.new_object(
+            episode, force_type=PodcastEpisode, title_parts=TitleParts.EPISODE_DETAILS
+        )
         if not ma_episode:
             raise MediaNotFoundError(f"Podcast episode {prov_episode_id} not found")
         if type(ma_episode) is not PodcastEpisode:

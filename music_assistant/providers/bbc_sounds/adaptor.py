@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 from auntie_sounds.models import (
     Category,
     Collection,
+    EpisodeTypes,
     LiveStation,
     MenuItem,
     Playlist,
@@ -394,7 +395,7 @@ class PodcastConverter(BaseConverter):
         if isinstance(source_obj, (Podcast, RadioSeries)) or self.context.force_type is MAPodcast:
             return await self._convert_podcast(source_obj)
         if isinstance(source_obj, PodcastEpisode):
-            return await self._convert_podcast_episode(source_obj)
+            return await self._convert_episode(source_obj)
         if isinstance(source_obj, RadioShow):
             return await self._convert_radio_show(source_obj)
         if isinstance(source_obj, RadioClip) or self.context.force_type is Track:
@@ -425,42 +426,43 @@ class PodcastConverter(BaseConverter):
             provider_mappings={self._create_provider_mapping(item_id)},
         )
 
-    async def _convert_podcast_episode(self, episode: PodcastEpisode) -> MAPodcastEpisode:
-        # 0 is MA's unknown duration, and None fails when the item is rebuilt from a dict
-        duration = self._get_attr(episode, "duration.value", 0)
-        resume_position_ms = (
-            self._get_attr(episode, "progress.value") * 1000 if episode.progress else None
+    async def _convert_episode(self, item: EpisodeTypes) -> MAPodcastEpisode:
+        """
+        Convert any of the episode types to a podcast episode.
+
+        Position is 0 because an episode's place in its podcast, and its season,
+        are only known after, when get_podcast_episodes lists the whole podcast.
+        """
+        if not item.pid:
+            raise ConversionError(f"No pid for episode {item}")
+        podcast = (
+            await PodcastConverter(self.context).convert(item.container) if item.container else None
         )
-        description = self._get_synopsis(episode)
+        if not isinstance(podcast, MAPodcast):
+            raise ConversionError(f"No podcast for episode {item}")
 
-        # Handle parent podcast
-        podcast = None
-        if hasattr(episode, "container") and episode.container:
-            podcast = await PodcastConverter(self.context).convert(episode.container)
-
-        if not podcast or not isinstance(podcast, MAPodcast):
-            raise ConversionError(f"No podcast for episode {episode}")
-        if not episode or not episode.pid:
-            raise ConversionError(f"No podcast episode for {episode}")
-
-        ma_episode = MAPodcastEpisode(
-            item_id=episode.pid,
-            name=programme_title(episode, self.context.title_parts),
+        episode = MAPodcastEpisode(
+            item_id=item.pid,
+            name=programme_title(item, self.context.title_parts),
             provider=self.context.provider.instance_id,
-            duration=duration,
+            # 0 is MA's unknown duration
+            duration=self._get_attr(item, "duration.value", 0),
             position=0,
-            resume_position_ms=resume_position_ms,
+            episode_number=item.episode_number,
+            resume_position_ms=(
+                self._get_attr(item, "progress.value") * 1000 if item.progress else None
+            ),
             metadata=ImageProvider.create_metadata_with_image(
-                url=episode.image_url,
+                url=item.image_url,
                 provider=self.context.provider.instance_id,
-                description=description,
+                description=self._get_synopsis(item),
             ),
             podcast=podcast,
-            provider_mappings={self._create_provider_mapping(episode.pid)},
-            uri=episode.stream,
+            provider_mappings={self._create_provider_mapping(item.pid)},
         )
-        ma_episode.metadata.release_date = release_date(episode)
-        return ma_episode
+        # A show played from a schedule has the broadcast time, which beats its release date
+        episode.metadata.release_date = item.start or release_date(item)
+        return episode
 
     def _show_is_a_track(self, show: RadioShow) -> bool:
         """
@@ -478,92 +480,36 @@ class PodcastConverter(BaseConverter):
         return not container
 
     async def _convert_radio_show(self, show: RadioShow) -> MAPodcastEpisode | Track:
-        # 0 is MA's unknown duration, and None fails when the item is rebuilt from a dict
-        duration = self._get_attr(show, "duration.value", 0)
-        resume_position_ms = (
-            self._get_attr(show, "progress.value") * 1000 if show.progress else None
-        )
-        if not show or not show.pid:
+        if not show.pid:
             raise ConversionError(f"No radio show for {show}")
-
-        name = programme_title(show, self.context.title_parts)
-        if self._show_is_a_track(show):
-            return Track(
-                item_id=show.pid,
-                name=name,
-                provider=self.context.provider.instance_id,
-                duration=duration,
-                metadata=ImageProvider.create_metadata_with_image(
-                    url=show.image_url,
-                    provider=self.context.provider.instance_id,
-                    description=self._get_synopsis(show),
-                ),
-                provider_mappings={self._create_provider_mapping(show.pid)},
-            )
-
-        # Handle as episode
-        podcast = None
-        if hasattr(show, "container") and show.container:
-            podcast = await PodcastConverter(self.context).convert(cast("Podcast", show.container))
-
-        if not podcast or not isinstance(podcast, MAPodcast):
-            raise ConversionError(f"No podcast for episode for {show}")
-
-        episode = MAPodcastEpisode(
+        if not self._show_is_a_track(show):
+            return await self._convert_episode(show)
+        return Track(
             item_id=show.pid,
-            name=name,
+            name=programme_title(show, self.context.title_parts),
             provider=self.context.provider.instance_id,
-            duration=duration,
-            resume_position_ms=resume_position_ms,
+            # 0 is MA's unknown duration
+            duration=self._get_attr(show, "duration.value", 0),
             metadata=ImageProvider.create_metadata_with_image(
                 url=show.image_url,
                 provider=self.context.provider.instance_id,
                 description=self._get_synopsis(show),
             ),
-            podcast=podcast,
             provider_mappings={self._create_provider_mapping(show.pid)},
-            position=1,
         )
-        episode.metadata.release_date = release_date(show)
-        return episode
 
     async def _convert_radio_clip(self, clip: RadioClip) -> Track | MAPodcastEpisode:
-        duration = self._get_attr(clip, "duration.value", 0)
-        description = self._get_synopsis(clip)
-
         if not clip or not clip.pid:
             raise ConversionError(f"No clip for {clip}")
-
         if self.context.force_type is MAPodcastEpisode:
-            podcast = None
-            if hasattr(clip, "container") and clip.container:
-                podcast = await PodcastConverter(self.context).convert(
-                    cast("Podcast", clip.container)
-                )
-
-            if not podcast or not isinstance(podcast, MAPodcast):
-                raise ConversionError(f"No podcast for episode for {clip}")
-            episode = MAPodcastEpisode(
-                item_id=clip.pid,
-                name=programme_title(clip, self.context.title_parts),
-                provider=self.context.provider.instance_id,
-                duration=duration,
-                metadata=ImageProvider.create_metadata_with_image(
-                    clip.image_url, self.context.provider.instance_id, description
-                ),
-                provider_mappings={self._create_provider_mapping(clip.pid)},
-                podcast=podcast,
-                position=0,
-            )
-            episode.metadata.release_date = release_date(clip)
-            return episode
+            return await self._convert_episode(clip)
         return Track(
             item_id=clip.pid,
             name=programme_title(clip, self.context.title_parts),
             provider=self.context.provider.instance_id,
-            duration=duration,
+            duration=self._get_attr(clip, "duration.value", 0),
             metadata=ImageProvider.create_metadata_with_image(
-                clip.image_url, self.context.provider.instance_id, description
+                clip.image_url, self.context.provider.instance_id, self._get_synopsis(clip)
             ),
             provider_mappings={self._create_provider_mapping(clip.pid)},
         )
