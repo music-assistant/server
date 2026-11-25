@@ -650,10 +650,11 @@ def calculate_content_length(
     return int((320000 / 8) * seconds)
 
 
-# Bump whenever an encoder setting in get_ffmpeg_args moves the encoded size. The
-# content-length cache holds measured bytes, so a stale entry announces a body we no
-# longer produce. Older entries are never read again and expire on their own.
-OUTPUT_ENCODING_REVISION: Final[int] = 2
+# Bump whenever an encoder setting in get_ffmpeg_args, or the header get_ffmpeg_stream
+# writes, moves the encoded size. The content-length cache holds measured bytes, so a
+# stale entry announces a body we no longer produce. Older entries are never read again
+# and expire on their own.
+OUTPUT_ENCODING_REVISION: Final[int] = 3
 
 
 def get_output_format_key(fmt: AudioFormat) -> str:
