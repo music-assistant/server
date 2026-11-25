@@ -1822,7 +1822,7 @@ class AirPlayPlayer(PlayerProtocol):
                 # synced into a group outside the original one = deliberate regroup.
                 # Still pointing at an original candidate is fine: a static group
                 # keeps the sync membership while only the session lost this player.
-                or (self.synced_to and self.synced_to not in (*candidate_ids, *target_ids))
+                or (self.synced_to and self.synced_to not in candidate_ids)
                 or self._plays_outside_group
             ):
                 # the player was grouped or repurposed by other means meanwhile

@@ -2010,6 +2010,45 @@ async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_announcement_that_comes_early_counts() -> None:
+    """A device that announces itself too soon after an attempt is tried later on."""
+    player = _make_idle_player()
+
+    with patch(_NO_DELAYS, (0.01,)):
+        attempt = asyncio.create_task(player._wait_rejoin_attempt(1, "group"))
+        await asyncio.sleep(0)
+        player._announced.set()
+
+        assert await asyncio.wait_for(attempt, 1)
+
+    assert not player._announced.is_set()
+
+
+@pytest.mark.parametrize(
+    ("state", "counted_in"),
+    [
+        ({}, True),
+        ({"active_group": "group"}, True),
+        ({"active_group": "other_group"}, False),
+        ({"synced_to": "member"}, True),
+        ({"synced_to": "other"}, False),
+        ({"player_id": "other"}, False),
+    ],
+    ids=str,
+)
+def test_belongs_to_a_group_it_is_not_taken_out_of(state: dict[str, Any], counted_in: bool) -> None:
+    """A player that its group does not count in, or that is grouped elsewhere, is out of it."""
+    player = _make_idle_player()
+    values = {"player_id": "lost", "active_group": None, "synced_to": None} | state
+    group = MagicMock()
+    group.own_protocol.counts_in = lambda player_id: player_id in ("lost", "member")
+    _players_mock(player).get_player = {"group": group}.get
+
+    with patch.object(AirPlayPlayer, "player", MagicMock(**values)):
+        assert player._group_counting_in("group") is (group if counted_in else None)
+
+
+@pytest.mark.asyncio
 async def test_rejoins_the_group_it_fell_out_of_until_it_is_done() -> None:
     """A player brings itself back to the group player it fell out of, and to no other one."""
     player = _make_idle_player()
