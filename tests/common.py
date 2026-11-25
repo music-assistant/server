@@ -852,6 +852,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "active_output_protocol": None,
         "active_mass_source": None,
         "fake_paused": False,
+        "fake_pause_ending": False,
         "sleep_timer_expires_at": None,
         "sleep_timer_mode": None,
         "extra_attributes": {},

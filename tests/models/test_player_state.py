@@ -803,13 +803,21 @@ class TestFakePause:
 
         assert state.playback_state == PlaybackState.PAUSED
 
-    def test_a_synced_player_shows_what_its_leader_plays(self) -> None:
-        """A player that joined another one shows the state of that one."""
+    @pytest.mark.parametrize("leader_paused", [True, False])
+    def test_a_synced_player_shows_the_pause_of_its_leader(self, leader_paused: bool) -> None:
+        """A player synced over an audio protocol pauses with its leader, not by itself."""
         state = _derive(
-            fake_paused=True, own=_own(synced_to="leader_1"), peers={"leader_1": _peer("leader_1")}
+            fake_paused=not leader_paused,
+            linked=(make_protocol_snapshot("airplay_1", synced_to="leader_1"),),
+            active_output_protocol="airplay_1",
+            active_protocol=make_protocol_snapshot("airplay_1", synced_to="leader_1"),
+            peers={"leader_1": _peer("leader_1", fake_paused=leader_paused)},
         )
 
-        assert state.playback_state == PlaybackState.IDLE
+        assert state.synced_to == "leader_1"
+        assert state.playback_state == (
+            PlaybackState.PAUSED if leader_paused else PlaybackState.IDLE
+        )
 
     def test_a_group_member_does_not_show_a_pause_of_its_own(self) -> None:
         """A player a group holds shows what that group plays."""
@@ -820,9 +828,10 @@ class TestFakePause:
         assert state.active_group == "group_1"
         assert state.playback_state == PlaybackState.IDLE
 
-    def test_a_player_switched_off_shows_as_idle(self) -> None:
+    @pytest.mark.parametrize("values", [{"offline_by_power_control": True}, {"powered": False}])
+    def test_a_player_switched_off_shows_as_idle(self, values: dict[str, Any]) -> None:
         """A device without power is not paused."""
-        state = _derive(fake_paused=True, offline_by_power_control=True)
+        state = _derive(fake_paused=True, **values)
 
         assert state.playback_state == PlaybackState.IDLE
 
@@ -2403,26 +2412,20 @@ class TestEffects:
         assert state.active_output_protocol == (None if clears else active_output)
 
     @pytest.mark.parametrize(
-        ("fake_paused", "previous", "own", "ended"),
+        ("ending", "own", "ended"),
         [
-            (True, PlaybackState.PAUSED, PlaybackState.PLAYING, True),
+            (True, PlaybackState.PLAYING, True),
+            (True, PlaybackState.IDLE, False),
             # its output still has to stop for the pause
-            (True, PlaybackState.PLAYING, PlaybackState.PLAYING, False),
-            (True, PlaybackState.PAUSED, PlaybackState.IDLE, False),
-            (False, PlaybackState.PAUSED, PlaybackState.PLAYING, False),
+            (False, PlaybackState.PLAYING, False),
         ],
-        ids=["plays_on", "still_stopping", "still_paused", "real_pause"],
+        ids=["plays_on", "starts", "still_stopping"],
     )
     def test_a_fake_pause_ends_once_the_player_plays_on(
-        self, fake_paused: bool, previous: PlaybackState, own: PlaybackState, ended: bool
+        self, ending: bool, own: PlaybackState, ended: bool
     ) -> None:
-        """Playback ends the pause a player is shown in, not the playback before it."""
-        previous_state = make_player_state(PLAYER_ID)
-        previous_state.playback_state = previous
-
-        effects = _effects(
-            fake_paused=fake_paused, previous_state=previous_state, own=_own(playback_state=own)
-        )
+        """Playback that started ends the pause, not the playback before it."""
+        effects = _effects(fake_paused=True, fake_pause_ending=ending, own=_own(playback_state=own))
 
         assert effects.fake_pause_ended is ended
 

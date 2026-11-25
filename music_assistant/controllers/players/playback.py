@@ -758,9 +758,10 @@ class PlaybackMixin(_PlayerControllerBase):
         # resume — and one that cannot be re-selected once its plugin has let go.
         if media.media_type not in (MediaType.AUDIO_SOURCE, MediaType.ANNOUNCEMENT):
             await self._release_audio_source(player_id)
-        if player.playback_state == PlaybackState.PLAYING:
-            # its output did not stop for the pause yet, so it can not show that it plays on
-            player.set_fake_paused(False)
+        if player.fake_paused:
+            player.end_fake_pause()
+            # a player that does not get to play goes idle after all
+            self._schedule_fake_pause_end(player_id)
         # set active source if media has a source_id (e.g. plugin source or mass queue source)
         if media.source_id:
             player.set_active_mass_source(media.source_id)
@@ -1062,12 +1063,7 @@ class PlaybackMixin(_PlayerControllerBase):
         # set before the output is silent, so the player never shows as idle in between
         player.set_fake_paused(True)
         player.mark_stop_called()
-        self.mass.call_later(
-            self.mass.player_queues._get_pause_timeout(),
-            self._end_fake_pause,
-            player_id,
-            task_id=f"fake_pause_{player_id}",
-        )
+        self._schedule_fake_pause_end(player_id)
         try:
             if (output := player.resolve_output_protocol()) is not None:
                 await output.hold()
@@ -1076,18 +1072,36 @@ class PlaybackMixin(_PlayerControllerBase):
             player.set_fake_paused(False)
             raise
 
+    def _schedule_fake_pause_end(self, player_id: str) -> None:
+        """
+        Have the fake pause of a player end once the pause timeout passed, counted from now.
+
+        :param player_id: player_id of the player.
+        """
+        self.mass.call_later(
+            self.mass.player_queues._get_pause_timeout(),
+            self._end_fake_pause,
+            player_id,
+            task_id=f"fake_pause_{player_id}",
+        )
+
     async def _end_fake_pause(self, player_id: str) -> None:
         """
-        Stop a player that is still shown as paused once the pause timeout passed.
+        End the fake pause of a player and stop it, unless it got something else to play.
 
         :param player_id: player_id of the player.
         """
         async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
             if (player := self.get_player(player_id)) is None or not player.fake_paused:
                 return
+            still_paused = (
+                player.playback_state == PlaybackState.PAUSED
+                and not player.fake_pause_ending
+                # a player that joined a group since plays what that plays
+                and self._resolve_playback_owner(player) is player
+            )
             player.set_fake_paused(False)
-            # a player that joined a group since plays what that plays
-            if self._resolve_playback_owner(player) is player:
+            if still_paused:
                 with suppress(PlayerUnavailableError):
                     await self._handle_cmd_stop(player_id)
 

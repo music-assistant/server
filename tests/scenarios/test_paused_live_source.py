@@ -25,6 +25,7 @@ from .test_group_power_on import _announce
 
 if TYPE_CHECKING:
     from music_assistant_models.player import Player as PlayerState
+    from music_assistant_models.player import PlayerMedia
 
 INSTANCE_ID = "spotify_connect--test"
 SOURCE_ID = "main"
@@ -139,6 +140,32 @@ async def _speaker(scenario: Scenario) -> tuple[FakeProtocol, str]:
     return speakers[0], player_ids[0]
 
 
+async def _airplay_speakers(
+    scenario: Scenario, *names: str
+) -> tuple[list[FakeProtocol], list[str]]:
+    """
+    Return speakers that play over AirPlay and can group, and their player ids.
+
+    :param names: The names of the speakers.
+    """
+    provider = await scenario.add_provider("airplay")
+    speakers = [
+        provider.protocol(
+            f"ap_{name.lower()}",
+            name,
+            role="audio",
+            identifiers={IdentifierType.MAC_ADDRESS: f"00:11:22:33:44:0{index}"},
+            supported_features={*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS},
+            can_group_with={provider.instance_id},
+        )
+        for index, name in enumerate(names)
+    ]
+    for speaker in speakers:
+        await scenario.register(speaker)
+    await scenario.settle()
+    return speakers, [cast("str", scenario.player_of(speaker)) for speaker in speakers]
+
+
 def _state(scenario: Scenario, player_id: str) -> PlayerState:
     """Return what a client sees of a player."""
     state = scenario.player(player_id)
@@ -209,6 +236,41 @@ async def test_play_on_a_paused_live_source_goes_to_the_source(
     # its provider sees the stream end now, and lets go of the source itself
     await scenario.mass.players.cmd_stop(player_id)
     live_source.provider.on_source_released.assert_not_awaited()
+
+
+async def test_a_resumed_live_source_that_ends_leaves_its_player_idle(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """The pause is over once the player plays, so a stream that ends is no pause again."""
+    speaker, player_id = await _speaker(scenario)
+    await live_source.play(player_id)
+    await live_source.pause(player_id)
+    await scenario.advance(5)
+    await live_source.play(player_id)
+
+    await scenario.report(speaker, playback_state=PlaybackState.IDLE)
+
+    assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+
+
+async def test_a_player_synced_over_an_audio_protocol_pauses_with_its_leader(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """Every speaker of an AirPlay group shows as paused, and as idle after the pause timeout."""
+    _, (kitchen_id, office_id) = await _airplay_speakers(scenario, "Kitchen", "Office")
+    await live_source.play(kitchen_id)
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id])
+    await scenario.advance(5)
+    assert _state(scenario, office_id).synced_to == kitchen_id
+
+    await live_source.pause(kitchen_id)
+    await scenario.advance(5)
+
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PAUSED
+    assert _state(scenario, office_id).playback_state == PlaybackState.PAUSED
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT)
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.IDLE
+    assert _state(scenario, office_id).playback_state == PlaybackState.IDLE
 
 
 async def test_a_paused_live_source_goes_idle_at_the_pause_timeout(
@@ -296,23 +358,30 @@ async def test_a_paused_live_source_that_moves_leaves_its_player_idle(
     assert state.active_source == kitchen_id
 
 
+@pytest.mark.parametrize("leader_state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
 async def test_a_paused_player_that_joins_a_group_plays_along(
-    scenario: Scenario, live_source: LiveSource
+    scenario: Scenario, live_source: LiveSource, leader_state: PlaybackState
 ) -> None:
-    """The pause timeout does not stop a player that plays along with another one by then."""
-    (kitchen, _), (kitchen_id, office_id) = await _speakers(scenario, "Kitchen", "Office")
+    """
+    The pause timeout does not stop a player that plays along with another one by then.
+
+    :param leader_state: What the other one does when the pause timeout passes.
+    """
+    (kitchen, office), (kitchen_id, office_id) = await _speakers(scenario, "Kitchen", "Office")
     await live_source.play(kitchen_id)
     await live_source.pause(kitchen_id)
     await scenario.advance(5)
     await scenario.mass.players.cmd_set_members(office_id, player_ids_to_add=[kitchen_id])
     await scenario.advance(5)
     await scenario.play(office_id)
+    await scenario.report(office, playback_state=leader_state)
     kitchen.commands.clear()
 
-    await scenario.advance(DEFAULT_PAUSE_TIMEOUT)
+    # past the pause timeout of Kitchen, and not of Office
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT - 8)
 
     assert _names(kitchen) == []
-    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, kitchen_id).playback_state == leader_state
     await scenario.mass.players.cmd_stop(office_id)
     await scenario.idle()
 
@@ -369,17 +438,159 @@ async def test_an_announcement_on_a_paused_live_source_leaves_the_source(
     live_source.provider.on_source_released.assert_not_awaited()
 
 
+async def test_a_source_that_pauses_because_of_a_stop_leaves_its_player_idle(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """A source that pauses as its player was stopped does not turn the stop into a pause."""
+    speaker, player_id = await _speaker(scenario)
+    await live_source.play(player_id)
+    speaker.commands.clear()
+    await scenario.mass.players.cmd_stop(player_id)
+    await scenario.advance(1)
+    scenario.clear_events()
+
+    await live_source.pause(player_id)
+    await scenario.advance(1)
+
+    assert _names(speaker) == ["stop"]
+    assert PlaybackState.PAUSED not in _seen_states(scenario, player_id)
+    assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+
+
+async def test_a_source_that_pauses_while_its_player_still_stops_leaves_it_idle(
+    scenario: Scenario, live_source: LiveSource, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A speaker that reports a stop late is not taken for one that was paused."""
+    speaker, player_id = await _speaker(scenario)
+    await live_source.play(player_id)
+    # the speaker takes the stop, and reports it late
+    monkeypatch.setattr(speaker, "stop", AsyncMock())
+    await scenario.mass.players.cmd_stop(player_id)
+
+    await live_source.pause(player_id)
+    await scenario.report(speaker, playback_state=PlaybackState.IDLE)
+
+    assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+
+
+async def test_a_source_that_pauses_before_its_player_plays_leaves_it_idle(
+    scenario: Scenario, live_source: LiveSource, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A player that has not played the source yet has nothing to be paused on."""
+    speaker, player_id = await _speaker(scenario)
+    monkeypatch.setattr(speaker, "play_media", AsyncMock())
+    await live_source.play(player_id)
+
+    await live_source.pause(player_id)
+    await scenario.advance(1)
+
+    assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+
+
+async def test_a_resume_shortly_before_the_pause_timeout_plays_on(
+    scenario: Scenario, live_source: LiveSource, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A speaker that is slow to start is not stopped by the pause timeout meanwhile."""
+    (speaker,), (player_id,) = await _airplay_speakers(scenario, "Kitchen")
+    await live_source.play(player_id)
+    await live_source.pause(player_id)
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT - 2)
+    speaker.commands.clear()
+    scenario.clear_events()
+
+    async def _starts_late(media: PlayerMedia) -> None:
+        speaker._apply("play_media", media, current_media=media)
+
+    monkeypatch.setattr(speaker, "play_media", _starts_late)
+    await live_source.play(player_id)
+    await scenario.advance(3)
+    assert _state(scenario, player_id).playback_state == PlaybackState.PAUSED
+    await scenario.report(speaker, playback_state=PlaybackState.PLAYING)
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT)
+
+    assert _names(speaker) == ["play_media"]
+    assert _seen_states(scenario, player_id)[-1] == PlaybackState.PLAYING
+    assert PlaybackState.IDLE not in _seen_states(scenario, player_id)
+
+
+async def test_a_resume_that_never_plays_leaves_its_player_idle(
+    scenario: Scenario, live_source: LiveSource, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A speaker that takes the resume and stays silent is not shown as paused for good."""
+    (speaker,), (player_id,) = await _airplay_speakers(scenario, "Kitchen")
+    await live_source.play(player_id)
+    await live_source.pause(player_id)
+    await scenario.advance(5)
+    speaker.commands.clear()
+    monkeypatch.setattr(speaker, "play_media", AsyncMock())
+    await live_source.play(player_id)
+    assert _state(scenario, player_id).playback_state == PlaybackState.PAUSED
+
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT)
+
+    assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+    # it can still get to play
+    assert _names(speaker) == []
+
+
+async def test_a_pause_during_a_resume_silences_the_speaker(
+    scenario: Scenario, live_source: LiveSource, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source that pauses again before the speaker plays stays paused, and stops the start."""
+    speaker, player_id = await _speaker(scenario)
+    await live_source.play(player_id)
+    await live_source.pause(player_id)
+    await scenario.advance(5)
+    speaker.commands.clear()
+
+    async def _starts_late(media: PlayerMedia) -> None:
+        speaker._apply("play_media", media)
+
+    monkeypatch.setattr(speaker, "play_media", _starts_late)
+    await live_source.play(player_id)
+    await live_source.pause(player_id)
+    await scenario.advance(1)
+
+    assert _names(speaker) == ["play_media", "stop"]
+    assert _state(scenario, player_id).playback_state == PlaybackState.PAUSED
+    # the speaker got to play the start before it took the stop
+    await scenario.report(speaker, playback_state=PlaybackState.PLAYING)
+    await scenario.report(speaker, playback_state=PlaybackState.IDLE)
+    assert _state(scenario, player_id).playback_state == PlaybackState.PAUSED
+
+
+async def test_what_the_speaker_plays_itself_outlasts_the_pause_timeout(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """The pause timeout does not stop a speaker that plays something of its own by then."""
+    speaker, player_id = await _speaker(scenario)
+    await live_source.play(player_id)
+    await live_source.pause(player_id)
+    await scenario.advance(5)
+    speaker.commands.clear()
+    await scenario.report(speaker, playback_state=PlaybackState.PLAYING)
+
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT)
+
+    assert _names(speaker) == []
+    assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
+
+
 async def test_a_source_that_plays_on_before_the_speaker_stopped_is_not_paused(
     scenario: Scenario, live_source: LiveSource, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A resume that overtakes the pause leaves no pause behind for when playback ends."""
     speaker, player_id = await _speaker(scenario)
     await live_source.play(player_id)
-    # the speaker takes the stop, and reports it late
+    # the speaker takes the stop and the start, and reports neither before it stopped
     monkeypatch.setattr(speaker, "stop", AsyncMock())
+    monkeypatch.setattr(speaker, "play_media", AsyncMock())
     await live_source.pause(player_id)
     assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
     await live_source.play(player_id)
+    player = scenario.mass.players.get_player(player_id)
+    assert player is not None
+    assert not player.stop_called
 
     await scenario.report(speaker, playback_state=PlaybackState.IDLE)
 

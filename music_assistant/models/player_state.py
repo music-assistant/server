@@ -123,6 +123,7 @@ class PeerSnapshot:
     :param state: The state it publishes.
     :param available_for_playback: Whether it is enabled, reachable and set up. Only
         given where it counts: for the players grouped to the player.
+    :param fake_paused: Whether it shows as paused while its output is idle.
     """
 
     player_id: str
@@ -131,6 +132,7 @@ class PeerSnapshot:
     grouping_locked: bool
     state: PlayerState
     available_for_playback: bool | None = None
+    fake_paused: bool = False
 
 
 @dataclass(slots=True)
@@ -229,6 +231,7 @@ class StateInputs:
         "native" or None.
     :param active_mass_source: Id of the last active Music Assistant source.
     :param fake_paused: Show the player as paused while its output is idle.
+    :param fake_pause_ending: Playback started since, the pause ends once the player plays.
     :param sleep_timer_expires_at: Timestamp the sleep timer stops playback at.
     :param sleep_timer_mode: Point at which the sleep timer stops playback.
     :param extra_attributes: Extra attributes of the player.
@@ -298,6 +301,7 @@ class StateInputs:
     active_output_protocol: str | None
     active_mass_source: str | None
     fake_paused: bool
+    fake_pause_ending: bool
     sleep_timer_expires_at: float | None
     sleep_timer_mode: SleepTimerMode | None
     extra_attributes: dict[str, EXTRA_ATTRIBUTES_TYPES]
@@ -478,11 +482,7 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         default_name=device_name if device_name and inputs.default_name != device_name else None,
         left_idle=was_idle and not is_idle,
         went_idle=is_idle and not was_idle,
-        # an output that still has to stop for the pause plays on as well, but that player
-        # was not shown as paused yet
-        fake_pause_ended=inputs.fake_paused
-        and output_state == PlaybackState.PLAYING
-        and prev_state.playback_state == PlaybackState.PAUSED,
+        fake_pause_ended=inputs.fake_pause_ending and output_state == PlaybackState.PLAYING,
         foreign_protocol_id=foreign_app.protocol_id if foreign_app else None,
         clear_active_output=follows_native_leader,
     )
@@ -820,14 +820,17 @@ def _shows_fake_pause(
     active_group: str | None,
 ) -> bool:
     """Return whether the player is shown as paused although its output is idle."""
-    return (
-        inputs.fake_paused
-        and output_state == PlaybackState.IDLE
-        # a player that follows another one shows what that one plays
-        and not synced_to
-        and not active_group
-        and not inputs.offline_by_power_control
-    )
+    if (
+        output_state != PlaybackState.IDLE
+        or inputs.offline_by_power_control
+        or inputs.powered is False
+    ):
+        return False
+    if synced_to:
+        # the output of a synced player stopped along with that of its leader
+        sync_parent = inputs.peers.get(synced_to)
+        return sync_parent is not None and sync_parent.fake_paused
+    return inputs.fake_paused and not active_group
 
 
 def _active_source(

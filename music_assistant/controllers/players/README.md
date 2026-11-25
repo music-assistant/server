@@ -727,11 +727,11 @@ and still waits for another one, holds that off.
   has the player silenced (`PlayerProtocol.hold`) and shown as paused with `pause_audio_source`,
   and plays on by selecting the source again. This fake pause (`Player.fake_paused`) is the
   player's: it shows over an idle output and ends when the player plays again, is stopped, loses
-  the source, or after the pause timeout of the queues. The session outlives it. A source carries its own name and the player it belongs to;
-  `get_audio_source_name` composes the name for where it is shown: the name alone on that player,
-  with the player's name after it elsewhere. An input a speaker offers from another speaker of its
-  system, such as the line-in of another Sonos speaker, names that player in `owner_player_id` of
-  its source list entry and is named by the same rule.
+  the source, or after the pause timeout of the queues. The session outlives it. A source carries
+  its own name and the player it belongs to; `get_audio_source_name` composes the name for where it
+  is shown: the name alone on that player, with the player's name after it elsewhere. An input a
+  speaker offers from another speaker of its system, such as the line-in of another Sonos speaker,
+  names that player in `owner_player_id` of its source list entry and is named by the same rule.
 - **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
   player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
   an audio protocol is its active output, its own protocol plays (a paused player keeps its place

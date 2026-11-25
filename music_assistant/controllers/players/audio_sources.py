@@ -604,7 +604,8 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
 
         Call this from a plugin when its source pauses upstream and delivers no more audio. The
         source keeps the player: the plugin plays on by selecting it again. A player that stays
-        paused for the pause timeout goes idle, and can still be played on after that.
+        paused for the pause timeout goes idle, and can still be played on after that. A player
+        that does not play is only stopped.
 
         Ignored unless the source playing on the player is owned by ``provider_instance_id``
         with ``item_id == source_id``.
@@ -629,6 +630,12 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
                 )
                 return
             session.paused = True
+            if not player.fake_paused and (
+                player.playback_state == PlaybackState.IDLE or player.stop_called
+            ):
+                # stopped already (a source can pause because of that) or not started yet
+                await self._handle_cmd_stop(player.player_id)
+                return
             await self._handle_fake_pause(player.player_id)
 
     async def release_provider_sources(self, provider_instance_id: str) -> None:
