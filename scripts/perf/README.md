@@ -117,12 +117,6 @@ for borderline results run the suite twice.
 
 ### CI
 
-Automatic per-PR performance checks are handled by **CodSpeed**
-(`.github/workflows/codspeed.yml` + `tests/benchmarks/`): it measures CPU
-instruction counts under valgrind, which is deterministic on shared runners,
-and comments on PRs that touch core code. Use this suite instead for local
-deep-dives: it measures real wall/CPU time, RSS, streaming and loop lag on a
-full server process — things CodSpeed's in-process model cannot see. Runner
-variance on shared GitHub-hosted runners is far larger than the regressions
-the timing-based metrics are meant to catch, so this suite has no CI job of
-its own.
+This suite has no CI job, run it locally. Runner variance on shared
+GitHub-hosted runners is far larger than the regressions the timing-based
+metrics are meant to catch.
