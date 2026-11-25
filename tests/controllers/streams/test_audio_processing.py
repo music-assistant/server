@@ -2231,7 +2231,7 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
         uri="test://track",
         seek_position=0,
         seconds_streamed=0,
-        duration=300,
+        duration=4,
         is_realtime=False,
     )
     queue_track = SimpleNamespace(
@@ -2241,7 +2241,7 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
         media_type=MediaType.TRACK,
         media_item=None,
         streamdetails=streamdetails,
-        duration=300,
+        duration=4,
         extra_attributes={},
     )
     queue = SimpleNamespace(
@@ -2296,20 +2296,526 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
         assert streamdetails.seconds_streamed == 3
         assert entry.seconds_streamed == 3
         mass.player_queues.queue_buffer_completed.assert_called_once()
-    expected_duration = 300 if source_cancelled else 3
+    # a clean source delivered the 4 s item within tolerance, so its 3 s is the length;
+    # a released one stopped short and the item keeps its declared length
+    expected_duration = 4 if source_cancelled else 3
     assert streamdetails.duration == expected_duration
     assert queue_track.duration == expected_duration
     assert entry.duration == (None if source_cancelled else 3)
 
 
+def _flow_track(
+    pcm_format: AudioFormat,
+    item_id: str,
+    *,
+    duration: int = 300,
+    still_delivering: bool = False,
+    aborted: bool = False,
+) -> SimpleNamespace:
+    """
+    Return a queue item a flow stream plays.
+
+    :param pcm_format: PCM format the flow stream is rendered in.
+    :param item_id: Id the item streams under.
+    :param duration: The item's declared length.
+    :param still_delivering: Whether the source is still delivering instead of having ended.
+    :param aborted: Whether a stop released the source mid-item instead.
+    """
+    item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id=item_id,
+        name=item_id,
+        media_type=MediaType.TRACK,
+        media_item=None,
+        origin=None,
+        streamdetails=SimpleNamespace(
+            audio_format=pcm_format,
+            # the source has delivered all it ever will, so its tail may be held back
+            buffer=_bare_buffer(cancelled=False, eof=True, has_error=False),
+            fade_in=False,
+            stream_error=False,
+            tail_overlap=None,
+            uri=f"test://{item_id}",
+            seek_position=0,
+            seconds_streamed=0,
+            duration=duration,
+            is_realtime=False,
+        ),
+        duration=duration,
+        extra_attributes={},
+    )
+    if still_delivering:
+        ready = asyncio.Event()
+        ready.set()
+        item.streamdetails.buffer = _bare_buffer(
+            cancelled=False,
+            has_error=False,
+            is_valid=lambda *_args: True,
+            duration_available=duration,
+            eof=False,
+            ready=ready,
+        )
+    elif aborted:
+        # a stop released the buffer: it ends cleanly after what it delivered, and no
+        # new fade may be planned against it
+        ready = asyncio.Event()
+        ready.set()
+        item.streamdetails.buffer = _bare_buffer(
+            cancelled=True,
+            eof=True,
+            has_error=False,
+            is_valid=lambda *_args: False,
+            duration_available=duration,
+            ready=ready,
+        )
+    return item
+
+
+def _flow_context(
+    *,
+    announced_item: SimpleNamespace,
+    load_next: list[Any] | Exception | type[Exception],
+) -> tuple[StreamsAudio, MagicMock, Any, Any]:
+    """
+    Return a crossfading flow stream and the play log it writes to.
+
+    :param announced_item: The item the queue announces after the one that plays.
+    :param load_next: What loading the next queue item returns, in order, or the error
+        that ends the queue.
+    """
+    mass = MagicMock()
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=load_next)
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.get_next_item.return_value = announced_item
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    mass.config.get_raw_core_config_value.return_value = 8
+    protocol = MagicMock()
+    protocol.config.get_value.return_value = "fixed_48000"
+    protocol.get_supported_sample_rates.return_value = []
+    mass.players.get_output_protocol.return_value = protocol
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    return audio, mass, queue, queue_data
+
+
+def _flow_smart_fade(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: StreamsAudio,
+    *,
+    fadein_trimmed: float = 0.0,
+    crossfade: float = 8.0,
+    pre_crossfade: float = 0.0,
+) -> AsyncMock:
+    """
+    Stub the smart fade the flow's boundary plans, trimmed and overlapping as asked.
+
+    :param fadein_trimmed: Head of the incoming item the plan trims away.
+    :param crossfade: Overlap the plan blends.
+    :param pre_crossfade: Outgoing audio the blend plays before the overlap.
+    """
+    build = AsyncMock(
+        return_value=SimpleNamespace(
+            timing_info=SimpleNamespace(
+                fadein_trimmed_duration=fadein_trimmed,
+                crossfade_duration=crossfade,
+                pre_crossfade_duration=pre_crossfade,
+            )
+        )
+    )
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+    return build
+
+
+def _flow_mixer(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: StreamsAudio,
+    *,
+    plays_the_incoming_audio: bool = True,
+) -> list[int]:
+    """
+    Stub the boundary mix with a lossless stand-in, so the emitted total stays checkable.
+
+    :param plays_the_incoming_audio: Whether the blend passes the incoming audio on; a mix
+        that swallows it stands in for a head the plan trimmed away.
+    :return: Length of the incoming audio each blend consumed, per mix call.
+    """
+    consumed: list[int] = []
+
+    async def _mix(
+        _smart_fade: object,
+        *,
+        fade_in_part: bytes | AsyncGenerator[bytes],
+        fade_out_part: bytes,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        # the outgoing side first, like a blend that starts before the incoming audio lands
+        yield fade_out_part
+        incoming = (
+            [fade_in_part]
+            if isinstance(fade_in_part, bytes)
+            else [chunk async for chunk in fade_in_part]
+        )
+        consumed.append(sum(len(chunk) for chunk in incoming))
+        if plays_the_incoming_audio:
+            for chunk in incoming:
+                yield chunk
+
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _mix)
+    return consumed
+
+
+def _flow_source(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: StreamsAudio,
+    pcm_format: AudioFormat,
+    delivered_seconds: int | dict[str, int],
+) -> None:
+    """
+    Serve the flow's item streams with audible PCM.
+
+    :param delivered_seconds: Audio each item's source delivers, or one length per item id.
+    """
+
+    async def _item_stream(
+        queue_item: Any, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        seconds = (
+            delivered_seconds[queue_item.queue_item_id]
+            if isinstance(delivered_seconds, dict)
+            else delivered_seconds
+        )
+        # audible PCM: the holdback reads zero-filled bytes as trailing silence
+        for _ in range(seconds):
+            yield b"\x10\x20" * (pcm_format.pcm_sample_size // 2)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+
+
+@pytest.mark.asyncio
+async def test_flow_crossfade_keeps_the_length_of_an_item_whose_source_ends_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crossfaded item whose source ends mid-track keeps its own length in the play log."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 300
+    delivered_seconds = 40
+    first_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    second_item = _flow_track(
+        pcm_format, "item-2", duration=declared_duration, still_delivering=True
+    )
+    audio, mass, queue, queue_data = _flow_context(
+        announced_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    build = _flow_smart_fade(monkeypatch, audio)
+    mix_calls = _flow_mixer(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, delivered_seconds)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    # the item really was blended into the next one, so this is the overlap path
+    build.assert_awaited_once()
+    assert len(mix_calls) == 1
+    faded = {
+        (call.kwargs["queue_item_id"], call.kwargs["queue_processing"].crossfade_mode)
+        for call in mass.streams.audio_processing.update_item_context.call_args_list
+    }
+    assert faded >= {
+        ("item-1", CrossfadeMode.STANDARD_CROSSFADE),
+        ("item-2", CrossfadeMode.STANDARD_CROSSFADE),
+    }
+    # 40 s of a 300 s item is a source that stopped, not the item's end
+    assert first_item.streamdetails.duration == first_item.duration == declared_duration
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.queue_item_id == "item-1"
+    assert entry.seconds_streamed == delivered_seconds
+    assert entry.duration is None
+
+
+@pytest.mark.asyncio
+async def test_flow_end_does_not_hand_the_held_tail_a_duration_for_a_short_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tail held at the flow end is played out, but does not invent a length for it."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 300
+    delivered_seconds = 40
+    first_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    # the queue still announces an item after this one, so its tail is held back for a fade
+    queued_item = _flow_track(
+        pcm_format, "item-2", duration=declared_duration, still_delivering=True
+    )
+    # the announced item turns out unplayable while loading, so the queue ends here, with a
+    # tail of the last played item still in hand
+    audio, mass, queue, queue_data = _flow_context(announced_item=queued_item, load_next=QueueEmpty)
+    build = _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, delivered_seconds)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    total_bytes = 0
+    async for chunk in stream:
+        total_bytes += len(chunk)
+
+    # no second item ever played, so nothing was blended
+    build.assert_not_awaited()
+    # the tail was held back (only 32 s of the 40 s source went out during the item) and
+    # played out at the flow end instead of being dropped with the stream
+    assert total_bytes == delivered_seconds * pcm_format.pcm_sample_size
+    assert mass.player_queues.queue_buffer_completed.call_args.args == ("queue-1", True)
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.queue_item_id == "item-1"
+    assert entry.seconds_streamed == delivered_seconds
+    # the source stopped mid-track, so the tail is not the item's length and may not
+    # become its duration now that it has played out
+    assert entry.duration is None
+    assert first_item.streamdetails.duration == first_item.duration == declared_duration
+
+
+@pytest.mark.asyncio
+async def test_flow_keeps_the_declared_length_of_a_resumed_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resumed item's length is not rebuilt from a seek that the source did not take."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 4
+    first_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    # the source did not take the seek, so it serves the whole item from its start
+    first_item.streamdetails.seek_position = 100
+    queued_item = _flow_track(
+        pcm_format, "item-2", duration=declared_duration, still_delivering=True
+    )
+    audio, _mass, queue, queue_data = _flow_context(
+        announced_item=queued_item, load_next=QueueEmpty
+    )
+    _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, declared_duration)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.seek_position == 100
+    assert entry.duration is None
+    assert first_item.streamdetails.duration == first_item.duration == declared_duration
+
+
+@pytest.mark.asyncio
+async def test_flow_measures_an_item_that_is_longer_than_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An item that was not resumed and plays on past a too short declared length is measured."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    delivered_seconds = 6
+    first_item = _flow_track(pcm_format, "item-1", duration=1)
+    queued_item = _flow_track(pcm_format, "item-2", duration=1, still_delivering=True)
+    audio, _mass, queue, queue_data = _flow_context(
+        announced_item=queued_item, load_next=QueueEmpty
+    )
+    _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, delivered_seconds)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    assert queue_data.flow_mode_stream_log[0].duration == delivered_seconds
+    assert first_item.streamdetails.duration == first_item.duration == delivered_seconds
+
+
+@pytest.mark.asyncio
+async def test_flow_end_hands_the_held_tail_to_the_item_it_belongs_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tail held for a fade is credited to its own item, not to a later one without audio."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    delivered_seconds = 40
+    first_item = _flow_track(pcm_format, "item-1", duration=300)
+    silent_item = _flow_track(pcm_format, "item-2", duration=300, still_delivering=True)
+    queued_item = _flow_track(pcm_format, "item-3", duration=300, still_delivering=True)
+    audio, _mass, queue, _queue_data = _flow_context(
+        announced_item=queued_item, load_next=[silent_item, QueueEmpty]
+    )
+    _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, {"item-1": delivered_seconds, "item-2": 0})
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    assert first_item.streamdetails.seconds_streamed == delivered_seconds
+    assert silent_item.streamdetails.seconds_streamed == 0
+
+
+@pytest.mark.asyncio
+async def test_flow_end_does_not_give_an_aborted_last_item_the_previous_items_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An aborted last item does not inherit the previous item's measured length."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 300
+    delivered_seconds = 40
+    measured_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    # a stop released this item's source after 40 s, so it ends short of its own length
+    aborted_item = _flow_track(pcm_format, "item-2", duration=declared_duration, aborted=True)
+    # the queue still announces an item after it, so its tail is held back for a fade, but
+    # loading that item ends the queue, leaving the held tail to the flow's end
+    queued_item = _flow_track(
+        pcm_format, "item-3", duration=declared_duration, still_delivering=True
+    )
+    audio, mass, queue, queue_data = _flow_context(
+        announced_item=queued_item, load_next=[aborted_item, QueueEmpty]
+    )
+    build = _flow_smart_fade(monkeypatch, audio)
+    _flow_source(
+        monkeypatch,
+        audio,
+        pcm_format,
+        {
+            "item-1": declared_duration,
+            "item-2": delivered_seconds,
+            "item-3": delivered_seconds,
+        },
+    )
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", measured_item), pcm_format, session_id="session-1"
+    )
+
+    total_bytes = 0
+    async for chunk in stream:
+        total_bytes += len(chunk)
+
+    # the aborted item's buffer refuses a fade, so neither the boundary into it nor the
+    # one after it blended anything
+    build.assert_not_awaited()
+    entries = queue_data.flow_mode_stream_log
+    assert [entry.queue_item_id for entry in entries] == ["item-1", "item-2"]
+    # item-1 played out and was measured, so its entry carries its length
+    assert entries[0].duration == declared_duration
+    # the aborted item did not: the flow end plays its held tail out, but the length
+    # measured for item-1 must not stand in for item-2's
+    assert entries[1].duration is None
+    assert aborted_item.streamdetails.duration == aborted_item.duration == declared_duration
+    assert measured_item.streamdetails.duration == declared_duration
+    # the aborted item's held tail was played out at the flow's end, not dropped: every
+    # second either source delivered reached the player
+    assert total_bytes == (declared_duration + delivered_seconds) * pcm_format.pcm_sample_size
+    # the flow's end folded that tail into the aborted item's streamed time
+    assert aborted_item.streamdetails.seconds_streamed == delivered_seconds
+    assert mass.player_queues.queue_buffer_completed.call_args.args == ("queue-1", True)
+
+
+@pytest.mark.asyncio
+async def test_flow_keeps_the_declared_length_of_a_trimmed_but_fully_delivered_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track whose head the mixer trims keeps its own length, and the trim stays out of it."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 180
+    # the plan trims 5 s of the incoming head and blends 3 s: more than the guard's tolerance
+    fadein_trimmed = 5
+    crossfade = 3
+    pre_crossfade = 5
+    first_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    trimmed_item = _flow_track(
+        pcm_format, "item-2", duration=declared_duration, still_delivering=True
+    )
+    audio, mass, queue, queue_data = _flow_context(
+        announced_item=trimmed_item, load_next=[trimmed_item, QueueEmpty]
+    )
+    build = _flow_smart_fade(
+        monkeypatch,
+        audio,
+        fadein_trimmed=fadein_trimmed,
+        crossfade=crossfade,
+        pre_crossfade=pre_crossfade,
+    )
+    mix_calls = _flow_mixer(monkeypatch, audio, plays_the_incoming_audio=False)
+    # the item before the trim reaches its end a little short, as a full playthrough does,
+    # and the trimmed item delivers its whole source despite the trimmed head
+    _flow_source(
+        monkeypatch,
+        audio,
+        pcm_format,
+        {"item-1": declared_duration - 1, "item-2": declared_duration},
+    )
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    # the boundary really happened, and the mixer took the trimmed head plus the blend
+    # window out of the incoming item
+    build.assert_awaited_once()
+    assert mix_calls == [pcm_format.pcm_sample_size * (fadein_trimmed + crossfade)]
+    entries = queue_data.flow_mode_stream_log
+    assert [entry.queue_item_id for entry in entries] == ["item-1", "item-2"]
+    # a delivery that ends a little short is still the item's end: the tolerance takes it,
+    # so its measured length stands
+    assert entries[0].duration == declared_duration - 1
+    assert first_item.streamdetails.duration == declared_duration - 1
+    # the trimmed head is gone from what listeners hear; the item's media-time still starts
+    # where the trim put it, so the delivery reaches the item's own length
+    trimmed_entry = entries[1]
+    assert trimmed_entry.seek_position == fadein_trimmed + crossfade
+    assert trimmed_entry.seconds_streamed == declared_duration - (fadein_trimmed + crossfade)
+    assert trimmed_entry.duration == declared_duration
+    assert trimmed_item.streamdetails.duration == trimmed_item.duration == declared_duration
+    # the queue itself played out: the trim changed what was heard, not the arithmetic
+    assert mass.player_queues.queue_buffer_completed.call_args.args == ("queue-1", True)
+
+
 @pytest.mark.parametrize(
-    ("released_by_stop", "expected_duration"),
-    [(False, 3), (True, 180)],
-    ids=["clean_source", "source_released_by_a_stop"],
+    ("released_by_stop", "declared_duration", "expected_duration", "seek_position", "delivered"),
+    [
+        (False, 4, 3, 0, 3),
+        (True, 4, 4, 0, 3),
+        (False, 10, 10, 0, 3),
+        (False, 102, 103, 100, 3),
+        (False, 4, 4, 100, 3),
+        (False, 1, 5, 0, 5),
+        (False, 1, 1, 100, 5),
+    ],
+    ids=[
+        "clean_source",
+        "source_released_by_a_stop",
+        "clean_end_far_short_of_the_item",
+        "resumed_item_played_to_its_end",
+        "resumed_item_whose_seek_was_not_taken",
+        "item_longer_than_declared_is_measured",
+        "resumed_item_longer_than_declared_keeps_it",
+    ],
 )
 @pytest.mark.asyncio
 async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
-    monkeypatch: pytest.MonkeyPatch, released_by_stop: bool, expected_duration: int
+    monkeypatch: pytest.MonkeyPatch,
+    released_by_stop: bool,
+    declared_duration: int,
+    expected_duration: int,
+    seek_position: int,
+    delivered: int,
 ) -> None:
     """A single item whose buffer a stop released keeps its length, as in the flow."""
     mass = MagicMock()
@@ -2321,9 +2827,9 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
         stream_error=False,
         tail_overlap=None,
         uri="test://track",
-        seek_position=0,
+        seek_position=seek_position,
         seconds_streamed=0,
-        duration=180,
+        duration=declared_duration,
         is_realtime=False,
     )
     queue_item = SimpleNamespace(
@@ -2333,7 +2839,7 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
         media_type=MediaType.TRACK,
         media_item=None,
         streamdetails=streamdetails,
-        duration=180,
+        duration=declared_duration,
         extra_attributes={},
     )
     mass.player_queues.get.return_value = SimpleNamespace(
@@ -2343,7 +2849,7 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
     audio.setup()
 
     async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
-        for _ in range(3):
+        for _ in range(delivered):
             yield bytes(pcm_format.pcm_sample_size)
         if released_by_stop:
             # a stop detaches the buffer from the details before it releases it
@@ -2361,8 +2867,10 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
 
     chunks = [chunk async for chunk in stream]
 
-    assert len(chunks) == 3
-    assert streamdetails.seconds_streamed == 3
+    assert len(chunks) == delivered
+    assert streamdetails.seconds_streamed == delivered
+    # a source that delivered the item within tolerance measures its length, one that
+    # stopped short of it, released or not, leaves the declared length
     assert streamdetails.duration == expected_duration
     assert queue_item.duration == expected_duration
 
