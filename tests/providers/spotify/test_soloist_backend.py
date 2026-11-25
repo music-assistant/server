@@ -696,6 +696,38 @@ def _live_run(tmp_path: Path) -> _SingleTrackRun:
     return run
 
 
+async def test_a_takeover_stops_the_queue_before_its_stream_fails(tmp_path: Path) -> None:
+    """A stream failing before the queue stopped skips to the next item, taking the account back."""
+    run = _live_run(tmp_path)
+    tasks: list[asyncio.Future[Any]] = []
+
+    def _create_task(target: Any, *args: Any) -> asyncio.Future[Any]:
+        coro = target(*args) if callable(target) else target
+        task: asyncio.Future[Any] = asyncio.ensure_future(coro)
+        tasks.append(task)
+        return task
+
+    run.mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
+    consumer = asyncio.ensure_future(_collect(run))
+    await asyncio.sleep(0)
+    stream_failed_before_the_stop: list[bool] = []
+
+    async def _stop(_queue_id: str) -> None:
+        # the player acknowledges the stop only after a round trip
+        await asyncio.sleep(0.01)
+        stream_failed_before_the_stop.append(consumer.done())
+
+    queues = cast("MagicMock", run.mass).player_queues
+    queues.stop = AsyncMock(side_effect=_stop)
+    run._observe_device_active(active=False)
+    with pytest.raises(AudioError, match="already streaming somewhere else"):
+        async with asyncio.timeout(5):
+            await consumer
+    queues.stop.assert_awaited_once_with("player1")
+    assert stream_failed_before_the_stop == [False]
+    await asyncio.gather(*tasks)
+
+
 def _shorten_pause_grace(monkeypatch: pytest.MonkeyPatch) -> float:
     """Shrink the wait a pause is given to prove external, and return a sleep past it."""
     monkeypatch.setattr(soloist_backend, "_EXTERNAL_PAUSE_GRACE_S", 0.02)
