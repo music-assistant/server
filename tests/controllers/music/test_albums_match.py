@@ -7,15 +7,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     MediaNotFoundError,
     RetriesExhausted,
 )
+from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -715,6 +716,97 @@ async def test_match_providers_searches_every_provider_without_musicbrainz() -> 
         "spotify_1",
         "deezer_1",
     ]
+
+
+async def test_match_providers_merges_the_album_owning_a_confirmed_match(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A confirmed match already owned by another library album merges, not duplicates.
+
+    Drives the real `AlbumsController.match_providers` -> `add_provider_mappings` path
+    end to end against a real (test) database, only stubbing the provider IO boundary
+    (search/full-item fetch).
+    """
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Sigur Rós",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    target = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="0",
+            provider="library",
+            name="( )",
+            album_type=AlbumType.UNKNOWN,
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="qobuz-item", provider_domain="qobuz", provider_instance="qobuz_1"
+                )
+            },
+        )
+    )
+    duplicate = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="0",
+            provider="library",
+            name="( )",
+            album_type=AlbumType.ALBUM,
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="spotify-item",
+                    provider_domain="spotify",
+                    provider_instance="spotify_1",
+                )
+            },
+        )
+    )
+
+    provider = Mock()
+    provider.domain = "spotify"
+    provider.instance_id = "spotify_1"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.ALBUM}
+    provider.is_streaming_provider = True
+
+    search_result = Album(
+        item_id="spotify-item",
+        provider="spotify_1",
+        name=target.name,
+        artists=UniqueList([artist]),
+        provider_mappings={
+            ProviderMapping(
+                item_id="spotify-item", provider_domain="spotify", provider_instance="spotify_1"
+            )
+        },
+    )
+
+    # both providers must be "available" for the match to be considered, and for
+    # add_provider_mappings' subsequent uniqueness check to see qobuz_1's own mapping
+    await set_global_cache_values({"available_providers": {"qobuz_1", "spotify_1"}})
+
+    with (
+        patch.object(mass.music.albums, "search", AsyncMock(return_value=[search_result])),
+        patch.object(mass.music.albums, "get_provider_item", AsyncMock(return_value=search_result)),
+        patch.object(type(mass.music), "providers", new_callable=PropertyMock) as providers_mock,
+    ):
+        providers_mock.return_value = [provider]
+        await mass.music.albums.match_providers(target)
+
+    # the duplicate row is gone: its mapping was transferred, not recreated
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.albums.get_library_item(duplicate.item_id)
+    merged = await mass.music.albums.get_library_item(target.item_id)
+    assert {m.provider_instance for m in merged.provider_mappings} == {"qobuz_1", "spotify_1"}
 
 
 # ---------------------------------------------------------------------------
