@@ -242,7 +242,7 @@ UPLOAD_SEARCH_ALBUM: dict[str, Any] = {
 UPLOAD_SEARCH_ARTIST: dict[str, Any] = {
     "category": None,
     "resultType": "artist",
-    "artist": "MA Upload Test Artist",
+    "title": "MA Upload Test Artist",
     "browseId": UPLOAD_ARTIST_ID,
     "thumbnails": THUMBNAILS,
 }

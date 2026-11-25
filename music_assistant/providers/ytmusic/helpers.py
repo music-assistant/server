@@ -500,10 +500,9 @@ async def search(
                     result["name"] = result["artists"][0]["name"]
                     del result["artists"]
                 else:
-                    result["id"] = result["browseId"]
-                    result["name"] = result["artist"]
-                    del result["browseId"]
-                    del result["artist"]
+                    result["id"] = result.pop("browseId")
+                    # an upload artist carries its name as the title
+                    result["name"] = result.pop("artist", None) or result["title"]
             elif result["resultType"] == "playlist":
                 if "playlistId" in result:
                     result["id"] = result["playlistId"]

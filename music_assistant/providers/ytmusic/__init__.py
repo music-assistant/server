@@ -375,11 +375,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             videos = await search(query=search_query, ytm_filter="videos", limit=limit, **account)
             results = [item for pair in zip_longest(results, videos) for item in pair if item]
             results = results[:limit]
-        items: list[MediaItemType] = []
-        for result in uploads:
-            with suppress(InvalidDataError, MediaNotFoundError):
-                if item := await self._parse_upload_search_result(result, media_types):
-                    items.append(item)
+        upload_items = await asyncio.gather(
+            *(self._parse_upload_search_result(result, media_types) for result in uploads)
+        )
+        items: list[MediaItemType] = [item for item in upload_items if item]
         for result in results:
             with suppress(InvalidDataError):
                 if item := self._parse_search_result(result, media_types):
@@ -1239,14 +1238,17 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _parse_upload_search_result(
         self, result: dict[str, Any], media_types: list[MediaType]
     ) -> MediaItemType | None:
-        """Parse an uploads search result, resolving an untagged upload by its video id."""
+        """Parse an uploads search result, None when it is invalid or not asked for."""
         try:
             item = self._parse_search_result(result, media_types)
         except InvalidDataError:
             # an untagged upload has no artist credit, same as in the library sync
             if result["resultType"] != "song" or not result.get("videoId"):
-                raise
-            item = await self.get_track(result["videoId"])
+                return None
+            try:
+                item = await self.get_track(result["videoId"])
+            except MediaNotFoundError:
+                return None
         if item:
             # upload search results carry no entityId, so mark them here
             for mapping in item.provider_mappings:
