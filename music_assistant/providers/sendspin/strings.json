@@ -23,7 +23,7 @@
     },
     "allow_legacy_clients": {
       "label": "Allow legacy clients",
-      "description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nDisable this to accept only spec-compliant clients and to stop holding back newer protocol behavior. \nThis option is temporary and will be removed in a future release."
+      "description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nWith this off, only spec-compliant clients can connect, and most Sendspin devices and apps need an update first. Sendspin is still a release candidate, so a later Music Assistant update can require client updates again. \nThis option is temporary and will be removed in a future release."
     },
     "security_status_disconnected": {
       "label": "The device disconnected and will reappear once it reconnects."

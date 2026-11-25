@@ -90,7 +90,7 @@ def _metadata() -> Metadata:
 
 
 def _queue() -> PlayerQueue:
-    return cast("PlayerQueue", SimpleNamespace(queue_id="queue-1"))
+    return cast("PlayerQueue", SimpleNamespace(queue_id="queue-1", flow_mode=True))
 
 
 def test_position_comes_from_when_the_track_is_heard(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,6 +255,7 @@ def _republishing_player(
     player.mass = mass
     full_send = MagicMock()
     monkeypatch.setattr(SendspinPlayer, "send_current_media_metadata", full_send)
+    monkeypatch.setattr(SendspinPlayer, "on_upcoming_item_changed", MagicMock())
     return player, role, mass
 
 
@@ -281,6 +282,8 @@ async def test_the_position_is_republished_without_a_full_send(
     assert metadata.title == "Track"
     assert role.set_metadata.call_args.kwargs == {"timestamp_us": None}
     mass.create_task.assert_not_called()
+    # the republish replaced the next item's scheduled metadata, so it is scheduled again
+    cast("MagicMock", player.on_upcoming_item_changed).assert_called_once_with()
 
 
 async def test_a_scheduled_track_is_not_replaced_by_the_previous_one(

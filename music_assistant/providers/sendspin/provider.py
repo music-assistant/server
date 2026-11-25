@@ -496,7 +496,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 key=CONF_ALLOW_LEGACY_CLIENTS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
-                hidden=True,
+                advanced=True,
             ),
         )
 

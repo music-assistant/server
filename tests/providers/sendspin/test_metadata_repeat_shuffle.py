@@ -35,6 +35,7 @@ async def test_repeat_and_shuffle_reach_clients_through_the_controller_only() ->
     )
     player.mass.player_queues.get_item.return_value = None
     player._send_album_artwork = AsyncMock()
+    player._album_artist = AsyncMock(return_value=None)
     player._send_beat_schedule = AsyncMock()
     # no flow timeline yet: the queue position is all there is
     player._timeline_anchored = lambda metadata, *_args, **_kwargs: (metadata, None)

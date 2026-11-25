@@ -39,6 +39,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_STREAMING_MODE,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
+    STREAMING_MODE_AP2_PTP,
     STREAMING_MODE_AUTO,
     STREAMING_MODE_RAOP,
     StreamingProtocol,
@@ -532,24 +533,21 @@ async def test_streaming_mode_offered_for_non_apple_airplay2(
 
 
 @pytest.mark.asyncio
-async def test_streaming_mode_on_apple_offers_no_ntp_lane() -> None:
-    """
-    Apple devices get the entry as an escape hatch, minus the NTP lane.
-
-    An Apple receiver renders silence on an NTP-timed realtime stream
-    (hardware-measured), so that lane is never offered; the compatibility
-    flow and legacy RAOP remain available as the escapes for networks where
-    the PTP ports are blocked, and pinning PTP stays possible as an explicit
-    choice of the normal lane.
-    """
+async def test_streaming_mode_on_apple_offers_every_lane() -> None:
+    """Apple devices get every lane they advertise, NTP timing included."""
     player = _make_apple_player()
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     entries = await player.get_config_entries()
     entry = next((entry for entry in entries if entry.key == CONF_STREAMING_MODE), None)
     assert entry is not None
     values = [option.value for option in entry.options]
-    assert STREAMING_MODE_AP2_NTP not in values
-    assert STREAMING_MODE_RAOP in values
+    assert values == [
+        STREAMING_MODE_AUTO,
+        STREAMING_MODE_AP2_PTP,
+        STREAMING_MODE_AP2_NTP,
+        STREAMING_MODE_AP2_COMPAT,
+        STREAMING_MODE_RAOP,
+    ]
 
 
 @pytest.mark.asyncio
@@ -651,12 +649,14 @@ def test_raop_mode_applies_on_apple_with_raop_service() -> None:
     assert player.protocol_override == StreamingProtocol.RAOP
 
 
-def test_ntp_mode_ignored_on_apple_airplay2() -> None:
-    """A stray persisted NTP mode is ignored on Apple devices (the lane is never offered)."""
+def test_ntp_mode_applies_on_apple_airplay2() -> None:
+    """The NTP timing pin works on an Apple device, on the AirPlay 2 protocol."""
     player = _make_apple_player()
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     _configure_player(player, {CONF_STREAMING_MODE: STREAMING_MODE_AP2_NTP})
-    assert player.streaming_mode == STREAMING_MODE_AUTO
+    assert player.streaming_mode == STREAMING_MODE_AP2_NTP
+    assert player.protocol == StreamingProtocol.AIRPLAY2
+    assert player.protocol_override is None
 
 
 @pytest.mark.parametrize(
@@ -2132,6 +2132,43 @@ async def test_schedule_and_cancel_group_rejoin() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rejoin_attempts_wait_for_what_comes_first() -> None:
+    """The first attempt is made after the given task, and not at all once cancelled meanwhile."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    _players_mock(player).get_protocol.side_effect = lambda player_id: {"leader": leader}.get(
+        player_id
+    )
+    leader.set_members = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda **_kwargs: _attach_running_session(player, [leader, player])
+    )
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+    first = asyncio.Event()
+
+    async def _comes_first() -> None:
+        await first.wait()
+
+    with patch(_NO_DELAYS, (0, 60, 60)):
+        handover = asyncio.get_running_loop().create_task(_comes_first())
+        player.schedule_group_rejoin(["leader"], after=handover)
+        await asyncio.sleep(0.01)
+        leader.set_members.assert_not_awaited()
+        player.cancel_group_rejoin()
+        await asyncio.sleep(0.01)
+        assert not handover.done()
+
+        player.schedule_group_rejoin(["leader"], after=handover)
+        rejoin_task = player._rejoin_task
+        assert rejoin_task is not None
+        first.set()
+        await asyncio.wait_for(rejoin_task, timeout=5)
+
+    leader.set_members.assert_awaited_once_with(player_ids_to_add=[player.protocol_id])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("switched_off", [False, True])
 async def test_no_rejoin_scheduled_for_player_switched_off(switched_off: bool) -> None:
     """A player switched off at its power control gets no re-join scheduled."""
@@ -2212,6 +2249,40 @@ def test_live_session_members_reports_who_the_session_actually_feeds() -> None:
     assert leader.live_session_members == []
     leader.stream = None
     assert leader.live_session_members == []
+
+
+def test_live_session_members_of_a_leader_that_lost_its_own_stream() -> None:
+    """The session goes on with the members that are still fed, without the leader."""
+    leader, playing, lost = (_make_idle_player(name) for name in ("leader", "playing", "lost"))
+    session = MagicMock(sync_clients=[leader, playing, lost])
+    leader.stream = MagicMock(running=False, session=session)
+    playing.stream = MagicMock(running=True, session=session)
+    lost.stream = MagicMock(running=False, session=session)
+
+    assert leader.live_session_members == ["playing"]
+
+    # once it left the session, what becomes of that session is none of its business
+    session.sync_clients.remove(leader)
+    assert leader.live_session_members == []
+
+
+@pytest.mark.asyncio
+async def test_a_leader_that_lost_its_own_stream_leaves_the_session_to_its_members() -> None:
+    """The session drops the lost leader, so that it can join again later, and plays on."""
+    leader = _make_idle_player("leader")
+    leader._attr_group_members = ["leader", "child"]
+    session = MagicMock(
+        sync_clients=[leader, _make_idle_player("child")],
+        remove_client=AsyncMock(),
+        stop=AsyncMock(),
+    )
+    leader.stream = MagicMock(running=False, session=session)
+
+    await leader.set_members(player_ids_to_remove=["leader"])
+
+    session.remove_client.assert_awaited_once_with(leader, reason="leader removed from group")
+    session.stop.assert_not_awaited()
+    assert leader.group_members == []
 
 
 @pytest.mark.asyncio

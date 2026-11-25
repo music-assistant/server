@@ -25,6 +25,7 @@ from music_assistant.controllers.players.audio_sources import (
 )
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import StreamsController
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider
 
@@ -329,6 +330,38 @@ async def test_a_plugin_refusing_the_stream_takes_the_source_off_the_player() ->
     with pytest.raises(web.HTTPNotFound):
         await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
 
+    ctrl.mass.players.deselect_source.assert_awaited_once_with(
+        OWNER_ID,
+        provider_instance_id=session.provider_instance_id,
+        source_id=session.source_id,
+        playback_session_id=session.playback_session_id,
+    )
+
+
+async def test_a_plugin_refusing_a_pcm_consumer_is_logged_once_as_a_refusal() -> None:
+    """
+    A PCM consumer gets the refusal as such, logged in the line the route logs.
+
+    It has no response to answer the refusal with, so it must be able to tell it from a
+    failure; the source is still released.
+    """
+    session = _session()
+    ctrl, provider, _player, _store = _controller(session)
+    refusal = RuntimeError("switching disabled")
+    provider.on_source_selected = AsyncMock(side_effect=refusal)
+    media = PlayerMedia(
+        uri="x://audio_source/main",
+        media_type=MediaType.AUDIO_SOURCE,
+        source_id=OWNER_ID,
+        queue_session_id=session.playback_session_id,
+    )
+
+    with pytest.raises(AudioSourceRefusedError, match="switching disabled"):
+        await ctrl.open_audio_source_stream(media, CONSUMER_ID)
+
+    ctrl.logger.info.assert_called_once_with(
+        "AudioSource %s aborted stream for player %s: %s", session.source_id, CONSUMER_ID, refusal
+    )
     ctrl.mass.players.deselect_source.assert_awaited_once_with(
         OWNER_ID,
         provider_instance_id=session.provider_instance_id,

@@ -83,6 +83,7 @@ from music_assistant.models.player_state import (
     QueueSnapshot,
     StateInputs,
     derive_player_state,
+    queue_item_media,
     reconcile_position_anchor,
     resolve_media_queue,
     resolve_synced_to,
@@ -96,6 +97,9 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioSource, MediaItemPalette
     from music_assistant_models.player import PlayerOption, PlayerSoundMode
     from music_assistant_models.player_control import PlayerControl
+    from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.streamdetails import StreamMetadata
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
@@ -960,6 +964,18 @@ class Player:
         what the device itself reports, such as its source, source list or current media.
         """
         return self._own_protocol or (self._audio_protocols[0] if self._audio_protocols else None)
+
+    def queue_item_media(self, queue: PlayerQueue, queue_item: QueueItem) -> PlayerMedia:
+        """
+        Return the media this player shows while it plays the given queue item.
+
+        :param queue: The queue the item belongs to.
+        :param queue_item: The queue item to describe.
+        """
+        media = queue_item_media(queue, queue_item, *self._shown_item_details(queue_item))
+        if media.image_url and media.image_url == self._current_palette_url:
+            media.palette = self._current_palette
+        return media
 
     def get_role(self, protocol_id: str) -> ProtocolRole | None:
         """
@@ -2797,21 +2813,32 @@ class Player:
 
     def _resolve_artwork(self, snapshot: QueueSnapshot) -> None:
         """Resolve the stream metadata and artwork of the current item of a queue into its snapshot."""
-        if not (current_item := snapshot.queue.current_item):
-            return
+        if current_item := snapshot.queue.current_item:
+            (
+                snapshot.stream_metadata,
+                snapshot.item_image_url,
+                snapshot.media_item_image_url,
+            ) = self._shown_item_details(current_item)
+
+    def _shown_item_details(
+        self, queue_item: QueueItem
+    ) -> tuple[StreamMetadata | None, str | None, str | None]:
+        """Return the stream metadata a queue item shows, and the urls of its images."""
+        item_image_url = media_item_image_url = None
         # a stream that reports metadata shows its own image, or else that of the item
-        stream_metadata = snapshot.stream_metadata = (
-            self.mass.streams.audio_analysis.shown_stream_metadata(current_item.streamdetails)
-            if current_item.streamdetails
+        stream_metadata = (
+            self.mass.streams.audio_analysis.shown_stream_metadata(queue_item.streamdetails)
+            if queue_item.streamdetails
             else None
         )
         # the image format needs to be 512x512 jpeg for maximum compatibility with players
-        if current_item.image and not (stream_metadata and stream_metadata.image_url):
-            snapshot.item_image_url = self.mass.metadata.get_image_url(current_item.image, size=512)
-        if not stream_metadata and current_item.media_item and current_item.media_item.image:
-            snapshot.media_item_image_url = self.mass.metadata.get_image_url(
-                current_item.media_item.image, size=512
+        if queue_item.image and not (stream_metadata and stream_metadata.image_url):
+            item_image_url = self.mass.metadata.get_image_url(queue_item.image, size=512)
+        if not stream_metadata and queue_item.media_item and queue_item.media_item.image:
+            media_item_image_url = self.mass.metadata.get_image_url(
+                queue_item.media_item.image, size=512
             )
+        return stream_metadata, item_image_url, media_item_image_url
 
     def _power_control_state(self) -> bool | None:
         """Return the power state based on the playercontrol which may have been set-up."""

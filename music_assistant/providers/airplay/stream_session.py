@@ -13,6 +13,7 @@ from music_assistant_models.errors import MusicAssistantError, PlayerCommandFail
 
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 
 from .constants import (
     AIRPLAY_ANCHOR_SEAT_LEAD_MS,
@@ -1043,6 +1044,9 @@ class AirPlayStreamSession:
         except asyncio.CancelledError:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise
+        except AudioSourceRefusedError:
+            # the streams controller logs a source refusing this player itself
+            pass
         except Exception as err:
             stream_error = err
             self.prov.logger.error(

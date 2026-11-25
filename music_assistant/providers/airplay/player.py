@@ -82,7 +82,6 @@ from .helpers import (
     default_hires_enabled,
     get_decoded_property,
     get_sync_offset_ms,
-    is_apple_device,
     is_macos_device,
     parse_airplay_features,
     parse_set_membership,
@@ -231,21 +230,15 @@ class AirPlayPlayer(PlayerProtocol):
         capability (PTP timing additionally needs the SupportsPTP bit), and
         legacy RAOP needs an advertised _raop service to fall back to. A
         RAOP-only device has no alternative lane and keeps Automatic only,
-        which hides the entry entirely. Apple receivers get every lane except
-        NTP timing — they render silence on an NTP-timed realtime stream
-        (hardware-measured). Of their lanes, the compatibility flow and
-        legacy RAOP are the escapes for networks where the PTP ports are
-        blocked; pinning PTP is an explicit choice of the normal lane.
+        which hides the entry entirely.
         """
         options = [ConfigValueOption(STREAMING_MODE_AUTO, "Automatic (recommended)")]
         if not self._is_airplay2_capable:
             return options
-        apple = is_apple_device(self.device_info.manufacturer, self.device_info.model)
         features = parse_airplay_features(self._advertised_features)
         if (features >> 41) & 1:
             options.append(ConfigValueOption(STREAMING_MODE_AP2_PTP, "AirPlay 2 - PTP timing"))
-        if not apple:
-            options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
+        options.append(ConfigValueOption(STREAMING_MODE_AP2_NTP, "AirPlay 2 - NTP timing"))
         options.append(
             ConfigValueOption(STREAMING_MODE_AP2_COMPAT, "AirPlay 2 - compatibility mode")
         )
@@ -470,10 +463,14 @@ class AirPlayPlayer(PlayerProtocol):
         # dropped from the session (write failures) or never make it in (a refused
         # late join) while still being listed as part of the group, and without a
         # session there is nobody to render with at all
-        if session := self.session:
+        if session := self.session or self._lost_session:
             # a speaker of a set is in the session for its set
             return list(
-                dict.fromkeys(owner.protocol_id for x in session.sync_clients if (owner := x.owner))
+                dict.fromkeys(
+                    owner.protocol_id
+                    for x in session.sync_clients
+                    if x.stream and x.stream.running and (owner := x.owner)
+                )
             )
         return []
 
@@ -594,8 +591,7 @@ class AirPlayPlayer(PlayerProtocol):
 
         # Streaming-mode escape hatch: a per-device pin of the protocol/timing
         # lane for receivers whose automatic route misbehaves. Only offered
-        # when the device actually has a lane to choose (Apple receivers are
-        # always native AirPlay 2 with PTP and get no entry).
+        # when the device actually has a lane to choose.
         mode_options = self.streaming_mode_options
         if len(mode_options) > 1:
             base_entries.append(
@@ -948,11 +944,11 @@ class AirPlayPlayer(PlayerProtocol):
                         for member_id in self._attr_group_members
                         if member_id != self.protocol_id and member_id not in player_ids_to_remove
                     ]
-                    if stream_session and remaining_members:
+                    if remaining_members and (session := stream_session or self._lost_session):
                         # Members stay behind: remove only this leader client,
                         # the session continues for the remaining players
                         for endpoint in self.session_endpoints:
-                            await stream_session.remove_client(
+                            await session.remove_client(
                                 endpoint, reason="leader removed from group"
                             )
                     elif stream_session:
@@ -1048,13 +1044,16 @@ class AirPlayPlayer(PlayerProtocol):
     @property
     def ignore_volume_reports(self) -> bool:
         """Return True if the device's own volume reports must not be acted on."""
-        if self._volume_reports_ignored_until > time.time():
-            # a level we sent ourselves is still echoing back
-            return True
         return bool(
-            self.settings.get_value(CONF_IGNORE_VOLUME)
+            self.volume_echo_pending
+            or self.settings.get_value(CONF_IGNORE_VOLUME)
             or self.device_info.manufacturer.lower() == "apple"
         )
+
+    @property
+    def volume_echo_pending(self) -> bool:
+        """Return whether the device may still echo back a level we sent ourselves."""
+        return self._volume_reports_ignored_until > time.time()
 
     def suppress_volume_reports(self, seconds: float = AIRPLAY_VOLUME_ECHO_GRACE_S) -> None:
         """
@@ -1297,7 +1296,9 @@ class AirPlayPlayer(PlayerProtocol):
             self.protocol_id, permanent=True
         )
 
-    def schedule_group_rejoin(self, candidate_ids: list[str]) -> None:
+    def schedule_group_rejoin(
+        self, candidate_ids: list[str], after: asyncio.Task[None] | None = None
+    ) -> None:
         """
         Schedule a bounded automatic re-join of this player to its still-active group.
 
@@ -1313,6 +1314,7 @@ class AirPlayPlayer(PlayerProtocol):
         :param candidate_ids: Protocol ids of the AirPlay players that led or shared
             the group at the moment the stream was lost, used to resolve the re-join
             target (the leadership may transfer while the backoff runs).
+        :param after: Task that has to be done before the attempts start.
         """
         self.cancel_group_rejoin()
         if self.player is not None and self.player.offline_by_power_control:
@@ -1321,7 +1323,7 @@ class AirPlayPlayer(PlayerProtocol):
             "Scheduling automatic re-join of %s to its group after unexpected stream loss",
             self.display_name,
         )
-        self._rejoin_task = self.mass.create_task(self._group_rejoin_attempts(candidate_ids))
+        self._rejoin_task = self.mass.create_task(self._group_rejoin_attempts(candidate_ids, after))
 
     def cancel_group_rejoin(self) -> None:
         """Cancel any pending automatic group re-join attempts for this player."""
@@ -1724,6 +1726,28 @@ class AirPlayPlayer(PlayerProtocol):
             output_players=sync_clients,
         )
 
+    @property
+    def _plays_outside_group(self) -> bool:
+        """Return whether the player plays something of its own, on any of its protocols."""
+        return (
+            (player := self.player) is not None
+            and player.playback_state != PlaybackState.IDLE
+            and not player.synced_to
+            and not player.active_group
+        )
+
+    @property
+    def _lost_session(self) -> AirPlayStreamSession | None:
+        """Return the session that still counts this player in after its own stream was lost."""
+        for endpoint in self.session_endpoints:
+            if (
+                endpoint.stream
+                and (session := endpoint.stream.session)
+                and endpoint in session.sync_clients
+            ):
+                return session
+        return None
+
     def _get_sync_clients(self) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""
         sync_clients: list[AirPlayPlayer] = []
@@ -1735,8 +1759,12 @@ class AirPlayPlayer(PlayerProtocol):
                 sync_clients.append(client)
         return sync_clients
 
-    async def _group_rejoin_attempts(self, candidate_ids: list[str]) -> None:
+    async def _group_rejoin_attempts(
+        self, candidate_ids: list[str], after: asyncio.Task[None] | None = None
+    ) -> None:
         """Re-join this player to its group's live session after a bounded backoff."""
+        if after is not None:
+            await asyncio.wait([after])
         max_attempts = len(AIRPLAY_REJOIN_ATTEMPT_DELAYS)
         for attempt, delay in enumerate(AIRPLAY_REJOIN_ATTEMPT_DELAYS, start=1):
             await asyncio.sleep(delay)
@@ -1748,6 +1776,7 @@ class AirPlayPlayer(PlayerProtocol):
                 # Still pointing at an original candidate is fine: a static group
                 # keeps the sync membership while only the session lost this player.
                 or (self.synced_to and self.synced_to not in candidate_ids)
+                or self._plays_outside_group
             ):
                 # the player was grouped or repurposed by other means meanwhile
                 self.logger.debug(
@@ -1763,7 +1792,9 @@ class AirPlayPlayer(PlayerProtocol):
                     self.display_name,
                 )
                 return
-            if self.player is not None and self.player.offline_by_power_control:
+            if self.player is not None and (
+                self.player.powered is False or self.player.offline_by_power_control
+            ):
                 # the protocol may read available long after the power was cut
                 self.logger.debug(
                     "Automatic group re-join for %s cancelled: player is switched off",

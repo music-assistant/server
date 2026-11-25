@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import AudioError
 
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 
@@ -106,6 +108,8 @@ def _line_in_session(monkeypatch: pytest.MonkeyPatch) -> tuple[SendspinPlaybackS
     session._history = deque()
     session._produced_audio_us = 0
     session._timeline_start_us = None
+    session.playback_task = None
+    session._next_media_ready = asyncio.Event()
     source_stream = MagicMock()
     source_stream.aclose = AsyncMock()
     session.player.mass.streams.open_audio_source_stream = AsyncMock(return_value=source_stream)
@@ -125,7 +129,7 @@ async def test_a_line_in_session_follows_the_source_format(monkeypatch: pytest.M
     followed: list[object] = []
 
     async def follow(_player_ids: object) -> None:
-        followed.append(session._start_streamdetails)
+        followed.append(session._item_streamdetails)
 
     monkeypatch.setattr(session, "_follow_session_sample_rate", follow)
     media = _line_in()
@@ -152,3 +156,27 @@ async def test_a_line_in_cancelled_during_setup_is_released(
         await session._run_playback(_line_in())
 
     source_stream.aclose.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize(
+    ("error", "logged"),
+    [
+        (AudioSourceRefusedError("No AirPlay client is streaming to this receiver"), False),
+        (AudioError("AudioSource provider airplay_receiver is not available"), True),
+    ],
+    ids=["refused", "failed"],
+)
+async def test_only_a_line_in_that_fails_is_logged_as_a_failed_playback(
+    monkeypatch: pytest.MonkeyPatch, error: AudioError, logged: bool
+) -> None:
+    """Only a failure is logged here: the streams controller logs a line-in refusing the speaker."""
+    session, _source_stream = _line_in_session(monkeypatch)
+    cast("AsyncMock", session.player.mass.streams.open_audio_source_stream).side_effect = error
+
+    await session.start(_line_in())
+    task = session.playback_task
+    assert task is not None
+    with pytest.raises(AudioError):
+        await task
+
+    assert cast("MagicMock", session.player.logger.exception).called is logged

@@ -212,6 +212,23 @@ async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
     assert "busy" in cast("MagicMock", controller.logger).debug.call_args.args[0]
 
 
+async def test_a_repeat_handed_over_after_a_seek_starts_the_item_over() -> None:
+    """Repeat one turned on after a seek plays the next pass from the start of the item."""
+    controller, mass, _players, items = _handover_controller()
+    controller.signal_update = MagicMock()  # type: ignore[method-assign]
+    queue_data = controller._queue_data["q1"]
+    queue_data.queue.repeat_mode = RepeatMode.ONE
+    items[0].streamdetails = cast("Any", SimpleNamespace(seek_position=412))
+    load_item = AsyncMock()
+    controller._load_item = load_item  # type: ignore[method-assign]
+    controller.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
+
+    await _scheduled_handover(controller, mass, items[0])
+
+    load_item.assert_awaited_once_with(items[0])
+    mass.players.enqueue_next_media.assert_awaited_once()
+
+
 async def test_enqueue_next_item_follows_an_edit_made_during_the_handover() -> None:
     """A track taken back out of the queue while it is handed over does not stay on the player."""
     controller, mass, _players, items = _handover_controller()
@@ -240,6 +257,20 @@ async def test_enqueue_next_item_follows_an_edit_made_during_the_handover() -> N
     handed_over = mass.players.enqueue_next_media.await_args.kwargs["media"]
     assert handed_over.queue_item_id == items[1].queue_item_id
     assert queue_data.next_item_id_enqueued == items[1].queue_item_id
+
+
+async def test_a_stale_handover_hands_over_the_item_that_follows_now() -> None:
+    """A handover that lost its place to an edit still gets the new next item to the player."""
+    controller, mass, _players, items = _handover_controller()
+    controller.signal_update = MagicMock()  # type: ignore[method-assign]
+    # an edit moved the last item up while the handover of the old next item was scheduled
+    controller._queue_data["q1"].items = [items[0], items[2], items[1]]
+
+    await _scheduled_handover(controller, mass, items[1])
+    await _start_scheduled_handover(mass)
+
+    handed_over = mass.players.enqueue_next_media.await_args.kwargs["media"]
+    assert handed_over.queue_item_id == items[2].queue_item_id
 
 
 def _make_queue_item(queue_id: str, item_id: str) -> QueueItem:

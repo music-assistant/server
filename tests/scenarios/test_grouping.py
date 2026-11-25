@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
 import pytest
+from aiosonos.exceptions import CommandTimeout
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -1082,6 +1084,299 @@ async def test_a_sync_group_whose_leader_leaves_is_led_by_a_member_that_can_grou
     assert _state(scenario, garden_id).synced_to is None
     assert _state(scenario, kitchen_id).synced_to is None
     await _stop(scenario, group_id)
+
+
+async def _group_behind_an_airplay_leader(
+    scenario: Scenario,
+) -> tuple[FakeProtocol, FakeProtocol, FakeProtocol, str]:
+    """
+    Play a sync group over the AirPlay output of Kitchen, with Office as its Sonos follower.
+
+    Both speakers play natively until a receiver that only has AirPlay joins, which then leaves.
+
+    :return: The Sonos protocols of Kitchen and Office, the AirPlay protocol of Kitchen, and the
+        id of the group.
+    """
+    _, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    airplay = await scenario.add_provider("airplay")
+    kitchen_airplay, receiver = (
+        airplay.protocol(
+            protocol_id,
+            name,
+            role="audio",
+            identifiers=_device(number),
+            supported_features=set(GROUPING),
+            can_group_with={other},
+        )
+        for protocol_id, name, number, other in (
+            ("airplay_kitchen", "Kitchen", 10, "airplay_receiver"),
+            ("airplay_receiver", "Receiver", 30, "airplay_kitchen"),
+        )
+    )
+    for protocol in (kitchen_airplay, receiver):
+        await scenario.register(protocol)
+    await scenario.idle()
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+    receiver_id = _player_id(scenario, receiver)
+    group_id = await _sync_group(scenario, kitchen_id, office_id)
+    await scenario.play(group_id)
+    await scenario.idle()
+    for change in ("player_ids_to_add", "player_ids_to_remove"):
+        command = await scenario.command(
+            scenario.mass.players.cmd_set_members(group_id, **{change: [receiver_id]})
+        )
+        await scenario.advance(10)
+        await command
+        await scenario.idle()
+    assert _active_output(scenario, kitchen_id) == "airplay_kitchen"
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _state(scenario, group_id).group_members == [kitchen_id, office_id]
+    return kitchen, office, kitchen_airplay, group_id
+
+
+def _fall_silent(scenario: Scenario, speaker: FakeProtocol, seconds: float) -> None:
+    """
+    Let a Sonos leader answer no group command for a while; it lets its members go after that.
+
+    :param speaker: The Sonos protocol of the leader.
+    :param seconds: How long it stays silent.
+    """
+    loop = scenario.mass.loop
+    silent_until = loop.time() + seconds
+    loop.call_later(seconds, speaker._report_members, [], [])
+
+    async def _set_members(
+        player_ids_to_add: list[str] | None = None, player_ids_to_remove: list[str] | None = None
+    ) -> None:
+        if loop.time() < silent_until:
+            await asyncio.sleep(10)
+            raise CommandTimeout("groups:modifyGroupMembers", 10)
+        await FakeProtocol.set_members(speaker, player_ids_to_add, player_ids_to_remove)
+
+    speaker.set_members = _set_members  # type: ignore[method-assign]
+
+
+def _hang_on_a_group_command_after_airplay(
+    scenario: Scenario, speaker: FakeProtocol, airplay: FakeProtocol
+) -> None:
+    """
+    Let a Sonos leader fall silent for 40 s on a group command right after its AirPlay output stopped.
+
+    :param speaker: The Sonos protocol of the leader.
+    :param airplay: Its AirPlay protocol.
+    """
+    loop = scenario.mass.loop
+    stopped_at = float("-inf")
+
+    async def _stop() -> None:
+        nonlocal stopped_at
+        stopped_at = loop.time()
+        await FakeProtocol.stop(airplay)
+
+    async def _set_members(
+        player_ids_to_add: list[str] | None = None, player_ids_to_remove: list[str] | None = None
+    ) -> None:
+        if loop.time() - stopped_at < 0.5:
+            _fall_silent(scenario, speaker, 40)
+            await speaker.set_members(player_ids_to_add, player_ids_to_remove)
+            return
+        await FakeProtocol.set_members(speaker, player_ids_to_add, player_ids_to_remove)
+
+    airplay.stop = _stop  # type: ignore[method-assign]
+    speaker.set_members = _set_members  # type: ignore[method-assign]
+
+
+async def test_a_sync_group_plays_on_at_once_when_its_airplay_leader_leaves(
+    scenario: Scenario,
+) -> None:
+    """
+    A leader that plays over AirPlay lets its Sonos follower go before its AirPlay output stops.
+
+    It falls silent on a group command right after that stop, which would hold up the group.
+    """
+    kitchen, office, kitchen_airplay, group_id = await _group_behind_an_airplay_leader(scenario)
+    _hang_on_a_group_command_after_airplay(scenario, kitchen, kitchen_airplay)
+    kitchen_id = _player_id(scenario, kitchen)
+    scenario.timeline.clear()
+
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(kitchen_id))
+    await scenario.advance(5)
+    assert leave.done()
+    await leave
+    await scenario.idle()
+
+    assert [(protocol_id, command[0]) for protocol_id, command in scenario.timeline] == [
+        ("sonos_kitchen", "set_members"),
+        ("airplay_kitchen", "stop"),
+        ("sonos_office", "play_media"),
+    ]
+    assert _active_output(scenario, kitchen_id) is None
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, group_id).group_members == [_player_id(scenario, office)]
+    await _stop(scenario, group_id)
+
+
+async def test_a_sync_group_whose_airplay_leader_and_its_member_leave_at_once_lets_them_go(
+    scenario: Scenario,
+) -> None:
+    """Members that leave together with their leader on AirPlay are free at once, and silent."""
+    kitchen, office, kitchen_airplay, group_id = await _group_behind_an_airplay_leader(scenario)
+    _hang_on_a_group_command_after_airplay(scenario, kitchen, kitchen_airplay)
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+
+    remove = await scenario.command(
+        scenario.mass.players.cmd_set_members(
+            group_id, player_ids_to_remove=[kitchen_id, office_id]
+        )
+    )
+    await scenario.advance(5)
+    assert remove.done()
+    await remove
+    await scenario.idle()
+
+    assert _state(scenario, office_id).synced_to is None
+    assert kitchen_airplay.playback_state == PlaybackState.IDLE
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+    assert _state(scenario, group_id).group_members == []
+
+
+async def test_a_sync_group_leader_on_its_own_protocol_stops_before_it_lets_its_members_go(
+    scenario: Scenario,
+) -> None:
+    """A leader that plays on the protocol its members follow it on is never left playing alone."""
+    _, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    kitchen_id = _player_id(scenario, kitchen)
+    group_id = await _sync_group(scenario, kitchen_id, _player_id(scenario, office))
+    await scenario.play(group_id)
+    await scenario.idle()
+    scenario.timeline.clear()
+
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(kitchen_id))
+    await scenario.advance(5)
+    assert leave.done()
+    await leave
+    await scenario.idle()
+
+    assert [(protocol_id, command[0]) for protocol_id, command in scenario.timeline] == [
+        ("sonos_kitchen", "stop"),
+        ("sonos_kitchen", "set_members"),
+        ("sonos_office", "play_media"),
+    ]
+    await _stop(scenario, group_id)
+
+
+async def test_a_sync_group_plays_on_once_its_silent_old_leader_lets_the_member_go(
+    scenario: Scenario,
+) -> None:
+    """
+    A group whose leader leaves plays on, however long that leader holds on to the member.
+
+    Kitchen leads over AirPlay with Office as its Sonos follower. It answers no group command for
+    36 s, and only then lets Office go.
+    """
+    kitchen, office, _, group_id = await _group_behind_an_airplay_leader(scenario)
+    _fall_silent(scenario, kitchen, 36)
+    scenario.expect_log("Could not ungroup the members of Kitchen")
+    scenario.expect_log("Player Office still reports synced_to")
+
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(_player_id(scenario, kitchen)))
+    await scenario.advance(40)
+    await leave
+    await scenario.idle()
+
+    assert [command[0] for command in office.commands].count("play_media") == 1
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, group_id).group_members == [_player_id(scenario, office)]
+    await _stop(scenario, group_id)
+
+
+async def test_a_member_taken_out_while_its_silent_old_leader_holds_it_does_not_start(
+    scenario: Scenario,
+) -> None:
+    """A member that leaves a group that waits for it is out at once, and starts nothing later."""
+    kitchen, office, _, group_id = await _group_behind_an_airplay_leader(scenario)
+    _fall_silent(scenario, kitchen, 36)
+    scenario.expect_log("Could not ungroup the members of Kitchen")
+    scenario.expect_log("Player Office still reports synced_to")
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(_player_id(scenario, kitchen)))
+    await scenario.advance(30)
+    await leave
+
+    remove = await scenario.command(
+        scenario.mass.players.cmd_set_members(
+            group_id, player_ids_to_remove=[_player_id(scenario, office)]
+        )
+    )
+    assert remove.done()
+    await remove
+    await scenario.advance(30)
+    await scenario.idle()
+
+    assert _state(scenario, group_id).group_members == []
+    assert "play_media" not in [command[0] for command in office.commands]
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+
+
+async def test_a_play_does_not_wait_until_a_silent_old_leader_lets_the_new_one_go(
+    scenario: Scenario,
+) -> None:
+    """A play that the new leader of a group can not start yet fails, and a later one plays."""
+    kitchen, office, _, group_id = await _group_behind_an_airplay_leader(scenario)
+    _fall_silent(scenario, kitchen, 36)
+    scenario.expect_log("Could not ungroup the members of Kitchen")
+    scenario.expect_log("Player Office still reports synced_to")
+    scenario.expect_log("Player Office is stuck")
+    scenario.expect_log("Aborting syncgroup form")
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(_player_id(scenario, kitchen)))
+    await scenario.advance(14)
+
+    play = await scenario.command(scenario.mass.players.cmd_play(group_id))
+    await scenario.advance(19)
+    assert play.done()
+    with pytest.raises(PlayerCommandFailed):
+        await play
+    await leave
+    await scenario.advance(10)
+    later_play = await scenario.command(scenario.mass.players.cmd_play(group_id))
+    await scenario.advance(5)
+    await later_play
+    await scenario.idle()
+
+    assert [command[0] for command in office.commands].count("play_media") == 1
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("through_queue", [False, True])
+@pytest.mark.parametrize("seconds", [4, 14, 20, 30])
+async def test_a_sync_group_stopped_while_its_silent_old_leader_holds_a_member_stays_silent(
+    scenario: Scenario, seconds: float, through_queue: bool
+) -> None:
+    """
+    A group that is stopped while it waits for a member starts nothing once that member is free.
+
+    :param seconds: How long after its leader left the group is stopped.
+    :param through_queue: Whether the queue of the group is stopped instead of the group.
+    """
+    kitchen, office, _, group_id = await _group_behind_an_airplay_leader(scenario)
+    _fall_silent(scenario, kitchen, 36)
+    scenario.expect_log("Could not ungroup the members of Kitchen")
+    scenario.expect_log("Player Office still reports synced_to")
+    leave = await scenario.command(scenario.mass.players.cmd_ungroup(_player_id(scenario, kitchen)))
+    await scenario.advance(seconds)
+
+    stop = await scenario.command(
+        scenario.mass.player_queues.stop(group_id)
+        if through_queue
+        else scenario.mass.players.cmd_stop(group_id)
+    )
+    await scenario.advance(90)
+    await leave
+    await stop
+    await scenario.idle()
+
+    assert "play_media" not in [command[0] for command in office.commands]
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
 
 
 async def test_a_player_added_to_an_idle_sync_group_is_checked_against_the_member_that_leads(

@@ -32,7 +32,7 @@ from music_assistant.providers.sonos.const import (
     SOURCE_TV,
     UPNP_PORT,
 )
-from music_assistant.providers.sonos.player import SonosPlayer, _is_wakeable
+from music_assistant.providers.sonos.player import SonosPlayer, _has_device_feature
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
@@ -57,6 +57,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player.connected = False
     player._connect_lock = asyncio.Lock()
     player._wakeable = False
+    player._portable = False
     player._wol_mac = None
     player._marked_asleep = False
     player._woken_from_sleep = False
@@ -1226,7 +1227,13 @@ def _report_airplay(
     group.container_type = ContainerType.AIRPLAY
     group.active_service = None
     group.playback_metadata = {
-        "container": {"name": "AirPlay", "type": "linein.airplay", "service": {"name": "Airplay"}}
+        "container": {"name": "AirPlay", "type": "linein.airplay", "service": {"name": "Airplay"}},
+        "currentItem": {
+            "track": {
+                "name": "Shout",
+                "images": [{"url": "http://192.168.1.20:1400/getaa?u=1"}],
+            }
+        },
     }
     group.playback_actions = _actions({})
     player._airplay_output = MagicMock(  # type: ignore[method-assign]
@@ -1275,6 +1282,29 @@ def test_an_airplay_sender_of_its_own_is_reported_as_the_airplay_source() -> Non
     )
 
 
+def test_our_airplay_session_reports_no_artwork() -> None:
+    """Test the artwork the speaker names for our AirPlay session is not reported."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+
+    # our stream ends before the speaker reports its pause
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.title == "Shout"
+    assert player._attr_current_media.image_url is None
+
+
+def test_an_airplay_sender_of_its_own_reports_its_artwork() -> None:
+    """Test the artwork of a phone that plays over AirPlay is reported."""
+    player, client = _speaker_on_airplay()
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.image_url == "http://192.168.1.20:1400/getaa?u=1"
+
+
 def test_a_sender_that_takes_over_while_we_stream_keeps_the_session_ours() -> None:
     """Test a phone that takes the speaker over mid-stream is not told apart from our stream."""
     player, client = _speaker_on_airplay()
@@ -1303,10 +1333,15 @@ def test_other_speaker_events_keep_our_airplay_session() -> None:
     assert player._attr_active_source is None
 
 
-def _wakeable_player() -> tuple[SonosPlayer, MagicMock]:
-    """Create a bound player that advertises Wake-on-LAN support."""
+def _wakeable_player(*, portable: bool = True) -> tuple[SonosPlayer, MagicMock]:
+    """
+    Create a bound player that advertises Wake-on-LAN support.
+
+    :param portable: Whether it is a portable, as opposed to a speaker on mains power.
+    """
     player, mass = _make_player()
     player._wakeable = True
+    player._portable = portable
     player._wol_mac = "C4:38:75:0D:18:9C"
     player._cache = {}
     player._attr_name = "Portable"
@@ -1401,6 +1436,24 @@ async def test_a_goodbye_reads_as_sleep_only_when_we_control_power(power_control
 
 
 @pytest.mark.asyncio
+async def test_a_goodbye_leaves_a_speaker_on_mains_power_connected() -> None:
+    """Test a speaker that does not sleep is left as it is when its announcement is gone."""
+    player, _ = _wakeable_player(portable=False)
+    player.connected = True
+    player._attr_powered = True
+    player._disconnect = AsyncMock()  # type: ignore[method-assign]
+
+    with patch.object(
+        player, "_player", MagicMock(spec=Player, power_control=PLAYER_CONTROL_NATIVE)
+    ):
+        await player.on_mdns_goodbye()
+
+    player._disconnect.assert_not_awaited()
+    assert player._attr_powered is True
+    assert player._marked_asleep is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("marked_asleep", [True, False])
 async def test_reconnecting_only_powers_on_after_a_confirmed_sleep(
     marked_asleep: bool, timer_mass: MusicAssistant
@@ -1442,6 +1495,26 @@ async def test_a_failed_connect_puts_a_portable_to_sleep_without_retrying() -> N
     mass.call_later.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_a_failed_connect_to_a_speaker_on_mains_power_is_retried() -> None:
+    """Test a speaker that does not sleep reads as unavailable when it stops answering."""
+    player, mass = _wakeable_player(portable=False)
+    player._attr_powered = True
+    player.client.connect = AsyncMock(  # type: ignore[method-assign]
+        side_effect=CannotConnect(OSError("no route to host"))
+    )
+
+    with patch.object(
+        player, "_player", MagicMock(spec=Player, power_control=PLAYER_CONTROL_NATIVE)
+    ):
+        await player._connect(retry_on_fail=5)
+
+    assert player._attr_available is False
+    assert player._attr_powered is True
+    assert player._marked_asleep is False
+    mass.call_later.assert_called_once()
+
+
 @pytest.mark.parametrize(
     ("features", "expected"),
     [
@@ -1451,12 +1524,12 @@ async def test_a_failed_connect_puts_a_portable_to_sleep_without_retrying() -> N
         (["WAKEABLE"], False),
     ],
 )
-def test_is_wakeable_reads_the_advertised_device_features(
+def test_the_advertised_device_features_are_read_defensively(
     features: list[Any] | None, expected: bool
 ) -> None:
-    """Test the WAKEABLE device feature is read defensively from the discovery info."""
+    """Test a device feature is found in the discovery info, whatever that holds."""
     device: dict[str, Any] = {} if features is None else {"deviceFeatures": features}
-    assert _is_wakeable(cast("Any", {"device": device})) is expected
+    assert _has_device_feature(cast("Any", {"device": device}), "WAKEABLE") is expected
 
 
 @pytest.mark.asyncio

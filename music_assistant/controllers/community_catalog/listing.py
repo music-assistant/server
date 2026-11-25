@@ -49,7 +49,7 @@ def installed_provider(
     :param entry: The provider in the kept copy of the index.
     :param own_entry: The provider in the index of this server's channel.
     :param decision: Whether it loads, None when it was not decided.
-    :param update: The version the kept copy of the index offers to change to, if any.
+    :param update: The version an update of it installs, None when there is no update.
     :param error: Why it does not load, as its settings entries show it.
     """
     latest = own_entry.latest if own_entry is not None else None
@@ -83,6 +83,7 @@ def installed_provider(
         state=state,
         installed_version=installed.version,
         latest_version=latest,
+        update_version=update,
         pending_version=installed.pending_version,
         failed_version=installed.failed_version,
         added=entry.added if entry is not None else None,

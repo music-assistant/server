@@ -67,6 +67,7 @@ from music_assistant.providers.sonos.const import (
     AMP_MODEL,
     AUDIO_IN_SERVICE,
     CONF_SHOW_DEVICE_SETTINGS,
+    DEVICE_FEATURE_PORTABLE,
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
     OPTION_EVENT_VARIABLES,
@@ -205,14 +206,20 @@ class SonosPlayer(PlayerProtocol):
         self._connect_lock = asyncio.Lock()
         mac_address = self._extract_mac_from_player_id()
         self._wol_mac = mac_address if mac_address and is_valid_mac_address(mac_address) else None
-        self._wakeable = self._wol_mac is not None and _is_wakeable(discovery_info)
+        self._wakeable = self._wol_mac is not None and _has_device_feature(
+            discovery_info, DEVICE_FEATURE_WAKEABLE
+        )
+        # a speaker on mains power can be wakeable too, but does not go to sleep
+        self._portable = _has_device_feature(discovery_info, DEVICE_FEATURE_PORTABLE)
         # a dropped connection confirmed as sleep, as opposed to a passing blip
         self._marked_asleep = False
         # the connection followed a sleep; the speaker then restores its session paused
         self._woken_from_sleep = False
-        # the MA queue the loaded cloud queue serves, and the version the speaker
-        # compares against to decide whether its cached copy is still valid
+        # the MA queue the loaded cloud queue serves, the playback session of it that was
+        # loaded, and the version the speaker compares against to decide whether its cached
+        # copy is still valid
         self.cloud_queue_id: str | None = None
+        self._loaded_session_id: str | None = None
         self.cloud_queue_version: float = time.time()
         # advanced on every play_media: item ids are served suffixed with it, so a
         # reload of the item the speaker is already playing gets a fresh identity.
@@ -792,11 +799,16 @@ class SonosPlayer(PlayerProtocol):
             self._queue_session_id = None
             self._flow_queue_id = None
             self.cloud_queue_id = media.source_id
+
+            def _load_starts(_sonos_session_id: str) -> None:
+                self._loaded_session_id = media.queue_session_id
+
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.protocol_id}/v2.3/"
             try:
                 await self.group_controller.play_cloud_queue(
                     cloud_queue_url,
                     item_id=self.wire_item_id(media.queue_item_id),
+                    on_session=_load_starts,
                 )
             except (Exception, asyncio.CancelledError) as err:
                 self._settle_failed_load(err, media.source_id, previous_queue_id)
@@ -860,6 +872,7 @@ class SonosPlayer(PlayerProtocol):
         """
         if media.source_id:
             self.cloud_queue_id = media.source_id
+            self._loaded_session_id = media.queue_session_id
         await self.refresh_cloud_queue()
 
     def wire_item_id(self, queue_item_id: str | None, generation: int | None = None) -> str | None:
@@ -1454,6 +1467,11 @@ class SonosPlayer(PlayerProtocol):
                 current_media.title = container["name"]
             if not current_media.uri:
                 current_media.uri = container["id"]["objectId"]
+
+        if current_media and self._own_airplay_session:
+            # the speaker drops the artwork of our own AirPlay session as soon as our stream
+            # stops, while it still names it
+            current_media.image_url = None
 
         self._attr_current_media = current_media
 
@@ -2060,6 +2078,11 @@ class SonosPlayer(PlayerProtocol):
     ) -> PlayerMedia:
         """Return the media for a queue item, with a position-based stream URL for this player."""
         media = await self.mass.player_queues.player_media_from_queue_item(queue_item)
+        # a start moves the queue to a new session before the speaker gets to load it, and the
+        # speaker acts on no load while an item it fetched waits for audio (the started track
+        # can hold the only stream slot). Under the session it loaded the stream server refuses
+        # such a fetch right away.
+        media.queue_session_id = self._loaded_session_id
         media.uri = await self.mass.streams.resolve_stream_url(
             self.protocol_id, media, queue_index=queue_index
         )
@@ -2355,6 +2378,7 @@ class SonosPlayer(PlayerProtocol):
         """Return whether the player reports sleep as powered off, MA controlling power natively."""
         return (
             self._wakeable
+            and self._portable
             and self.player is not None
             and self.player.power_control == PLAYER_CONTROL_NATIVE
         )
@@ -2560,11 +2584,13 @@ def _playing_line_in(container: Container | None) -> str:
     return _line_in_source_id(device_id) if device_id else SOURCE_LINE_IN
 
 
-def _is_wakeable(discovery_info: SonosDiscoveryInfo) -> bool:
-    """Return whether the discovered device features advertise Wake-on-LAN support."""
+def _has_device_feature(discovery_info: SonosDiscoveryInfo, feature: str) -> bool:
+    """
+    Return whether a discovered speaker advertises a device feature.
+
+    :param discovery_info: The discovery info of the speaker.
+    :param feature: Name of the feature, as the speaker advertises it.
+    """
     # deviceFeatures is not modeled in aiosonos
     features = cast("dict[str, Any]", discovery_info["device"]).get("deviceFeatures", [])
-    return any(
-        isinstance(feature, dict) and feature.get("name") == DEVICE_FEATURE_WAKEABLE
-        for feature in features
-    )
+    return any(isinstance(x, dict) and x.get("name") == feature for x in features)

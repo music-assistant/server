@@ -51,6 +51,7 @@ from music_assistant.providers.sendspin.helpers import (
 )
 
 from .constants import (
+    CAST_APP_SYNC_TIMEOUT,
     CAST_STATUS_REFRESH_TIMEOUT,
     CONF_SENDSPIN_UNSUPPORTED,
     SENDSPIN_CAST_APP_ID,
@@ -109,6 +110,7 @@ class SendspinCastController(BaseController):
         logger: logging.Logger,
         on_fatal_audio_error: Callable[[], None] | None = None,
         on_cast_connected: Callable[[], None] | None = None,
+        on_cast_synced: Callable[[], None] | None = None,
     ) -> None:
         """
         Initialize the controller.
@@ -116,11 +118,13 @@ class SendspinCastController(BaseController):
         :param logger: Logger to forward Cast receiver messages to.
         :param on_fatal_audio_error: Callback when Cast app reports audio is unsupported.
         :param on_cast_connected: Callback when Cast app reports it connected to Sendspin.
+        :param on_cast_synced: Callback for each report that the Cast app's clock is synchronized.
         """
         super().__init__(SENDSPIN_CAST_NAMESPACE)
         self._log = logger
         self._on_fatal_audio_error = on_fatal_audio_error
         self._on_cast_connected = on_cast_connected
+        self._on_cast_synced = on_cast_synced
 
     def receive_message(self, _message: CastMessage, data: dict[str, Any]) -> bool:
         """
@@ -158,6 +162,8 @@ class SendspinCastController(BaseController):
                 self._on_fatal_audio_error()
         elif state == "connected" and self._on_cast_connected:
             self._on_cast_connected()
+        elif (data.get("sync") or {}).get("synced") and self._on_cast_synced:
+            self._on_cast_synced()
         return True
 
 
@@ -218,6 +224,16 @@ def _build_bridge_hello(cast_player: ChromecastPlayer, bridge_client_id: str) ->
             supported_commands=[],
         ),
     )
+
+
+def _resolve_pending(future: asyncio.Future[None]) -> None:
+    """
+    Resolve a future, unless it was resolved or cancelled meanwhile.
+
+    :param future: The future to resolve.
+    """
+    if not future.done():
+        future.set_result(None)
 
 
 async def _apply_fatal_disconnect(client: SendspinClient, logger: logging.Logger) -> None:
@@ -282,7 +298,8 @@ class SendspinChromecastBridge:
 
         If the Sendspin Cast app is running and connected to the Sendspin server,
         return a future that's already resolved so callers don't wait 30s for a
-        "connected" status that won't fire again.
+        "connected" status that won't fire again. Otherwise it resolves once the app
+        can play what it receives.
         """
         prior = self._cast_app_ready
         if prior is not None and not prior.done():
@@ -432,6 +449,7 @@ class SendspinChromecastBridge:
             self.logger,
             on_fatal_audio_error=self._on_cast_fatal_audio_error,
             on_cast_connected=self._on_cast_connected,
+            on_cast_synced=self._on_cast_synced,
         )
         self.cast_player.register_client_handler(self._log_controller)
 
@@ -530,10 +548,24 @@ class SendspinChromecastBridge:
         """Handle Cast app "connected" status (called from socket thread)."""
         self.mass.loop.call_soon_threadsafe(self._mark_cast_app_connected)
 
+    def _on_cast_synced(self) -> None:
+        """Handle a Cast app "clock synchronized" report (called from socket thread)."""
+        # reported every second for as long as the app runs
+        if (ready := self._cast_app_ready) is not None and not ready.done():
+            self.mass.loop.call_soon_threadsafe(self._mark_cast_app_synced)
+
     def _mark_cast_app_connected(self) -> None:
-        """Mark the Cast app as connected and resolve any pending future."""
+        """Mark the Cast app as connected, and give it time to synchronize its clock."""
         self._cast_app_connected = True
-        self._resolve_cast_app_ready(None)
+        # The app does not play audio that arrives before its clock is synchronized, and a
+        # short clip arrives in full before then, so connected alone is not ready yet.
+        if (ready := self._cast_app_ready) is not None and not ready.done():
+            self.mass.loop.call_later(CAST_APP_SYNC_TIMEOUT, _resolve_pending, ready)
+
+    def _mark_cast_app_synced(self) -> None:
+        """Resolve any pending future, unless the report is from an app that is going away."""
+        if self.is_cast_app_serving:
+            self._resolve_cast_app_ready(None)
 
     def _resolve_cast_app_ready(self, error: BaseException | None) -> None:
         """
@@ -1046,7 +1078,10 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 cast_player.on_app_status_changed = None
 
         def _on_cast_status_changed(app_id: str | None) -> None:
+            nonlocal cast_app_was_active
             if app_id == SENDSPIN_CAST_APP_ID:
+                # the claim usually comes before the first status of the device
+                cast_app_was_active = True
                 return
             if not cast_app_was_active:
                 return

@@ -84,6 +84,7 @@ from music_assistant.helpers.util import (
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
+from .constants import UPLOAD_ALBUM_ID_PREFIX, UPLOAD_ARTIST_ID_PREFIX
 from .helpers import (
     YTMSearchFilter,
     add_remove_playlist_tracks,
@@ -124,6 +125,7 @@ if TYPE_CHECKING:
 
 
 CONF_INCLUDE_VIDEOS = "include_videos_in_search"
+CONF_AUTHENTICATED_SEARCH = "authenticated_search"
 CONF_COOKIE = "cookie"
 CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
 CONF_STREAM_PROFILE = "stream_profile"
@@ -261,6 +263,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 default_value=STREAM_PROFILE_STABLE,
                 advanced=True,
             ),
+            ConfigEntry(
+                key=CONF_AUTHENTICATED_SEARCH,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+            ),
         )
 
     async def handle_async_init(self) -> None:
@@ -308,8 +316,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle a config update."""
         await super().update_config(config, changed_keys)
-        if f"values/{CONF_INCLUDE_VIDEOS}" in changed_keys:
-            # cached search results do not record the video preference they were made with
+        if changed_keys & {f"values/{CONF_INCLUDE_VIDEOS}", f"values/{CONF_AUTHENTICATED_SEARCH}"}:
+            # cached search results do not record the search settings they were made with
             for provider in (self.instance_id, self.mass.music.domain):
                 await self.mass.cache.delete(
                     None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=provider
@@ -346,14 +354,15 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             if media_types[0] == MediaType.RADIO:
                 # bit of an edge case but still good to handle
                 return parsed_results
-        results = await search(
-            query=search_query,
-            ytm_filter=ytm_filter,
-            limit=limit,
+        account: dict[str, Any] = (
+            {"headers": self._headers, "user": self._yt_user}
+            if self.config.get_value(CONF_AUTHENTICATED_SEARCH)
+            else {}
         )
+        results = await search(query=search_query, ytm_filter=ytm_filter, limit=limit, **account)
         if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
             # some tracks only exist as a video; interleave so videos survive the limit cut
-            videos = await search(query=search_query, ytm_filter="videos", limit=limit)
+            videos = await search(query=search_query, ytm_filter="videos", limit=limit, **account)
             results = [item for pair in zip_longest(results, videos) for item in pair if item]
             results = results[:limit]
         parsed_results = SearchResults()
@@ -438,6 +447,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 yield self._parse_track(track)
             except InvalidDataError:
                 full_track = await self.get_track(track["videoId"])
+                if "entityId" in track:
+                    for mapping in full_track.provider_mappings:
+                        mapping.is_unique = True
                 yield full_track
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
@@ -1235,6 +1247,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                         if (playlist_id := album_obj.get("audioPlaylistId"))
                         else f"{YTM_DOMAIN}/browse/{album_id}"
                     ),
+                    is_unique=str(album_id).startswith(UPLOAD_ALBUM_ID_PREFIX) or None,
                 )
             },
             favorite=_favorite_from_like_status(album_obj),
@@ -1279,6 +1292,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not artist_id:
             msg = "Artist does not have a valid ID"
             raise InvalidDataError(msg)
+        is_upload = str(artist_id).startswith(UPLOAD_ARTIST_ID_PREFIX)
         artist = Artist(
             item_id=artist_id,
             name=artist_obj["name"],
@@ -1288,7 +1302,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     item_id=str(artist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{YTM_DOMAIN}/channel/{artist_id}",
+                    url=f"{YTM_DOMAIN}/browse/{artist_id}"
+                    if is_upload
+                    else f"{YTM_DOMAIN}/channel/{artist_id}",
+                    is_unique=is_upload or None,
                 )
             },
             favorite=_favorite_from_like_status(artist_obj),
@@ -1364,6 +1381,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     audio_format=AudioFormat(
                         content_type=ContentType.M4A,
                     ),
+                    # only uploads carry an entityId; they exist on this account only
+                    is_unique="entityId" in track_obj or None,
                 )
             },
             favorite=_favorite_from_like_status(track_obj),
@@ -1722,7 +1741,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             artists sections, which ytmusicapi finds by their translated title.
         """
         return await get_artist(
-            prov_artist_id=prov_artist_id, headers=self._headers, language=language
+            prov_artist_id=prov_artist_id,
+            headers=self._headers,
+            language=language,
+            user=self._yt_user,
         )
 
     @use_cache(3600)  # Cache for 1 hour

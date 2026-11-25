@@ -252,7 +252,9 @@ def test_player_classes_advertise_grouping_by_role(monkeypatch: pytest.MonkeyPat
         SimpleNamespace(
             instance_id="sendspin--test",
             logger=Mock(),
-            server_api=SimpleNamespace(get_client=Mock(return_value=client)),
+            server_api=SimpleNamespace(
+                get_client=Mock(return_value=client), allow_noncompliant_clients=True
+            ),
         ),
     )
     monkeypatch.setattr(PlayerProtocol, "__init__", _init_player)

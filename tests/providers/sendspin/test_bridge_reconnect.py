@@ -96,7 +96,9 @@ def _sendspin(scenario: Scenario) -> Any:
     for name in _CLIENT_CODE:
         setattr(provider, name, getattr(SendspinProvider, name).__get__(provider))
     provider.clients = {}
-    provider.server_api = SimpleNamespace(get_client=provider.clients.get)
+    provider.server_api = SimpleNamespace(
+        get_client=provider.clients.get, allow_noncompliant_clients=True
+    )
     provider.is_virtual_player = lambda _client_id: False
     provider.sources = SendspinSources(provider)
     provider.is_held_unapproved = lambda _client_id: False

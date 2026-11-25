@@ -38,6 +38,7 @@ from music_assistant.helpers.ffmpeg import (
     parse_ffmpeg_stream_info,
     probe_audio_stream,
 )
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.music_provider import ProviderStreamLimitError
 
 
@@ -865,6 +866,34 @@ async def test_overlay_stream_keeps_provider_stream_limit(overlay_file: Path) ->
         )
 
     assert err.value is limit_error
+
+
+async def test_ffmpeg_stream_keeps_a_source_refusal_and_logs_it_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A live source refusing the consumer surfaces as itself, without a feeder warning."""
+    refusal = AudioSourceRefusedError("No AirPlay client is streaming to this receiver")
+
+    async def refusing_input() -> AsyncGenerator[bytes]:
+        raise refusal
+        yield b""  # type: ignore[unreachable]  # pragma: no cover
+
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(AudioSourceRefusedError) as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=refusing_input(),
+                input_format=_PCM_FORMAT,
+                output_format=_PCM_FORMAT,
+            )
+        )
+
+    assert err.value is refusal
+    feeder_records = [
+        record for record in caplog.records if "stdin feeder task ended" in record.getMessage()
+    ]
+    assert feeder_records
+    assert all(record.levelno == logging.DEBUG for record in feeder_records)
 
 
 async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:

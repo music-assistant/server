@@ -528,6 +528,7 @@ class PlayerProtocol(ABC):
         always return ``False``. Group implementations should return ``True`` while
         a session is being formed, while it is actively playing/paused, and during
         any idle grace period; and ``False`` once the group is fully dormant.
+        While it is ``True``, a STOP command calls ``stop()`` also when the group is idle.
         """
         return False
 
@@ -1179,6 +1180,18 @@ class PlayerProtocol(ABC):
         # optional callback
         # default implementation will simply trigger an update for the state of the player
         self._trigger_player_update()
+
+    async def on_session_leader_lost(self, leader: PlayerProtocol) -> bool:
+        """
+        Handle callback when the leader of the session of this group player lost its stream.
+
+        Runs under the playback locks of the group player and of the player of the leader.
+
+        :param leader: The protocol that lost its stream.
+        :return: Whether the session plays on, led by another member.
+        """
+        # optional callback for group players that can hand their session over
+        return False
 
     def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:  # noqa: B027
         """

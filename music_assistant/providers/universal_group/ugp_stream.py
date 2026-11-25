@@ -23,6 +23,7 @@ from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.streams.constants import output_pacing_args
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.providers.ugp_stream")
 
@@ -124,6 +125,9 @@ class UGPStream:
         except asyncio.CancelledError:
             LOGGER.debug("UGP stream runner cancelled")
             raise
+        except AudioSourceRefusedError:
+            # the streams controller logs a source refusing this group itself
+            pass
         except Exception as err:
             LOGGER.error("UGP stream runner error: %s", err, exc_info=err)
         finally:

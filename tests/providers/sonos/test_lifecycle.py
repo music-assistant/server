@@ -13,7 +13,10 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_POWER_CONTROL
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
-from music_assistant.providers.sonos.const import DEVICE_FEATURE_WAKEABLE
+from music_assistant.providers.sonos.const import (
+    DEVICE_FEATURE_PORTABLE,
+    DEVICE_FEATURE_WAKEABLE,
+)
 from music_assistant.providers.sonos.player import SonosPlayer
 from tests.scenarios.harness import Scenario
 
@@ -67,7 +70,10 @@ async def _attach_speaker(scenario: Scenario) -> SonosPlayer:
                 "name": "Speaker A",
                 "modelDisplayName": "Roam",
                 "capabilities": [SonosCapability.PLAYBACK],
-                "deviceFeatures": [{"name": DEVICE_FEATURE_WAKEABLE}],
+                "deviceFeatures": [
+                    {"name": DEVICE_FEATURE_PORTABLE},
+                    {"name": DEVICE_FEATURE_WAKEABLE},
+                ],
             }
         },
     )

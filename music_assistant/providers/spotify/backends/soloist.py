@@ -2064,7 +2064,7 @@ class _EngineRun:
             self._engine_playing = playing
             was_paused, self._engine_paused = self._engine_paused, data.status == "paused"
             if self._engine_paused and data.position is not None and data.position.position_ms == 0:
-                self._observe_rewound_pause()
+                await self._observe_rewound_pause()
             # the engine repeats a pause across events: act on the transition only
             if self._engine_paused and not was_paused:
                 self._observe_external_pause()
@@ -2088,11 +2088,13 @@ class _EngineRun:
         """
         self._engine_uri = uri
         if details is not None and (duration_ms := _decorated_duration_ms(details)):
-            # only the full playback state carries the exact length
-            self._engine_length = (uri, duration_ms)
+            # only a playing report carries the exact length, the others may round it
+            # to whole seconds
+            if announced or self._engine_length is None or self._engine_length[0] != uri:
+                self._engine_length = (uri, duration_ms)
             for candidate in (self._next, self._item):
                 if candidate is not None and candidate.spotify_uri == uri:
-                    if candidate.engine_duration_ms is None:
+                    if announced or candidate.engine_duration_ms is None:
                         candidate.engine_duration_ms = duration_ms
                     break
         if self._moving:
@@ -2265,7 +2267,7 @@ class _EngineRun:
             item.engine_duration_ms = self._engine_length[1]
         return item
 
-    def _observe_rewound_pause(self) -> None:
+    async def _observe_rewound_pause(self) -> None:
         """End the current item when the engine has run past the last item it was given."""
         if (
             not self._moving
@@ -2285,6 +2287,11 @@ class _EngineRun:
             # it never came to play
             self._fed = None
             self._end_item()
+            # the engine reports a pause without its position first, which held the
+            # sink: an item whose end is known is owed its tail, and only a running
+            # sink lets it end short of its cut
+            if not item.abandoned and not item.chunks.full():
+                await self._set_sink(running=True)
 
     def _observe_device_active(self, *, active: bool) -> None:
         """Fail the run when the account starts playing somewhere else."""

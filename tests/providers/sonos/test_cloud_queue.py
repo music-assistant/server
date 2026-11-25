@@ -97,6 +97,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player._player = None
     player.connected = True
     player.cloud_queue_id = QUEUE_ID
+    player._loaded_session_id = "session"
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 0
     player._window_item_ids = {}
@@ -110,11 +111,19 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
 
 
 def _loads_into_a_session(
-    group: MagicMock, on_load: Callable[..., Awaitable[None]] | None = None
+    group: MagicMock,
+    on_load: Callable[..., Awaitable[None]] | None = None,
+    on_setup: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Let a mocked group load a cloud queue into a session of its own, as the speaker does."""
 
-    async def _play_cloud_queue(*args: object, **kwargs: object) -> None:
+    async def _play_cloud_queue(
+        *args: object, on_session: Callable[[str], None] | None = None, **kwargs: object
+    ) -> None:
+        if on_setup is not None:
+            await on_setup()
+        if on_session is not None:
+            on_session("loaded-session")
         if on_load is not None:
             await on_load(*args, **kwargs)
         group.active_session_id = "loaded-session"
@@ -459,6 +468,70 @@ async def test_a_window_asked_around_an_id_of_an_earlier_load_keeps_the_ids_of_t
 
     assert moved.wire_ids == ["track1@1", "track2@1"]
     assert lost.wire_ids == ["track0@1", "track1@1", "track2@1"]
+
+
+@pytest.mark.parametrize("replaced", [True, False], ids=["replaced queue", "same queue"])
+async def test_a_window_asked_ahead_of_a_load_addresses_the_loaded_session(replaced: bool) -> None:
+    """
+    Test the items of a window belong to the session the speaker loaded, until its next load.
+
+    A started queue is in a new session before the speaker loads it. An item fetched from that
+    session ahead of the load can wait for audio, and the speaker acts on no load while it does.
+
+    :param replaced: Whether the started queue replaced the one the speaker plays.
+    """
+    player = _make_player_on_real_queues(3, RepeatMode.OFF)
+    cast("AsyncMock", player.mass.streams.resolve_stream_url).side_effect = (
+        lambda _player_id, media, queue_index: f"{media.queue_session_id}/{queue_index}"
+    )
+    player.cloud_queue_item_generation = 3
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    queue_data.queue.current_index = 1
+    if replaced:
+        queue_data.items = [_make_queue_item(f"new{i}") for i in range(3)]
+    queue_data.session_id = "next-session"
+
+    window = await player.build_cloud_queue_window("track1@3")
+
+    assert window.wire_ids[1] == "track1@3"
+    assert [x.uri for x in window.items] == ["session/0", "session/1", "session/2"]
+
+
+async def test_a_load_addresses_the_session_it_loads() -> None:
+    """Test a window holds the items of the new session from the load on, not while it is set up."""
+    player = _make_player_on_real_queues(3, RepeatMode.OFF)
+    cast("AsyncMock", player.mass.streams.resolve_stream_url).side_effect = (
+        lambda _player_id, media, queue_index: f"{media.queue_session_id}/{queue_index}"
+    )
+    player.mass.player_queues._queue_data[QUEUE_ID].session_id = "next-session"
+    client = MagicMock()
+    client.player.is_passive = False
+    served: list[SonosQueueWindow] = []
+
+    async def _read_window_for_load(*_args: object, item_id: str, **_kwargs: object) -> None:
+        served.append(await player.build_cloud_queue_window(item_id))
+
+    async def _read_window_during_setup() -> None:
+        served.append(await player.build_cloud_queue_window("track0@0"))
+
+    _loads_into_a_session(client.player.group, _read_window_for_load, _read_window_during_setup)
+    player.client = client
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        await player.play_media(
+            PlayerMedia(
+                uri="library://track/1",
+                media_type=MediaType.TRACK,
+                source_id=QUEUE_ID,
+                queue_item_id="track0",
+                queue_session_id="next-session",
+            )
+        )
+
+    during_setup, for_load = served
+    assert [x.uri for x in during_setup.items] == [f"session/{i}" for i in range(3)]
+    assert [x.uri for x in for_load.items] == [f"next-session/{i}" for i in range(3)]
 
 
 async def test_unavailable_items_are_left_out() -> None:

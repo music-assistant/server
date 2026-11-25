@@ -125,24 +125,19 @@ Its nqptp and MA's PTP engine both need UDP 319/320, so the native lane can't wo
 The only user override is the advanced per-player `streaming_mode` selector. It
 pins the protocol/timing lane for a device whose automatic route misbehaves, and
 each option is offered only when the device can actually use it: the AirPlay 2
-lanes need AirPlay 2 support, legacy RAOP needs an advertised `_raop` service,
-and Apple receivers get every lane except NTP timing (they render silence on an
-NTP-timed realtime stream). The modes map
-onto the binary's `--protocol`/`--timing` arguments. Music Assistant never
-writes the setting itself: when an automatic route conclusively fails (a device
-that advertises PTP but never answers a clock probe, or a native control
-channel that fails after its keepalive retries) it logs a warning pointing at
-this selector and leaves the choice to the user. The usual cause of a control
-channel failure is a network dropout, and a persisted automatic switch would
-outlive it and pin the player to a lane the device may not even accept.
+lanes need AirPlay 2 support and legacy RAOP needs an advertised `_raop`
+service. The modes map onto the binary's `--protocol`/`--timing` arguments.
+Music Assistant never writes the setting itself: when an automatic route
+conclusively fails (a device that advertises PTP but never answers a clock
+probe, or a native control channel that fails after its keepalive retries) it
+logs a warning pointing at this selector and leaves the choice to the user. The
+usual cause of a control channel failure is a network dropout, and a persisted
+automatic switch would outlive it and pin the player to a lane the device may
+not even accept.
 
 The selector is hidden only for RAOP-only devices (no alternative lane; a
-stray persisted value is ignored). Apple devices (HomePod / Apple TV) get
-every lane except NTP timing — they render silence on an NTP-timed realtime
-stream (hardware-measured) — leaving pinned PTP, the compatibility flow and
-legacy RAOP as escape hatches for networks where the PTP ports are blocked.
-AirPlay-2-only devices get the AirPlay 2 lanes without RAOP: they are the
-class the NTP escape exists for.
+stray persisted value is ignored). AirPlay-2-only devices get the AirPlay 2
+lanes without RAOP: they are the class the NTP escape exists for.
 
 ## Discovery and Player Setup
 
@@ -481,13 +476,15 @@ A volume is still sent when the AirPlay output itself is the resolved volume con
 
 ### Volume Feedback
 
-Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. Genuine Apple devices are auto-set to ignore these reports (they manage volume internally).
+Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. The DACP volume reports of Apple devices are always ignored: a HomePod holds its reports back for 5 seconds for every connected sender whose DACP service it can not find, such as the control connection, so an old level can arrive long after a newer one.
+
+The volume of a HomePod is followed over its control connection (MRP) instead, idle and while it plays from Music Assistant. That is the volume the stream plays at, and its reports arrive in order. They are only taken over, never sent back to the device, and a 0 never mutes the player. A HomePod that plays as a speaker of an Apple TV has no control connection, so its changes are not followed. On an Apple TV the native volume is separate from the one of the stream, and is ignored while it plays from Music Assistant.
 
 A receiver also echoes back every level it is handed, and an echo that arrives after the next level was sent would be read as the user reaching for the volume and written straight back to the device. Reports are therefore ignored for a short window after Music Assistant sends a volume itself, and for the whole span of an announcement.
 
-**Config option**: `ignore_volume` (default: `False`, auto-enabled for Apple devices)
+**Config option**: `ignore_volume` (default: `False`)
 - Useful when device volume reports are unreliable
-- Apple devices always ignore volume feedback (handled internally)
+- On a HomePod it ignores the reports that arrive while it plays from Music Assistant
 
 ### Device Source Switching
 

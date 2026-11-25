@@ -1014,12 +1014,19 @@ class AirPlayStream:
             leader_player = sync_leader.player if sync_leader else None
         else:
             leader_player = owner.player if was_leader else None
+        leaving: asyncio.Task[None] | None = None
         if leader_player is not None and owner.player is not None:
-            self.mass.create_task(self._leave_group(leader_player, owner.player.player_id))
+            leaving = self.mass.create_task(
+                self._leave_group(leader_player, owner.player.player_id)
+            )
         if rejoin and rejoin_candidates and not self._receiver_closed:
             # the group (or its successor) may still be playing:
             # schedule bounded attempts to re-join it
-            owner.schedule_group_rejoin(rejoin_candidates)
+            if was_leader:
+                # it leads the group until it has left it, which waits for other commands
+                owner.schedule_group_rejoin(rejoin_candidates, after=leaving)
+            else:
+                owner.schedule_group_rejoin(rejoin_candidates)
         if (
             (owner is not player or player.speakers)
             and not was_leader
@@ -2369,9 +2376,30 @@ class AirPlayStream:
         )
 
     async def _leave_group(self, leader: Player, player_id: str) -> None:
-        """Take a player out of the group of its sync leader, on the server's own behalf."""
+        """
+        Take a player out of the group it plays in, on the server's own behalf.
+
+        :param leader: The player that leads the group.
+        :param player_id: Id of the player that leaves, which can be the leader itself.
+        """
         players = self.mass.players
-        async with players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):
+        if leader.player_id != player_id:
+            async with players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):
+                await players._handle_set_members(leader, player_ids_to_remove=[player_id])
+            return
+        async with players.get_group_and_player_lock(player_id):
+            owner = self.player.owner or self.player
+            if self.player.stream is not self or not owner.group_members:
+                # a command that came first restarted the stream or took the leadership away
+                return
+            group = players.get_player(leader.active_group) if leader.active_group else None
+            if (
+                not self._receiver_closed
+                and group
+                and group.own_protocol
+                and await group.own_protocol.on_session_leader_lost(owner)
+            ):
+                return
             await players._handle_set_members(leader, player_ids_to_remove=[player_id])
 
 

@@ -77,13 +77,15 @@ async def test_update(tmp_path: Path, registry: Registry, github: GitHub) -> Non
         other_module = sys.modules[f"{providers_package.__name__}.{OTHER}"]
         other_instance = mass.get_provider(OTHER)
         await _publish(mass, registry, github, {NEW: _files(DOMAIN, NEW)}, entry)
-        assert _states(await mass.community_catalog.get_providers())[DOMAIN] == (
-            CommunityProviderState.UPDATE_AVAILABLE
-        )
+        provider = _provider(await mass.community_catalog.get_providers())
+        assert provider.state == CommunityProviderState.UPDATE_AVAILABLE
+        assert provider.update_version == NEW
         with patch.object(mass, "signal_event", wraps=mass.signal_event) as signal_event:
             providers = await mass.community_catalog.update_providers(DOMAIN)
 
-        assert _states(providers)[DOMAIN] == CommunityProviderState.INSTALLED
+        provider = _provider(providers)
+        assert provider.state == CommunityProviderState.INSTALLED
+        assert provider.update_version is None
         assert EventType.COMMUNITY_CATALOG_UPDATED in [c.args[0] for c in signal_event.mock_calls]
         _assert_runs(mass, DOMAIN, NEW)
         assert _code_version(folder / ".previous" / DOMAIN) == OLD
@@ -170,6 +172,7 @@ async def test_update_of_an_imported_package(
         provider = _provider(providers)
         assert provider.state == CommunityProviderState.RESTART_REQUIRED
         assert provider.pending_version == NEW
+        assert provider.update_version is None
         assert _installed(folder)["pending_version"] == NEW
         assert _installed(folder)["version"] == OLD
         assert (folder / ".staging" / DOMAIN).is_dir()
@@ -251,6 +254,7 @@ async def test_failed_update_goes_back(
         assert not (folder / ".previous" / DOMAIN).exists()
         assert _states(providers)[DOMAIN] == CommunityProviderState.INSTALLED
         assert _provider(providers).failed_version == NEW
+        assert _provider(providers).update_version is None
         await mass.community_catalog.update_providers()
         _assert_runs(mass, DOMAIN, OLD)
 
@@ -469,6 +473,59 @@ async def test_no_update_without_auto_update(
         )
 
 
+async def test_update_of_a_provider_that_does_not_run(
+    tmp_path: Path, registry: Registry, github: GitHub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An update of a provider whose requirements clash is offered, and makes it run by hand."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD, [f"{REQUIREMENT}==1.0"])})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    _require_on_server(monkeypatch, f"{REQUIREMENT}==2.0")
+    _add_version(github, entry, NEW, _files(DOMAIN, NEW))
+    registry.document = _index({DOMAIN: entry})
+    registry.etag = '"two"'
+
+    async with _server(tmp_path) as mass:
+        await mass.community_catalog.refresh()
+
+        reason = _REASONS[Verdict.REQUIREMENTS_CLASH]
+        await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
+        assert _provider(await mass.community_catalog.get_providers()).update_version == NEW
+        assert _installed(_catalog(tmp_path))["version"] == OLD
+
+        providers = await mass.community_catalog.update_providers(DOMAIN)
+
+        _assert_runs(mass, DOMAIN, NEW)
+        provider = _provider(providers)
+        assert provider.state == CommunityProviderState.INSTALLED
+        assert provider.update_version is None
+
+
+@pytest.mark.parametrize("found", ["at_start", "by_a_check"])
+async def test_auto_update_of_a_provider_that_does_not_run(
+    tmp_path: Path,
+    registry: Registry,
+    github: GitHub,
+    monkeypatch: pytest.MonkeyPatch,
+    found: str,
+) -> None:
+    """With automatic updates on, an update of a provider whose requirements clash makes it run."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD, [f"{REQUIREMENT}==1.0"])})
+    await _install(tmp_path, registry, {DOMAIN: entry}, auto_update=True)
+    _require_on_server(monkeypatch, f"{REQUIREMENT}==2.0")
+    if found == "at_start":
+        _add_version(github, entry, NEW, _files(DOMAIN, NEW))
+        registry.document = _index({DOMAIN: entry})
+        registry.etag = '"two"'
+
+    async with _server(tmp_path) as mass:
+        if found == "by_a_check":
+            reason = _REASONS[Verdict.REQUIREMENTS_CLASH]
+            await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
+            await _publish(mass, registry, github, {NEW: _files(DOMAIN, NEW)}, entry)
+
+        _assert_runs(mass, DOMAIN, NEW)
+
+
 async def test_blocked_while_an_update_is_pending(
     tmp_path: Path, registry: Registry, github: GitHub
 ) -> None:
@@ -652,6 +709,7 @@ async def test_failed_switch_is_tried_again_by_the_next_check(
     async with _server(tmp_path) as mass:
         reason = _REASONS[Verdict.NOT_FOR_THIS_VERSION]
         await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
+        assert _provider(await mass.community_catalog.get_providers()).update_version == NEW
         github.status = 200
 
         await mass.create_task(mass.community_catalog._check_index(), task_id=_INDEX_CHECK)
@@ -930,6 +988,12 @@ async def _move(
     _seed_instance(tmp_path, *providers)
     async with _server(tmp_path):
         pass
+
+
+def _require_on_server(monkeypatch: pytest.MonkeyPatch, pin: str) -> None:
+    """Let the server itself hold a package at a version, as a newer server may do."""
+    constraints = dependencies._server_constraints
+    monkeypatch.setattr(dependencies, "_server_constraints", lambda: [*constraints(), pin])
 
 
 async def _publish(
