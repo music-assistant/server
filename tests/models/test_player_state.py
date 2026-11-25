@@ -474,6 +474,7 @@ class TestActiveGroup:
             ({"powered": False}, {}, False),
             ({}, {"own": {"synced_to": "leader"}}, False),
             ({}, {"own": {"group_members": [PLAYER_ID, "member"]}}, False),
+            ({}, {"own": {"group_members": [PLAYER_ID]}}, True),
             ({}, {"own": {"available": False}}, False),
             ({}, {"own": {"playback_state": PlaybackState.PLAYING}}, False),
             ({}, {"own": {"playback_state": PlaybackState.PAUSED}}, True),

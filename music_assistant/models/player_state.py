@@ -728,7 +728,7 @@ def _active_group(inputs: StateInputs, synced_to: str | None) -> str | None:
     if (
         synced_to
         or not _reachable(inputs)
-        or inputs.own.group_members
+        or any(x != inputs.own.protocol_id for x in inputs.own.group_members)
         or any(x.playback_state == PlaybackState.PLAYING for x in (inputs.own, *inputs.linked))
     ):
         return None
