@@ -2767,3 +2767,21 @@ does one that pauses before the speaker got to play it. A pause of a source that
   - `test_paused_live_source.py::test_a_source_that_plays_on_before_the_speaker_stopped_is_not_paused`
   - `test_paused_live_source.py::test_a_speaker_that_refuses_the_pause_is_not_paused`
   - `test_paused_live_source.py::test_a_pause_of_another_source_leaves_the_player_alone`
+
+### SOURCE-7 · A sync group with a paused live source keeps its speakers
+
+Spotify plays on the sync group Downstairs of the Kitchen and Office speakers and is paused. The
+speakers are silent, and the group and both speakers show as paused, never idle in between. The
+group keeps its speakers, also past the idle grace in which a group that plays nothing lets them
+go, and play resumes Spotify on the same speakers without grouping them again. At the pause
+timeout, on a stop of the group or of one of its speakers, or when Spotify ends the session, the
+speakers are idle and free again; a stop also ends the session of Spotify.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused, on a sync
+  group.
+- Proven by:
+  - `test_paused_live_source.py::test_a_paused_sync_group_keeps_its_speakers`
+  - `test_paused_live_source.py::test_play_on_a_paused_sync_group_plays_on_with_the_same_speakers`
+  - `test_paused_live_source.py::test_a_paused_sync_group_lets_its_speakers_go_at_the_pause_timeout`
+  - `test_paused_live_source.py::test_a_stop_of_a_paused_sync_group_lets_the_source_go`
+  - `test_paused_live_source.py::test_a_sync_group_whose_source_ends_while_paused_goes_idle`

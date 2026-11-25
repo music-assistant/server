@@ -91,7 +91,7 @@ The sync leader is the **source of truth** for the group's playback state:
 - Reports playback state, elapsed time, current media, and active source to the group (via the group's `_update_attributes` reading what the leader's protocols report)
 - Contributes features (enqueue, gapless, volume, DSP) to the group
 
-> **State derivation note:** The leader's own playback state does **not** mirror its parent group — that would create a circular dependency (group derives from leader → leader derives from group → both stuck at last value). Members of an active group always report their own raw playback state; only manually-synced clients (`synced_to`) mirror their leader's state.
+> **State derivation note:** The leader's own playback state does **not** mirror its parent group — that would create a circular dependency (group derives from leader → leader derives from group → both stuck at last value). Members of an active group report their own raw playback state; only manually-synced clients (`synced_to`) mirror their leader's state. The one exception is the fake pause of the group (see Pausing): a silent leader and its members show as paused while the group's flag is set, and a change of that flag updates them explicitly, as the group's own state follows the leader.
 
 ## Group Types
 
@@ -187,7 +187,8 @@ The group's lifecycle is driven by **power**:
 
 - `power(True)` **forms** the group: selects a sync leader and syncs all members to it
 - `power(False)` **dissolves** the group: ungroups all members from the leader and clears the sync leader
-- `stop()` only stops the leader — it does **not** dissolve the group; the group remains powered and ready to resume
+- `stop()` stops the leader and dissolves the group, unless Fake power control keeps the group powered
+- `hold()` silences the leader while what the group plays is paused, and keeps the group formed
 
 This mirrors how a typical AVR or stereo system behaves: turn it on, it's an active output; turn it off, it's gone.
 
@@ -221,12 +222,28 @@ This mirrors how a typical AVR or stereo system behaves: turn it on, it's an act
 3. Leader starts playback, synced members follow
 ```
 
+### Pausing a Live Source
+
+```
+1. A live source (such as Spotify Connect) pauses on the SyncGroupPlayer
+   │
+2. The player controller shows the group as paused (fake pause) and calls hold()
+   │
+3. hold() silences the leader's output; the group stays formed
+   │
+4. The leader and the members show the fake pause of the group
+   │
+5. play_media plays on with the same members; a stop or the pause timeout dissolves the group
+```
+
 ### Stopping Playback
 
 ```
 1. User stops playback on SyncGroupPlayer
    │
-2. stop() forwarded to sync leader (group stays powered & formed)
+2. stop() forwarded to sync leader
+   │
+3. The group dissolves, unless Fake power control keeps it powered
 ```
 
 ### Powering Off

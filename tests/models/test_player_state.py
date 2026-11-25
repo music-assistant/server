@@ -867,14 +867,20 @@ class TestFakePause:
             PlaybackState.PAUSED if leader_paused else PlaybackState.IDLE
         )
 
-    def test_a_group_member_does_not_show_a_pause_of_its_own(self) -> None:
-        """A player a group holds shows what that group plays."""
+    @pytest.mark.parametrize("group_paused", [True, False])
+    def test_a_group_member_shows_the_pause_of_its_group(self, group_paused: bool) -> None:
+        """A player a group holds pauses with that group, not by itself."""
+        group = _group("group_1")
         state = _derive(
-            fake_paused=True, groups=(_group("group_1", powered=True, group_members=[PLAYER_ID]),)
+            fake_paused=not group_paused,
+            groups=(group,),
+            peers={"group_1": make_peer_snapshot("group_1", group.state, fake_paused=group_paused)},
         )
 
         assert state.active_group == "group_1"
-        assert state.playback_state == PlaybackState.IDLE
+        assert state.playback_state == (
+            PlaybackState.PAUSED if group_paused else PlaybackState.IDLE
+        )
 
     @pytest.mark.parametrize("values", [{"offline_by_power_control": True}, {"powered": False}])
     def test_a_player_switched_off_shows_as_idle(self, values: dict[str, Any]) -> None:

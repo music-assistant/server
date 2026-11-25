@@ -2842,6 +2842,22 @@ class TestPowerlessLifecycle:
         # session stays intact
         assert sgp.sync_leader is leader
 
+    async def test_hold_silences_the_leader_and_keeps_the_group(self) -> None:
+        """hold() silences the output of the leader and leaves the group formed."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader")
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        output = _protocol(leader, "sonos")
+
+        with patch.object(output, "hold", AsyncMock()) as hold:
+            await sgp.hold()
+
+        hold.assert_awaited_once()
+        mass.players._handle_cmd_stop.assert_not_awaited()
+        assert sgp.sync_leader is leader
+
 
 @pytest.mark.parametrize("active_output", [None, "native", "sendspin_leader", "missing"])
 def test_group_media_uses_active_session(active_output: str | None) -> None:
