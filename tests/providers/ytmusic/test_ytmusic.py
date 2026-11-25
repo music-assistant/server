@@ -326,7 +326,10 @@ async def test_search_uses_account_only_when_enabled(
         await search(provider, "test", [MediaType.TRACK])
 
     if authenticated:
-        mock_ytmusic.assert_called_once_with(auth={"cookie": "abc"}, language="en", user="123")
+        assert all(
+            call == ((), {"auth": {"cookie": "abc"}, "language": "en", "user": "123"})
+            for call in mock_ytmusic.call_args_list
+        )
     else:
         mock_ytmusic.assert_called_once_with(language="en")
 
@@ -923,7 +926,9 @@ async def test_search_includes_videos_only_when_enabled(
     async def backend(**kwargs: Any) -> list[dict[str, Any]]:
         return [_search_track("Om6ae_QDZgI", "video")] if kwargs["ytm_filter"] == "videos" else []
 
-    cast("MagicMock", provider.config.get_value).return_value = enabled
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        key == "include_videos_in_search" and enabled
+    )
     search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch("music_assistant.providers.ytmusic.search", side_effect=backend) as backend_search:
         results = await search(provider, "Ocean Eyes", [MediaType.TRACK], 5)
@@ -939,7 +944,9 @@ async def test_video_search_interleaves_full_shelves(provider: YoutubeMusicProvi
         prefix = "video" if kwargs["ytm_filter"] == "videos" else "song"
         return [_search_track(f"{prefix}{index}", prefix) for index in range(1, 5)]
 
-    cast("MagicMock", provider.config.get_value).return_value = True
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        key == "include_videos_in_search"
+    )
     search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch("music_assistant.providers.ytmusic.search", side_effect=backend):
         results = await search(provider, "query", [MediaType.TRACK], 4)

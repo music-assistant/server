@@ -467,6 +467,7 @@ async def search(
     limit: int = 20,
     headers: dict[str, str] | None = None,
     user: str | None = None,
+    scope: Literal["uploads"] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Async wrapper around the ytmusicapi search function.
@@ -476,6 +477,7 @@ async def search(
     :param limit: Maximum number of results.
     :param headers: Account headers to search with, None to search signed out.
     :param user: Brand account id to search as.
+    :param scope: "uploads" to search the account's own uploads, needs headers and no filter.
     """
 
     def _search() -> list[dict[str, Any]]:
@@ -489,7 +491,7 @@ async def search(
             if headers
             else _search_client()
         )
-        results = ytm.search(query=query, filter=ytm_filter, limit=limit)
+        results = ytm.search(query=query, filter=ytm_filter, scope=scope, limit=limit)
         # Sync result properties with uniformal objects
         for result in results:
             if result["resultType"] == "artist":

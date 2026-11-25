@@ -132,6 +132,7 @@ CONF_STREAM_PROFILE = "stream_profile"
 STREAM_PROFILE_STABLE = "stable"
 STREAM_PROFILE_FAST = "fast"
 DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
+UPLOAD_MEDIA_TYPES = {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK}
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"
@@ -354,47 +355,41 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             if media_types[0] == MediaType.RADIO:
                 # bit of an edge case but still good to handle
                 return parsed_results
+        authenticated = bool(self.config.get_value(CONF_AUTHENTICATED_SEARCH))
         account: dict[str, Any] = (
-            {"headers": self._headers, "user": self._yt_user}
-            if self.config.get_value(CONF_AUTHENTICATED_SEARCH)
-            else {}
+            {"headers": self._headers, "user": self._yt_user} if authenticated else {}
         )
-        results = await search(query=search_query, ytm_filter=ytm_filter, limit=limit, **account)
+        uploads: list[dict[str, Any]] = []
+        if authenticated and UPLOAD_MEDIA_TYPES & set(media_types):
+            # uploads only come back from their own scope, which needs the account
+            results, uploads = await asyncio.gather(
+                search(query=search_query, ytm_filter=ytm_filter, limit=limit, **account),
+                search(query=search_query, scope="uploads", limit=limit, **account),
+            )
+        else:
+            results = await search(
+                query=search_query, ytm_filter=ytm_filter, limit=limit, **account
+            )
         if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
             # some tracks only exist as a video; interleave so videos survive the limit cut
             videos = await search(query=search_query, ytm_filter="videos", limit=limit, **account)
             results = [item for pair in zip_longest(results, videos) for item in pair if item]
             results = results[:limit]
-        parsed_results = SearchResults()
-        artists: list[Artist | ItemMapping] = []
-        albums: list[Album | ItemMapping] = []
-        playlists: list[Playlist | ItemMapping] = []
-        tracks: list[Track | ItemMapping] = []
-        podcasts: list[Podcast | ItemMapping] = []
+        items: list[MediaItemType] = []
+        for result in uploads:
+            with suppress(InvalidDataError, MediaNotFoundError):
+                if item := await self._parse_upload_search_result(result, media_types):
+                    items.append(item)
         for result in results:
-            try:
-                if result["resultType"] == "artist" and MediaType.ARTIST in media_types:
-                    artists.append(self._parse_artist(result))
-                elif result["resultType"] == "album" and MediaType.ALBUM in media_types:
-                    albums.append(self._parse_album(result))
-                elif result["resultType"] == "playlist" and MediaType.PLAYLIST in media_types:
-                    playlists.append(self._parse_playlist(result))
-                elif result["resultType"] == "podcast" and MediaType.PODCAST in media_types:
-                    if podcast := self._parse_browse_podcast(result):
-                        podcasts.append(podcast)
-                elif (
-                    result["resultType"] in ("song", "video")
-                    and MediaType.TRACK in media_types
-                    and (track := self._parse_track(result))
-                ):
-                    tracks.append(track)
-            except InvalidDataError:
-                pass  # ignore invalid item
-        parsed_results.artists = artists
-        parsed_results.albums = albums
-        parsed_results.playlists = playlists
-        parsed_results.tracks = tracks
-        parsed_results.podcasts = podcasts
+            with suppress(InvalidDataError):
+                if item := self._parse_search_result(result, media_types):
+                    items.append(item)
+        # uploads come first, so the user's own items survive the limit cut
+        parsed_results.artists = [i for i in items if isinstance(i, Artist)][:limit]
+        parsed_results.albums = [i for i in items if isinstance(i, Album)][:limit]
+        parsed_results.playlists = [i for i in items if isinstance(i, Playlist)][:limit]
+        parsed_results.tracks = [i for i in items if isinstance(i, Track)][:limit]
+        parsed_results.podcasts = [i for i in items if isinstance(i, Podcast)][:limit]
         return parsed_results
 
     async def sync_library(self, media_type: MediaType) -> None:
@@ -1223,6 +1218,40 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 "user": {},
             }
         }
+
+    def _parse_search_result(
+        self, result: dict[str, Any], media_types: list[MediaType]
+    ) -> MediaItemType | None:
+        """Parse a search result, None when its media type was not asked for."""
+        result_type = result["resultType"]
+        if result_type == "artist" and MediaType.ARTIST in media_types:
+            return self._parse_artist(result)
+        if result_type == "album" and MediaType.ALBUM in media_types:
+            return self._parse_album(result)
+        if result_type == "playlist" and MediaType.PLAYLIST in media_types:
+            return self._parse_playlist(result)
+        if result_type == "podcast" and MediaType.PODCAST in media_types:
+            return self._parse_browse_podcast(result)
+        if result_type in ("song", "video") and MediaType.TRACK in media_types:
+            return self._parse_track(result)
+        return None
+
+    async def _parse_upload_search_result(
+        self, result: dict[str, Any], media_types: list[MediaType]
+    ) -> MediaItemType | None:
+        """Parse an uploads search result, resolving an untagged upload by its video id."""
+        try:
+            item = self._parse_search_result(result, media_types)
+        except InvalidDataError:
+            # an untagged upload has no artist credit, same as in the library sync
+            if result["resultType"] != "song" or not result.get("videoId"):
+                raise
+            item = await self.get_track(result["videoId"])
+        if item:
+            # upload search results carry no entityId, so mark them here
+            for mapping in item.provider_mappings:
+                mapping.is_unique = True
+        return item
 
     def _parse_album(self, album_obj: dict[str, Any], album_id: str | None = None) -> Album:
         """Parse a YT Album response to an Album model object."""
