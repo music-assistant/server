@@ -2227,9 +2227,9 @@ class Player:
         """
         Resolve the control a volume or mute command goes to right now.
 
-        Without a selection in the config that is the protocol rendering the audio,
-        else the native protocol while it can be reached, else any available protocol
-        with the feature.
+        Without a selection in the config that is the active output while it plays or is
+        paused, else the native protocol while it can be reached, else the active output,
+        else any available protocol with the feature.
 
         :param feature: The feature the control has to support.
         :param conf_key: Config key holding the control selection.
@@ -2253,6 +2253,12 @@ class Player:
             and (protocol := self._protocols.get(active_protocol))
             and protocol.available_for_playback
             and feature in protocol.supported_features
+            # an output that plays nothing gives way to the own protocol: some protocols
+            # (airplay, sendspin) only take the command while they stream
+            and (
+                protocol.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                or not self._own_controls(feature)
+            )
         ):
             # the protocol that renders the audio owns its level
             return protocol.protocol_id

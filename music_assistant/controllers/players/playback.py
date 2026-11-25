@@ -812,6 +812,17 @@ class PlaybackMixin(_PlayerControllerBase):
                 player.group_members,
             )
             await self._activate_output_protocol(player, "native")
+        if is_fresh_start:
+            # members that kept their output in this group while it played nothing took
+            # their level and mute on their own protocol, so that output starts at them too
+            for member_protocol_id in target_player.group_members:
+                member = self.get_player_by_protocol(member_protocol_id)
+                if (
+                    member is not None
+                    and member is not player
+                    and member.active_output_protocol == member_protocol_id
+                ):
+                    await self._activate_output_protocol(member, member_protocol_id)
 
         async with own.prepare_play_media() if own else contextlib.nullcontext():
             # skip auto-play since we're about to start playback

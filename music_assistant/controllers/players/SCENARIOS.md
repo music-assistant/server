@@ -2341,6 +2341,21 @@ pause.
   through its own protocol), with its DLNA renderer and a Spotify Connect session started on it.
 - Proven by: `tests/providers/wiim/test_linkplay_control.py::test_transport_commands_reach_an_app_playing_on_the_renderer`
 
+### OUTPUT-3 · A player that plays nothing keeps no output for a group it no longer has
+
+Lounge leads Study over AirPlay and the user stops the group: Lounge keeps its AirPlay receiver
+as its output, for the group. Once the user takes Study out, neither of them names its AirPlay
+receiver as its output. Study, a WiiM speaker, plays along with the Sendspin speaker Den on its
+Sendspin client; once it leaves Den's group, it no longer names that client as its output. Volume
+and mute of both go to their own protocol again.
+
+- End-to-end: **possible with** two virtual players of different kinds that each also run an
+  AirPlay receiver on their host, and a WiiM speaker with a Sendspin bridge next to a Sendspin
+  speaker.
+- Proven by:
+  - `test_outputs.py::test_a_stopped_leader_lets_go_of_its_output_once_its_group_ended`
+  - `test_outputs.py::test_a_member_lets_go_of_the_output_it_played_its_group_on_once_it_left`
+
 ## Volume
 
 The level and mute of a player are its own. A volume or mute command goes to the output that
@@ -2424,6 +2439,20 @@ has no level of its own; only its members count.
 
 - End-to-end: **possible with** two players of one make that group, one of them a set of speakers.
 - Proven by: `test_grouping.py::test_a_leader_counts_its_own_level_in_the_group_volume`
+
+### VOLUME-7 · An output that plays nothing leaves volume and mute to the own protocol
+
+Lounge leads Study over AirPlay and the user stops the group. Lounge's AirPlay receiver stays its
+output for the group, but plays nothing, and an AirPlay receiver only takes a volume command while
+it streams. A volume or mute command goes to Lounge's own protocol, and the receiver gets none.
+The user turns Study down and mutes it meanwhile, which reaches Study's own protocol; when the
+group plays again, Study's receiver gets that level and mute before the music starts.
+
+- End-to-end: **possible with** two virtual players of different kinds that each also run an
+  AirPlay receiver on their host.
+- Proven by:
+  - `test_outputs.py::test_a_stopped_leader_takes_volume_on_its_own_protocol_while_it_keeps_its_group`
+  - `test_outputs.py::test_a_member_plays_again_at_the_level_it_got_while_its_group_was_stopped`
 
 ## A pause, a stop and the end of a queue
 
