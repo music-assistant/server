@@ -49,6 +49,7 @@ from .constants import (
     AUDIOBOOK_METADATA_VERSION,
     AUTHOR_ARTIST_PREFIX,
     AUTHOR_NEWEST_RELEASES,
+    BOOKMARKS_CACHE_SECONDS,
     FAVORITES_PAGE_SIZE,
     PERSONAL_ALBUM_PREFIX,
     PERSONAL_ARTIST_PREFIX,
@@ -748,7 +749,7 @@ class DeezerMediaManager:
         episodes = await self._fetch_podcast_episodes(prov_podcast_id)
         if not episodes:
             return
-        bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
+        bookmarks = await self.get_podcast_bookmarks()
         for ep in episodes:
             ep.fully_played = False
             ep.resume_position_ms = 0
@@ -757,6 +758,11 @@ class DeezerMediaManager:
                 ep.fully_played, ep.resume_position_ms, bookmarked_at = bookmarks[ep.item_id]
                 ep.resume_position_timestamp = parse_bookmark_time(bookmarked_at)
             yield ep
+
+    @use_cache(BOOKMARKS_CACHE_SECONDS)
+    async def get_podcast_bookmarks(self) -> dict[str, tuple[bool, int, str]]:
+        """Return the account's podcast episode bookmarks as (played, position in ms, saved at)."""
+        return await fetch_all_bookmarks(self.provider.gql_client)
 
     @use_cache(3600)
     async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:

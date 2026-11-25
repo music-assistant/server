@@ -34,6 +34,7 @@ from music_assistant_models.errors import AudioError, MediaNotFoundError, Retrie
 from music_assistant_models.media_items import AudioFormat, MediaItemType
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import forget_cached
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import utc, utc_timestamp
 
@@ -49,7 +50,6 @@ from .constants import (
 from .gw_client import DeezerGWAuthError, DeezerGWError
 from .helpers import (
     fetch_all_audiobook_chapter_edges,
-    fetch_all_bookmarks,
     parse_flac_streaminfo,
 )
 from .parsers import parse_audio_format, parse_bookmark_time
@@ -90,7 +90,7 @@ class DeezerStreamingManager:
         """
         if media_type != MediaType.PODCAST_EPISODE:
             return (False, 0, None)
-        bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
+        bookmarks = await self.provider.media_manager.get_podcast_bookmarks()
         if item_id in bookmarks:
             is_played, position_ms, bookmarked_at = bookmarks[item_id]
             return (is_played, position_ms, parse_bookmark_time(bookmarked_at))
@@ -127,6 +127,7 @@ class DeezerStreamingManager:
             await self.provider.gql_client.bookmark_podcast_episode(
                 episode_id=prov_item_id, offset=position
             )
+        await forget_cached(self.provider.media_manager.get_podcast_bookmarks)
 
     async def on_stream_started(self, streamdetails: StreamDetails) -> None:
         """Handle callback when a track starts playing."""
