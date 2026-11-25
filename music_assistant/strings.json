@@ -1096,6 +1096,12 @@
       "trending_stations": {
         "name": "Trending"
       },
+      "artist_radio_for_you": {
+        "name": "Artist radio for you"
+      },
+      "live_radio_for_you": {
+        "name": "Live radio for you"
+      },
       "inspired_by_recently_played": {
         "name": "Inspired by recently played"
       },

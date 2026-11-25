@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant_models.media_items import SearchResults
+from music_assistant_models.media_items import RecommendationFolder, SearchResults
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_USERNAME
 from music_assistant.controllers.cache import forget_cached, use_cache
@@ -23,7 +24,11 @@ from .constants import (
     DEFAULT_COUNTRY,
     PATH_PODCAST_EPISODE_METADATA,
     PATH_PODCAST_EPISODE_PROGRESS,
+    PATH_RECS_ARTISTS,
+    PATH_RECS_LIVE,
     PROGRESS_CACHE_TTL,
+    REC_ARTIST_RADIO,
+    REC_LIVE_RADIO,
 )
 from .library import IHeartRadioLibraryManager
 from .parsers import (
@@ -63,12 +68,13 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
 }
-# Library features, available with a signed-in account only.
-LIBRARY_FEATURES = {
+# Library features and recommendations, available with a signed-in account only.
+ACCOUNT_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.LIBRARY_RADIOS_EDIT,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 
@@ -84,11 +90,11 @@ class IHeartRadioProvider(MusicProvider):
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
-        """Return the supported features, library sync only with a configured account."""
+        """Return the supported features, the account features only with a configured account."""
         # Read from setup rather than the session: MA resolves a provider's config entries
         # (and so its features) before handle_async_init has signed in.
         if str(self.get_setup_value(CONF_USERNAME) or "").strip():
-            return SUPPORTED_FEATURES | LIBRARY_FEATURES
+            return SUPPORTED_FEATURES | ACCOUNT_FEATURES
         return set(SUPPORTED_FEATURES)
 
     @property
@@ -349,6 +355,41 @@ class IHeartRadioProvider(MusicProvider):
         :param path: The path to browse, e.g. ``iheartradio--xx://live/genres``.
         """
         return await self.browse_manager.browse(path)
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Return the recommendation rows of the signed-in account, without items."""
+        return [
+            RecommendationFolder(
+                item_id=REC_ARTIST_RADIO,
+                provider=self.instance_id,
+                name="Artist radio for you",
+                translation_key=REC_ARTIST_RADIO,
+            ),
+            RecommendationFolder(
+                item_id=REC_LIVE_RADIO,
+                provider=self.instance_id,
+                name="Live radio for you",
+                translation_key=REC_LIVE_RADIO,
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return the items of one recommendation row.
+
+        :param item_id: The id of the row, as returned by get_recommendations.
+        """
+        if item_id == REC_ARTIST_RADIO:
+            artists = await self.api.get_recommendations(PATH_RECS_ARTISTS)
+            radios = [parse_artist_radio(x, self.instance_id, self.domain) for x in artists]
+        elif item_id == REC_LIVE_RADIO:
+            stations = await self.api.get_recommendations(PATH_RECS_LIVE)
+            radios = [parse_live_station(x, self.instance_id, self.domain) for x in stations]
+        else:
+            return UniqueList()
+        return UniqueList(radio for radio in radios if radio is not None)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
