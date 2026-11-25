@@ -479,6 +479,9 @@ class MyDemoMusicprovider(MusicProvider):
         # get_library_audiobooks. It is only called if you reported the
         # AUTHOR_AUDIOBOOKS feature in the supported_features. Without it Music Assistant
         # lists the audiobooks of the author that are in its library.
+        # NOTE: When the API pages through the audiobooks of the author, stop at
+        # ARTIST_ALBUMS_LIMIT audiobooks (music_assistant.models.music_provider) to keep the
+        # request count bounded.
         # NOTE: Always cache the result, so the provider's API is not called again for
         # data Music Assistant already has. The @use_cache decorator from
         # music_assistant.controllers.cache does this for you.
@@ -490,6 +493,9 @@ class MyDemoMusicprovider(MusicProvider):
         # get_library_audiobooks. It is only called if you reported the
         # NARRATOR_AUDIOBOOKS feature in the supported_features. Without it Music Assistant
         # lists the audiobooks of the narrator that are in its library.
+        # NOTE: When the API pages through the audiobooks of the narrator, stop at
+        # ARTIST_ALBUMS_LIMIT audiobooks (music_assistant.models.music_provider) to keep the
+        # request count bounded.
         # NOTE: Always cache the result, so the provider's API is not called again for
         # data Music Assistant already has. The @use_cache decorator from
         # music_assistant.controllers.cache does this for you.
