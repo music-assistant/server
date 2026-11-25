@@ -241,22 +241,15 @@ async def test_failed_connection_streams_directly_without_caching(
     assert cast("MagicMock", audio.mass).cache.set.called is cached
 
 
-@pytest.mark.asyncio
-async def test_resumed_station_is_checked_again_after_a_failed_connection(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """
-    Stopping and starting the same radio item checks the station again.
+_RADIO_URL = "http://radio.example.com/stream"
 
-    Its stream details are reused for a while, so a check that failed on a connection error
-    would otherwise keep the station playing without track information until they expire.
-    """
-    audio = _streams_audio()
+
+def _resumable_radio_item(audio: StreamsAudio) -> QueueItem:
+    """Return a radio queue item holding unexpired HTTP stream details for _RADIO_URL."""
     mass = cast("MagicMock", audio.mass)
     mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=None)
     mass.webserver.auth.get_user = AsyncMock(return_value=None)
     set_music_source_access(mass, {"radiobrowser": None})
-    url = "http://radio.example.com/stream"
     station = Radio(
         item_id="station",
         provider="radiobrowser",
@@ -276,8 +269,23 @@ async def test_resumed_station_is_checked_again_after_a_failed_connection(
         audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
         media_type=MediaType.RADIO,
         stream_type=StreamType.HTTP,
-        path=url,
+        path=_RADIO_URL,
     )
+    return queue_item
+
+
+@pytest.mark.asyncio
+async def test_resumed_station_is_checked_again_after_a_failed_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Stopping and starting the same radio item checks the station again.
+
+    Its stream details are reused for a while, so a check that failed on a connection error
+    would otherwise keep the station playing without track information until they expire.
+    """
+    audio = _streams_audio()
+    queue_item = _resumable_radio_item(audio)
     responses: list[Any] = [
         _FailingConnCtx(aiohttp.ClientConnectorDNSError(MagicMock(), OSError("DNS timeout"))),
         _FakeConnCtx({"icy-metaint": "16000"}),
@@ -292,3 +300,22 @@ async def test_resumed_station_is_checked_again_after_a_failed_connection(
 
     assert second is first
     assert second.stream_type == StreamType.ICY
+
+
+@pytest.mark.asyncio
+async def test_resumed_station_keeps_its_stored_details_when_the_check_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resumed station whose re-check fails on a timeout still plays from its stored details."""
+    audio = _streams_audio()
+    queue_item = _resumable_radio_item(audio)
+    stored = queue_item.streamdetails
+    monkeypatch.setattr(
+        audio, "_connect_radio_stream", lambda *_args, **_kwargs: _FailingConnCtx(TimeoutError())
+    )
+
+    result = await audio.get_stream_details(queue_item=queue_item)
+
+    assert result is stored
+    assert result.stream_type == StreamType.HTTP
+    assert result.path == _RADIO_URL

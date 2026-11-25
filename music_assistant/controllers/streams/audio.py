@@ -4148,7 +4148,11 @@ class StreamsAudio:
             if not buffered:
                 # a radio station whose check failed earlier is checked again for the new
                 # buffer; a station checked fine answers from the cache
-                await self._resolve_radio_stream_details(streamdetails)
+                try:
+                    await self._resolve_radio_stream_details(streamdetails)
+                except MusicAssistantError as err:
+                    # the stored details played before, a failed re-check is no reason to drop them
+                    self.logger.debug("Radio re-check failed for %s: %s", streamdetails.uri, err)
         else:
             # need to (re)create streamdetails
             # retrieve streamdetails from provider
