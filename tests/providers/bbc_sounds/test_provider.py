@@ -189,13 +189,13 @@ class TestOnDemandEpisodes:
         episode = await provider.get_podcast_episode("clip_pid")
 
         assert type(episode) is PodcastEpisode
-        assert episode.name == "Podcast • Clip title"
+        assert episode.name == "Clip title"
 
     @pytest.mark.usefixtures("cache_tasks")
     async def test_radio_show_keeps_the_date_it_was_broadcast(
         self, provider: BBCSoundsProvider
     ) -> None:
-        """Test a show played from a schedule is named with its broadcast date."""
+        """Test a show played from a schedule is dated with its broadcast time."""
 
         def show(start: datetime | None = None, end: datetime | None = None) -> RadioShow:
             return RadioShow(
@@ -222,7 +222,7 @@ class TestOnDemandEpisodes:
 
         episode = await provider.get_podcast_episode("show_pid")
 
-        assert episode.name == "Today • Business news · 12 Oct 2026"
+        assert episode.metadata.release_date == start
         assert (aired_show.start, aired_show.end) == (start, end)
 
     @pytest.mark.usefixtures("cache_tasks")

@@ -1,11 +1,15 @@
 """Test BBC Sounds provider adaptor that converts auntie-sounds objects to Music Assistant objects."""
 
+from copy import copy
+
 import pytest
 from auntie_sounds.models import (
     Duration,
+    EpisodeTypes,
     Playlist,
     Podcast,
     PodcastEpisode,
+    RadioClip,
     RadioShow,
     Synopses,
     Titles,
@@ -17,6 +21,22 @@ from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.constants import Constants
 
 PODCAST = Podcast(id="brand", title="Podcast", titles=Titles(primary="Podcast"))
+
+# Each of the BBC's types that can be listed as an episode of a podcast
+EPISODES = [
+    pytest.param(
+        RadioShow(id="vpid", pid="pid", titles=Titles(primary="Show"), container=PODCAST),
+        id="radio-show",
+    ),
+    pytest.param(
+        PodcastEpisode(id="vpid", pid="pid", titles=Titles(primary="Episode"), container=PODCAST),
+        id="podcast-episode",
+    ),
+    pytest.param(
+        RadioClip(id="vpid", pid="pid", titles=Titles(primary="Clip"), container=PODCAST),
+        id="radio-clip",
+    ),
+]
 
 
 class TestMenuLoading:
@@ -97,26 +117,30 @@ class TestMenuLoading:
 class TestRoundTrip:
     """Tests for items that are serialised, e.g. into a saved queue, and rebuilt."""
 
-    @pytest.mark.parametrize(
-        "item",
-        [
-            pytest.param(
-                RadioShow(id="vpid", pid="pid", titles=Titles(primary="Show"), container=PODCAST),
-                id="radio-show",
-            ),
-            pytest.param(
-                PodcastEpisode(
-                    id="vpid", pid="pid", titles=Titles(primary="Episode"), container=PODCAST
-                ),
-                id="podcast-episode",
-            ),
-        ],
-    )
+    @pytest.mark.parametrize("item", EPISODES)
     async def test_episode_without_a_duration_can_be_rebuilt(
-        self, provider: BBCSoundsProvider, item: RadioShow | PodcastEpisode
+        self, provider: BBCSoundsProvider, item: EpisodeTypes
     ) -> None:
         """Test an episode the BBC gives no duration for survives a round trip."""
         episode = await provider.adaptor.new_object(item, force_type=MAPodcastEpisode)
 
         assert isinstance(episode, MAPodcastEpisode)
         assert media_from_dict(episode.to_dict()) == episode
+
+
+class TestEpisodes:
+    """Tests for the BBC's episode types converted to podcast episodes."""
+
+    @pytest.mark.parametrize("item", EPISODES)
+    async def test_episode_number_is_kept(
+        self, provider: BBCSoundsProvider, item: EpisodeTypes
+    ) -> None:
+        """Test the number auntie-sounds gives an episode reaches Music Assistant."""
+        # a copy, so the shared params stay unnumbered for the other tests
+        item = copy(item)
+        item.episode_number = 3
+
+        episode = await provider.adaptor.new_object(item, force_type=MAPodcastEpisode)
+
+        assert isinstance(episode, MAPodcastEpisode)
+        assert episode.episode_number == 3
