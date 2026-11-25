@@ -6,10 +6,11 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import SearchResults
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_USERNAME
+from music_assistant.controllers.cache import forget_cached, use_cache
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 
@@ -17,8 +18,12 @@ from .api import IHeartRadioApiClient, json_items
 from .auth import IHeartRadioAuthManager
 from .browse import IHeartRadioBrowseManager
 from .constants import (
+    CACHE_CATEGORY_PODCASTS,
     CONF_COUNTRY,
     DEFAULT_COUNTRY,
+    PATH_PODCAST_EPISODE_METADATA,
+    PATH_PODCAST_EPISODE_PROGRESS,
+    PROGRESS_CACHE_TTL,
 )
 from .library import IHeartRadioLibraryManager
 from .parsers import (
@@ -38,6 +43,7 @@ from .streaming import IHeartRadioStreamingManager
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
+    from datetime import datetime
 
     from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.media_items import (
@@ -254,10 +260,13 @@ class IHeartRadioProvider(MusicProvider):
         :param prov_podcast_id: The iHeartRadio podcast id.
         """
         podcast = await self.api.get_podcast_data(prov_podcast_id) or {}
+        progress = await self._episode_progress(prov_podcast_id) or {}
         for position, episode in await self._positioned_episodes(prov_podcast_id):
             if mass_episode := parse_podcast_episode(
                 episode, prov_podcast_id, position, self.instance_id, self.domain, podcast
             ):
+                if state := progress.get(str(episode.get("id"))):
+                    mass_episode.fully_played, mass_episode.resume_position_ms = state
                 yield mass_episode
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
@@ -283,6 +292,9 @@ class IHeartRadioProvider(MusicProvider):
         )
         if mass_episode is None:
             raise MediaNotFoundError(f"Episode {episode_id} not found")
+        progress = await self._episode_progress(podcast_id) or {}
+        if state := progress.get(episode_id):
+            mass_episode.fully_played, mass_episode.resume_position_ms = state
         return mass_episode
 
     async def search(
@@ -347,6 +359,26 @@ class IHeartRadioProvider(MusicProvider):
         """
         return await self.streaming_manager.get_stream_details(item_id, media_type)
 
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
+        """
+        Get the resume point the signed-in account holds for a podcast episode.
+
+        iHeartRadio does not say when the progress was saved, so the timestamp is always None.
+
+        :param item_id: The MA episode id, holding the podcast and episode id.
+        :param media_type: The media type of the item.
+        """
+        parsed = split_episode_item_id(item_id)
+        if media_type != MediaType.PODCAST_EPISODE or parsed is None:
+            raise NotImplementedError
+        podcast_id, episode_id = parsed
+        if (progress := await self._episode_progress(podcast_id)) is None:
+            raise NotImplementedError
+        fully_played, position_ms = progress.get(episode_id, (False, 0))
+        return fully_played, position_ms, None
+
     async def on_played(
         self,
         media_type: MediaType,
@@ -357,7 +389,7 @@ class IHeartRadioProvider(MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """
-        Report a started, finished or skipped artist radio track to iHeartRadio.
+        Report playback to iHeartRadio: an artist radio track or the progress of an episode.
 
         :param media_type: The media type of the played item.
         :param prov_item_id: The provider item id.
@@ -366,6 +398,12 @@ class IHeartRadioProvider(MusicProvider):
         :param media_item: The played item.
         :param is_playing: Whether the item is still playing.
         """
+        if media_type == MediaType.PODCAST_EPISODE:
+            # saved once playback stops instead of on every report while playing, to keep
+            # the requests to iHeartRadio down
+            if not is_playing:
+                await self._save_episode_progress(prov_item_id, fully_played, position)
+            return
         if media_type != MediaType.TRACK:
             return
         if is_playing:
@@ -377,6 +415,58 @@ class IHeartRadioProvider(MusicProvider):
             # the user marked the item as unplayed; nothing was heard
             return
         await self.stations.report_stopped(prov_item_id, fully_played, position)
+
+    @property
+    def _signed_in(self) -> bool:
+        """Return whether the session belongs to an account, which is what holds progress."""
+        return self.auth is not None and self.auth.is_account
+
+    async def _save_episode_progress(self, item_id: str, completed: bool, position: int) -> None:
+        """
+        Save the progress of a podcast episode to the signed-in account.
+
+        :param item_id: The MA episode id, holding the podcast and episode id.
+        :param completed: Whether the episode was played to its end.
+        :param position: The last known position in seconds.
+        """
+        if not self._signed_in or (parsed := split_episode_item_id(item_id)) is None:
+            return
+        podcast_id, episode_id = parsed
+        # an episode marked as unplayed arrives as position 0 and not completed, which
+        # clears the progress on the account the same way
+        await self.api.request(
+            "PUT",
+            PATH_PODCAST_EPISODE_PROGRESS.format(podcast_id=podcast_id, episode_id=episode_id),
+            json={"secondsPlayed": position, "completed": completed},
+        )
+        await forget_cached(self._episode_progress, podcast_id)
+
+    # playing an episode looks up its resume point and its details right after each other,
+    # the short cache saves the second, identical request
+    @use_cache(PROGRESS_CACHE_TTL, category=CACHE_CATEGORY_PODCASTS, cache_none=False)
+    async def _episode_progress(self, podcast_id: str) -> dict[str, tuple[bool, int]] | None:
+        """Return the account's progress per episode id as (finished, position in ms)."""
+        if not self._signed_in:
+            return None
+        try:
+            # one request holds the progress of every episode of the podcast
+            payload = await self.api.get_json(
+                PATH_PODCAST_EPISODE_METADATA.format(podcast_id=podcast_id)
+            )
+        except MusicAssistantError as err:
+            # progress is best effort and must not keep an episode from listing or playing
+            self.logger.warning("Could not get the progress of podcast %s: %s", podcast_id, err)
+            return None
+        progress: dict[str, tuple[bool, int]] = {}
+        entries = payload.get("progress") if isinstance(payload, dict) else None
+        for entry in json_items(entries):
+            seconds_played = entry.get("secondsPlayed")
+            position = seconds_played if isinstance(seconds_played, int | float) else 0
+            progress[str(entry.get("episodeId"))] = (
+                bool(entry.get("completed")),
+                int(position * 1000),
+            )
+        return progress
 
     async def _episode_position(self, podcast_id: str, episode_id: str) -> int:
         """
