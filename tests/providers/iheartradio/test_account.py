@@ -7,7 +7,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
@@ -586,14 +586,17 @@ async def test_progress_is_reused_until_it_is_saved(
     async def drop(key: str, **_kwargs: Any) -> None:
         stored.pop(key, None)
 
-    provider.mass.cache.get_with_freshness = get_with_freshness
-    provider.mass.cache.set = store
-    provider.mass.cache.delete = drop
     _sign_in(provider)
     api.responses[EPISODE_METADATA_PATH] = {"progress": []}
-    await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
-    await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
-    assert [path for path, _ in api.calls] == [EPISODE_METADATA_PATH]
-    await provider.on_played(MediaType.PODCAST_EPISODE, EPISODE_ITEM_ID, False, 0, Mock())
-    await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
-    assert [path for path, _ in api.calls] == [EPISODE_METADATA_PATH] * 2
+    cache = provider.mass.cache
+    with (
+        patch.object(cache, "get_with_freshness", get_with_freshness),
+        patch.object(cache, "set", store),
+        patch.object(cache, "delete", drop),
+    ):
+        await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+        await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+        assert [path for path, _ in api.calls] == [EPISODE_METADATA_PATH]
+        await provider.on_played(MediaType.PODCAST_EPISODE, EPISODE_ITEM_ID, False, 0, Mock())
+        await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+        assert [path for path, _ in api.calls] == [EPISODE_METADATA_PATH] * 2
