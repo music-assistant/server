@@ -514,6 +514,16 @@ async def get_ffmpeg_stream(
     :param pass_fds: Descriptors ffmpeg needs to open its input(s).
     :param verify_ssl: Whether the certificate of an https source must be verified.
     """
+    wave_header = b""
+    if output_format.content_type == ContentType.WAV:
+        # ffmpeg writes a WAVE_FORMAT_EXTENSIBLE header above 16 bit or 48 kHz, which not
+        # every player accepts (a Sonos reports a corrupt file), so the plain header is
+        # written here and ffmpeg only delivers the samples that follow it
+        from .audio import create_streaming_wave_header  # noqa: PLC0415
+
+        wave_header = create_streaming_wave_header(output_format)
+        output_format = copy(output_format)
+        output_format.content_type = ContentType.from_bit_depth(output_format.bit_depth)
     async with FFMpeg(
         audio_input=audio_input,
         input_format=input_format,
@@ -528,6 +538,11 @@ async def get_ffmpeg_stream(
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
+            if wave_header:
+                # sent with the first audio, so a stream without audio stays empty
+                yield wave_header + chunk
+                wave_header = b""
+                continue
             yield chunk
         # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
         # excessive decode errors) closes stdout early, which ends the loop above before
