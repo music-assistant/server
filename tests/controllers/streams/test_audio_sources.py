@@ -745,8 +745,8 @@ class TestAudioSourceSilenceKeepalive:
         assert silence_chunk in out
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("stall_s", [0.085, 0.11])
-    async def test_short_loop_stall_inserts_no_silence(self, stall_s: float) -> None:
+    @pytest.mark.parametrize("stall_s", [0.085, 0.11, 0.35])
+    async def test_loop_stall_inserts_no_silence(self, stall_s: float) -> None:
         """A brief event loop stall during live audio must not inject silence."""
         from music_assistant.helpers.audio import (  # noqa: PLC0415
             audio_source_silence_keepalive,

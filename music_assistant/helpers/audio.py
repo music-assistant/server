@@ -427,7 +427,7 @@ async def realtime_pcm_pacer(
             await asyncio.sleep(expected_elapsed - actual_elapsed)
 
 
-async def audio_source_silence_keepalive(
+async def audio_source_silence_keepalive(  # noqa: PLR0915
     inner: AsyncGenerator[bytes],
     pcm_format: AudioFormat,
     silence_chunk_ms: int = 100,
@@ -507,8 +507,10 @@ async def audio_source_silence_keepalive(
                         queue.get(), timeout=max(0.0, last_audio + due - loop.time())
                     )
                 except TimeoutError:
-                    yield silence_chunk
-                    silence_sent_s += chunk_s
+                    # after a loop stall the producer may have queued audio during the timeout
+                    if queue.empty():
+                        yield silence_chunk
+                        silence_sent_s += chunk_s
                     continue
             last_audio = loop.time()
             silence_sent_s = 0.0
