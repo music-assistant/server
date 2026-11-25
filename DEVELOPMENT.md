@@ -95,6 +95,13 @@ A provider that lives outside the server repository (for example in a repository
 
       PYTHONDEVMODE=1 python -m music_assistant --dev-providers-dir /path/to/my_providers
 
+  Pass `--dev-providers-dir` more than once to load providers from several folders at once, which is useful when you work on providers across repositories:
+
+      PYTHONDEVMODE=1 python -m music_assistant \
+          --dev-providers-dir /path/to/repo_a \
+          --dev-providers-dir /path/to/repo_b
+
+  If two folders carry a provider with the same `domain`, the first-passed folder wins and the other is skipped with a warning naming both paths.
 * The `requirements` in `manifest.json` are plain package names with versions, such as `aiohttp-retry==2.9.1`. They are installed next to the server's own packages and never replace one of them: a provider whose requirements clash with the server is not loaded.
 * A change to the code takes effect after a restart of the server.
 * To test the provider against a real server, add `pytest_plugins = ["music_assistant.testing"]` to `tests/conftest.py` (with pytest-asyncio's `asyncio_mode = "auto"`). The `mass` fixture then gives a started server in dev mode that loads the providers in the root folder of the test run. It announces nothing on the network and listens on the loopback address only; the requests a provider makes itself still go out. Next to the server, install the requirements of its built-in Sendspin provider (`aiosendspin[server]` and `av`, at the versions in `music_assistant/providers/sendspin/manifest.json`): the server starts that provider at every boot.

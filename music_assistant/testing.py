@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import logging
 import pathlib
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Iterator, Sequence
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
@@ -38,7 +38,7 @@ async def mass(
     :param tmp_path: Temporary directory for test data.
     :param pytestconfig: The configuration of the test run.
     """
-    async with full_mass_context(tmp_path, dev_providers_path=pytestconfig.rootpath) as server:
+    async with full_mass_context(tmp_path, dev_providers_paths=(pytestconfig.rootpath,)) as server:
         yield server
 
 
@@ -47,7 +47,7 @@ async def full_mass_context(
     tmp_path: pathlib.Path,
     *,
     safe_mode: bool = False,
-    dev_providers_path: pathlib.Path | None = None,
+    dev_providers_paths: Sequence[pathlib.Path] | None = None,
 ) -> AsyncGenerator[MusicAssistant]:
     """
     Boot a full server on the given temporary directory.
@@ -57,8 +57,8 @@ async def full_mass_context(
 
     :param tmp_path: Temporary directory for test data.
     :param safe_mode: Boot the server in safe mode.
-    :param dev_providers_path: Folder of providers to load as community providers. The server
-        then runs in dev mode and is handed over once these are loaded.
+    :param dev_providers_paths: Folders of providers to load as community providers. The
+        server then runs in dev mode and is handed over once these are loaded.
     """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
@@ -71,9 +71,9 @@ async def full_mass_context(
         str(storage_path),
         str(cache_path),
         safe_mode,
-        str(dev_providers_path) if dev_providers_path else None,
+        tuple(str(p) for p in dev_providers_paths) if dev_providers_paths else None,
     )
-    if dev_providers_path:
+    if dev_providers_paths:
         # the server only loads a local provider folder in dev mode
         mass_instance.dev_mode = True
 
@@ -112,8 +112,8 @@ async def full_mass_context(
     ):
         try:
             await mass_instance.start()
-            if dev_providers_path:
-                # the server loads the providers of the local folder in a task of its own
+            if dev_providers_paths:
+                # the server loads the providers of the local folders in a task of its own
                 for task in list(mass_instance._tracked_tasks.values()):
                     if task.get_name() == "community_catalog_start":
                         await task

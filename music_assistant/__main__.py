@@ -79,8 +79,13 @@ def get_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--dev-providers-dir",
+        action="append",
         metavar="path_to_providers_dir",
-        help="Directory with provider folders to load, only used in dev mode [optional]",
+        help=(
+            "Directory with provider folders to load, only used in dev mode. "
+            "Pass more than once to load from several directories; on a name "
+            "collision the first-passed directory wins [optional]"
+        ),
     )
 
     return parser.parse_args()
@@ -265,8 +270,8 @@ def main() -> None:
         except (ValueError, OSError) as err:
             LOGGER.warning("Could not raise open-file limit: %s", err)
 
-    dev_providers_dir = args.dev_providers_dir and str(Path(args.dev_providers_dir).resolve())
-    mass = MusicAssistant(data_dir, cache_dir, safe_mode, dev_providers_dir)
+    dev_providers_dirs = tuple(str(Path(d).resolve()) for d in (args.dev_providers_dir or ()))
+    mass = MusicAssistant(data_dir, cache_dir, safe_mode, dev_providers_dirs)
 
     # enable alpine subprocess workaround
     _enable_posix_spawn()
