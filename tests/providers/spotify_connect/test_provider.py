@@ -137,6 +137,36 @@ async def test_daemon_runner_reselects_api_port_when_taken(tmp_path: Path) -> No
     write_config.assert_called_once_with("192.168.1.5")
 
 
+async def test_deactivate_keeps_reading_until_the_daemon_stopped() -> None:
+    """A daemon that waits for its audio to be read can still be released."""
+    audio_read = asyncio.Event()
+    reads = 0
+
+    async def _read(_size: int) -> bytes:
+        nonlocal reads
+        reads += 1
+        audio_read.set()
+        await asyncio.sleep(0)
+        return b"\x00" * 64
+
+    backend = object.__new__(GoLibrespotBackend)
+    backend.mass = MagicMock()
+    backend.mass.create_task.side_effect = asyncio.create_task
+    backend._proc = MagicMock(read=_read)
+    backend._client = MagicMock()
+    backend._client.stop = AsyncMock(side_effect=audio_read.wait)
+
+    async with asyncio.timeout(1):
+        await backend.deactivate()
+
+    backend._client.stop.assert_awaited_once()
+    # the audio of a next session is left to its own stream
+    await asyncio.sleep(0)
+    reads_after_stop = reads
+    await asyncio.sleep(0.01)
+    assert reads == reads_after_stop
+
+
 def _volume_sync_provider(
     volume_level: int | None,
     group_volume: int | None = None,
