@@ -14,6 +14,7 @@ from music_assistant.constants import CONF_POWER_CONTROL
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 from tests.providers.airplay.test_group_leader_loss import (
     AFTER_IDLE_GRACE,
+    _Cli,
     _cli,
     _led_by,
     _members,
@@ -110,8 +111,26 @@ async def _play_group(
     assert a.group_members == [a.protocol_id, r.protocol_id]
     for letter in members:
         assert _player(scenario, letter).playback_state == PlaybackState.PLAYING
+    _stops_with(_cli(a), scenario.protocol("RINCON_A"))
     scenario.timeline.clear()
     return _Group(group, a, r)
+
+
+def _stops_with(process: _Cli, native: FakeProtocol) -> None:
+    """
+    Let a device report that it stopped once the AirPlay stream it plays ends, as a Sonos does.
+
+    :param process: The process of the stream.
+    :param native: The native protocol of the device.
+    """
+    end = process.end
+
+    def _end(*lines: str) -> None:
+        end(*lines)
+        native._set_reported(playback_state=PlaybackState.IDLE)
+        native.update_state()
+
+    process.end = _end  # type: ignore[method-assign]
 
 
 def _player(scenario: Scenario, letter: str) -> Player:

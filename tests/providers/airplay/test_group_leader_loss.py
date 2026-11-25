@@ -852,6 +852,35 @@ async def _switch_off_command(scenario: Scenario, _group: Player, leader: Player
     await scenario.mass.players.cmd_power(leader.player_id, False)
 
 
+@pytest.mark.parametrize("command", [_remove_command, _ungroup_command])
+async def test_a_leader_that_was_taken_out_shows_what_its_device_plays_by_itself(
+    scenario: Scenario,
+    provider: AirPlayProvider,
+    command: Callable[[Scenario, Player, Player], Coroutine[Any, Any, None]],
+) -> None:
+    """
+    A leader that the user takes out of its group plays on its own protocol again.
+
+    :param command: How the user takes the leader out.
+    """
+    a, b, c = await _receivers(scenario, provider, native=True)
+    group = await _play_group(scenario, [a, b, c])
+    leader = _player_of(a)
+
+    await command(scenario, group, leader)
+    await scenario.settle()
+
+    assert _led_by(group) is _player_of(b)
+    assert leader.active_output_protocol is None
+    # another app plays on its device
+    await scenario.report(
+        scenario.protocol("RINCON_A"), playback_state=PlaybackState.PLAYING, active_source="spotify"
+    )
+    assert leader.playback_state == PlaybackState.PLAYING
+    assert leader.active_source == "spotify"
+    await _stop(scenario, group)
+
+
 @pytest.mark.parametrize("leader", [True, False], ids=["leader", "member"])
 async def test_a_lost_player_the_user_plays_on_is_not_taken_back(
     scenario: Scenario, provider: AirPlayProvider, leader: bool
