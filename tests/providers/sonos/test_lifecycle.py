@@ -7,8 +7,12 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from aiosonos.api.models import SonosCapability
-from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import IdentifierType, MediaType, ProtocolRole
+from music_assistant_models.constants import (
+    PLAYER_CONTROL_FAKE,
+    PLAYER_CONTROL_NATIVE,
+    PLAYER_CONTROL_NONE,
+)
+from music_assistant_models.enums import IdentifierType, MediaType, PlayerFeature, ProtocolRole
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_POWER_CONTROL
@@ -57,8 +61,13 @@ class _Subscriptions:
         return self.results[-1]
 
 
-async def _attach_speaker(scenario: Scenario) -> SonosPlayer:
-    """Attach a portable speaker that wakes on LAN, the way discovery sets it up."""
+async def _attach_speaker(scenario: Scenario, *, portable: bool = True) -> SonosPlayer:
+    """
+    Attach a speaker that wakes on LAN, the way discovery sets it up.
+
+    :param scenario: The scenario to attach it in.
+    :param portable: Whether it is a portable, as opposed to a speaker on mains power.
+    """
     provider: Any = await scenario.add_provider("sonos")
     # the UPnP of all speakers, which the Sonos provider sets up
     provider.upnp = MagicMock()
@@ -68,10 +77,10 @@ async def _attach_speaker(scenario: Scenario) -> SonosPlayer:
             "device": {
                 "id": UID,
                 "name": "Speaker A",
-                "modelDisplayName": "Roam",
+                "modelDisplayName": "Roam" if portable else "Era 100",
                 "capabilities": [SonosCapability.PLAYBACK],
                 "deviceFeatures": [
-                    {"name": DEVICE_FEATURE_PORTABLE},
+                    *([{"name": DEVICE_FEATURE_PORTABLE}] if portable else []),
                     {"name": DEVICE_FEATURE_WAKEABLE},
                 ],
             }
@@ -158,6 +167,27 @@ async def test_a_new_speaker_sleeps_as_powered_off_by_the_power_control_of_its_p
     )
 
     assert not protocol._sleeps_as_power_off
+
+
+@pytest.mark.parametrize(
+    ("setting", "expected"),
+    [
+        (None, PLAYER_CONTROL_NONE),
+        (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE),
+        (PLAYER_CONTROL_FAKE, PLAYER_CONTROL_FAKE),
+    ],
+)
+async def test_a_speaker_on_mains_power_has_no_power_control_of_its_own(
+    scenario: Scenario, setting: str | None, expected: str
+) -> None:
+    """A speaker that cannot sleep offers no power control, whatever was stored before."""
+    protocol = await _attach_speaker(scenario, portable=False)
+    assert protocol.player is not None
+    if setting is not None:
+        await scenario.configure_player(protocol.player.player_id, **{CONF_POWER_CONTROL: setting})
+
+    assert PlayerFeature.POWER not in protocol.supported_features
+    assert protocol.player.state.power_control == expected
 
 
 async def test_a_new_speaker_fetches_its_cloud_queue_under_its_own_id(

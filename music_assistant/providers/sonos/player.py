@@ -206,11 +206,12 @@ class SonosPlayer(PlayerProtocol):
         self._connect_lock = asyncio.Lock()
         mac_address = self._extract_mac_from_player_id()
         self._wol_mac = mac_address if mac_address and is_valid_mac_address(mac_address) else None
-        self._wakeable = self._wol_mac is not None and _has_device_feature(
-            discovery_info, DEVICE_FEATURE_WAKEABLE
-        )
         # a speaker on mains power can be wakeable too, but does not go to sleep
-        self._portable = _has_device_feature(discovery_info, DEVICE_FEATURE_PORTABLE)
+        self._sleeps = (
+            self._wol_mac is not None
+            and _has_device_feature(discovery_info, DEVICE_FEATURE_WAKEABLE)
+            and _has_device_feature(discovery_info, DEVICE_FEATURE_PORTABLE)
+        )
         # a dropped connection confirmed as sleep, as opposed to a passing blip
         self._marked_asleep = False
         # the connection followed a sleep; the speaker then restores its session paused
@@ -330,7 +331,7 @@ class SonosPlayer(PlayerProtocol):
         _supported_features.add(PlayerFeature.OPTIONS)
         # the speaker sends no event when its settings change; the first poll reads them
         self._attr_needs_poll = True
-        if self._wakeable:
+        if self._sleeps:
             _supported_features.add(PlayerFeature.POWER)
             self._attr_powered = True
         self._attr_supported_features = _supported_features
@@ -2375,8 +2376,7 @@ class SonosPlayer(PlayerProtocol):
     def _sleeps_as_power_off(self) -> bool:
         """Return whether the player reports sleep as powered off, MA controlling power natively."""
         return (
-            self._wakeable
-            and self._portable
+            self._sleeps
             and self.player is not None
             and self.player.power_control == PLAYER_CONTROL_NATIVE
         )
