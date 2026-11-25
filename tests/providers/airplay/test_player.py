@@ -25,6 +25,7 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_PASSWORD, CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import AnnouncementFeature
 from music_assistant.providers.airplay.constants import (
@@ -241,6 +242,39 @@ async def test_play_media_clears_transitioning_when_cold_start_raises(
     ):
         await airplay_player.play_media(MagicMock())
 
+    assert airplay_player._transitioning is False
+
+
+@pytest.mark.parametrize("warm", [False, True], ids=["cold_start", "warm_replace"])
+async def test_play_media_ends_quietly_when_the_source_refuses_the_player(
+    airplay_player: AirPlayPlayer, warm: bool
+) -> None:
+    """
+    A source refusing the player ends play_media without an error.
+
+    The streams controller logs the refusal and takes the source off the player, so an error
+    here would only add a warning for the command.
+    """
+    refusal = AudioSourceRefusedError("No AirPlay client is streaming to this receiver")
+    session = MagicMock()
+    session.can_replace = MagicMock(return_value=warm)
+    session.replace = AsyncMock(side_effect=refusal)
+    session.stop = AsyncMock()
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    with (
+        patch.object(airplay_player, "_get_sync_clients", return_value=[airplay_player]),
+        patch.object(airplay_player, "_get_session_pcm_format", new_callable=AsyncMock),
+        patch.object(airplay_player.mass.streams, "get_stream", MagicMock()),
+        patch(
+            "music_assistant.providers.airplay.player.AirPlayStreamSession",
+            return_value=MagicMock(start=AsyncMock(side_effect=refusal)),
+        ) as new_session,
+    ):
+        await airplay_player.play_media(MagicMock())
+
+    # a refused warm replacement is not retried cold, which would be refused as well
+    assert new_session.called is not warm
     assert airplay_player._transitioning is False
 
 

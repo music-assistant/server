@@ -153,6 +153,8 @@ class AirPlayStreamSession:
         # members, and also when the source ends without ever handing any over,
         # so a waiter is never left holding on for a feed that is not coming.
         self._feed_settled = asyncio.Event()
+        # Set when the source of this start cycle refused to play on the members.
+        self._source_refusal: AudioSourceRefusedError | None = None
         # Starvation shift of the group timeline a late joiner was mapped onto,
         # keyed by player id. Its own reported shift counts from there.
         self._member_shift_base: dict[str, float] = {}
@@ -199,6 +201,8 @@ class AirPlayStreamSession:
         persistent stdin and starts feeding audio, then commands one shared
         audible start instant. On any failure the whole session is stopped so the
         caller can fall back to a cold restart.
+
+        :raises AudioSourceRefusedError: When the source refuses to play on the members.
         """
         ap2_members = sum(1 for p in self.sync_clients if p.protocol == StreamingProtocol.AIRPLAY2)
         if ap2_members:
@@ -245,6 +249,10 @@ class AirPlayStreamSession:
             )
             self._join_silent_members()
         except asyncio.CancelledError:
+            await self.stop()
+            raise
+        except AudioSourceRefusedError:
+            # the streams controller logs a source refusing this player itself
             await self.stop()
             raise
         except Exception as err:
@@ -296,6 +304,9 @@ class AirPlayStreamSession:
         shared instant. A group flushes every member and awaits all acks before
         the shared start. Returns False when anything fails so the caller can
         fall back to the cold path.
+
+        :raises AudioSourceRefusedError: When the new source refuses to play on the
+            members, after the session is stopped.
         """
         position_ms = int((media.elapsed_time or 0) * 1000)
         # the shared START below puts every member back on one timeline
@@ -338,6 +349,7 @@ class AirPlayStreamSession:
             self.seconds_streamed = 0
             self._pcm_total_fed = 0
             self._feed_settled.clear()
+            self._source_refusal = None
             self._pcm_buffer.clear()
             # The shared START below re-establishes start_time, so the per-client
             # late-join skip counters and every member's accumulated starvation
@@ -352,6 +364,10 @@ class AirPlayStreamSession:
             await self._start_members(position_ms, self._anchor_start_unix_ms(warm=True))
             self._join_silent_members()
         except asyncio.CancelledError:
+            raise
+        except AudioSourceRefusedError:
+            # logged by the streams controller, and a cold restart would only be refused again
+            await self.stop()
             raise
         except Exception as err:  # noqa: BLE001 - any failure falls back to a cold restart
             self.prov.logger.warning(
@@ -1044,9 +1060,12 @@ class AirPlayStreamSession:
         except asyncio.CancelledError:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise
-        except AudioSourceRefusedError:
-            # the streams controller logs a source refusing this player itself
-            pass
+        except AudioSourceRefusedError as err:
+            # the streams controller logs a source refusing this player itself. The (re)start
+            # waiting for this feed stops the session, which ends the members' ffmpeg: retiring
+            # them here as well would race that stop and leave them untracked
+            self._source_refusal = err
+            return
         except Exception as err:
             stream_error = err
             self.prov.logger.error(
@@ -1395,8 +1414,13 @@ class AirPlayStreamSession:
         waited out first and the per-member budget below measures the binary
         alone; giving up on the source here would only restart the session into
         the very same wait.
+
+        :raises AudioSourceRefusedError: When the source refused to play on the members.
         """
         await self._wait_feed_settled()
+        if self._source_refusal is not None:
+            # a refused source fed nothing, so no member can report its audio
+            raise self._source_refusal
         members = [(p, p.stream) for p in self._audible_clients if p.stream]
         results = await asyncio.gather(*[stream.wait_audio_present() for _, stream in members])
         if all(results):
