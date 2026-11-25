@@ -15,6 +15,7 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderSharing,
     ProviderType,
+    SharedPlayback,
     StreamType,
 )
 from music_assistant_models.errors import (
@@ -293,6 +294,74 @@ async def test_a_shared_account_stands_in_without_an_own_account_of_the_service(
     assert queue_item.streamdetails is not None
     assert queue_item.streamdetails.provider == FALLBACK_INSTANCE
     shared.get_stream_details.assert_awaited_once_with(ITEM_ID, MediaType.SOUND_EFFECT)
+
+
+async def test_an_account_set_to_step_in_serves_once_the_own_one_is_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A busy own account hands the play to an account shared to step in for it."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE, ContentType.FLAC))
+    own = _music_provider(BUSY_INSTANCE, has_slot=False)
+    stand_in = _music_provider(FALLBACK_INSTANCE, has_slot=True)
+    audio = StreamsAudio(
+        _mass(
+            {BUSY_INSTANCE: own, FALLBACK_INSTANCE: stand_in},
+            access={
+                BUSY_INSTANCE: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.PRIVATE),
+                FALLBACK_INSTANCE: ProviderAccess(
+                    owner=OTHER_USER_ID,
+                    sharing=ProviderSharing.EVERYONE,
+                    shared_playback=SharedPlayback.WHEN_BUSY,
+                ),
+            },
+        )
+    )
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    monkeypatch.setattr(
+        AudioBuffer,
+        "get_buffer",
+        AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer]),
+    )
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails.provider == FALLBACK_INSTANCE
+    # the own account was tried first, while it still looked free
+    own.get_stream_details.assert_awaited_once()
+
+
+async def test_an_account_set_to_step_in_never_goes_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neither the copy the listing pinned nor a better copy puts it ahead of the own one."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.MP3), _mapping(FALLBACK_INSTANCE, ContentType.FLAC)
+    )
+    queue_item.origin = MagicMock(provider_instance=FALLBACK_INSTANCE, item_id=ITEM_ID)
+    own = _music_provider(BUSY_INSTANCE, has_slot=True)
+    stand_in = _music_provider(FALLBACK_INSTANCE, has_slot=True)
+    audio = StreamsAudio(
+        _mass(
+            {BUSY_INSTANCE: own, FALLBACK_INSTANCE: stand_in},
+            access={
+                BUSY_INSTANCE: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.PRIVATE),
+                FALLBACK_INSTANCE: ProviderAccess(
+                    owner=OTHER_USER_ID,
+                    sharing=ProviderSharing.EVERYONE,
+                    shared_playback=SharedPlayback.WHEN_BUSY,
+                ),
+            },
+        )
+    )
+    monkeypatch.setattr(AudioBuffer, "get_buffer", AsyncMock(return_value=MagicMock()))
+
+    await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails.provider == BUSY_INSTANCE
+    stand_in.get_stream_details.assert_not_awaited()
 
 
 def _single_source_audio() -> tuple[StreamsAudio, MagicMock, QueueItem]:

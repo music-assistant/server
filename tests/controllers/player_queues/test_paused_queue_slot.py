@@ -53,6 +53,7 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from music_assistant.helpers.provider_access import PlaybackSources
 from music_assistant.models.music_provider import (
     MusicProvider,
     ProviderStreamHeldError,
@@ -241,7 +242,9 @@ class _Rig:
 @pytest.fixture
 def rig(monkeypatch: pytest.MonkeyPatch) -> _Rig:
     """Build the rig with every music source open to the queues' playback."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
+    monkeypatch.setattr(
+        audio_mod, "playback_sources", AsyncMock(return_value=PlaybackSources(None, []))
+    )
     return _Rig()
 
 
@@ -956,7 +959,9 @@ async def test_a_free_account_the_user_may_not_use_does_not_keep_a_play_going(
     )
 
     with (
-        patch.object(feeder_mod, "visible_playback_sources", return_value=[INSTANCE]),
+        patch.object(
+            feeder_mod, "playback_sources_for", return_value=PlaybackSources([INSTANCE], [])
+        ),
         pytest.raises(ProviderStreamHeldError),
     ):
         rig.queues.refuse_held_item(track, STARTING_QUEUE, None)

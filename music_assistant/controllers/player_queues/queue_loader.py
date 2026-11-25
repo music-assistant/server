@@ -1501,7 +1501,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
 
         # Steer provider selection to the playback user's own music sources
-        allowed, preferred = await playback_sources(self.mass, queue_id)
+        allowed, preferred, _ = await playback_sources(self.mass, queue_id)
 
         # Some providers have very deterministic similar-track algorithms for a single track
         # seed. When continuing from a single track on a refill, seed from the play history

@@ -1349,6 +1349,7 @@
     "source_owner_change_admin_only": "Only an administrator can change who owns a music source",
     "source_no_owner_admin_only": "Only an administrator can manage a music source that has no owner",
     "source_no_owner_must_be_shared": "A music source without an owner must be shared with someone",
+    "source_no_owner_must_play": "A music source without an owner must play for the users it is shared with",
     "unknown_or_disabled_user": "Unknown or disabled user: {0}",
     "guest_account_disabled": "Guest access is unavailable because the {0} account is disabled.",
     "already_registered": "This item is already registered.",

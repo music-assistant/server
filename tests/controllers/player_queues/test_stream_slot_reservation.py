@@ -29,6 +29,7 @@ from music_assistant_models.streamdetails import StreamDetails
 import music_assistant.controllers.streams.audio as audio_mod
 import music_assistant.models.music_provider as music_provider_mod
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from music_assistant.helpers.provider_access import PlaybackSources
 from music_assistant.models.music_provider import (
     ProviderStreamHeldError,
     ProviderStreamLimitError,
@@ -69,7 +70,9 @@ async def rig(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncGenerator[SlotRig]:
     """Build the rig with every music source open to the queue's playback."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
+    monkeypatch.setattr(
+        audio_mod, "playback_sources", AsyncMock(return_value=PlaybackSources(None, []))
+    )
     rig = SlotRig(getattr(request, "param", SingleStreamProvider))
     rig.mass.providers = [rig.provider]
     yield rig
