@@ -170,8 +170,7 @@ YT_PERSONAL_PLAYLISTS = (
 )
 DYNAMIC_PLAYLIST_TRACK_LIMIT = 300
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
-YTDLP_PACKAGE = "yt-dlp[default]"
-PACKAGES_TO_INSTALL = ("bgutil-ytdlp-pot-provider",)
+PACKAGES_TO_INSTALL = ("yt-dlp[default]", "bgutil-ytdlp-pot-provider")
 DEFAULT_STREAM_URL_EXPIRATION = 3600  # 1 hour
 
 SUPPORTED_FEATURES = {
@@ -1778,15 +1777,16 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         # NOTE: Google breaks things quite often which requires us to update
         # some packages very frequently. Installing them dynamically prevents
         # us from having to update MA to ensure this provider works.
-        try:
-            await install_package(YTDLP_PACKAGE, upgrade=True)
-        except RuntimeError as err:
-            # e.g. PyPI unreachable, an already installed yt-dlp is still usable
-            if await get_package_version("yt-dlp") is None:
-                raise
-            self.logger.warning("Failed to upgrade yt-dlp, using the installed version: %s", err)
         for package_name in PACKAGES_TO_INSTALL:
-            await install_package(package_name)
+            try:
+                await install_package(package_name, upgrade=True)
+            except RuntimeError as err:
+                # e.g. PyPI unreachable, an already installed version is still usable
+                if await get_package_version(package_name.split("[", 1)[0]) is None:
+                    raise
+                self.logger.warning(
+                    "Failed to upgrade %s, using the installed version: %s", package_name, err
+                )
         # verify if the yt_dlp package is usable
         try:
             await import_module_in_thread("yt_dlp")
