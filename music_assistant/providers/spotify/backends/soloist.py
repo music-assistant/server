@@ -811,11 +811,28 @@ class _SingleTrackRun:
         self.logger.error("Spotify Soloist task failed: %s", err, exc_info=err)
         self._fail(f"Spotify playback stopped unexpectedly: {err}")
 
-    def _fail(self, message: str) -> None:
-        """Record a fatal error, unblock the consumer and tear the run down."""
+    def _fail(self, message: str, *, stop_queue: bool = False) -> None:
+        """Record a fatal error and end the run, after stopping its queue when asked."""
         if self._error is not None or self._stopped:
             return
         self._error = message
+        if stop_queue and (queue_id := self.queue_id) is not None:
+            # a stream that fails before the stop ended its queue session skips to
+            # the next item, whose run takes the account back
+            self.mass.create_task(self._stop_queue_and_end(queue_id))
+            return
+        self._end_failed_run()
+
+    async def _stop_queue_and_end(self, queue_id: str) -> None:
+        """Stop the queue, then end the failed run."""
+        self.logger.info("Spotify plays elsewhere now, stopping queue %s", queue_id)
+        try:
+            await self.mass.player_queues.stop(queue_id)
+        finally:
+            self._end_failed_run()
+
+    def _end_failed_run(self) -> None:
+        """Unblock the consumer of a failed run and tear it down."""
         self._release_waiters()
         # the teardown runs as its own task: it cancels the very tasks this is
         # called from, and the daemon has to go either way
@@ -1259,7 +1276,7 @@ class _SingleTrackRun:
         self._started.set()
 
     def _observe_device_active(self, *, active: bool) -> None:
-        """Fail the run when the account starts playing somewhere else."""
+        """Stop the queue and fail the run when the account starts playing somewhere else."""
         # the engine reports itself active as each run starts, and a run whose item
         # is over or whose daemon has gone is only shedding the device on its way
         # out: another player took the account over when a LIVE item loses it. Auth
@@ -1268,7 +1285,8 @@ class _SingleTrackRun:
             return
         self._fail(
             "Spotify is already streaming somewhere else - an account "
-            "can only play in one place at a time"
+            "can only play in one place at a time",
+            stop_queue=True,
         )
 
     def _observe_external_pause(self) -> None:
