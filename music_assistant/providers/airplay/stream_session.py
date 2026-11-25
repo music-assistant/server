@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Coroutine
 from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState
 from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
@@ -44,6 +44,9 @@ from .constants import (
 )
 from .helpers import cli_clock_time, get_final_output_format
 from .stream import AirPlayStream
+
+# A re-anchor further than this beyond the warm lead waits and drops the audio fed meanwhile.
+LIVE_ANCHOR_SLACK_MS = 300
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -374,6 +377,58 @@ class AirPlayStreamSession:
                 "Warm replacement failed (%r); falling back to a cold restart", err
             )
             return False
+        return True
+
+    async def resync_live(self, position_ms: int) -> bool | None:
+        """
+        Drop the audio queued for the members and re-anchor them on a short lead.
+
+        For a live source that counts audio as played when it is read (Spotify
+        Connect): the queued audio is what the source's clock already ran past, so
+        dropping it brings what is heard back in line with the source. Unlike
+        :meth:`replace`, the same audio source keeps feeding.
+
+        :param position_ms: Source position mapped to the first sample after the re-anchor.
+        :return: True when the members re-anchored; False when the session cannot
+            re-anchor yet (not started, parked or paused); None when it does not play
+            a live source.
+        :raises PlayerCommandFailed: When the re-anchor failed twice; the members are
+            then silent.
+        """
+        if self.media.media_type != MediaType.AUDIO_SOURCE:
+            return None
+        audible = self._audible_clients
+        if not audible or self.parked or not self.start_unix_ms:
+            return False
+        reference_stream = audible[0].stream
+        if (
+            reference_stream is None
+            or not reference_stream.accepts_audio
+            or audible[0].playback_state == PlaybackState.PAUSED
+        ):
+            return False
+        self.mass.cancel_timer(self._shift_check_task_id)
+        # The source keeps feeding throughout, so a failed attempt is retried in
+        # place: ending the session would release the live source itself.
+        try:
+            await self._resync_live_once(position_ms)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 - retried once below
+            self.prov.logger.warning("Re-syncing the live stream failed (%r); retrying", err)
+            try:
+                await self._resync_live_once(position_ms)
+            except asyncio.CancelledError:
+                raise
+            except Exception as retry_err:
+                raise PlayerCommandFailed(
+                    f"re-syncing the live stream failed: {retry_err!r}"
+                ) from retry_err
+        # the receivers' own progress still runs from where it was (a seek made elsewhere)
+        for player in self.sync_clients:
+            if player.stream is not None:
+                player.stream.announce_position_at(self.start_unix_ms)
+        self.prov.logger.debug("Re-synced the live stream at %.1f s", position_ms / 1000)
         return True
 
     async def standby(self) -> bool:
@@ -1607,6 +1662,93 @@ class AirPlayStreamSession:
         # the only place a session (re)gains a live timeline, so any park ends here
         self.parked = False
         await self._start_silent_members(position_ms, target_ms)
+
+    async def _resync_live_once(self, position_ms: int) -> None:
+        """
+        Flush the members, restart their ffmpeg on the same source and re-START them.
+
+        :param position_ms: Source position mapped to the first sample after the re-anchor.
+        """
+        try:
+            await self._resync_live_members()
+            # Right after a cold start the receivers' timeline still starts a long lead
+            # out, and a re-anchor cannot land before it: audio fed now would be heard
+            # only then, long after the live source counted it as played. Wait until
+            # shortly before that start and drop what was fed meanwhile once more.
+            waited_ms = await self._wait_for_live_anchor()
+            if waited_ms:
+                position_ms += waited_ms
+                await self._resync_live_members()
+        except asyncio.CancelledError:
+            # cancelled between the kill and the restart (a pause or a newer seek): a
+            # member left without ffmpeg would never see the end of the stream
+            await asyncio.shield(self._restart_missing_member_ffmpeg())
+            raise
+        # a receiver can drop its now-playing info across the flush; done outside the
+        # session lock, since it waits for an artwork render still in progress
+        await asyncio.gather(
+            *[
+                player.stream.forget_delivered_metadata()
+                for player in self.sync_clients
+                if player.stream is not None
+            ]
+        )
+        await self._wait_members_audio_present()
+        await self._start_members(position_ms, self._anchor_start_unix_ms(warm=True))
+
+    async def _resync_live_members(self) -> None:
+        """Flush the members and restart their ffmpeg on the same source."""
+        async with self._lock:
+            members = list(self.sync_clients)
+            for player in members:
+                if ffmpeg := self._player_ffmpeg.pop(player.protocol_id, None):
+                    await ffmpeg.kill()
+            flushed = await asyncio.gather(*[self._flush_member(player) for player in members])
+            if not all(
+                ok for player, ok in zip(members, flushed, strict=True) if player.renders_audio
+            ):
+                raise PlayerCommandFailed("warm flush was not acknowledged")
+            for player in self.sync_clients:
+                stream = player.stream
+                assert stream
+                await self._start_player_ffmpeg(player, self.media, stream)
+            # the START below re-establishes start_time, so the stream position and
+            # the late-join prime buffer restart with it, as in replace()
+            self.seconds_streamed = 0
+            self._pcm_total_fed = 0
+            self._pcm_buffer.clear()
+            self._client_skip_bytes.clear()
+            self._reset_member_shifts()
+
+    async def _wait_for_live_anchor(self) -> int:
+        """
+        Wait until a re-anchor is a short lead away; return the milliseconds waited.
+
+        A re-anchor cannot start before the timeline the receivers already have.
+        """
+        warm_lead_ms = max(
+            (p.stream.warm_lead_ms for p in self.sync_clients if p.stream is not None),
+            default=0,
+        )
+        now_ms = int(cli_clock_time(self.mass.timeline_clock) * 1000)
+        excess_ms = self._anchor_start_unix_ms(warm=True) - now_ms - warm_lead_ms
+        if excess_ms <= LIVE_ANCHOR_SLACK_MS:
+            return 0
+        await asyncio.sleep(excess_ms / 1000)
+        return excess_ms
+
+    async def _restart_missing_member_ffmpeg(self) -> None:
+        """Start ffmpeg again for every member that is left without one."""
+        async with self._lock:
+            for player in self.sync_clients:
+                if player.protocol_id in self._player_ffmpeg or (stream := player.stream) is None:
+                    continue
+                try:
+                    await self._start_player_ffmpeg(player, self.media, stream)
+                except Exception as err:  # noqa: BLE001 - a member that cannot restart is lost
+                    self.prov.logger.warning(
+                        "Restarting ffmpeg for %s failed: %r", player.display_name, err
+                    )
 
     async def _flush_member(self, player: AirPlayPlayer) -> bool:
         """Flush one member's live stream in place and report the binary's ack."""

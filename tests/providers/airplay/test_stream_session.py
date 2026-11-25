@@ -9,7 +9,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
 from music_assistant.helpers.timeline_clock import TimelineClock
@@ -3624,3 +3624,209 @@ async def test_an_apple_tv_that_fails_its_late_join_never_takes_its_room_along()
         await session.add_client(apple_tv)
 
     stream.handle_stream_loss.assert_not_called()
+
+
+def _live_session() -> tuple[AirPlayStreamSession, Any]:
+    """Return a playing single-member session with a mocked flush and re-anchor hooks."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    stream = player.stream
+    stream.flush = AsyncMock(return_value=True)
+    stream.forget_delivered_metadata = AsyncMock()
+    stream.announce_position_at = MagicMock()
+    session.media.media_type = MediaType.AUDIO_SOURCE
+    # anchored a short lead out unless a test says otherwise
+    session._wait_for_live_anchor = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    return session, player
+
+
+@pytest.mark.asyncio
+async def test_live_resync_keeps_the_source_and_reanchors_on_a_short_lead() -> None:
+    """A live re-sync drops the queued audio but keeps feeding the same source."""
+    session, player = _live_session()
+    stream = player.stream
+    old_ffmpeg = MagicMock()
+    old_ffmpeg.kill = AsyncMock()
+    session._player_ffmpeg[player.protocol_id] = old_ffmpeg
+
+    async def _feeding() -> None:
+        await asyncio.Event().wait()
+
+    source_task = asyncio.create_task(_feeding())
+    session._audio_source_task = source_task
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock) as start_ffmpeg,
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
+    ):
+        assert await session.resync_live(62_100)
+
+    old_ffmpeg.kill.assert_awaited_once()
+    stream.flush.assert_awaited_once_with()
+    start_ffmpeg.assert_awaited_once_with(player, session.media, stream)
+    stream.start.assert_awaited_once_with(100_000 + AIRPLAY_START_LEAD_MS, 62_100)
+    # the receiver is told its new position and given its now-playing info again
+    stream.forget_delivered_metadata.assert_awaited_once()
+    stream.announce_position_at.assert_called_once_with(session.start_unix_ms)
+    assert not source_task.done()
+    source_task.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["paused", "parked", "not_started"])
+async def test_live_resync_skips_a_session_without_a_live_timeline(state: str) -> None:
+    """A paused, parked or not yet started session has no queued lead to drop."""
+    session, player = _live_session()
+    if state == "paused":
+        player.playback_state = PlaybackState.PAUSED
+    elif state == "parked":
+        session.parked = True
+    else:
+        session.start_unix_ms = 0
+
+    assert await session.resync_live(10_000) is False
+
+    player.stream.flush.assert_not_awaited()
+    player.stream.start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_live_resync_restarts_the_stream_position_with_the_new_anchor() -> None:
+    """A late joiner after a re-sync maps onto the new start, not the old timeline."""
+    session, _player = _live_session()
+    session.seconds_streamed = 300.0
+    session._pcm_total_fed = 300 * 44100 * PCM_SAMPLE_SIZE
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
+    ):
+        assert await session.resync_live(62_100)
+
+    assert session.seconds_streamed == 0
+    assert session._pcm_total_fed == 0
+
+
+@pytest.mark.asyncio
+async def test_live_resync_leaves_a_queue_session_alone() -> None:
+    """Only a live source has queued audio its clock already ran past."""
+    session, player = _live_session()
+    session.media.media_type = MediaType.TRACK
+
+    assert await session.resync_live(10_000) is None
+
+    player.stream.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_live_resync_restarts_the_killed_ffmpeg() -> None:
+    """A re-sync cancelled mid-flush leaves no member without ffmpeg to end its stream."""
+    session, player = _live_session()
+    old_ffmpeg = MagicMock()
+    old_ffmpeg.kill = AsyncMock()
+    session._player_ffmpeg[player.protocol_id] = old_ffmpeg
+    flushing = asyncio.Event()
+
+    async def _slow_flush() -> bool:
+        flushing.set()
+        await asyncio.Event().wait()
+        return True
+
+    player.stream.flush = AsyncMock(side_effect=_slow_flush)
+
+    with patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock) as start_ffmpeg:
+        resync = asyncio.create_task(session.resync_live(10_000))
+        await flushing.wait()
+        resync.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await resync
+
+    old_ffmpeg.kill.assert_awaited_once()
+    start_ffmpeg.assert_awaited_once_with(player, session.media, player.stream)
+
+
+@pytest.mark.asyncio
+async def test_live_resync_retries_in_place_after_a_failed_flush() -> None:
+    """A failed attempt is retried on the same source, which keeps feeding."""
+    session, player = _live_session()
+    player.stream.flush = AsyncMock(side_effect=[False, True])
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock) as start_ffmpeg,
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
+    ):
+        assert await session.resync_live(10_000) is True
+
+    assert player.stream.flush.await_count == 2
+    start_ffmpeg.assert_awaited_once()
+    player.stream.start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_live_resync_flush_failure_is_raised_after_the_retry() -> None:
+    """A re-sync that fails twice is raised: the members are silent by then."""
+    session, player = _live_session()
+    player.stream.flush = AsyncMock(return_value=False)
+    old_ffmpeg = MagicMock()
+    old_ffmpeg.kill = AsyncMock()
+    session._player_ffmpeg[player.protocol_id] = old_ffmpeg
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock) as start_ffmpeg,
+        pytest.raises(PlayerCommandFailed),
+    ):
+        await session.resync_live(10_000)
+
+    old_ffmpeg.kill.assert_awaited_once()
+    start_ffmpeg.assert_not_awaited()
+    player.stream.start.assert_not_awaited()
+    player.stream.announce_position_at.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_resync_right_after_a_cold_start_waits_for_the_receivers_timeline() -> None:
+    """Audio fed while the cold start's long lead runs out is dropped again before START."""
+    session, player = _live_session()
+    del session._wait_for_live_anchor
+    player.stream.warm_lead_ms = 600
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_anchor_start_unix_ms", return_value=103_000),
+        patch.object(session, "_start_members", new_callable=AsyncMock) as start_members,
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
+        patch(
+            "music_assistant.providers.airplay.stream_session.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep,
+    ):
+        assert await session.resync_live(60_000)
+
+    sleep.assert_awaited_once_with(2.4)
+    assert player.stream.flush.await_count == 2
+    # the source played on while the lead ran out
+    start_members.assert_awaited_once_with(62_400, 103_000)
+
+
+@pytest.mark.asyncio
+async def test_a_resync_on_a_short_lead_does_not_wait() -> None:
+    """A re-anchor already a short lead away starts straight away."""
+    session, player = _live_session()
+    del session._wait_for_live_anchor
+    player.stream.warm_lead_ms = 600
+
+    with (
+        patch.object(session, "_anchor_start_unix_ms", return_value=100_700),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
+    ):
+        assert await session._wait_for_live_anchor() == 0

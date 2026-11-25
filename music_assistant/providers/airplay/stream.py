@@ -18,7 +18,7 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import uuid4
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -34,6 +34,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_DEFAULT_PORT,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
+    AIRPLAY_REMOTE_SEEK_REPEAT_SECONDS,
     AIRPLAY_START_ACK_TIMEOUT_MS,
     AIRPLAY_STOP_ACK_TIMEOUT,
     CLI_PROBLEM_MARKERS,
@@ -218,6 +219,8 @@ class AirPlayStream:
         # transport command, plus a counter of suppressed repeats.
         self._remote_command_last: dict[str, float] = {}
         self._remote_commands_suppressed: int = 0
+        # the last remote seek honored: its target and monotonic time
+        self._remote_seek_last: tuple[str, float] = ("", 0.0)
         # Set when the binary reports the first audio bytes of the current
         # start cycle arriving on its stdin ([STATUS] audio). Together with
         # `connected` this makes readiness fully event-driven, so START can
@@ -808,6 +811,27 @@ class AirPlayStream:
             )
         return audible_unix_ms
 
+    def announce_position_at(self, audible_unix_ms: int) -> None:
+        """
+        Send the receiver its position once a start instant becomes audible.
+
+        :param audible_unix_ms: The acknowledged audible start instant, in unix milliseconds.
+        """
+        self.mass.create_task(
+            self._send_start_progress_anchor(audible_unix_ms, self._progress_anchor_generation),
+            task_id=f"airplay_progress_after_start_{self._stream_id}",
+            abort_existing=True,
+        )
+
+    async def forget_delivered_metadata(self) -> None:
+        """Make the next metadata push send everything again, for a receiver that dropped it."""
+        async with self._metadata_lock:
+            self._metadata_text_checksum = ""
+            self._metadata_artwork_checksum = ""
+            self._metadata_item_identity = ""
+            self._pending_metadata_checksum = ""
+            self._metadata_generation += 1
+
     def rebase_position(self, position_ms: int) -> None:
         """
         Re-map reported progress onto a start instant that moved after the command.
@@ -1389,7 +1413,14 @@ class AirPlayStream:
 
     def _parse_remote_event(self, line: str) -> None:
         """Dispatch a normalized remote command reported by cliairplay."""
-        command_value = line.removeprefix("[EVENT] remote command=").strip()
+        parts = line.removeprefix("[EVENT] remote command=").split()
+        if not parts:
+            self.player.logger.warning("Ignoring an empty cliairplay remote command")
+            return
+        command_value, *arguments = parts
+        if command_value == AirPlayRemoteCommand.SEEK:
+            self._parse_remote_seek(arguments)
+            return
         try:
             command = AirPlayRemoteCommand(command_value)
         except ValueError:
@@ -1425,6 +1456,23 @@ class AirPlayStream:
         self._remote_commands_suppressed = 0
         prov = cast("AirPlayProvider", self.prov)
         prov.handle_remote_command(self.player, command)
+
+    def _parse_remote_seek(self, arguments: list[str]) -> None:
+        """Dispatch a scrub on the receiver; the provider lets a drag settle first."""
+        fields = dict(argument.partition("=")[::2] for argument in arguments)
+        position_ms = fields.get("position_ms", "")
+        if not position_ms.isdigit():
+            self.player.logger.warning("Ignoring a remote seek without a position")
+            return
+        # MediaRemote re-sends an unfulfilled command at ~10 Hz (see the storm guard
+        # in _parse_remote_event); a repeat of the same target is not a new scrub
+        now = time.monotonic()
+        last_target, last_at = self._remote_seek_last
+        if position_ms == last_target and now - last_at < AIRPLAY_REMOTE_SEEK_REPEAT_SECONDS:
+            return
+        self._remote_seek_last = (position_ms, now)
+        prov = cast("AirPlayProvider", self.prov)
+        prov.handle_remote_command(self.player, AirPlayRemoteCommand.SEEK, int(position_ms))
 
     def _parse_mrp_status(self, line: str) -> None:
         """
@@ -1857,6 +1905,16 @@ class AirPlayStream:
             and state_media is not None
             and state_media.queue_item_id
             and state_media.queue_item_id == metadata.queue_item_id
+        ):
+            return state_media
+        # A live source only names itself on the session media ("Spotify Connect
+        # (Kitchen)"); the state media carries the track it plays right now.
+        if (
+            metadata is not None
+            and metadata.media_type == MediaType.AUDIO_SOURCE
+            and state_media is not None
+            and not state_media.queue_item_id
+            and state_media.title
         ):
             return state_media
         return metadata

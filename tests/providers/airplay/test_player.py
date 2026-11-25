@@ -2951,3 +2951,83 @@ def test_pin_pairing_keeps_its_own_setup_reason(airplay_player: AirPlayPlayer) -
 
     assert airplay_player.needs_setup is True
     assert airplay_player.setup_reason == "pairing_required"
+
+
+async def test_live_source_resync_goes_to_the_stream_session(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A live source re-sync is handed to the playing session, in milliseconds."""
+    session = MagicMock(resync_live=AsyncMock(return_value=True))
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    assert await airplay_player.resync_live_source(lambda: 62.15) is True
+
+    session.resync_live.assert_awaited_once_with(62_150)
+
+
+async def test_a_live_source_resync_that_cannot_recover_stops_the_player(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A player left silent by a failed re-sync is stopped rather than shown as playing."""
+    session = MagicMock(
+        resync_live=AsyncMock(side_effect=PlayerCommandFailed("flush was not acknowledged")),
+        stop=AsyncMock(),
+    )
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    with patch.object(airplay_player, "_stop_locked", new_callable=AsyncMock) as stop:
+        assert await airplay_player.resync_live_source(lambda: 10.0) is True
+
+    stop.assert_awaited_once()
+
+
+async def test_a_live_source_resync_waits_for_the_player_lock(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A re-sync does not reshape the session while play_media or a stop holds the player."""
+    session = MagicMock(resync_live=AsyncMock(return_value=True))
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    async with airplay_player._lock:
+        resync = asyncio.create_task(airplay_player.resync_live_source(lambda: 10.0))
+        await asyncio.sleep(0)
+        session.resync_live.assert_not_awaited()
+    assert await resync is True
+
+
+async def test_a_live_source_that_stopped_playing_is_not_resynced(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A source that paused while the re-sync waited for the lock is left alone."""
+    session = MagicMock(resync_live=AsyncMock(return_value=True))
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    assert await airplay_player.resync_live_source(lambda: None) is False
+
+    session.resync_live.assert_not_awaited()
+
+
+async def test_a_failed_resync_leaves_media_started_meanwhile_alone(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A failed re-sync does not stop a session that moved on to other media."""
+    session = MagicMock()
+
+    async def _failed_after_a_replace(_position_ms: int) -> bool:
+        session.media = MagicMock()
+        raise PlayerCommandFailed("flush was not acknowledged")
+
+    session.resync_live = AsyncMock(side_effect=_failed_after_a_replace)
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    with patch.object(airplay_player, "_stop_locked", new_callable=AsyncMock) as stop:
+        assert await airplay_player.resync_live_source(lambda: 10.0) is True
+
+    stop.assert_not_awaited()
+
+
+async def test_live_source_resync_without_a_session_cannot_run(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Without a playing session there is nothing to re-sync yet."""
+    assert await airplay_player.resync_live_source(lambda: 10.0) is False

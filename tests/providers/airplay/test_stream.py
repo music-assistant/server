@@ -13,7 +13,7 @@ from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
-from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
@@ -805,14 +805,60 @@ async def test_stdout_reader_dispatches_remote_events_once() -> None:
     player = _make_player()
     stream = AirPlayStream(player)
     process = MagicMock()
-    output = "".join(f"[EVENT] remote command={command}\n" for command in AirPlayRemoteCommand)
+    commands = [c for c in AirPlayRemoteCommand if c is not AirPlayRemoteCommand.SEEK]
+    output = "".join(f"[EVENT] remote command={command}\n" for command in commands)
+    output += "[EVENT] remote command=seek position_ms=83250\n"
     process.read = AsyncMock(side_effect=[output.encode(), b""])
     stream._cli_proc = process
 
     await stream._stdout_reader()
 
     assert player.provider.handle_remote_command.call_args_list == [
-        call(player, command) for command in AirPlayRemoteCommand
+        *(call(player, command) for command in commands),
+        call(player, AirPlayRemoteCommand.SEEK, 83250),
+    ]
+
+
+def test_parse_remote_seek_without_a_position_is_ignored(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A scrub reported without a usable position is ignored with a warning."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_remote_event("[EVENT] remote command=seek position_ms=x")
+        stream._parse_remote_event("[EVENT] remote command=seek")
+
+    player.provider.handle_remote_command.assert_not_called()
+    assert caplog.text.count("Ignoring a remote seek without a position") == 2
+
+
+def test_an_empty_remote_command_is_ignored(caplog: pytest.LogCaptureFixture) -> None:
+    """An empty remote command line is ignored, so the stdout reader keeps going."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_remote_event("[EVENT] remote command=")
+        stream._parse_remote_event("[EVENT] remote command=   ")
+
+    player.provider.handle_remote_command.assert_not_called()
+    assert caplog.text.count("Ignoring an empty cliairplay remote command") == 2
+
+
+def test_a_repeated_remote_seek_is_dispatched_once() -> None:
+    """A receiver re-sending the same seek target is not a new scrub."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    for _ in range(3):
+        stream._parse_remote_event("[EVENT] remote command=seek position_ms=83250")
+    stream._parse_remote_event("[EVENT] remote command=seek position_ms=90000")
+
+    assert player.provider.handle_remote_command.call_args_list == [
+        call(player, AirPlayRemoteCommand.SEEK, 83250),
+        call(player, AirPlayRemoteCommand.SEEK, 90000),
     ]
 
 
@@ -3778,6 +3824,38 @@ def test_current_metadata_without_queue_item_never_swaps_sources() -> None:
     player.player.current_media = MagicMock(queue_item_id=None, title="Something else")
 
     assert stream._current_metadata() is session_media
+
+
+def test_current_metadata_of_a_live_source_is_what_it_plays() -> None:
+    """A live source names only itself on the session media: the track playing is pushed."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(
+        queue_item_id=None, media_type=MediaType.AUDIO_SOURCE, title="Spotify Connect (Kitchen)"
+    )
+    stream.session = MagicMock(media=session_media)
+    track = MagicMock(queue_item_id=None, title="The World Is Crowded")
+    player.player.current_media = track
+
+    assert stream._current_metadata() is track
+
+
+@pytest.mark.asyncio
+async def test_forgetting_delivered_metadata_makes_the_next_push_send_it_again() -> None:
+    """After a receiver dropped its now-playing info, the same metadata is sent again."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._metadata_text_checksum = "item|title|artist|album"
+    stream._metadata_artwork_checksum = "art"
+    stream._metadata_item_identity = "item"
+    generation = stream._metadata_generation
+
+    await stream.forget_delivered_metadata()
+
+    assert stream._metadata_text_checksum == ""
+    assert stream._metadata_artwork_checksum == ""
+    assert stream._metadata_item_identity == ""
+    assert stream._metadata_generation == generation + 1
 
 
 @pytest.mark.asyncio
