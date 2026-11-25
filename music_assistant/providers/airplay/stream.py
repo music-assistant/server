@@ -2386,6 +2386,14 @@ class AirPlayStream:
         :param player_id: Id of the player that leaves, which can be the leader itself.
         """
         players = self.mass.players
+        player = players.get_player(player_id)
+        if self._receiver_closed and player and player.active_group:
+            # the other sender takes it out of its group player, as a user does
+            async with players.get_group_and_player_lock(player_id):
+                # unless a command that came first restarted the stream
+                if self.player.stream is self:
+                    await players.cmd_ungroup(player_id)
+            return
         if leader.player_id != player_id:
             async with players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):
                 await players._handle_set_members(leader, player_ids_to_remove=[player_id])

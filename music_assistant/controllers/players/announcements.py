@@ -606,6 +606,9 @@ class AnnouncementsMixin(_PlayerControllerBase):
         )
         prev_synced_to = player.synced_to
         prev_group = self.get_player(player.active_group) if player.active_group else None
+        if prev_group and player.player_id not in prev_group.group_members:
+            # it fell out of the playback of the group, which plays on without it
+            prev_group = None
         # a player that leads others plays the announcement alone: its members leave it
         # for the clip and join it again afterwards
         prev_members = (

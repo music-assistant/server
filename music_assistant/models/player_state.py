@@ -143,12 +143,14 @@ class GroupSnapshot:
     :param player_id: Id of the group player.
     :param powered: Power state its own protocol reports.
     :param is_active_session: Whether it is holding its members.
+    :param counts_in: Whether the player belongs to its session, also while it fell out of it.
     :param state: The state it publishes.
     """
 
     player_id: str
     powered: bool | None
     is_active_session: bool
+    counts_in: bool
     state: PlayerState
 
 
@@ -366,7 +368,7 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
     if follows_native_leader:
         inputs = replace(inputs, active_protocol=None, active_output_protocol=None)
     synced_to = resolve_synced_to(own, inputs.linked, inputs.peers)
-    active_group = _active_group(inputs)
+    active_group = _active_group(inputs, synced_to)
     setup_protocol = _protocol_needing_setup(inputs)
     foreign_app = _shown_foreign_app(inputs, synced_to, active_group)
     output_state, elapsed_time, elapsed_time_last_updated = _playback_position(
@@ -522,7 +524,7 @@ def resolve_media_queue(inputs: StateInputs) -> QueueSnapshot | None:
     :param inputs: Everything the state is derived from.
     """
     synced_to = resolve_synced_to(inputs.own, inputs.linked, inputs.peers)
-    active_group = _active_group(inputs)
+    active_group = _active_group(inputs, synced_to)
     foreign_app = _shown_foreign_app(inputs, synced_to, active_group)
     if synced_to or active_group or foreign_app or inputs.session is not None:
         # the media is that of another player, an app or a live external source
@@ -710,8 +712,9 @@ def _protocols(
     ]
 
 
-def _active_group(inputs: StateInputs) -> str | None:
+def _active_group(inputs: StateInputs, synced_to: str | None) -> str | None:
     """Return the id of the group player that currently holds the player, if any."""
+    fell_out_of: str | None = None
     for group in inputs.groups:
         if group.player_id == inputs.player_id:
             continue
@@ -730,7 +733,18 @@ def _active_group(inputs: StateInputs) -> str | None:
             continue
         if inputs.player_id in group.state.group_members:
             return group.player_id
-    return None
+        if group.counts_in and inputs.player_id in group.state.static_group_members:
+            fell_out_of = fell_out_of or group.player_id
+    # a fixed group keeps a member that fell out of its playback, unless that is gone or in
+    # use for something else
+    if (
+        synced_to
+        or not _reachable(inputs)
+        or any(x != inputs.own.protocol_id for x in inputs.own.group_members)
+        or any(x.playback_state == PlaybackState.PLAYING for x in (inputs.own, *inputs.linked))
+    ):
+        return None
+    return fell_out_of
 
 
 def _shown_foreign_app(

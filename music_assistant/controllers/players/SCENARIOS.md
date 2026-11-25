@@ -2310,6 +2310,29 @@ protocol Office follows it on, it stops first and lets Office go then.
   - `test_grouping.py::test_a_sync_group_whose_airplay_leader_and_its_member_leave_at_once_lets_them_go`
   - `test_grouping.py::test_a_sync_group_leader_on_its_own_protocol_stops_before_it_lets_its_members_go`
 
+### GROUP-71 · A fixed group ends when a member that dropped off is taken out
+
+Downstairs is a sync group with a fixed member list, Kitchen, Office and Den, and plays. Office drops
+off for a moment, and still belongs to Downstairs. Before Downstairs takes it back the user plays
+something else on it, selects a source on it, ungroups it or switches it off: Downstairs stops, as it
+does when Office plays along, and leaves Office alone. When Office can not be reached, or an
+announcement plays on it, Downstairs plays on, and takes it back once it is back.
+
+- End-to-end: **possible with** a device that can be cut off its group for a moment.
+- Proven by:
+  - `test_grouping.py::test_a_fixed_group_ends_when_a_member_that_dropped_off_is_taken_out`
+  - `test_grouping.py::test_a_fixed_group_plays_on_when_a_member_that_dropped_off_can_not_be_reached`
+  - `test_announcements.py::test_an_announcement_to_a_member_that_dropped_off_leaves_its_group_playing`
+
+### GROUP-72 · A member of a fixed group that plays something of its own is left alone
+
+Downstairs is a sync group with a fixed member list, Kitchen, Office and Den, and plays. Office is
+taken out at the device and plays something of its own: Downstairs plays on without it and leaves it
+alone until that ends.
+
+- End-to-end: **possible with** a device that plays by itself, such as one with a vendor's own app.
+- Proven by: `test_grouping.py::test_a_member_of_a_fixed_group_that_plays_something_of_its_own_is_left_alone`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered

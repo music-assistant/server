@@ -2681,6 +2681,7 @@ class Player:
                     group_player.player_id,
                     group_protocol.powered if group_protocol else None,
                     group_protocol.is_active_session if group_protocol else False,
+                    group_protocol.counts_in(self.player_id) if group_protocol else False,
                     group_player.state,
                 )
             )

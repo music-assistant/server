@@ -793,7 +793,7 @@ def make_group_snapshot(
     :param state: The state the group player publishes.
     :param values: The values that differ from that group player.
     """
-    defaults: dict[str, Any] = {"powered": None, "is_active_session": False}
+    defaults: dict[str, Any] = {"powered": None, "is_active_session": False, "counts_in": False}
     return GroupSnapshot(
         player_id=player_id,
         state=state or make_player_state(player_id),
