@@ -96,6 +96,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 FETCH_LIMIT = 2000
+LIBRARY_PAGE_SIZE = 500
 CACHE_CATEGORY_DYNAMIC_SAMPLE = 0
 DYNAMIC_SAMPLE_CACHE_EXPIRATION = 24 * 3600  # 24h; stale entries are still served via SWR
 
@@ -142,6 +143,21 @@ def _filter_by_explicit(tracks: list[Track], explicit_rule: bool | None) -> list
         # Exclude tracks explicitly marked as explicit; pass through unknown
         return [t for t in tracks if t.metadata.explicit is not True]
     return tracks
+
+
+def _filter_by_track_year(
+    tracks: list[Track], year_from: int | None, year_to: int | None
+) -> list[Track]:
+    """Filter tracks by their release year when a year range is set."""
+    if year_from is None and year_to is None:
+        return tracks
+    return [
+        track
+        for track in tracks
+        if (release_date := track.metadata.release_date) is not None
+        and (year_from is None or release_date.year >= year_from)
+        and (year_to is None or release_date.year <= year_to)
+    ]
 
 
 def _filter_by_duration(
@@ -825,6 +841,7 @@ class SmartPlaylistProvider(PluginProvider):
 
         # Apply exclusions regardless of source mode. Recency (don't repeat recently-played) is
         # no longer handled here: the player queue owns it globally for dynamic playlists.
+        tracks = _filter_by_track_year(tracks, rules.track_year_from, rules.track_year_to)
         excluded_genre_names, excl_album_type_ids = await asyncio.gather(
             self._resolve_excluded_genre_names(rules),
             self._get_album_ids_for_types(rules.excluded_album_types)
@@ -1183,11 +1200,16 @@ class SmartPlaylistProvider(PluginProvider):
                 explicit=rules.explicit,
                 limit=min(rules.limit * 3, 2000),
                 user_provider_filter=user_provider_filter,
+                track_year_from=rules.track_year_from,
+                track_year_to=rules.track_year_to,
             )
 
         if has_folder:
             base_tracks = await self._folder_tracks(
                 rules.folder_paths, rules.explicit, user_provider_filter
+            )
+            base_tracks = _filter_by_track_year(
+                base_tracks, rules.track_year_from, rules.track_year_to
             )
         else:
             favorite = True if rules.favorites_only else None
@@ -1198,6 +1220,8 @@ class SmartPlaylistProvider(PluginProvider):
                 explicit=rules.explicit,
                 limit=min(rules.limit * 5, 2000),
                 user_provider_filter=user_provider_filter,
+                track_year_from=rules.track_year_from,
+                track_year_to=rules.track_year_to,
             )
 
         # the library query applies it already, the browsed folder tracks still need it
@@ -1253,6 +1277,8 @@ class SmartPlaylistProvider(PluginProvider):
                 explicit=rules.explicit,
                 limit=fetch_limit,
                 user_provider_filter=user_provider_filter,
+                track_year_from=rules.track_year_from,
+                track_year_to=rules.track_year_to,
             ):
                 if track.uri:
                     track_sets[track.uri] = track
@@ -1263,6 +1289,8 @@ class SmartPlaylistProvider(PluginProvider):
                 explicit=rules.explicit,
                 limit=fetch_limit,
                 user_provider_filter=user_provider_filter,
+                track_year_from=rules.track_year_from,
+                track_year_to=rules.track_year_to,
             ):
                 if track.uri:
                     track_sets[track.uri] = track
@@ -1279,6 +1307,8 @@ class SmartPlaylistProvider(PluginProvider):
                 explicit=rules.explicit,
                 limit=min(fetch_limit * 2, FETCH_LIMIT),
                 user_provider_filter=user_provider_filter,
+                track_year_from=rules.track_year_from,
+                track_year_to=rules.track_year_to,
             )
             if rules.artist_ids:
                 artist_id_set = set(rules.artist_ids)
@@ -1313,6 +1343,8 @@ class SmartPlaylistProvider(PluginProvider):
                 explicit=rules.explicit,
                 limit=fetch_limit,
                 user_provider_filter=user_provider_filter,
+                track_year_from=rules.track_year_from,
+                track_year_to=rules.track_year_to,
             ):
                 if track.uri:
                     track_sets[track.uri] = track
@@ -1326,17 +1358,41 @@ class SmartPlaylistProvider(PluginProvider):
         explicit: bool | None = None,
         limit: int = 500,
         user_provider_filter: list[str] | None = None,
+        track_year_from: int | None = None,
+        track_year_to: int | None = None,
     ) -> list[Track]:
         """Fetch library tracks with optional filters."""
-        return await self.mass.music.tracks.library_items(
-            favorite=favorite,
-            genre=genre_ids,
-            explicit=explicit,
-            limit=limit,
-            sort_field=SortField.RANDOM,
-            provider=user_provider_filter,
-            summary=False,
-        )
+        if track_year_from is None and track_year_to is None:
+            return await self.mass.music.tracks.library_items(
+                favorite=favorite,
+                genre=genre_ids,
+                explicit=explicit,
+                limit=limit,
+                sort_field=SortField.RANDOM,
+                provider=user_provider_filter,
+                summary=False,
+            )
+
+        random_seed = random.getrandbits(31)
+        offset = 0
+        tracks: list[Track] = []
+        while len(tracks) < limit:
+            page = await self.mass.music.tracks.library_items(
+                favorite=favorite,
+                genre=genre_ids,
+                explicit=explicit,
+                limit=LIBRARY_PAGE_SIZE,
+                offset=offset,
+                sort_field=SortField.RANDOM,
+                random_seed=random_seed,
+                provider=user_provider_filter,
+                summary=False,
+            )
+            tracks.extend(_filter_by_track_year(page, track_year_from, track_year_to))
+            if len(page) < LIBRARY_PAGE_SIZE:
+                break
+            offset += len(page)
+        return tracks[:limit]
 
     async def _folder_tracks(
         self,

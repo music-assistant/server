@@ -7,8 +7,9 @@ import json
 import logging
 import random
 import time
-from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientResponseError, RequestInfo
@@ -21,6 +22,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     ProviderSharing,
     ProviderType,
+    SortField,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -59,6 +61,10 @@ from music_assistant.providers.smart_playlist.helpers import (
     write_json,
 )
 from tests.common import set_music_source_access, use_real_create_task
+from tests.controllers.music.helpers import create_track
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 # ---------------------------------------------------------------------------
 # SmartPlaylistRules unit tests
@@ -91,6 +97,15 @@ class TestSmartPlaylistRules:
         assert SmartPlaylistRules.from_dict({"favorites_only": False}).exclude_favorites is False
         assert "Exclude favorites" in original.human_readable()
         validate_rules(original)
+
+    def test_track_year_rules_round_trip_and_validation(self) -> None:
+        """Track-year rules are additive and reject reversed ranges."""
+        rules = SmartPlaylistRules(track_year_from=1950, track_year_to=1959)
+        assert SmartPlaylistRules.from_dict(rules.to_dict()) == rules
+        assert SmartPlaylistRules.from_dict({}).track_year_from is None
+        assert "1950-1959" in rules.human_readable()
+        with pytest.raises(InvalidDataError, match="track_year"):
+            validate_rules(SmartPlaylistRules(track_year_from=2000, track_year_to=1990))
 
     @pytest.mark.parametrize("value", [None, "false", "true", 0, 1, [], {}])
     def test_exclude_favorites_requires_boolean(self, value: Any) -> None:
@@ -579,6 +594,85 @@ async def test_popularity_filter_applied() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("seed", [False, True])
+async def test_track_year_filter_excludes_unknown_and_outside_years(seed: bool) -> None:
+    """Filter by the track release year, independently of the album and source mode."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    old = _make_mock_track("1", uri="library://track/1")
+    old.album.year = 1993
+    old.metadata.release_date = datetime(1959, 4, 1, tzinfo=UTC)
+    new = _make_mock_track("2", uri="library://track/2")
+    new.metadata.release_date = datetime(1993, 1, 1, tzinfo=UTC)
+    unknown = _make_mock_track("3", uri="library://track/3")
+    unknown.metadata.release_date = None
+    tracks = [old, new, unknown]
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
+    cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=tracks)
+    rules = SmartPlaylistRules(
+        track_year_from=1950,
+        track_year_to=1959,
+        seed_track_uris=["library://track/1"] if seed else [],
+    )
+    result = await plugin._evaluate_rules(rules)
+    assert [track.item_id for track in result] == ["1"]
+
+
+async def test_track_year_filter_pages_library(
+    music_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Find a matching track beyond the first page without extending the track API."""
+    mass = music_mass
+    for index in range(5):
+        track = create_track("qobuz_1", str(index), name=str(index), isrc=f"USRC1{index:07}")
+        for mapping in track.provider_mappings:
+            mapping.in_library = True
+        if index != 1:
+            track.metadata.release_date = datetime(1959 if index == 0 else 1993, 1, 1, tzinfo=UTC)
+        await mass.music.tracks.add_item_to_library(track)
+
+    seed = 0
+    while True:
+        ordered = await mass.music.tracks.library_items(
+            sort_field=SortField.RANDOM, random_seed=seed, summary=False
+        )
+        if next(i for i, track in enumerate(ordered) if track.name == "0") >= 2:
+            break
+        seed += 1
+        assert seed < 100
+
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.LIBRARY_PAGE_SIZE", 2)
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.random.getrandbits", lambda _: seed
+    )
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, MagicMock(domain="smart_playlist"), config, set())
+    with patch.object(
+        mass.music.tracks, "library_items", wraps=mass.music.tracks.library_items
+    ) as library_items:
+        tracks = await plugin._get_library_tracks(limit=1, track_year_from=1950, track_year_to=1959)
+
+    assert [track.name for track in tracks] == ["0"]
+    assert [call.kwargs["offset"] for call in library_items.await_args_list] == list(
+        range(0, 2 * len(library_items.await_args_list), 2)
+    )
+    assert len(library_items.await_args_list) > 1
+    assert all(call.kwargs["random_seed"] == seed for call in library_items.await_args_list)
+
+    with patch.object(
+        mass.music.tracks, "library_items", wraps=mass.music.tracks.library_items
+    ) as library_items:
+        tracks = await plugin._get_library_tracks(limit=1, track_year_from=2000)
+    assert tracks == []
+    assert [call.kwargs["offset"] for call in library_items.await_args_list] == [0, 2, 4]
+
+
+@pytest.mark.asyncio
 async def test_favorites_only_filter() -> None:
     """favorites_only=True passes favorite=True to the DB query layer."""
     mass = MagicMock()
@@ -869,6 +963,14 @@ async def test_folder_rule_is_the_base_in_and_and_a_source_in_or(
     folder_mock.return_value = [folder_track, other_folder_track, artist_track]
     result = await plugin._evaluate_and(
         SmartPlaylistRules(folder_paths=folders, genre_ids=[1], artist_ids=[7], limit=1)
+    )
+    assert result == [artist_track]
+
+    folder_track.metadata.release_date = datetime(1993, 1, 1, tzinfo=UTC)
+    other_folder_track.metadata.release_date = None
+    artist_track.metadata.release_date = datetime(1959, 1, 1, tzinfo=UTC)
+    result = await plugin._evaluate_and(
+        SmartPlaylistRules(folder_paths=folders, genre_ids=[1], track_year_to=1959, limit=1)
     )
     assert result == [artist_track]
 
