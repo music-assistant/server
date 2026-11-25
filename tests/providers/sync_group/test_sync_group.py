@@ -2007,7 +2007,7 @@ class TestRejoinLeavesABusyMemberAlone:
     async def test_a_play_on_the_member_queue_plays_while_the_member_is_left_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The play reaches the member; the member is re-added at the leader's next report."""
+        """The play reaches the member, and the group does not take it back meanwhile."""
         players, group, _leader, member, join = self._group_playing_without_a_member(monkeypatch)
         queue = _LoadingQueue(cast("MagicMock", players.mass), "B")
 
@@ -2019,8 +2019,6 @@ class TestRejoinLeavesABusyMemberAlone:
 
         member.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
         join.assert_not_awaited()
-        await group._rejoin_members()
-        join.assert_awaited_once()
 
     async def test_a_power_on_that_plays_plays_while_the_member_is_left_out(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4755,6 +4753,18 @@ class TestStaticMemberRejoin:
         sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
 
         mass.call_later.assert_not_called()
+
+    def test_a_member_that_comes_back_by_itself_is_not_rejoined(self) -> None:
+        """A member whose own protocol brings it back is left to that protocol."""
+        mass = _make_mock_mass()
+        sgp, leader, display = _static_group_with_a_member_away(mass)
+        protocol = next(iter(display.attached_protocols.values()))
+
+        with patch.object(protocol, "rejoins_group", MagicMock(return_value=True)) as rejoins:
+            sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+
+        mass.call_later.assert_not_called()
+        rejoins.assert_called_with(_group_id(sgp))
 
     def test_a_member_this_group_holds_is_rejoined(self) -> None:
         """A member that names this group as its active group is still recovered."""

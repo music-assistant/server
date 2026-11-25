@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import re
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
-from music_assistant_models.enums import IdentifierType, PlaybackState
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_POWER_CONTROL
 from music_assistant.controllers.streams.controller import StreamsController
@@ -252,6 +254,39 @@ async def _play_again(scenario: Scenario, group: Player) -> None:
     await scenario.idle()
     await task
     assert _state(group) == PlaybackState.PLAYING
+
+
+@contextmanager
+def _out_of_reach(protocol: AirPlayPlayer) -> Iterator[list[str]]:
+    """
+    Keep a receiver from answering new connections.
+
+    :param protocol: The protocol of its player.
+    :return: One entry for each attempt to connect to it.
+    """
+    attempts: list[str] = []
+    connect = AirPlayStream.connect
+
+    async def _connect(stream: AirPlayStream, use_shared_ptp: bool = False) -> None:
+        if stream.player is not protocol:
+            await connect(stream, use_shared_ptp)
+            return
+        attempts.append(protocol.protocol_id)
+        with patch.object(_Cli, "start", AsyncMock()):
+            await connect(stream, use_shared_ptp)
+
+    with patch.object(AirPlayStream, "connect", _connect):
+        yield attempts
+
+
+async def _announce_again(
+    scenario: Scenario, provider: AirPlayProvider, protocol: AirPlayPlayer
+) -> None:
+    """Announce a receiver again, as it does when it shows up on the network."""
+    info = protocol.raop_discovery_info or protocol.airplay_discovery_info
+    assert info is not None
+    await provider.on_mdns_service_state_change(info.name, ServiceStateChange.Updated, info)
+    await scenario.advance(2)
 
 
 async def _stop(scenario: Scenario, group: Player) -> None:
@@ -912,6 +947,190 @@ async def test_a_fixed_group_ends_when_the_user_switches_a_lost_player_off(
     await scenario.advance(AFTER_REJOIN)
     assert player.powered is False
     assert [x.playback_state for x in (a, b, c)] == [PlaybackState.IDLE] * 3
+
+
+@pytest.mark.parametrize("leader", [True, False], ids=["leader", "member"])
+async def test_a_lost_player_does_not_join_a_member_that_plays_alone_after_the_group(
+    scenario: Scenario, provider: AirPlayProvider, leader: bool
+) -> None:
+    """A lost player does not come back to a player that plays alone once its group stopped."""
+    a, b, c = await _receivers(scenario, provider)
+    group = await _play_group(scenario, [a, b, c])
+    lost, other = (a, b) if leader else (c, a)
+
+    _cli(lost).end()
+    await scenario.advance(1)
+    await scenario.command(scenario.mass.players.cmd_stop(group.player_id))
+    await scenario.advance(AFTER_IDLE_GRACE)
+    await scenario.play(_player_of(other).player_id)
+    await scenario.advance(300)
+
+    assert lost.playback_state == PlaybackState.IDLE
+    assert other.group_members == []
+    assert _player_of(other).playback_state == PlaybackState.PLAYING
+    await scenario.command(scenario.mass.players.cmd_stop(_player_of(other).player_id))
+    await scenario.idle()
+
+
+async def test_a_lost_player_the_user_removes_does_not_come_back(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """A lost player that the user takes out while it tries to come back stays out."""
+    scenario.expect_log("cliairplay did not connect")
+    scenario.expect_log("did not produce a running stream")
+    a, b, c = await _receivers(scenario, provider)
+    group = await _play_group(scenario, [a, b, c])
+
+    with _out_of_reach(a):
+        _cli(a).end()
+        await scenario.advance(AFTER_REJOIN)
+        # it is listed during an attempt
+        assert _members(scenario, group) == ["Player A", "Player B", "Player C"]
+        remove = await scenario.command(
+            scenario.mass.players.cmd_set_members(
+                group.player_id, player_ids_to_remove=[_player_of(a).player_id]
+            )
+        )
+        await scenario.advance(12)
+        await remove
+    await scenario.advance(300)
+
+    assert a.playback_state == PlaybackState.IDLE
+    assert _members(scenario, group) == ["Player B", "Player C"]
+    assert _state(group) == PlaybackState.PLAYING
+    await _stop(scenario, group)
+
+
+@pytest.mark.parametrize("dynamic", [True, False])
+@pytest.mark.parametrize("leader", [True, False], ids=["leader", "member"])
+async def test_a_player_that_was_away_for_long_comes_back_once_it_announces_itself(
+    scenario: Scenario, provider: AirPlayProvider, leader: bool, dynamic: bool
+) -> None:
+    """A lost player that can not be reached for minutes is back as soon as it shows up again."""
+    scenario.expect_log("cliairplay did not connect")
+    scenario.expect_log("did not produce a running stream")
+    protocols = await _receivers(scenario, provider)
+    a, b, c = protocols
+    group = await _play_group(scenario, [a, b, c], dynamic=dynamic)
+    lost, other = (a, b) if leader else (c, a)
+
+    with _out_of_reach(lost) as attempts:
+        _cli(lost).end()
+        await scenario.advance(600)
+        # the attempts that are not known to make sense are bounded
+        assert len(attempts) == 5
+        # it announces itself, but can not be reached yet
+        await _announce_again(scenario, provider, lost)
+        await scenario.advance(600)
+        assert len(attempts) == 6
+    await scenario.advance(600)
+    assert other.session is not None
+    assert lost not in other.session.sync_clients
+    await _announce_again(scenario, provider, lost)
+
+    assert lost in other.session.sync_clients
+    assert _members(scenario, group) == ["Player A", "Player B", "Player C"]
+    assert _state(group) == PlaybackState.PLAYING
+    await _stop(scenario, group)
+
+
+async def test_a_lost_player_comes_back_to_a_group_whose_members_changed(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """A lost player comes back to its group, whoever plays in it by then."""
+    scenario.expect_log("cliairplay did not connect")
+    scenario.expect_log("did not produce a running stream")
+    a, b, c = await _receivers(scenario, provider)
+    group = await _play_group(scenario, [a, b])
+    with _out_of_reach(b):
+        _cli(b).end()
+        await scenario.advance(AFTER_REJOIN)
+        for change in (
+            {"player_ids_to_add": [_player_of(c).player_id]},
+            {"player_ids_to_remove": [_player_of(a).player_id]},
+        ):
+            task = await scenario.command(
+                scenario.mass.players.cmd_set_members(group.player_id, **change)
+            )
+            await scenario.advance(20)
+            await task
+        assert _led_by(group) is _player_of(c)
+    await scenario.advance(130)
+
+    assert _members(scenario, group) == ["Player B", "Player C"]
+    assert b.playback_state == PlaybackState.PLAYING
+    assert _state(group) == PlaybackState.PLAYING
+    await _stop(scenario, group)
+
+
+async def test_a_player_that_announces_itself_at_each_attempt_is_not_tried_all_the_time(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """A receiver whose record changes with an attempt that fails is tried once in two minutes."""
+    scenario.expect_log("cliairplay did not connect")
+    scenario.expect_log("did not produce a running stream")
+    a, b, c = await _receivers(scenario, provider)
+    group = await _play_group(scenario, [a, b, c])
+
+    with _out_of_reach(c) as attempts:
+        _cli(c).end()
+        for _ in range(100):
+            await _announce_again(scenario, provider, c)
+            await scenario.advance(18)
+
+    # 2000 seconds: five attempts in the first 230, and then one each 120 seconds at most
+    assert 5 + 10 <= len(attempts) <= 5 + 15
+    assert _state(group) == PlaybackState.PLAYING
+    await _stop(scenario, group)
+
+
+async def test_a_lost_player_the_user_groups_elsewhere_is_not_taken_back(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """A lost player that follows another player by now stays there when it announces itself."""
+    scenario.expect_log("cliairplay did not connect")
+    scenario.expect_log("did not produce a running stream")
+    a, b, c, d = await _receivers(scenario, provider, "ABCD", native=True)
+    group = await _play_group(scenario, [a, b, c])
+    with _out_of_reach(c):
+        _cli(c).end()
+        await scenario.advance(400)
+    native = scenario.protocol("RINCON_D")
+    native.supported_features.add(PlayerFeature.SET_MEMBERS)
+    await scenario.report(native, can_group_with={"RINCON_C"})
+    await scenario.mass.players.cmd_group(_player_of(c).player_id, _player_of(d).player_id)
+    await scenario.advance(3)
+    assert _player_of(c).synced_to == _player_of(d).player_id
+
+    await _announce_again(scenario, provider, c)
+
+    assert a.session is not None
+    assert c not in a.session.sync_clients
+    assert _player_of(c).synced_to == _player_of(d).player_id
+    await _stop(scenario, group)
+
+
+async def test_a_player_that_shows_up_after_its_group_stopped_stays_idle(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """A lost player that announces itself once its group has ended does nothing."""
+    scenario.expect_log("cliairplay did not connect")
+    scenario.expect_log("did not produce a running stream")
+    a, b, c = await _receivers(scenario, provider)
+    group = await _play_group(scenario, [a, b, c])
+    with _out_of_reach(c):
+        _cli(c).end()
+        await scenario.advance(400)
+    await _stop(scenario, group)
+    await scenario.play(_player_of(a).player_id)
+    await scenario.idle()
+
+    await _announce_again(scenario, provider, c)
+
+    assert c.playback_state == PlaybackState.IDLE
+    assert a.group_members == []
+    await scenario.command(scenario.mass.players.cmd_stop(_player_of(a).player_id))
+    await scenario.idle()
 
 
 @pytest.mark.parametrize("command", [_remove_command, _ungroup_command, _switch_off_command])

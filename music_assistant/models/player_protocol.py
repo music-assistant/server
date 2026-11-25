@@ -1186,6 +1186,14 @@ class PlayerProtocol(ABC):
         elif self.group_members:
             await self.set_members(player_ids_to_remove=self.group_members)
 
+    def rejoins_group(self, group_id: str) -> bool:
+        """
+        Return whether this protocol brings itself back to a group player it fell out of.
+
+        :param group_id: Id of the group player.
+        """
+        return False
+
     def counts_in(self, player_id: str) -> bool:
         """
         Return whether a player belongs to the session of this group player.

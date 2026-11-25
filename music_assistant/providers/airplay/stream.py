@@ -990,6 +990,7 @@ class AirPlayStream:
         # the ungroup below mutates the group state (create_task
         # starts eagerly).
         was_leader = bool(owner.group_members)
+        group_id = owner.player.active_group if owner.player else None
         if owner.synced_to:
             rejoin_candidates = [owner.synced_to]
             if leader := owner.provider.get_protocol(owner.synced_to):
@@ -1024,12 +1025,12 @@ class AirPlayStream:
             )
         if rejoin and rejoin_candidates and not self._receiver_closed:
             # the group (or its successor) may still be playing:
-            # schedule bounded attempts to re-join it
+            # schedule attempts to re-join it
             if was_leader:
                 # it leads the group until it has left it, which waits for other commands
-                owner.schedule_group_rejoin(rejoin_candidates, after=leaving)
+                owner.schedule_group_rejoin(rejoin_candidates, group_id, after=leaving)
             else:
-                owner.schedule_group_rejoin(rejoin_candidates)
+                owner.schedule_group_rejoin(rejoin_candidates, group_id)
         if (
             (owner is not player or player.speakers)
             and not was_leader
