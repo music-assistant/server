@@ -1061,8 +1061,11 @@ class AirPlayStreamSession:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise
         except AudioSourceRefusedError as err:
-            # the streams controller logs a source refusing this player itself
+            # the streams controller logs a source refusing this player itself. The (re)start
+            # waiting for this feed stops the session, which ends the members' ffmpeg: retiring
+            # them here as well would race that stop and leave them untracked
             self._source_refusal = err
+            return
         except Exception as err:
             stream_error = err
             self.prov.logger.error(

@@ -1228,11 +1228,14 @@ async def test_a_source_refusing_the_members_ends_the_start_at_once_and_quietly(
     A refusal ends the start as soon as the source gives it, and is not logged here.
 
     The streams controller logs the refusal itself, and no member can report audio the
-    source never handed over, so none is waited for.
+    source never handed over, so none is waited for. The stop that ends the start is what
+    ends the members' ffmpeg, also one that would not exit by itself.
     """
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
     player.stream.wait_for_connection = AsyncMock()
+    player.stream.session = session
+    player.stream.stop = AsyncMock()
     refusal = AudioSourceRefusedError("No AirPlay client is streaming to this receiver")
     no_chunks: list[bytes] = []
 
@@ -1241,21 +1244,31 @@ async def test_a_source_refusing_the_members_ends_the_start_at_once_and_quietly(
             yield chunk
         raise refusal
 
+    async def never_exits(*_args: Any) -> int:
+        await asyncio.Event().wait()
+        return 0
+
+    ffmpeg = MagicMock(closed=False, kill=AsyncMock(), write_eof=AsyncMock())
+    ffmpeg.wait_with_timeout = AsyncMock(side_effect=never_exits)
+
+    async def start_client(airplay_player: Any, _use_shared_ptp: bool) -> None:
+        session._player_ffmpeg[airplay_player.protocol_id] = ffmpeg
+
     with (
-        patch.object(session, "_start_client", new_callable=AsyncMock),
-        patch.object(session, "stop", new_callable=AsyncMock) as stop_session,
+        patch.object(session, "_start_client", side_effect=start_client),
         pytest.raises(AudioSourceRefusedError) as raised,
     ):
         await session.start(refusing_source())
 
     assert raised.value is refusal
-    stop_session.assert_awaited_once()
     player.stream.wait_audio_present.assert_not_awaited()
+    ffmpeg.write_eof.assert_not_awaited()
+    ffmpeg.kill.assert_awaited_once()
+    player.stream.stop.assert_awaited_once_with(force=True)
+    assert not session.sync_clients
     logger = cast("MagicMock", session.prov.logger)
     logger.warning.assert_not_called()
     logger.error.assert_not_called()
-    assert session._audio_source_task is not None
-    await session._audio_source_task
 
 
 @pytest.mark.asyncio
