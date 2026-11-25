@@ -166,6 +166,7 @@ async def _prepare(announcements: PlayerController, player: Any, prev_state: Pla
         prev_state=prev_state,
         prev_synced_to=None,
         prev_group=None,
+        prev_members=[],
         prev_media_name=None,
         prev_volumes={},
         prev_muted=set(),

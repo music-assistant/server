@@ -429,12 +429,16 @@ class AirPlayPlayer(PlayerProtocol):
 
     @property
     def announcement_features(self) -> set[AnnouncementFeature]:
-        """Return the full set: the clip is mixed into live audio, in step across members."""
-        return {
-            AnnouncementFeature.SUPPORTS_VOLUME,
-            AnnouncementFeature.APPLIES_VOLUME,
-            AnnouncementFeature.COORDINATES_START,
-        }
+        """
+        Return how the player announces: the clip is mixed into live audio at the given level.
+
+        The start is lined up with the other members of a group announcement only while
+        the player plays in a stream session; a Sendspin-bridged player has none.
+        """
+        features = {AnnouncementFeature.SUPPORTS_VOLUME, AnnouncementFeature.APPLIES_VOLUME}
+        if announce.announce_session(self) is not None:
+            features.add(AnnouncementFeature.COORDINATES_START)
+        return features
 
     @property
     def can_group_with(self) -> set[str]:

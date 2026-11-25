@@ -352,7 +352,7 @@ class AirPlayProvider(PlayerProvider):
         self._pair_records: dict[str, dict[str, AsyncServiceInfo]] = {}
         self._pair_carriers: dict[str, str] = {}
         # Shared audible instants for in-flight announcements, keyed by
-        # (group-or-leader player id, render key) -> unix ms. The controller
+        # (group player id, render key) -> unix ms. The controller
         # forwards a group-entity announcement to every member concurrently;
         # each call arms its own member and reuses the instant the first call
         # planned, so all rooms render the clip in sync (managed by

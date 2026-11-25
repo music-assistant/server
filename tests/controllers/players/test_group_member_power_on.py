@@ -464,6 +464,7 @@ async def test_an_announcement_leaves_the_volume_of_a_switched_off_member_alone(
         prev_state=PlaybackState.IDLE,
         prev_synced_to=None,
         prev_group=None,
+        prev_members=[],
         prev_media_name=None,
         prev_volumes={},
         prev_muted=set(),

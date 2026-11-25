@@ -13,6 +13,7 @@ from music_assistant_models.media_items import AudioFormat
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import CONF_PASSWORD, CONF_SYNC_ADJUST
+from music_assistant.models.player_protocol import AnnouncementFeature
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_PCM_FORMAT,
@@ -155,6 +156,14 @@ def test_a_set_plays_in_the_session_of_its_speakers() -> None:
     assert (apple_tv.renders_audio, speaker.renders_audio) == (False, True)
     session.sync_clients = [speaker, apple_tv]
     assert apple_tv.live_session_members == [apple_tv.protocol_id]
+
+
+def test_a_set_lines_up_its_announcement_start_in_the_session_of_its_speakers() -> None:
+    """A set announces in step with the other members, through the session of its speakers."""
+    apple_tv, speaker, _ = _home_theater()
+    speaker.stream = _playing_stream()
+
+    assert AnnouncementFeature.COORDINATES_START in apple_tv.announcement_features
 
 
 def test_a_set_that_plays_on_its_homepods_only_leaves_its_apple_tv_out() -> None:

@@ -1489,12 +1489,33 @@ def test_announcements_are_advertised_only_with_live_audio(
     assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
 
 
-def test_player_reports_its_announcement_features(airplay_player: AirPlayPlayer) -> None:
+def test_player_in_a_session_lines_up_its_announcement_start(
+    airplay_player: AirPlayPlayer,
+) -> None:
     """The clip is mixed into live audio at the requested level, in step across members."""
+    airplay_player.stream = MagicMock(running=True, session=MagicMock())
+
     assert airplay_player.announcement_features == {
         AnnouncementFeature.SUPPORTS_VOLUME,
         AnnouncementFeature.APPLIES_VOLUME,
         AnnouncementFeature.COORDINATES_START,
+    }
+
+
+def test_bridged_player_does_not_line_up_its_announcement_start(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A Sendspin-bridged player has no stream session to line up its start in.
+
+    A group announcement then plays through the group's own stream, instead of each
+    member picking its own start and the rooms being heard out of step.
+    """
+    airplay_player.stream = MagicMock(running=True, session=None)
+
+    assert airplay_player.announcement_features == {
+        AnnouncementFeature.SUPPORTS_VOLUME,
+        AnnouncementFeature.APPLIES_VOLUME,
     }
 
 

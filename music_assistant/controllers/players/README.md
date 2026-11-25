@@ -712,9 +712,11 @@ and still waits for another one, holds that off.
   Without such a protocol the controller plays the announcement as media and restores what the
   player did before. It does that too when the native route would ignore a requested volume, as
   long as it can set and restore that volume itself: the player has a volume control and a known
-  level. A group announcement goes to the
-  members when they can start it together. An announcement holds the player (and its group) for as
-  long as it plays.
+  level. An announcement to a player plays on that player alone, also when it is a member of a group
+  or leads others: played as media, it takes the player out of its group, or the members off the
+  leader, for the clip and puts them back afterwards. An announcement to a group player plays on all
+  its members: it goes to each member when they can start it together, else the group plays it as
+  media. An announcement holds the player (and its group) for as long as it plays.
 - **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a provider (an
   `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. Any
   provider type can deliver them by mixing in `AudioSourceMixin`
