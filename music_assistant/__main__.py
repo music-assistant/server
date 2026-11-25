@@ -270,7 +270,11 @@ def main() -> None:
         except (ValueError, OSError) as err:
             LOGGER.warning("Could not raise open-file limit: %s", err)
 
-    dev_providers_dirs = tuple(str(Path(d).resolve()) for d in (args.dev_providers_dir or ()))
+    dev_providers_dirs = (
+        tuple(str(Path(d).resolve()) for d in args.dev_providers_dir)
+        if args.dev_providers_dir
+        else None
+    )
     mass = MusicAssistant(data_dir, cache_dir, safe_mode, dev_providers_dirs)
 
     # enable alpine subprocess workaround

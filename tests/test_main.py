@@ -76,7 +76,7 @@ def test_other_options(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert args.cache_dir == "/cache"
     assert args.log_level == "verbose"
-    assert args.dev_providers_dir == "providers"
+    assert args.dev_providers_dir == ["providers"]
 
 
 @pytest.mark.parametrize(("flag", "expected"), [("--safe-mode", True), ("--no-safe-mode", False)])
@@ -274,7 +274,7 @@ def test_main_prefers_the_add_on_options(
     )
 
     startup.setup_logger.assert_called_once_with(str(tmp_path), "VERBOSE")
-    assert startup.mass_class.call_args.args[3] == str(providers_dir.resolve())
+    assert startup.mass_class.call_args.args[3] == (str(providers_dir.resolve()),)
 
 
 @pytest.mark.parametrize("error", [None, OSError("not permitted")])

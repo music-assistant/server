@@ -149,7 +149,7 @@ class ProviderLoader:
         if not self.mass.dev_mode:
             self.logger.warning(
                 "Not loading the providers in %s: the server does not run in dev mode",
-                ", ".join(locations),
+                ", ".join(repr(location) for location in locations),
             )
             return {}
         self.logger.debug(
