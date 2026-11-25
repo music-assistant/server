@@ -346,7 +346,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             try:
                 yield self._parse_track(track)
             except InvalidDataError:
-                full_track = await self.get_track(track["videoId"])
+                try:
+                    full_track = await self.get_track(track["videoId"])
+                except (MediaNotFoundError, YTMusicServerError) as err:
+                    self.report_skipped_sync_item(MediaType.TRACK, track["videoId"], err)
+                    continue
                 if "entityId" in track:
                     for mapping in full_track.provider_mappings:
                         mapping.is_unique = True
@@ -425,6 +429,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             prov_track_id=prov_track_id,
             headers=self._headers,
             language=self.language,
+            user=self._yt_user,
         ):
             return self._parse_track(track_obj)
         msg = f"Item {prov_track_id} not found"
