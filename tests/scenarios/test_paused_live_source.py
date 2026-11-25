@@ -109,19 +109,34 @@ def live_source(scenario: Scenario, monkeypatch: pytest.MonkeyPatch) -> LiveSour
     return LiveSource(scenario, monkeypatch)
 
 
-async def _speaker(scenario: Scenario, **state: Any) -> tuple[FakeProtocol, str]:
-    """Return a speaker, without a pause of its own, and the id of its player."""
+async def _speakers(scenario: Scenario, *names: str) -> tuple[list[FakeProtocol], list[str]]:
+    """
+    Return speakers that can group and have no pause of their own, and their player ids.
+
+    :param names: The names of the speakers.
+    """
     provider = await scenario.add_provider("sonos")
-    speaker = provider.protocol(
-        "sonos_kitchen",
-        "Kitchen",
-        identifiers={IdentifierType.MAC_ADDRESS: "00:11:22:33:44:0A"},
-        supported_features=set(DEFAULT_FEATURES) - {PlayerFeature.PAUSE},
-        **state,
-    )
-    await scenario.register(speaker)
+    speakers = [
+        provider.protocol(
+            f"sonos_{name.lower()}",
+            name,
+            identifiers={IdentifierType.MAC_ADDRESS: f"00:11:22:33:44:0{index}"},
+            supported_features={*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
+            - {PlayerFeature.PAUSE},
+            can_group_with={provider.instance_id},
+        )
+        for index, name in enumerate(names)
+    ]
+    for speaker in speakers:
+        await scenario.register(speaker)
     await scenario.settle()
-    return speaker, cast("str", scenario.player_of(speaker))
+    return speakers, [cast("str", scenario.player_of(speaker)) for speaker in speakers]
+
+
+async def _speaker(scenario: Scenario) -> tuple[FakeProtocol, str]:
+    """Return the Kitchen speaker, without a pause of its own, and the id of its player."""
+    speakers, player_ids = await _speakers(scenario, "Kitchen")
+    return speakers[0], player_ids[0]
 
 
 def _state(scenario: Scenario, player_id: str) -> PlayerState:
@@ -165,6 +180,9 @@ async def test_a_paused_live_source_leaves_its_player_paused(
     assert state.current_media.title == "Song"
     assert PlaybackState.IDLE not in _seen_states(scenario, player_id)
     live_source.provider.on_source_released.assert_not_awaited()
+    player = scenario.mass.players.get_player(player_id)
+    assert player is not None
+    assert player.stop_called
 
 
 async def test_play_on_a_paused_live_source_goes_to_the_source(
@@ -188,6 +206,9 @@ async def test_play_on_a_paused_live_source_goes_to_the_source(
     player = scenario.mass.players.get_player(player_id)
     assert player is not None
     assert not player.stop_called
+    # its provider sees the stream end now, and lets go of the source itself
+    await scenario.mass.players.cmd_stop(player_id)
+    live_source.provider.on_source_released.assert_not_awaited()
 
 
 async def test_a_paused_live_source_goes_idle_at_the_pause_timeout(
@@ -256,6 +277,44 @@ async def test_a_source_that_ends_while_paused_leaves_its_player_idle(
     await scenario.advance(1)
 
     assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+
+
+async def test_a_paused_live_source_that_moves_leaves_its_player_idle(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """A source that plays on elsewhere is not shown as paused on the player it left."""
+    _, (kitchen_id, office_id) = await _speakers(scenario, "Kitchen", "Office")
+    await live_source.play(kitchen_id)
+    await live_source.pause(kitchen_id)
+    await scenario.advance(5)
+
+    await live_source.play(office_id)
+
+    assert _state(scenario, office_id).playback_state == PlaybackState.PLAYING
+    state = _state(scenario, kitchen_id)
+    assert state.playback_state == PlaybackState.IDLE
+    assert state.active_source == kitchen_id
+
+
+async def test_a_paused_player_that_joins_a_group_plays_along(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """The pause timeout does not stop a player that plays along with another one by then."""
+    (kitchen, _), (kitchen_id, office_id) = await _speakers(scenario, "Kitchen", "Office")
+    await live_source.play(kitchen_id)
+    await live_source.pause(kitchen_id)
+    await scenario.advance(5)
+    await scenario.mass.players.cmd_set_members(office_id, player_ids_to_add=[kitchen_id])
+    await scenario.advance(5)
+    await scenario.play(office_id)
+    kitchen.commands.clear()
+
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT)
+
+    assert _names(kitchen) == []
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
+    await scenario.mass.players.cmd_stop(office_id)
+    await scenario.idle()
 
 
 async def test_other_media_takes_the_place_of_a_paused_live_source(

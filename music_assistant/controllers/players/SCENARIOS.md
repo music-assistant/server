@@ -2678,24 +2678,27 @@ after the pause of a queue. It keeps the source and the song, and play still res
 ### SOURCE-4 · A paused live source that ends or is stopped leaves its player idle
 
 Spotify is paused on the Kitchen player. The user stops the player, within the pause timeout or
-after it, or Spotify itself ends the session: the player is idle and back on its own queue, and
-Spotify lets go of it.
+after it, Spotify itself ends the session, or it plays on on the Office player: the Kitchen player
+is idle and back on its own queue, and Spotify lets go of it.
 
 - End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
 - Proven by:
   - `test_paused_live_source.py::test_a_stop_of_a_paused_live_source_lets_it_go`
   - `test_paused_live_source.py::test_a_source_that_ends_while_paused_leaves_its_player_idle`
+  - `test_paused_live_source.py::test_a_paused_live_source_that_moves_leaves_its_player_idle`
 
 ### SOURCE-5 · Other audio on a player with a paused live source plays at once
 
 Spotify is paused on the Kitchen player. Music played on its queue starts at once and takes the
 place of Spotify. An announcement plays without waiting for the player to go idle and leaves
-Spotify on it: the player is idle after the clip, and play resumes Spotify.
+Spotify on it: the player is idle after the clip, and play resumes Spotify. When the Kitchen player
+joins the Office player and that plays, it plays along, also past the pause timeout.
 
 - End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
 - Proven by:
   - `test_paused_live_source.py::test_other_media_takes_the_place_of_a_paused_live_source`
   - `test_paused_live_source.py::test_an_announcement_on_a_paused_live_source_leaves_the_source`
+  - `test_paused_live_source.py::test_a_paused_player_that_joins_a_group_plays_along`
 
 ### SOURCE-6 · A pause that did not reach the speaker is not shown
 
