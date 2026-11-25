@@ -145,12 +145,12 @@ async def get_playlist(
 
 
 async def get_track(
-    prov_track_id: str, headers: dict[str, str], language: str = "en"
+    prov_track_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> dict[str, Any] | None:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_song() -> dict[str, Any] | None:
-        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         track_obj = ytm.get_song(videoId=prov_track_id)
         track: dict[str, Any] = {}
         if "videoDetails" not in track_obj:
