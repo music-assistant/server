@@ -62,6 +62,7 @@ controllers/streams/
   audio_processing.py  - AudioProcessingManager: processing details (normalization, DSP, output quality) reported to clients
   stream_sources.py    - Ranking of the copies of a media item (local file, streaming accounts) in the order they are tried
   audio_buffer.py      - AudioBuffer: in-memory PCM audio buffering with seek support
+  file_stream.py       - FileStream: a track as a WAV file with a declared length, for players that fetch files
   audio_analysis.py    - AudioAnalysisController: analysis storage (audio_analysis.db) and scheduling
   audio_analysis_codec.py - Packed on-disk format of an analysis record (JSON header plus binary array payload)
   audio_analysis_database.py - AudioAnalysisDatabaseMixin: connection, schema version and quarantine of audio_analysis.db
@@ -209,6 +210,16 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 
 1. **HTTP endpoints** (`serve_queue_item_stream`, `serve_queue_flow_stream`): Used by players that consume HTTP streams (Chromecast, DLNA, Sonos, etc.)
 2. **Direct PCM** (`get_stream`): Used by player providers that consume raw PCM directly (AirPlay, Sendspin, etc.)
+
+### A Track as a File
+
+A player that is built around files (`PlayerProtocol.fetches_files`) wants the length of a track up front, and pauses, resumes and seeks by asking for a part of the file. For such a player `serve_queue_item_stream` serves a track as a WAV file: a `Content-Length`, `Accept-Ranges: bytes`, and a `206` for a `Range` request. `StreamsController.serves_as_file` decides: a track with a known duration, WAV as output codec, normal playback speed, and nothing mixed into its stream (no crossfade, no fade-in). Everything else keeps the stream without a length.
+
+- The file is virtual. Every request that needs audio gets an encode of its own, read from the track's `AudioBuffer` at the position that belongs to the byte offset, and that encode ends with its connection. Nothing goes to disk; only the first megabyte of a file is kept in memory, because players ask for the start again before they resume or seek.
+- The same offset always gives the same audio. A player may put the bytes of different requests next to each other, so an encode starts on a whole second, one to two seconds before the part that is asked, and drops what comes before it: filters and resamplers have settled by then. What is left is dither, when the output goes from more bits to 16.
+- The declared length is exact when the track was decoded to its end before the first request, and else its duration plus a second. Audio that ends before the declared length just ends the body; from then on the file has its real size, and a request at or past it gets a `416` with that size. More audio than declared is cut off.
+- Pacing stays with ffmpeg, as for every stream. A file hands out 30 seconds of head start, 10 per encode, so the encodes after the third start at playback speed.
+- One encode runs per file: a request for another part ends the one before it. A player has three files at most, and they go when the queue stops.
 
 ## Audio Analysis
 

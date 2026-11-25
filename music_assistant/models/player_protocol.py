@@ -240,6 +240,17 @@ class PlayerProtocol(ABC):
         """
         return False
 
+    @property
+    def fetches_files(self) -> bool:
+        """
+        Return if the player is built around files rather than streams.
+
+        Such a player wants to know the length of a track up front, and pauses, resumes and
+        seeks by asking for a part of it. It gets a track as a file where that is possible,
+        see `StreamsController.serves_as_file`.
+        """
+        return False
+
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
         Return whether the player already holds the given queue item as the one it plays next.

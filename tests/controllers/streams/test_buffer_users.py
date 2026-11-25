@@ -796,6 +796,7 @@ def _start_request(
     for helper in ("_requested_item_ids", "_ended_item_ids", "_release_abandoned_item_sources"):
         setattr(ctrl, helper, MethodType(getattr(StreamsController, helper), ctrl))
     ctrl.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    ctrl.serves_as_file.return_value = False
     ctrl.mass = rig.mass
     ctrl.audio = rig.audio
     connection = _Connection()

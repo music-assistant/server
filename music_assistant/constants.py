@@ -991,6 +991,7 @@ DEFAULT_STREAM_HEADERS = {
 
 # DLNA contentFeatures header values for different stream types.
 # ORG_OP=00: no time-seek, no byte-seek (we encode on-the-fly, unknown size).
+# ORG_OP=01: byte-seek, for a track that is served as a file.
 # ORG_FLAGS bit layout (hex, first 8 chars of 32-char field):
 #   bit 31 (0x80000000): Sender Paced - server controls data rate
 #   bit 24 (0x01000000): Streaming Transfer Mode
@@ -1001,6 +1002,7 @@ DEFAULT_STREAM_HEADERS = {
 # Bufferable streams (tracks, flow mode): player may buffer aggressively.
 # Flags: 0x01700000 = Streaming + Background + Connection Stalling + V1.5
 DLNA_CONTENT_FEATURES = "DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+DLNA_CONTENT_FEATURES_FILE = "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 # Realtime streams (radio, plugin sources): server controls data rate,
 # player should not try to buffer ahead faster than the server delivers.
 # Flags: 0x81700000 = Sender Paced + Streaming + Background + Connection Stalling + V1.5
