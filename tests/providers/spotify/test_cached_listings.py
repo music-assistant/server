@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
 
-from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.providers.spotify.provider import SpotifyProvider
 from tests.common import use_real_create_task
 
@@ -36,9 +35,7 @@ def _make_album_provider(total: int) -> tuple[SpotifyProvider, AsyncMock]:
     provider, get_data = _make_provider(total)
     store: dict[str, Any] = {}
 
-    async def _get_with_freshness(key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
-        if kwargs.get("allow_bypass") and BYPASS_CACHE.get():
-            return None, False, False
+    async def _get_with_freshness(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
         return store.get(key), key in store, key in store
 
     async def _set(key: str, data: Any, **_kwargs: Any) -> None:
@@ -87,16 +84,12 @@ def _make_album_provider(total: int) -> tuple[SpotifyProvider, AsyncMock]:
 
 
 async def test_album_tracks_take_one_request() -> None:
-    """An album of up to 50 tracks is listed with a single request, each track with the album."""
+    """An album of up to 50 tracks is listed with a single request."""
     provider, get_data = _make_album_provider(total=30)
 
     tracks = await provider.get_album_tracks("album1")
 
     assert [track.item_id for track in tracks] == [f"t{i}" for i in range(30)]
-    assert all(track.album is not None and track.album.name == "Album" for track in tracks)
-    assert all(
-        track.image and track.image.path == "https://i.scdn.co/image/cover" for track in tracks
-    )
     assert get_data.await_args_list == [call("albums/album1")]
 
 
@@ -113,36 +106,15 @@ async def test_album_tracks_page_past_the_first_50() -> None:
     ]
 
 
-async def test_album_and_its_tracks_share_one_request() -> None:
-    """Getting an album and then its tracks costs a single request."""
+async def test_album_tracks_and_their_album_share_one_request() -> None:
+    """Listing an album's tracks and then getting the album costs a single request."""
     provider, get_data = _make_album_provider(total=30)
 
-    await provider.get_album("album1")
     await provider.get_album_tracks("album1")
+    album = await provider.get_album("album1")
 
+    assert album.name == "Album"
     assert get_data.await_args_list == [call("albums/album1")]
-
-
-async def test_album_tracks_follow_a_refreshed_album() -> None:
-    """Cached album tracks carry the name of the album after it was refreshed."""
-    provider, get_data = _make_album_provider(total=30)
-    await provider.get_album_tracks("album1")
-    serve_album = get_data.side_effect
-
-    async def _serve_renamed(endpoint: str, **kwargs: Any) -> dict[str, Any]:
-        return {**await serve_album(endpoint, **kwargs), "name": "Renamed"}
-
-    get_data.side_effect = _serve_renamed
-    token = BYPASS_CACHE.set(True)
-    try:
-        await provider.get_album("album1")
-    finally:
-        BYPASS_CACHE.reset(token)
-
-    tracks = await provider.get_album_tracks("album1")
-
-    assert all(track.album is not None and track.album.name == "Renamed" for track in tracks)
-    assert get_data.await_count == 2
 
 
 async def test_audiobook_chapters_take_one_request() -> None:

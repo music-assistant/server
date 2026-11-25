@@ -832,18 +832,23 @@ class SpotifyProvider(MusicProvider):
             # the resume position stays in MA's own tracking, and Spotify's chapter
             # resume points are read separately via get_resume_position()
 
+    @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
-        # the album goes on per call instead of into the year-long track cache,
-        # so its name and cover follow a refresh of the album
-        album = await self.get_album(prov_album_id)
-        album_mapping = ItemMapping.from_item(album)
-        tracks = await self._get_album_tracks(prov_album_id)
-        for track in tracks:
-            track.album = album_mapping
-            if album.image:
-                track.metadata.add_image(album.image)
-        return tracks
+        # the album carries its first page of tracks, and shares this request with a
+        # lookup of the album itself
+        album_obj = await self._get_album_data(prov_album_id)
+        first_page = album_obj["tracks"]
+        items = list(first_page["items"])
+        if first_page.get("next"):
+            # the result cache outlives the page cache, which would only add a request
+            items += [
+                item
+                async for item in self._get_all_items(
+                    f"albums/{prov_album_id}/tracks", use_cache=False, start=first_page["limit"]
+                )
+            ]
+        return [parse_track(item, self) for item in items if item and item["id"]]
 
     @use_cache(3600 * 3, allow_expired_cache=True)  # 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -1977,23 +1982,6 @@ class SpotifyProvider(MusicProvider):
             cache_key, result, provider=self.instance_id, checksum=cache_checksum
         )
         return result
-
-    @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
-    async def _get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Get the tracks of an album, without the album they belong to."""
-        # the album carries its first page of tracks, which saves a request for them
-        album_obj = await self._get_album_data(prov_album_id)
-        first_page = album_obj["tracks"]
-        items = list(first_page["items"])
-        if first_page.get("next"):
-            # the result cache outlives the page cache, which would only add a request
-            items += [
-                item
-                async for item in self._get_all_items(
-                    f"albums/{prov_album_id}/tracks", use_cache=False, start=first_page["limit"]
-                )
-            ]
-        return [parse_track(item, self) for item in items if item and item["id"]]
 
     @use_cache(120)  # short cache: the album and its track listing share one request
     async def _get_album_data(self, prov_album_id: str) -> dict[str, Any]:
