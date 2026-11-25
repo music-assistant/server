@@ -72,7 +72,7 @@ class AIRadioStorageMixin:
                     continue
                 try:
                     normalized = self._normalize_section(item)
-                except Exception as err:
+                except InvalidDataError as err:
                     self.logger.warning("Skipping invalid section profile: %s", err)
                     continue
                 parsed[normalized["id"]] = normalized
@@ -124,7 +124,7 @@ class AIRadioStorageMixin:
                     continue
                 try:
                     normalized = self._normalize_station(station)
-                except Exception as err:
+                except InvalidDataError as err:
                     self.logger.warning("Skipping invalid station profile: %s", err)
                     continue
                 parsed[normalized["id"]] = normalized

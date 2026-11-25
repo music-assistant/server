@@ -91,7 +91,7 @@ class MediaAssistantPlayer(PlayerProtocol):
         try:
             device_info = await self.roku.update()
             app_running = self._app_in_front(device_info)
-        except Exception:
+        except Exception:  # noqa: BLE001 - device call, any failure is only logged
             self.logger.error("Failed to get app state on: %s", self.name)
 
         try:
@@ -101,7 +101,7 @@ class MediaAssistantPlayer(PlayerProtocol):
                 if app_running:
                     await self.roku.remote("home")
                     await self.roku.remote("power")
-        except Exception:
+        except Exception:  # noqa: BLE001 - device call, any failure is only logged
             self.logger.error("Failed to change Power state on: %s", self.name)
 
         # update the player state in the player manager
@@ -157,7 +157,7 @@ class MediaAssistantPlayer(PlayerProtocol):
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
             self.update_state()
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failed command is only logged
             self.logger.error("Failed to send stop signal to: %s", self.name)
 
     async def pause(self) -> None:
@@ -235,7 +235,7 @@ class MediaAssistantPlayer(PlayerProtocol):
             self._position_last_moved = time.time()
             self._stream_end_logged = False
             self.update_state()
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failed command is only logged
             self.logger.error("Failed to Play Media on: %s", self.name)
             return
 
@@ -277,7 +277,7 @@ class MediaAssistantPlayer(PlayerProtocol):
                 self.queued = media
                 self.logger.info("Enqueued %s on %s", media.title, self.name)
                 return
-            except Exception:
+            except Exception:  # noqa: BLE001 - any failure is retried
                 self.logger.error(
                     "Failed to Enqueue Media on: %s (attempt %d/%d)", self.name, attempt, attempts
                 )
@@ -294,7 +294,7 @@ class MediaAssistantPlayer(PlayerProtocol):
         try:
             device_info = await self.roku.update()
             self._attr_available = True
-        except Exception:
+        except Exception:  # noqa: BLE001 - any failure marks the player unavailable
             self._attr_available = False
             self.logger.error("Failed to retrieve Update from: %s", self.name)
             self.update_state()
@@ -376,7 +376,7 @@ class MediaAssistantPlayer(PlayerProtocol):
                                 )
                         self._attr_elapsed_time = position
                         self._attr_elapsed_time_last_updated = now
-                    except Exception:
+                    except ValueError, AttributeError:
                         self.logger.info(
                             "Playback Position received from %s Was Invalid", self.name
                         )
@@ -407,7 +407,7 @@ class MediaAssistantPlayer(PlayerProtocol):
                             "isLive": "true",
                         },
                     )
-            except Exception:
+            except Exception:  # noqa: BLE001 - a failed media state read must not fail the poll
                 self.logger.warning("Failed to update media state for: %s", self.name)
 
         self.update_state()

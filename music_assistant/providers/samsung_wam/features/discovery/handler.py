@@ -165,7 +165,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
         temp_speaker = Speaker(ip_address)
         try:
             await temp_speaker.connect()
-        except Exception as err:
+        except ConnectionError as err:
             self.logger.warning("Failed to connect to player at %s: %s", ip_address, err)
             return
 
@@ -174,7 +174,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
             attrs = StateSyncMapper.create_speaker_attributes(temp_speaker)
             if not attrs.mac:
                 raise ConnectionError("Could not retrieve MAC address from speaker")  # noqa: TRY301 - handled by except below
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the speaker is disconnected on any failure
             self.logger.warning("Failed to set up player at %s: %s", ip_address, err)
             await temp_speaker.disconnect()
             return
@@ -198,7 +198,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
                 # Set immediately if the speaker is already on an external input,
                 # so the UI reflects the correct source on first register
                 player.player.set_active_mass_source(attrs.source)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the speaker is disconnected on any failure
             self.logger.warning("Failed to set up player at %s: %s", ip_address, err)
             await temp_speaker.disconnect()
 
