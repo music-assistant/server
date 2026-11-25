@@ -56,8 +56,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._listen_task = None
     player.connected = False
     player._connect_lock = asyncio.Lock()
-    player._wakeable = False
-    player._portable = False
+    player._sleeps = False
     player._wol_mac = None
     player._marked_asleep = False
     player._woken_from_sleep = False
@@ -1340,8 +1339,7 @@ def _wakeable_player(*, portable: bool = True) -> tuple[SonosPlayer, MagicMock]:
     :param portable: Whether it is a portable, as opposed to a speaker on mains power.
     """
     player, mass = _make_player()
-    player._wakeable = True
-    player._portable = portable
+    player._sleeps = portable
     player._wol_mac = "C4:38:75:0D:18:9C"
     player._cache = {}
     player._attr_name = "Portable"
@@ -1460,7 +1458,7 @@ async def test_reconnecting_only_powers_on_after_a_confirmed_sleep(
 ) -> None:
     """Test a reconnect wakes a sleeping player but leaves a local power off alone."""
     player, client = _bind_player(timer_mass)
-    player._wakeable = True
+    player._sleeps = True
     player._attr_powered = False
     player._marked_asleep = marked_asleep
 
