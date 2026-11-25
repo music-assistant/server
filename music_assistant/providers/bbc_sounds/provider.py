@@ -1,6 +1,5 @@
 """BBC Sounds provider implementation."""
 
-import logging
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -67,8 +66,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SEARCH,
 }
-
-LIBRARY_LOGGER = logging.getLogger("auntie_sounds")
 
 
 class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):

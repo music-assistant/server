@@ -277,10 +277,6 @@ class StationConverter(BaseConverter):
             item_id=station.item_id,
             provider=station.provider,
             audio_format=_audio_format(source_obj.stream),
-            data={
-                "provider": self.context.provider.instance_id,
-                "station": station.item_id,
-            },
         )
 
     async def convert(self, source_obj: Any) -> Radio:
@@ -411,10 +407,7 @@ class PodcastConverter(BaseConverter):
     async def _convert_podcast(self, podcast: Podcast | RadioSeries) -> MAPodcast:
         name = self._get_attr(podcast, "titles.primary") or self._get_attr(podcast, "title")
         description = self._get_synopsis(podcast)
-        image_url = self._get_attr(podcast, "image_url") or self._get_attr(
-            podcast, "sub_items.image_url"
-        )
-
+        image_url = podcast.image_url
         metadata = ImageProvider.create_metadata_with_image(
             image_url, self.context.provider.instance_id, description
         )
@@ -812,26 +805,16 @@ class Adaptor:
             title_parts=title_parts,
         )
 
-    async def new_streamable_object(
-        self,
-        source_obj: SoundsTypes | None,
-        force_type: type[Track | Radio | MAPodcastEpisode] | None = None,
-        path_parts: list[str] | None = None,
-    ) -> StreamDetails | None:
+    async def new_streamable_object(self, source_obj: SoundsTypes | None) -> StreamDetails | None:
         """
-        Convert an auntie-sounds object to appropriate Music Assistant object.
+        Get the stream details of an auntie-sounds object.
 
-        Args:
-            source_obj: The source object from Sounds API via auntie-sounds
-            force_type: Force conversion to specific type if the expected target type is known
-            path_parts: Path parts for browse items to construct the object's path
-
-        Returns:
-            Converted Music Assistant media item or None if no converter found
+        :param source_obj: The source object from the Sounds API via auntie-sounds.
+        :returns: stream details or None if no converter found
         """
         if source_obj is None:
             return None
-        context = self._create_context(path_parts, force_type)
+        context = self._create_context()
 
         converters: list[BaseConverter] = [
             StationConverter(context),
