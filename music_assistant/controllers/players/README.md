@@ -563,7 +563,8 @@ protocol. The `volume_control` and `mute_control` of the player state name where
 goes right now, so while another output than the own protocol renders the audio they are the id of
 that protocol. A client only reads from them whether the player has a control (`none` if not).
 When the output changes, the protocol that becomes the control gets the level and mute of the
-player before it is made the active output and before the stream starts.
+player before it is made the active output and before the stream starts. So does the output a
+group member kept while its group played nothing, before the group starts again.
 
 While its own protocol is attached but can not be reached, a player keeps the level and mute it had
 when that began: what any of its protocols reports may be stale then. It is shown as the quieter of
@@ -766,7 +767,9 @@ group's protocol runs first, and a failure later in the join aborts the takeover
   the leader hands its output over;
 - on a hand-over the protocol the leader rendered on before stops and lets its members go, the
   leader resumes when it played, and those members join it again;
-- the members of the leader's own protocol join last, and a dissolved leader stops.
+- the members of the leader's own protocol join last, those that leave it drop the audio
+  protocol they played on as their output, and a dissolved leader stops;
+- a leader that plays nothing drops the output it kept for a group it no longer has.
 
 A regroup at a fresh start takes the members off the protocol none of them needs anymore and runs
 the same join. The join reads the players again after each device call and takes its next decision

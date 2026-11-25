@@ -190,6 +190,98 @@ class TestPlayMediaProtocolSelection:
         assert player.active_output_protocol == "proto_1"
 
 
+class RecordingMockProtocol(PlayableMockProtocol):
+    """PlayableMockProtocol that records its volume, mute and play commands in one shared list."""
+
+    events: list[tuple[str, str, object]]
+
+    async def volume_set(self, volume_level: int) -> None:
+        """Record the volume command and report the level."""
+        self.events.append((self.protocol_id, "volume_set", volume_level))
+        self._attr_volume_level = volume_level
+
+    async def volume_mute(self, muted: bool) -> None:
+        """Record the mute command and report the mute."""
+        self.events.append((self.protocol_id, "volume_mute", muted))
+        self._attr_volume_muted = muted
+
+    async def play_media(self, media: PlayerMedia) -> None:
+        """Record the play_media call."""
+        self.events.append((self.protocol_id, "play_media", media))
+
+
+def _player_with_airplay(
+    mock_mass: MagicMock, name: str, events: list[tuple[str, str, object]]
+) -> tuple[Player, RecordingMockProtocol, RecordingMockProtocol]:
+    """
+    Create a player of a native protocol and an AirPlay protocol, both recording to events.
+
+    :param mock_mass: The mocked server.
+    :param name: Name of the player; its protocols are "<name>_own" and "<name>_ap".
+    :param events: The list the protocols record their commands to.
+    """
+    player, own = attach_mock(
+        MockProvider(f"vendor_{name}", instance_id=f"vendor_{name}", mass=mock_mass),
+        f"{name}_own",
+        name,
+        player_id=name,
+        protocol_class=RecordingMockProtocol,
+    )
+    _, airplay = attach_mock(
+        MockProvider("airplay", instance_id="airplay", mass=mock_mass),
+        f"{name}_ap",
+        name,
+        role=ProtocolRole.AUDIO,
+        player=player,
+        protocol_class=RecordingMockProtocol,
+    )
+    own._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
+    airplay._attr_supported_features = {
+        PlayerFeature.PLAY_MEDIA,
+        PlayerFeature.SET_MEMBERS,
+        PlayerFeature.VOLUME_SET,
+        PlayerFeature.VOLUME_MUTE,
+    }
+    for protocol in (own, airplay):
+        cast("RecordingMockProtocol", protocol).events = events
+    return player, cast("RecordingMockProtocol", own), cast("RecordingMockProtocol", airplay)
+
+
+class TestKeptMemberOutputs:
+    """A stopped group that plays again hands the outputs its members kept their level."""
+
+    async def test_kept_member_output_gets_the_level_of_its_player_before_the_play(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """
+        A member's kept, idle output gets the level and mute of its player before the group plays.
+
+        While that output played nothing, the level and mute of the member went to its own
+        protocol, so the output still holds the ones it had before.
+        """
+        events: list[tuple[str, str, object]] = []
+        leader, _, leader_ap = _player_with_airplay(mock_mass, "leader", events)
+        member, member_own, member_ap = _player_with_airplay(mock_mass, "member", events)
+        leader_ap._attr_group_members = ["leader_ap", "member_ap"]
+        leader_ap._attr_can_group_with = {"member_ap"}
+        member_ap._attr_can_group_with = {"leader_ap"}
+        member_own._attr_volume_level, member_own._attr_volume_muted = 20, True
+        member_ap._attr_volume_level, member_ap._attr_volume_muted = 60, False
+        leader.set_active_output_protocol("leader_ap")
+        member.set_active_output_protocol("member_ap")
+        for player in (leader, member):
+            player.refresh_state(signal_event=False)
+        media = PlayerMedia(uri="http://test/stream")
+
+        await controller._handle_play_media("leader", media)
+
+        assert [event for event in events if event[0] == "member_ap"] == [
+            ("member_ap", "volume_set", 20),
+            ("member_ap", "volume_mute", True),
+        ]
+        assert events[-1] == ("leader_ap", "play_media", media)
+
+
 class TestGroupPlayMediaPower:
     """Playing new media must form an explicitly configured group before capture."""
 
