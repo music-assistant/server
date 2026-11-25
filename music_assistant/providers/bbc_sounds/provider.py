@@ -65,6 +65,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SEARCH,
+    ProviderFeature.LIBRARY_PODCASTS,
 }
 
 LIBRARY_LOGGER = logging.getLogger("auntie_sounds")
@@ -74,6 +75,11 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     """A MusicProvider class to interact with the BBC Sounds API via auntie-sounds."""
 
     recommendation_payload_ttl = 3600 * 3
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        return {MediaType.RADIO, MediaType.PODCAST, MediaType.PODCAST_EPISODE}
 
     @property
     def max_concurrent_streams(self) -> None:
@@ -228,6 +234,16 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         :param path: The path to browse, (e.g. provider_id://artists).
         """
         return await self.browse_manager.browse(path)
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
+        """Retrieve the API's 'My Sounds > Subscribed' contents."""
+        if not self.client.is_signed_in:
+            return
+        for programme in await self.client.personal.get_subscriptions():
+            if isinstance(
+                podcast := await self.adaptor.new_object(programme, force_type=Podcast), Podcast
+            ):
+                yield podcast
 
     async def search(
         self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
