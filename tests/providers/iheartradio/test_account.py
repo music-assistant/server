@@ -41,6 +41,7 @@ from music_assistant.providers.iheartradio.constants import (
     PATH_PLAYBACK_REPORTING,
     PATH_PLAYBACK_STREAMS,
     PATH_PODCAST,
+    PATH_PODCAST_EPISODE,
     PATH_PODCAST_EPISODE_METADATA,
     PATH_PODCAST_EPISODE_PROGRESS,
     PATH_PODCAST_EPISODES,
@@ -498,6 +499,23 @@ async def test_episode_listing_carries_the_account_progress(
         (False, 123000),
         (None, None),
     ]
+
+
+async def test_single_episode_carries_the_account_progress(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A single episode shows what the account part played, like the listing does."""
+    _sign_in(provider)
+    api.responses[PATH_PODCAST.format(podcast_id=PODCAST_ID)] = PODCAST
+    api.responses[PATH_PODCAST_EPISODE.format(episode_id=EPISODE_ID)] = {"episode": EPISODE}
+    api.pages[PATH_PODCAST_EPISODES.format(podcast_id=PODCAST_ID)] = [
+        {"data": [EPISODE], "links": {}}
+    ]
+    api.responses[EPISODE_METADATA_PATH] = {
+        "progress": [{"episodeId": int(EPISODE_ID), "secondsPlayed": 123, "completed": False}]
+    }
+    episode = await provider.get_podcast_episode(EPISODE_ITEM_ID)
+    assert (episode.fully_played, episode.resume_position_ms) == (False, 123000)
 
 
 async def test_resume_position_survives_an_api_failure(
