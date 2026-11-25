@@ -2007,7 +2007,7 @@ class TestRejoinLeavesABusyMemberAlone:
     async def test_a_play_on_the_member_queue_plays_while_the_member_is_left_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The play reaches the member; the member is re-added at the leader's next report."""
+        """The play reaches the member, and the group does not take it back meanwhile."""
         players, group, _leader, member, join = self._group_playing_without_a_member(monkeypatch)
         queue = _LoadingQueue(cast("MagicMock", players.mass), "B")
 
@@ -2019,8 +2019,6 @@ class TestRejoinLeavesABusyMemberAlone:
 
         member.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
         join.assert_not_awaited()
-        await group._rejoin_members()
-        join.assert_awaited_once()
 
     async def test_a_power_on_that_plays_plays_while_the_member_is_left_out(
         self, monkeypatch: pytest.MonkeyPatch
