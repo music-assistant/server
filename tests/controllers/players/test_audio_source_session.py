@@ -6,7 +6,8 @@ without any of it living in a queue item. Nothing produces a session yet, so
 these tests drive the mixin directly.
 """
 
-from typing import cast
+from collections import defaultdict
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
@@ -56,6 +57,11 @@ class _Controller(PlayerAudioSourcesMixin):
         self.log_mock = MagicMock()
         self.logger = self.log_mock
         self.updated_players: list[str] = []
+        self.players: dict[str, MagicMock] = defaultdict(MagicMock)
+
+    def get_player(self, player_id: str, *_args: object) -> Any:
+        """Return a player for any id."""
+        return self.players[player_id]
 
     def trigger_player_update(
         self,

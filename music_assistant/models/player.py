@@ -600,6 +600,9 @@ class Player:
         # when (monotonic) Music Assistant issued a power off the player has not reported yet
         self._power_off_issued_at: float | None = None
         self._stop_called: bool = False
+        self._fake_paused: bool = False
+        # playback started since: the fake pause ends once the player plays
+        self._fake_pause_ending: bool = False
         self._external_pause_since: float | None = None
         self._ended_external_source: str | None = None
         self._foreign_protocol_id: str | None = None
@@ -1416,6 +1419,9 @@ class Player:
             self.logger.info("Clearing active output protocol on %s", self.name)
             self._active_output_protocol = None
         # track stop called state
+        if effects.fake_pause_ended:
+            self._fake_paused = self._fake_pause_ending = False
+            self._stop_called = False
         if effects.left_idle:
             self._stop_called = False
             self._active_mass_source_expires_at = None
@@ -1676,6 +1682,39 @@ class Player:
         self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         self._active_mass_source_expires_at = None
         self._active_mass_source = value
+        self.update_state()
+
+    @property
+    def fake_paused(self) -> bool:
+        """Return whether the player shows as paused while its output is idle."""
+        return self._fake_paused
+
+    def set_fake_paused(self, value: bool) -> None:
+        """
+        Set whether the player shows as paused while its output is idle.
+
+        May only be called by the PlayerController.
+
+        :param value: Whether to show the idle player as paused.
+        """
+        self._fake_pause_ending = False
+        if self._fake_paused != value:
+            self._fake_paused = value
+            self.update_state()
+
+    @property
+    def fake_pause_ending(self) -> bool:
+        """Return whether playback started since the player was shown as paused."""
+        return self._fake_pause_ending
+
+    def end_fake_pause(self) -> None:
+        """
+        End the fake pause of the player as playback starts.
+
+        May only be called by the PlayerController. A player that is shown as paused goes on to
+        playing once it reports that, never through idle.
+        """
+        self._fake_pause_ending = self._fake_paused
         self.update_state()
 
     def set_sleep_timer(self, mode: SleepTimerMode | None, expires_at: float | None) -> None:
@@ -2365,6 +2404,8 @@ class Player:
             extra_data.get(ATTR_FAKE_MUTE),
             self._active_output_protocol,
             self._active_mass_source,
+            self._fake_paused,
+            self._fake_pause_ending,
             self._sleep_timer_expires_at,
             self._sleep_timer_mode,
         )
@@ -2514,6 +2555,8 @@ class Player:
             protocols=self._protocol_infos(),
             active_output_protocol=self._active_output_protocol,
             active_mass_source=self._active_mass_source,
+            fake_paused=self._fake_paused,
+            fake_pause_ending=self._fake_pause_ending,
             sleep_timer_expires_at=self._sleep_timer_expires_at,
             sleep_timer_mode=self._sleep_timer_mode,
             extra_attributes=self._extra_attributes,
@@ -2761,6 +2804,7 @@ class Player:
                 player._reachable,
                 own.grouping_locked if own else False,
                 player.state,
+                fake_paused=player._fake_paused,
             )
         if peer_id != player_id:
             peers[peer_id] = peer

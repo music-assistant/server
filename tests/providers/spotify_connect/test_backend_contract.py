@@ -1057,14 +1057,14 @@ async def test_stream_reopened_during_pause_stop_keeps_spotify_paused() -> None:
     _source_session(mass, "queue1", "pb1")
     stopped: list[str] = []
 
-    async def _cmd_stop(player_id: str) -> None:
+    async def _pause_audio_source(player_id: str, *_source: str) -> None:
         stopped.append(player_id)
         # the speaker drops its stream on the stop and requests it again at once
         await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess1")
         await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess2")
         await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess2")
 
-    mass.players.cmd_stop = _cmd_stop
+    mass.players.pause_audio_source = _pause_audio_source
 
     await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
     for _ in range(3):
@@ -1251,21 +1251,19 @@ async def test_stopped_only_stops_player_when_stream_does_not_end(
 
 
 async def test_paused_stops_player() -> None:
-    """A pause stops the consuming player actively, also on a backend whose stream ends."""
+    """A pause silences the consuming player at once, and leaves it paused on the source."""
     backend = FakeBackend()
     provider, daemon, mass = _make_provider(backend, playing=True, active_player_id="player-1")
-    stopped: list[str] = []
-
-    async def _cmd_stop(player_id: str) -> None:
-        stopped.append(player_id)
-
-    mass.players.cmd_stop = _cmd_stop
+    mass.players.pause_audio_source = AsyncMock()
+    mass.players.cmd_stop = AsyncMock()
 
     await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
     await asyncio.sleep(0)
 
     assert daemon.playing is False
-    assert stopped == ["player-1"]
+    mass.players.pause_audio_source.assert_awaited_once_with("player-1", _PLAYER_ID, _INSTANCE_ID)
+    # a stop would give up the source
+    mass.players.cmd_stop.assert_not_awaited()
     # the claim survives so the next 'playing' event can resume playback
     assert daemon.active_player_id == "player-1"
     # the finished stop task's handle is dropped again
@@ -1279,10 +1277,10 @@ async def test_duplicate_paused_events_stop_player_once() -> None:
     provider, daemon, mass = _make_provider(backend, playing=True, active_player_id="player-1")
     stopped: list[str] = []
 
-    async def _cmd_stop(player_id: str) -> None:
+    async def _pause_audio_source(player_id: str, *_source: str) -> None:
         stopped.append(player_id)
 
-    mass.players.cmd_stop = _cmd_stop
+    mass.players.pause_audio_source = _pause_audio_source
 
     await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
     await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
@@ -1300,12 +1298,12 @@ async def test_playing_cancels_pending_pause_stop() -> None:
     stop_started = asyncio.Event()
     stopped: list[str] = []
 
-    async def _cmd_stop(player_id: str) -> None:
+    async def _pause_audio_source(player_id: str, *_source: str) -> None:
         stop_started.set()
         await asyncio.sleep(3600)  # an unresponsive player holds the stop in flight
         stopped.append(player_id)
 
-    mass.players.cmd_stop = _cmd_stop
+    mass.players.pause_audio_source = _pause_audio_source
 
     await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
     task = daemon.pending_pause_stop_task
@@ -1338,10 +1336,10 @@ async def test_resume_before_the_stopped_stream_ends_restarts_playback(
         active_session_id="sess1",
     )
 
-    async def _cmd_stop(_player_id: str) -> None:
+    async def _pause_audio_source(*_args: str) -> None:
         await asyncio.sleep(stop_seconds)
 
-    mass.players.cmd_stop = _cmd_stop
+    mass.players.pause_audio_source = _pause_audio_source
 
     await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
     for _ in range(3):
@@ -1365,11 +1363,11 @@ async def test_released_source_cancels_pending_pause_stop() -> None:
     lock = asyncio.Lock()
     await lock.acquire()
 
-    async def _cmd_stop(player_id: str) -> None:
+    async def _pause_audio_source(player_id: str, *_source: str) -> None:
         async with lock:
             stopped.append(player_id)
 
-    mass.players.cmd_stop = _cmd_stop
+    mass.players.pause_audio_source = _pause_audio_source
 
     await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
     await asyncio.sleep(0)
@@ -1385,7 +1383,7 @@ async def test_paused_replaces_pending_pause_stop() -> None:
     """A new pause-stop supersedes a still-pending one instead of piling up."""
     backend = FakeBackend()
     provider, daemon, mass = _make_provider(backend, playing=True, active_player_id="player-1")
-    mass.players.cmd_stop = AsyncMock()
+    mass.players.pause_audio_source = AsyncMock()
     stale: Any = MagicMock()
     stale.done.return_value = False
     daemon.pending_pause_stop_task = stale
@@ -1398,6 +1396,7 @@ async def test_paused_replaces_pending_pause_stop() -> None:
     for _ in range(3):
         await asyncio.sleep(0)
     assert daemon.pending_pause_stop_task is None
+    mass.players.pause_audio_source.assert_awaited_once()
 
 
 async def test_handoff_kick_cannot_release_the_session() -> None:

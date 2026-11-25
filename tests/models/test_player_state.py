@@ -774,6 +774,68 @@ class TestPlaybackPosition:
         assert state.playback_state == PlaybackState.IDLE
 
 
+class TestFakePause:
+    """The pause a player shows while its output is idle."""
+
+    @pytest.mark.parametrize(
+        ("own", "shown"),
+        [
+            (PlaybackState.IDLE, PlaybackState.PAUSED),
+            (PlaybackState.PAUSED, PlaybackState.PAUSED),
+            (PlaybackState.PLAYING, PlaybackState.PLAYING),
+        ],
+    )
+    def test_only_an_idle_output_shows_as_paused(
+        self, own: PlaybackState, shown: PlaybackState
+    ) -> None:
+        """What the output plays outranks the pause."""
+        state = _derive(fake_paused=True, own=_own(playback_state=own))
+
+        assert state.playback_state == shown
+
+    def test_the_active_output_shows_as_paused(self) -> None:
+        """A player that plays through an audio protocol shows the pause of that."""
+        state = _derive(
+            fake_paused=True,
+            active_output_protocol="airplay_1",
+            active_protocol=make_protocol_snapshot("airplay_1"),
+        )
+
+        assert state.playback_state == PlaybackState.PAUSED
+
+    @pytest.mark.parametrize("leader_paused", [True, False])
+    def test_a_synced_player_shows_the_pause_of_its_leader(self, leader_paused: bool) -> None:
+        """A player synced over an audio protocol pauses with its leader, not by itself."""
+        state = _derive(
+            fake_paused=not leader_paused,
+            linked=(make_protocol_snapshot("airplay_1", synced_to="leader_1"),),
+            active_output_protocol="airplay_1",
+            active_protocol=make_protocol_snapshot("airplay_1", synced_to="leader_1"),
+            peers={"leader_1": _peer("leader_1", fake_paused=leader_paused)},
+        )
+
+        assert state.synced_to == "leader_1"
+        assert state.playback_state == (
+            PlaybackState.PAUSED if leader_paused else PlaybackState.IDLE
+        )
+
+    def test_a_group_member_does_not_show_a_pause_of_its_own(self) -> None:
+        """A player a group holds shows what that group plays."""
+        state = _derive(
+            fake_paused=True, groups=(_group("group_1", powered=True, group_members=[PLAYER_ID]),)
+        )
+
+        assert state.active_group == "group_1"
+        assert state.playback_state == PlaybackState.IDLE
+
+    @pytest.mark.parametrize("values", [{"offline_by_power_control": True}, {"powered": False}])
+    def test_a_player_switched_off_shows_as_idle(self, values: dict[str, Any]) -> None:
+        """A device without power is not paused."""
+        state = _derive(fake_paused=True, **values)
+
+        assert state.playback_state == PlaybackState.IDLE
+
+
 class TestActiveSource:
     """The active source of a player."""
 
@@ -2349,6 +2411,24 @@ class TestEffects:
         assert effects.clear_active_output is clears
         assert state.active_output_protocol == (None if clears else active_output)
 
+    @pytest.mark.parametrize(
+        ("ending", "own", "ended"),
+        [
+            (True, PlaybackState.PLAYING, True),
+            (True, PlaybackState.IDLE, False),
+            # its output still has to stop for the pause
+            (False, PlaybackState.PLAYING, False),
+        ],
+        ids=["plays_on", "starts", "still_stopping"],
+    )
+    def test_a_fake_pause_ends_once_the_player_plays_on(
+        self, ending: bool, own: PlaybackState, ended: bool
+    ) -> None:
+        """Playback that started ends the pause, not the playback before it."""
+        effects = _effects(fake_paused=True, fake_pause_ending=ending, own=_own(playback_state=own))
+
+        assert effects.fake_pause_ended is ended
+
     def test_nothing_to_do_for_an_idle_player(self) -> None:
         """Deriving the state of a player nothing happens on asks for nothing."""
         assert _effects() == StateEffects(
@@ -2357,6 +2437,7 @@ class TestEffects:
             default_name=None,
             left_idle=False,
             went_idle=False,
+            fake_pause_ended=False,
             foreign_protocol_id=None,
             clear_active_output=False,
         )
