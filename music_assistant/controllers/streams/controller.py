@@ -1565,7 +1565,10 @@ class StreamsController(CoreController):
                         exc_info=True,
                     )
             if not serving:
-                await self._release_unstarted_audio_source(session, playback_session_id)
+                self.mass.create_task(
+                    self._release_unstarted_audio_source(session, playback_session_id),
+                    task_name=f"release_unstarted_audio_source_{source_player_id}",
+                )
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream Queue Flow audio to player."""
@@ -2217,9 +2220,10 @@ class StreamsController(CoreController):
         """
         Take a source that never started off the player holding it.
 
-        The command that pointed the renderer here has already returned, so nothing
-        else will clear the session: without this the player goes on publishing a
-        source that never played, with its own queue held inactive behind it.
+        Without this the player goes on publishing a source that never played, with
+        its own queue held inactive behind it. Run it as a task of its own: it waits
+        for the player's lock, which the command that started the source can still
+        hold while its consumer waits for the stream.
 
         :param session: The session whose stream failed before any audio flowed.
         :param playback_session_id: Playback session active when stream setup started.
@@ -2462,7 +2466,10 @@ class StreamsController(CoreController):
                 exc_info=True,
             )
         if not served:
-            await self._release_unstarted_audio_source(session, playback_session_id)
+            self.mass.create_task(
+                self._release_unstarted_audio_source(session, playback_session_id),
+                task_name=f"release_unstarted_audio_source_{session.player_id}",
+            )
 
     def _get_live_audio_source_session(self, media: PlayerMedia) -> AudioSourceSession | None:
         """Return the session of the live source ``media`` plays on a player, if it is one."""

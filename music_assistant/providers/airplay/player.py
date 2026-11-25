@@ -30,6 +30,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import (
     DeviceInfo,
     PlayerMedia,
@@ -852,6 +853,9 @@ class AirPlayPlayer(PlayerProtocol):
                     media,
                 )
                 await stream_session.start(audio_source)
+            except AudioSourceRefusedError:
+                # the streams controller logs the refusal and takes the source off the player
+                pass
             finally:
                 self._transitioning = False
 
