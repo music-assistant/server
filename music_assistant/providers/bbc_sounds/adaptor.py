@@ -10,6 +10,7 @@ This adaptor maps those objects to the most sensible type for MA.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from importlib import metadata
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from auntie_sounds.models import (
@@ -64,6 +65,8 @@ from music_assistant.providers.bbc_sounds.naming import (
 if TYPE_CHECKING:
     from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 
+LIBRARY_VERSION = metadata.version("auntie-sounds")
+
 
 def _audio_format(stream: str) -> AudioFormat:
     return AudioFormat(content_type=ContentType.try_parse(stream))
@@ -76,7 +79,9 @@ class ConversionError(MusicAssistantError):
 class ImageProvider:
     """Handles image URL resolution and MediaItemImage creation."""
 
-    ICON_BASE_URL = "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@3.0.0/assets/icons/solid"
+    ICON_BASE_URL = (
+        f"https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@{LIBRARY_VERSION}/assets/icons/solid"
+    )
 
     ICON_MAPPING: ClassVar[dict[str, str]] = {
         ValidMenuIDs.LIVE: "listen_live",
