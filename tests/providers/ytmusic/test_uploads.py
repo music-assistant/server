@@ -7,6 +7,7 @@ import pytest
 import ytmusicapi
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
+from ytmusicapi.exceptions import YTMusicServerError
 
 from music_assistant.models.music_provider import SYNC_RUN_STATE, SyncRunState
 from music_assistant.providers.ytmusic import YoutubeMusicProvider, helpers
@@ -322,3 +323,20 @@ async def test_search_skips_uploads(
         await search(provider, "upload", media_types, 5)
 
     assert [call.kwargs.get("scope") for call in ytm.search.call_args_list] == [None]
+
+
+async def test_search_skips_an_upload_that_cannot_be_resolved(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """An untagged upload YouTube can not resolve is left out, not the rest of the search."""
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        key == "authenticated_search"
+    )
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=_search_ytm(authenticated=True)),
+        patch.object(provider, "get_track", AsyncMock(side_effect=YTMusicServerError("400"))),
+    ):
+        results = await search(provider, "upload", [MediaType.TRACK], 5)
+
+    assert [track.item_id for track in results.tracks] == ["2AcuBnPRv9s", "catalog1"]

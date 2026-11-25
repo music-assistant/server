@@ -1247,7 +1247,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 return None
             try:
                 item = await self.get_track(result["videoId"])
-            except MediaNotFoundError:
+            except MediaNotFoundError, YTMusicServerError:
                 return None
         if item:
             # upload search results carry no entityId, so mark them here
