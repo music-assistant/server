@@ -200,6 +200,11 @@ pair), and the HomePods are fed directly as its speakers.
   Apple TV, which then reports another sender (measured), so right after a speaker joined that
   report does not keep it out. Power and wake act on the Apple TV, as for a plain Apple TV,
   which needs to be paired for this.
+- The volume of the set is the one of its HomePods, which is not the native volume of the
+  Apple TV. The Apple TV's protocol keeps a transient MRP tunnel to one of them, the first that
+  answers, whether or not the Apple TV itself is paired: each HomePod reports and sets the one
+  volume of the whole set (measured). Over it the set follows changes made elsewhere, also while
+  it plays, and while it is idle its volume and mute go to the HomePods.
 - The player option "Play on HomePods only" leaves the Apple TV out: no session to it, no
   wake and no power control (the players controller powers a player on before it plays), and
   no pairing needed.
@@ -478,13 +483,13 @@ A volume is still sent when the AirPlay output itself is the resolved volume con
 
 Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. The DACP volume reports of Apple devices are always ignored: a HomePod holds its reports back for 5 seconds for every connected sender whose DACP service it can not find, such as the control connection, so an old level can arrive long after a newer one.
 
-The volume of a HomePod is followed over its control connection (MRP) instead, idle and while it plays from Music Assistant. That is the volume the stream plays at, and its reports arrive in order. They are only taken over, never sent back to the device, and a 0 never mutes the player. A HomePod that plays as a speaker of an Apple TV has no control connection, so its changes are not followed. On an Apple TV the native volume is separate from the one of the stream, and is ignored while it plays from Music Assistant.
+The volume of a HomePod is followed over its control connection (MRP) instead, idle and while it plays from Music Assistant. That is the volume the stream plays at, and its reports arrive in order. They are only taken over, never sent back to the device, and a 0 never mutes the player. A home theater set is followed, and set while it is idle, through the control connection to one of its HomePods (see [Home Theater Sets](#home-theater-sets)). On an Apple TV outside a set the native volume is separate from the one of the stream, and is ignored while it plays from Music Assistant.
 
 A receiver also echoes back every level it is handed, and an echo that arrives after the next level was sent would be read as the user reaching for the volume and written straight back to the device. Reports are therefore ignored for a short window after Music Assistant sends a volume itself, and for the whole span of an announcement.
 
 **Config option**: `ignore_volume` (default: `False`)
 - Useful when device volume reports are unreliable
-- On a HomePod it ignores the reports that arrive while it plays from Music Assistant
+- On a HomePod or a home theater set it ignores the reports that arrive while it plays from Music Assistant
 
 ### Device Source Switching
 
@@ -667,6 +672,9 @@ and control connections:
   and volume independently of Music Assistant streaming.
 - **AirPlay MRP tunnel** tracks external playback, including the active app,
   metadata, elapsed time, and transport state.
+- **HomePod MRP tunnel** of an Apple TV that carries a home theater set tracks and
+  controls the volume of the set on one of its HomePods (see
+  [Home Theater Sets](#home-theater-sets)).
 - Music Assistant explicitly wakes a sleeping device before starting or
   resuming an AirPlay stream.
 - AirPlay streaming, Companion control, and MRP playback monitoring keep
