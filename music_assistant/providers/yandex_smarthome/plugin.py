@@ -90,7 +90,7 @@ class YandexSmartHomePlugin(PluginProvider):
             playlist_options = await fetch_playlist_options(self.mass)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - the playlist picker is optional
             self.logger.debug("could not enumerate playlists")
 
         return (
@@ -428,6 +428,6 @@ class YandexSmartHomePlugin(PluginProvider):
                 options.append(
                     ConfigValueOption(title=state.name or state.player_id, value=state.player_id)
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001 - the player picker is optional
             self.logger.debug("could not enumerate players")
         return options

@@ -544,7 +544,7 @@ class ZvukMusicProvider(MusicProvider):
         except (ResourceTemporarilyUnavailable, ProviderUnavailableError, LoginFailed) as err:
             self.logger.debug("Failed to fetch lyrics for track %s: %s", track_id, err)
             return None
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - lyrics are optional, service errors vary
             self.logger.debug(
                 "Unexpected error while fetching lyrics for track %s: %s", track_id, err
             )

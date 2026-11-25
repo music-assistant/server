@@ -436,7 +436,7 @@ class KionMusicClient:
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.debug("Error fetching lyrics for track %s: %s", track_id, err)
             return None, False
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - lyrics are optional, service errors vary
             # Catch any other errors (e.g., geo-restrictions, API changes)
             LOGGER.debug("Unexpected error fetching lyrics for track %s: %s", track_id, err)
             return None, False
@@ -474,7 +474,7 @@ class KionMusicClient:
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.debug("Error fetching lyrics for track %s: %s", track_id, err)
             return None, False
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - lyrics are optional, service errors vary
             # Catch any other errors (e.g., geo-restrictions, API changes)
             LOGGER.debug("Unexpected error fetching lyrics for track %s: %s", track_id, err)
             return None, False
@@ -809,7 +809,7 @@ class KionMusicClient:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure means no stream info
             LOGGER.warning(
                 "get-file-info for track %s: Unexpected %s: %s",
                 track_id,
