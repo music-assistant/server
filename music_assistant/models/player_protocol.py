@@ -1165,6 +1165,16 @@ class PlayerProtocol(ABC):
         elif self.group_members:
             await self.set_members(player_ids_to_remove=self.group_members)
 
+    def counts_in(self, player_id: str) -> bool:
+        """
+        Return whether a player belongs to the session of this group player.
+
+        A member that fell out of playback still does, as it is part of it again once it is back.
+
+        :param player_id: Id of the player.
+        """
+        return self.is_active_session and player_id in self.group_members
+
     def on_group_member_updated(
         self, member_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import MediaType, PlaybackState
 
 from .test_group_power_on import _announce
-from .test_grouping import _player_id, _speakers, _state, _stop
+from .test_grouping import _fixed_group_without_a_member, _player_id, _speakers, _state, _stop
 
 if TYPE_CHECKING:
     from .harness import FakeProtocol, Scenario
@@ -53,3 +53,26 @@ async def test_an_announcement_to_a_leader_plays_on_the_leader_alone(scenario: S
     assert _state(scenario, office_id).synced_to == kitchen_id
     assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
     await _stop(scenario, kitchen_id)
+
+
+async def test_an_announcement_to_a_member_that_dropped_off_leaves_its_group_playing(
+    scenario: Scenario,
+) -> None:
+    """
+    An announcement to a member of a fixed group that fell out of it plays on that member.
+
+    Kitchen leads the group and plays on meanwhile, and takes Office back after the clip.
+    """
+    kitchen, office, group_id = await _fixed_group_without_a_member(scenario)
+    office_id = _player_id(scenario, office)
+    office.commands.clear()
+
+    await _announce(scenario, office_id, None, [office])
+
+    assert _commands(office) == [("play_media", MediaType.ANNOUNCEMENT), ("stop",)]
+    assert _commands(kitchen) == []
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await scenario.report(kitchen, volume_level=20)
+    await scenario.idle()
+    assert _state(scenario, office_id).synced_to == _player_id(scenario, kitchen)
+    await _stop(scenario, group_id)

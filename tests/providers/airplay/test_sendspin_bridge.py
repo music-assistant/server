@@ -2701,11 +2701,13 @@ def _make_taken_over_bridge(
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     bridge._bridge_client_id = "ss_bridge_client"
     cast("MagicMock", bridge.airplay_player).player.player_id = "own_player"
+    cast("MagicMock", bridge.airplay_player).player.active_group = None
     bridge_client = MagicMock(synced_to=synced_to, group_members=group_members or [])
     players = cast("MagicMock", bridge.mass).players
     players.get_protocol = MagicMock(return_value=bridge_client)
     players.get_player_by_protocol = MagicMock(return_value=MagicMock(player_id="leader_player"))
     players.get_player_lock = MagicMock(return_value=nullcontext())
+    players.get_group_and_player_lock = MagicMock(return_value=nullcontext())
     players._handle_set_members = AsyncMock()
     return bridge, players
 
@@ -2740,6 +2742,38 @@ async def test_a_taken_over_group_leader_leaves_its_own_group_through_the_contro
         own_player, player_ids_to_remove=["own_player"]
     )
     leave.assert_not_called()
+
+
+@pytest.mark.parametrize("group_members", [[], ["ss_bridge_client", "ss_member_client"]])
+async def test_a_taken_over_member_of_a_group_player_is_taken_out_of_it(
+    group_members: list[str],
+) -> None:
+    """The group player lets the speaker go, whether it leads the Sendspin group or not."""
+    bridge, players = _make_taken_over_bridge(
+        synced_to=None if group_members else "ss_leader_client", group_members=group_members
+    )
+    cast("MagicMock", bridge.airplay_player).player.active_group = "group_player"
+    players.cmd_ungroup = AsyncMock()
+    bridge._is_streaming = False
+
+    await bridge._leave_group_or_session()
+
+    players.get_group_and_player_lock.assert_called_once_with("own_player")
+    players.cmd_ungroup.assert_awaited_once_with("own_player")
+    players._handle_set_members.assert_not_called()
+
+
+async def test_a_taken_over_member_that_plays_again_stays_in_its_group_player() -> None:
+    """A takeover that is handled once the speaker plays in its group again changes nothing."""
+    bridge, players = _make_taken_over_bridge(synced_to="ss_leader_client")
+    cast("MagicMock", bridge.airplay_player).player.active_group = "group_player"
+    players.cmd_ungroup = AsyncMock()
+    bridge._is_streaming = True
+
+    await bridge._leave_group_or_session()
+
+    players.cmd_ungroup.assert_not_awaited()
+    players._handle_set_members.assert_not_called()
 
 
 async def test_a_taken_over_solo_speaker_ends_its_own_session() -> None:

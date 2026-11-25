@@ -1820,6 +1820,8 @@ class TestRejoinLeavesABusyMemberAlone:
         """
         players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
         group._attr_static_group_members = ["L", "B"]
+        # the leader could not group with B when the group formed, which leaves B free
+        group._attr_group_members = ["L"]
         group.sync_leader = leader
         leader_protocol = cast("MockProtocol", leader.own_protocol)
         member_protocol = cast("MockProtocol", member.own_protocol)
@@ -4592,6 +4594,48 @@ class TestStaticMemberRejoin:
         sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
 
         mass.call_later.assert_called_once()
+
+    def test_a_member_that_fell_out_still_counts_in(self) -> None:
+        """A member the leader does not hold belongs to the session while the group is formed."""
+        mass = _make_mock_mass()
+        sgp, leader, _display = _static_group_with_a_member_away(mass)
+        assert leader.group_members == ["leader"]
+        assert sgp.counts_in("display")
+
+        # a form drops a member the leader can not group with
+        sgp._attr_group_members = ["leader"]
+        assert not sgp.counts_in("display")
+
+        sgp._attr_group_members = ["leader", "display"]
+        sgp.sync_leader = None
+        assert not sgp.counts_in("display")
+
+    async def test_a_member_that_plays_on_its_own_is_not_rejoined(self) -> None:
+        """A member is left alone for as long as it plays something of its own."""
+        mass = _make_mock_mass()
+        sgp, _leader, display = _static_group_with_a_member_away(mass)
+        display.state.playback_state = PlaybackState.PLAYING
+        await sgp._rejoin_members()
+        mass.players._handle_set_members.assert_not_awaited()
+
+        display.state.playback_state = PlaybackState.IDLE
+        await sgp._rejoin_members()
+        mass.players._handle_set_members.assert_awaited_once()
+
+    @pytest.mark.parametrize("attribute", ["synced_to", "active_group"])
+    async def test_a_member_that_plays_what_the_group_plays_is_rejoined(
+        self, attribute: str
+    ) -> None:
+        """A member that plays along, while its leader does not list it, is re-added."""
+        mass = _make_mock_mass()
+        sgp, leader, display = _static_group_with_a_member_away(mass)
+        display.state.playback_state = PlaybackState.PLAYING
+        held_by = {"synced_to": leader.player_id, "active_group": _group_id(sgp)}
+        setattr(display.state, attribute, held_by[attribute])
+
+        await sgp._rejoin_members()
+
+        mass.players._handle_set_members.assert_awaited_once()
 
     def test_a_dynamic_or_leaderless_group_does_not_rejoin(self) -> None:
         """Only a static group with a live leader has configured members to recover."""

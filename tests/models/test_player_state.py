@@ -465,6 +465,53 @@ class TestActiveGroup:
 
         assert state.active_group == "group_1"
 
+    @pytest.mark.parametrize(
+        ("group_values", "values", "active"),
+        [
+            ({}, {}, True),
+            ({"counts_in": False}, {}, False),
+            ({"static_group_members": ["other"]}, {}, False),
+            ({"powered": False}, {}, False),
+            ({}, {"own": {"synced_to": "leader"}}, False),
+            ({}, {"own": {"group_members": [PLAYER_ID, "member"]}}, False),
+            ({}, {"own": {"available": False}}, False),
+            ({}, {"own": {"playback_state": PlaybackState.PLAYING}}, False),
+            ({}, {"own": {"playback_state": PlaybackState.PAUSED}}, True),
+            ({}, {"linked": {"playback_state": PlaybackState.PLAYING}}, False),
+        ],
+    )
+    def test_a_fixed_group_holds_a_member_that_fell_out_of_it(
+        self, group_values: dict[str, Any], values: dict[str, Any], active: bool
+    ) -> None:
+        """A member of a fixed group that fell out of it is free once it is gone or in use."""
+        fell_out: dict[str, Any] = {
+            "group_members": ["other"],
+            "static_group_members": ["other", PLAYER_ID],
+            "counts_in": True,
+        }
+        group = _group(**(fell_out | group_values))
+        inputs: dict[str, Any] = {"own": make_protocol_snapshot(PLAYER_ID, **values.get("own", {}))}
+        if "linked" in values:
+            inputs["linked"] = [make_protocol_snapshot("airplay", **values["linked"])]
+
+        state = _derive(groups=(group,), peers={"group_1": _group_peer(group)}, **inputs)
+
+        assert state.active_group == ("group_1" if active else None)
+
+    def test_a_group_the_player_plays_in_comes_before_one_it_fell_out_of(self) -> None:
+        """A player that plays in another group belongs to that one."""
+        fell_out_of = _group(
+            "group_1", group_members=["other"], static_group_members=[PLAYER_ID], counts_in=True
+        )
+        plays_in = _group("group_2")
+
+        state = _derive(
+            groups=(fell_out_of, plays_in),
+            peers={"group_1": _group_peer(fell_out_of), "group_2": _group_peer(plays_in)},
+        )
+
+        assert state.active_group == "group_2"
+
     def test_group_does_not_hold_itself(self) -> None:
         """A group player listing its own id is not its own active group."""
         group = _group(PLAYER_ID)

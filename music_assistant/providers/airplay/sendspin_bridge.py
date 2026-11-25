@@ -769,6 +769,13 @@ class SendspinAirPlayBridge:
         if leader is None or player is None:
             await self._leave_sendspin_session(rejoin=False)
             return
+        if player.active_group:
+            # the other sender takes it out of its group player, as a user does
+            async with players.get_group_and_player_lock(player.player_id):
+                # unless a command that came first restarted the stream
+                if not self._is_streaming:
+                    await players.cmd_ungroup(player.player_id)
+            return
         # Leaving the Sendspin group directly ends a leader's session for every member.
         # The controller hands the queue to a remaining member instead.
         async with players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):

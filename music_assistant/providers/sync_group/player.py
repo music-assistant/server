@@ -804,6 +804,14 @@ class SyncGroupPlayer(PlayerProtocol):
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(group_player_id)
 
+    def counts_in(self, player_id: str) -> bool:
+        """
+        Return whether a player belongs to the session of this group player.
+
+        :param player_id: Id of the player.
+        """
+        return self.is_active_session and player_id in self._attr_group_members
+
     def on_group_member_updated(
         self, member_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
@@ -1861,11 +1869,17 @@ class SyncGroupPlayer(PlayerProtocol):
             # that is offline, or incompatible with it, is not on it
             and member_id in leader.can_group_with
             and (member := self.mass.players.get_player(member_id)) is not None
-            # a member another group holds, or that leads a group of its own, is left
-            # alone: this is a background recovery, not a play command
+            # a member another group holds, or that leads a group of its own or plays
+            # something of its own, is left alone: this is a background recovery, not a
+            # play command
             and member.synced_to in (None, leader.player_id)
             and member.active_group in (None, group_player_id)
             and all(child_id == member_id for child_id in member.group_members)
+            and not (
+                member.playback_state == PlaybackState.PLAYING
+                and member.synced_to is None
+                and member.active_group is None
+            )
         ]
 
     async def _rejoin_members(self) -> None:

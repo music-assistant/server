@@ -307,7 +307,8 @@ async def test_the_remaining_members_play_on(
     assert _led_by(group) is _player_of(b)
     assert _members(scenario, group) == ["Player B", "Player C"]
     assert a.playback_state == PlaybackState.IDLE
-    assert _player_of(a).active_group is None
+    # a fixed group keeps it
+    assert _player_of(a).active_group == (None if dynamic else group.player_id)
     assert session is not None
     assert set(session.sync_clients) == {b, c}
 
@@ -369,12 +370,13 @@ async def test_a_lost_leader_is_part_of_the_next_formation(
     await _stop(scenario, group)
 
 
+@pytest.mark.parametrize("dynamic", [True, False])
 async def test_a_lost_leader_gets_its_volume_on_its_own_protocol_again(
-    scenario: Scenario, provider: AirPlayProvider
+    scenario: Scenario, provider: AirPlayProvider, dynamic: bool
 ) -> None:
     """A leader that fell out of its group is at rest, while its members play on over AirPlay."""
     a, b = await _receivers(scenario, provider, "AB", native=True)
-    group = await _play_group(scenario, [a, b])
+    group = await _play_group(scenario, [a, b], dynamic=dynamic)
     assert _player_of(a).active_output_protocol == a.protocol_id
 
     _cli(a).end()
@@ -609,19 +611,79 @@ async def test_a_paused_group_that_loses_its_leader_ends(
     await _stop(scenario, group)
 
 
-async def test_a_taken_over_leader_ends_the_group_and_is_not_taken_back(
-    scenario: Scenario, provider: AirPlayProvider
+@pytest.mark.parametrize("leader", [True, False], ids=["leader", "member"])
+async def test_a_taken_over_player_leaves_a_dynamic_group_and_is_not_taken_back(
+    scenario: Scenario, provider: AirPlayProvider, leader: bool
 ) -> None:
-    """A receiver of the leader that another sender took over is left to that sender."""
-    a, b = await _receivers(scenario, provider, "AB")
-    group = await _play_group(scenario, [a, b])
+    """A receiver that another sender took over is left to that sender, the others play on."""
+    a, b, c = await _receivers(scenario, provider)
+    group = await _play_group(scenario, [a, b, c])
+    taken, others = (a, [b, c]) if leader else (c, [a, b])
+    process = _cli(taken)
+    remaining = [_cli(x) for x in others]
 
-    _cli(a).end("receiver_closed")
-    await scenario.advance(AFTER_REJOIN + AFTER_IDLE_GRACE)
+    process.end("receiver_closed")
+    await scenario.advance(60)
 
-    assert _cli(a).closed
+    assert _state(group) == PlaybackState.PLAYING
+    assert _members(scenario, group) == [_player_of(x).name for x in others]
+    assert _cli(taken) is process
+    assert [_cli(x) for x in others] == remaining
+    assert not any(x.closed for x in remaining)
+    await _stop(scenario, group)
+    # nor is it when the group plays again, until the user adds it
+    await _play_again(scenario, group)
+    assert _members(scenario, group) == [_player_of(x).name for x in others]
+    await _stop(scenario, group)
+
+
+@pytest.mark.parametrize("leader", [True, False], ids=["leader", "member"])
+async def test_a_taken_over_player_ends_a_fixed_group(
+    scenario: Scenario, provider: AirPlayProvider, leader: bool
+) -> None:
+    """A fixed group plays on all of its members or not at all: another sender ends it."""
+    a, b, c = await _receivers(scenario, provider)
+    group = await _play_group(scenario, [a, b, c], dynamic=False)
+    taken = a if leader else c
+    process = _cli(taken)
+
+    process.end("receiver_closed")
+    await scenario.settle()
+
     assert _state(group) == PlaybackState.IDLE
     assert _led_by(group) is None
+    await scenario.advance(60)
+    assert [x.playback_state for x in (a, b, c)] == [PlaybackState.IDLE] * 3
+    # it is left to the other sender
+    assert taken.stream is None or _cli(taken) is process
+    await _play_again(scenario, group)
+    assert _members(scenario, group) == ["Player A", "Player B", "Player C"]
+    await _stop(scenario, group)
+
+
+async def test_a_fixed_group_that_was_started_again_outlives_the_takeover(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """A takeover that is handled after the group was started again does not end it."""
+    a, b, c = await _receivers(scenario, provider)
+    group = await _play_group(scenario, [a, b, c], dynamic=False)
+    taken_over = asyncio.Event()
+
+    async def _run() -> None:
+        async with scenario.mass.players.get_player_lock(group.player_id):
+            await taken_over.wait()
+            await scenario.mass.player_queues.play_media(group.player_id, TEST_TRACK_URI)
+
+    task = await scenario.command(_run())
+    _cli(c).end("receiver_closed")
+    await scenario.settle()
+    taken_over.set()
+    await scenario.advance(AFTER_IDLE_GRACE)
+
+    await task
+    assert _state(group) == PlaybackState.PLAYING
+    assert _members(scenario, group) == ["Player A", "Player B", "Player C"]
+    await _stop(scenario, group)
 
 
 async def test_a_lost_member_still_comes_back_to_its_leader(
@@ -802,6 +864,54 @@ async def test_a_lost_player_the_user_switches_off_stays_off(
     assert lost not in b.session.sync_clients
     assert _state(group) == PlaybackState.PLAYING
     await _stop(scenario, group)
+
+
+@pytest.mark.parametrize("leader", [True, False], ids=["leader", "member"])
+async def test_a_fixed_group_ends_when_the_user_plays_on_a_lost_player(
+    scenario: Scenario, provider: AirPlayProvider, leader: bool
+) -> None:
+    """Media played on a member of a fixed group ends the group, also while that member is out."""
+    a, b, c = await _receivers(scenario, provider, native=True)
+    group = await _play_group(scenario, [a, b, c], dynamic=False)
+    lost, others = (a, [b, c]) if leader else (c, [a, b])
+    player = _player_of(lost)
+
+    _cli(lost).end()
+    await scenario.advance(1)
+    await scenario.command(scenario.mass.player_queues.play_media(player.player_id, TEST_TRACK_URI))
+    await scenario.advance(2)
+
+    assert _state(group) == PlaybackState.IDLE
+    assert _led_by(group) is None
+    await scenario.advance(AFTER_REJOIN)
+    assert player.playback_state == PlaybackState.PLAYING
+    assert [_player_of(x).playback_state for x in others] == [PlaybackState.IDLE] * 2
+    await scenario.command(scenario.mass.players.cmd_stop(player.player_id))
+    await scenario.idle()
+
+
+@pytest.mark.parametrize("leader", [True, False], ids=["leader", "member"])
+async def test_a_fixed_group_ends_when_the_user_switches_a_lost_player_off(
+    scenario: Scenario, provider: AirPlayProvider, leader: bool
+) -> None:
+    """A member of a fixed group that is switched off ends the group, also while it is out."""
+    a, b, c = await _receivers(scenario, provider)
+    lost = a if leader else c
+    player = _player_of(lost)
+    await scenario.configure_player(player.player_id, **{CONF_POWER_CONTROL: PLAYER_CONTROL_FAKE})
+    group = await _play_group(scenario, [a, b, c], dynamic=False)
+
+    _cli(lost).end()
+    await scenario.advance(1)
+    task = await scenario.command(scenario.mass.players.cmd_power(player.player_id, False))
+    await scenario.advance(2)
+    await task
+
+    assert _state(group) == PlaybackState.IDLE
+    assert _led_by(group) is None
+    await scenario.advance(AFTER_REJOIN)
+    assert player.powered is False
+    assert [x.playback_state for x in (a, b, c)] == [PlaybackState.IDLE] * 3
 
 
 @pytest.mark.parametrize("command", [_remove_command, _ungroup_command, _switch_off_command])

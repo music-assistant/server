@@ -14,6 +14,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import DEFAULT_POWER_ON_STARTUP_TIME
 from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
@@ -852,6 +853,123 @@ async def test_a_returning_member_of_a_fixed_group_rejoins_its_leader(
     assert _grouping_commands(kitchen)[-1] == ("set_members", ["sonos_office"], None)
     assert _state(scenario, office_id).synced_to == kitchen_id
     assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, group_id)
+
+
+async def _fixed_group_without_a_member(
+    scenario: Scenario,
+) -> tuple[FakeProtocol, FakeProtocol, str]:
+    """
+    Play a group with a fixed member list whose member Office dropped off and is back.
+
+    :return: The protocols of Kitchen, which leads the group, and Office, and the id of the group.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    office.supported_features.add(PlayerFeature.SELECT_SOURCE)
+    await scenario.report(office, source_list=[PlayerSource(id="line_in", name="Line-in")])
+    for speaker in (kitchen, office, den):
+        speaker.supported_features.add(PlayerFeature.POWER)
+        await scenario.report(speaker, powered=True)
+    group = await scenario.mass.players.create_group_player(
+        "sync_group",
+        "Downstairs",
+        [_player_id(scenario, x) for x in (kitchen, office, den)],
+        dynamic=False,
+    )
+    await scenario.play(group.player_id)
+    await scenario.idle()
+    # the leader's device drops the member, which its group takes back two seconds later
+    await scenario.report(kitchen, group_members=["sonos_kitchen", "sonos_den"])
+    await scenario.advance(1)
+    assert _player_id(scenario, office) not in _state(scenario, group.player_id).group_members
+    assert _state(scenario, _player_id(scenario, office)).active_group == group.player_id
+    kitchen.commands.clear()
+    return kitchen, office, group.player_id
+
+
+@pytest.mark.parametrize(
+    "action", ["play", "select_source", "ungroup", "power_off", "power_off_at_device"]
+)
+async def test_a_fixed_group_ends_when_a_member_that_dropped_off_is_taken_out(
+    scenario: Scenario, action: str
+) -> None:
+    """
+    A fixed group plays on all of its members or not at all, also while one of them is out of it.
+
+    :param action: What the user does with the member.
+    """
+    kitchen, office, group_id = await _fixed_group_without_a_member(scenario)
+    office_id = _player_id(scenario, office)
+    players = scenario.mass.players
+
+    if action == "power_off_at_device":
+        await scenario.report(office, powered=False)
+        await scenario.advance(1)
+    else:
+        command = await scenario.command(
+            {
+                "play": lambda: scenario.mass.player_queues.play_media(office_id, TEST_TRACK_URI),
+                "select_source": lambda: players.select_source(office_id, "line_in"),
+                "ungroup": lambda: players.cmd_ungroup(office_id),
+                "power_off": lambda: players.cmd_power(office_id, False),
+            }[action]()
+        )
+        await scenario.advance(1)
+        await command
+
+    assert kitchen.playback_state == PlaybackState.IDLE
+    await scenario.advance(30)
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+    assert ("set_members", ["sonos_office"], None) not in kitchen.commands
+    assert _state(scenario, office_id).synced_to is None
+    assert _state(scenario, office_id).active_group is None
+    if action == "play":
+        assert office.playback_state == PlaybackState.PLAYING
+        await scenario.command(players.cmd_stop(office_id))
+        await scenario.idle()
+
+
+async def test_a_fixed_group_plays_on_when_a_member_that_dropped_off_can_not_be_reached(
+    scenario: Scenario,
+) -> None:
+    """A member that is gone is free, even if it reads as off, and is taken back once it is back."""
+    kitchen, office, group_id = await _fixed_group_without_a_member(scenario)
+    office_id = _player_id(scenario, office)
+    scenario.expect_log("is not available")
+
+    await scenario.report(office, available=False, powered=False)
+    await scenario.advance(30)
+
+    assert _state(scenario, office_id).active_group is None
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await scenario.report(office, available=True, powered=True)
+    await scenario.idle()
+    assert _state(scenario, office_id).synced_to == _player_id(scenario, kitchen)
+    await _stop(scenario, group_id)
+
+
+async def test_a_member_of_a_fixed_group_that_plays_something_of_its_own_is_left_alone(
+    scenario: Scenario,
+) -> None:
+    """
+    A member that is taken out at the device and plays is left alone until that ends.
+
+    The others play on.
+    """
+    kitchen, office, group_id = await _fixed_group_without_a_member(scenario)
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+    await scenario.report(office, playback_state=PlaybackState.PLAYING, active_source="spotify")
+
+    await scenario.advance(30)
+
+    assert kitchen.commands == []
+    assert _state(scenario, office_id).synced_to is None
+    assert _state(scenario, office_id).active_group is None
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await scenario.report(office, playback_state=PlaybackState.IDLE, active_source=None)
+    await scenario.report(kitchen, volume_level=20)
+    await scenario.idle()
+    assert _state(scenario, office_id).synced_to == kitchen_id
     await _stop(scenario, group_id)
 
 
