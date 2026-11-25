@@ -1437,10 +1437,18 @@ def empty_queue[T](q: asyncio.Queue[T]) -> None:
             pass
 
 
-async def install_package(package: str) -> None:
-    """Install package with pip, raise when install failed."""
+async def install_package(package: str, *, upgrade: bool = False) -> None:
+    """
+    Install package with pip, raise when install failed.
+
+    :param package: The requirement to install, e.g. "yt-dlp[default]".
+    :param upgrade: Also upgrade the package when an older version is already installed.
+    """
     LOGGER.debug("Installing python package %s", package)
-    args = ["uv", "pip", "install", "--no-cache", package]
+    args = ["uv", "pip", "install", "--no-cache"]
+    if upgrade:
+        args += ["--upgrade-package", package.split("[", 1)[0]]
+    args.append(package)
     return_code, output = await check_output(*args)
     if return_code != 0:
         msg = f"Failed to install package {package}\n{output.decode()}"
