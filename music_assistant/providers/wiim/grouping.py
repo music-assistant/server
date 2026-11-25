@@ -164,9 +164,7 @@ class NativeGroupCoordinator:
         devices are only paired when they share a known, matching router-based multiroom
         generation, so the UI never offers a generic pair that the command path would then
         reject. Cross-backend generation cannot be known without a device read, so those pairs
-        stay candidates and fail closed at command time if incompatible. A player that leads a
-        native set (a stereo pair made in the app) can lead a group but is offered to no other
-        player, as joining another leader takes the set apart.
+        stay candidates and fail closed at command time if incompatible.
 
         :param player: The player requesting its grouping candidates.
         """
@@ -182,7 +180,6 @@ class NativeGroupCoordinator:
             and peer.protocol_id != player.protocol_id
             and not self._is_unknown_leader_follower(peer.protocol_id)
             and not self.is_native_set_member(peer.protocol_id)
-            and not self._leads_native_set(peer.protocol_id)
             and self._offerable_pair(player, peer)
         }
 
@@ -496,7 +493,7 @@ class NativeGroupCoordinator:
         :param leader: The leader the member would join.
         :param member: The member that would join the leader.
         """
-        if self._leads_native_set(member.protocol_id):
+        if self.channel_layout_of(member.protocol_id) is not None:
             raise PlayerCommandFailed(
                 f"Cannot add {member.display_name} to {leader.display_name}: a stereo pair or "
                 "other speaker set can only lead a group, "
@@ -603,10 +600,6 @@ class NativeGroupCoordinator:
             self.role_of(player_id) == NativeGroupRole.FOLLOWER
             and self.leader_of(player_id) is None
         )
-
-    def _leads_native_set(self, player_id: str) -> bool:
-        """Return whether a player leads a native set (a stereo pair made in the app)."""
-        return player_id in self._layout
 
     def _offerable_pair(self, player: NativePlayer, peer: NativePlayer) -> bool:
         """
@@ -720,10 +713,10 @@ class NativeGroupCoordinator:
             for player_id in registered
             if role[player_id] == NativeGroupRole.FOLLOWER and player_id not in reverse
         }
-        # a change in which players follow an undiscovered leader or lead a native set flips
-        # every peer's can_group_with (those players are excluded there), so all players must
+        # a change in which players follow an undiscovered leader flips every peer's
+        # can_group_with (those followers are excluded there), so all players must
         # re-publish; otherwise only those whose own role/membership actually changed.
-        if old_unknown != new_unknown or old_layout.keys() != layout.keys():
+        if old_unknown != new_unknown:
             changed_ids = list(registered)
         else:
             changed_ids = [

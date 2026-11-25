@@ -409,40 +409,6 @@ class TestPairLeadsOnly:
         )
         return provider.native_groups, provider, left, third
 
-    async def test_the_pair_is_offered_to_no_other_speaker_but_offers_them(self) -> None:
-        """The pair's leader is no candidate of another speaker, its own candidates stay."""
-        coordinator, _, left, third = self._speakers(_pair_alone())
-        await coordinator.refresh_leader(left, force=True)
-
-        assert LEFT_ID not in coordinator.can_group_with(third)
-        assert THIRD_ID in coordinator.can_group_with(left)
-
-    async def test_speakers_without_a_pair_offer_each_other(self) -> None:
-        """Two speakers that make no pair offer each other both ways."""
-        coordinator, _, left, third = self._speakers([])
-        await coordinator.refresh_leader(left, force=True)
-
-        assert LEFT_ID in coordinator.can_group_with(third)
-        assert THIRD_ID in coordinator.can_group_with(left)
-
-    async def test_every_speaker_republishes_when_a_pair_appears_or_is_taken_apart(
-        self,
-    ) -> None:
-        """Another speaker re-publishes its candidates when the pair is made or taken apart."""
-        coordinator, _, left, third = self._speakers([])
-        client = left.make_command_client.return_value
-        await coordinator.refresh_leader(left, force=True)
-
-        third.on_native_group_update.reset_mock()
-        _read(client, "master", _pair_alone())
-        await coordinator.refresh_leader(left, force=True)
-        third.on_native_group_update.assert_called_once_with()
-
-        third.on_native_group_update.reset_mock()
-        _read(client, "solo", [])
-        await coordinator.refresh_leader(left, force=True)
-        third.on_native_group_update.assert_called_once_with()
-
     @pytest.mark.parametrize("backend", [BACKEND_OFFICIAL, BACKEND_GENERIC])
     async def test_adding_the_pair_to_another_speaker_is_refused_untouched(
         self, backend: str
