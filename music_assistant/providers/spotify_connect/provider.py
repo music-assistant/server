@@ -1207,6 +1207,20 @@ class SpotifyConnectProvider(PluginProvider):
                 )
             )
 
+    def _handle_connection_lost(self, daemon: _PlayerDaemon) -> None:
+        """
+        Reset the session state of a backend whose Spotify session is gone (e.g. daemon exit).
+
+        :param daemon: The daemon whose backend lost its session.
+        """
+        # a dead/restarting backend must not be treated as active and controllable;
+        # a fresh 'active' event re-establishes it. As for a pause, a re-sync still
+        # running is cancelled.
+        self._set_play_state(daemon, playing=False)
+        daemon.spotify_session_active = False
+        # stale options must not outlive the session they belong to
+        daemon.last_playback_options = None
+
     async def _handle_backend_event(self, daemon: _PlayerDaemon, event: BackendEvent) -> None:
         """Dispatch a single normalized event received from a daemon's backend."""
         if daemon.stop_called:
@@ -1215,14 +1229,7 @@ class SpotifyConnectProvider(PluginProvider):
             # late event of its dying backend
             return
         if event.type is BackendEventType.CONNECTION_LOST:
-            # The backend's Spotify session is gone (e.g. daemon exit). Reset
-            # session state so a dead/restarting backend isn't treated as active
-            # and controllable; a fresh 'active' event re-establishes it. As for a
-            # pause, a re-sync still running is cancelled.
-            self._set_play_state(daemon, playing=False)
-            daemon.spotify_session_active = False
-            # stale options must not outlive the session they belong to
-            daemon.last_playback_options = None
+            self._handle_connection_lost(daemon)
             return
         if event.type is BackendEventType.FATAL_ERROR:
             self._handle_fatal_error(daemon, event)
