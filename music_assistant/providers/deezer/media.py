@@ -244,6 +244,11 @@ class DeezerMediaManager:
             if node.id in audiobook_ids
         ]
 
+    @use_cache(BOOKMARKS_CACHE_SECONDS)
+    async def get_podcast_bookmarks(self) -> dict[str, tuple[bool, int, str]]:
+        """Return the account's podcast episode bookmarks as (played, position in ms, saved at)."""
+        return await fetch_all_bookmarks(self.provider.gql_client)
+
     # -- Pagination helper --
 
     async def _iter_paged(
@@ -758,11 +763,6 @@ class DeezerMediaManager:
                 ep.fully_played, ep.resume_position_ms, bookmarked_at = bookmarks[ep.item_id]
                 ep.resume_position_timestamp = parse_bookmark_time(bookmarked_at)
             yield ep
-
-    @use_cache(BOOKMARKS_CACHE_SECONDS)
-    async def get_podcast_bookmarks(self) -> dict[str, tuple[bool, int, str]]:
-        """Return the account's podcast episode bookmarks as (played, position in ms, saved at)."""
-        return await fetch_all_bookmarks(self.provider.gql_client)
 
     @use_cache(3600)
     async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
