@@ -21,7 +21,7 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players.controller import PlayerController
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import SOURCE_AIRPLAY, SOURCE_MUSIC_ASSISTANT
-from music_assistant.providers.sonos.player import SonosPlayer
+from music_assistant.providers.sonos.player import SUPPORTED_FEATURES, SonosPlayer
 from tests.common import MockProvider, mock_player_mass
 
 if TYPE_CHECKING:
@@ -47,6 +47,8 @@ def _mass() -> MagicMock:
     mass = mock_player_mass()
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.streams.get_announcement_duration = AsyncMock(return_value=3)
+    # a speaker as it comes gets no track as a file
+    mass.streams.serves_as_file = MagicMock(return_value=False)
     mass.players = PlayerController(mass)
     queues = PlayerQueuesController.__new__(PlayerQueuesController)
     queues.mass = mass
@@ -535,6 +537,80 @@ async def test_play_after_we_stopped_our_queue_resumes_it(
     assert mass.players.get_active_queue(_player(player)) is queue
     resume.assert_awaited_once_with(SPEAKER_PLAYER)
     cast("MagicMock", player.client).api.playback.play.assert_not_awaited()
+
+
+async def _play_a_file(mass: MagicMock, player: SonosPlayer) -> SonosGroup:
+    """Start our queue on a speaker that gets its tracks as a file, and let it play."""
+    mass.streams.serves_as_file.return_value = True
+    group = await _play_our_queue(mass, player)
+    _update(mass, player)
+    return group
+
+
+async def test_a_speaker_paused_in_a_file_reads_as_paused_and_plays_on() -> None:
+    """Test a pause in a track the speaker gets as a file is a pause, which play ends."""
+    mass = _mass()
+    player = _speaker(mass)
+    # what a speaker can do is collected at its setup, which this speaker did not run
+    player._attr_supported_features = set(SUPPORTED_FEATURES)
+    group = await _play_a_file(mass, player)
+    resume = AsyncMock()
+    mass.player_queues.resume = resume
+
+    # paused on the speaker itself, in the Sonos app or by Music Assistant
+    _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
+    queue = _update(mass, player)
+
+    assert _player(player).playback_state == PlaybackState.PAUSED
+    assert queue.active is True
+    assert queue.state == PlaybackState.PAUSED
+    # the queue stops a pause that outlasts the pause timeout
+    assert f"watch_pause_{SPEAKER_PLAYER}" in [
+        call.kwargs.get("task_id") for call in mass.create_task.call_args_list
+    ]
+
+    await mass.players.cmd_play(SPEAKER_PLAYER)
+
+    cast("MagicMock", player.client).api.playback.play.assert_awaited_once()
+    resume.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reported", ["during the stop", "after the stop"])
+async def test_a_speaker_stopped_in_a_file_reads_as_idle(reported: str) -> None:
+    """Test a stop is no pause, though the speaker reports it as one in the file it played."""
+    mass = _mass()
+    player = _speaker(mass)
+    group = await _play_a_file(mass, player)
+    states: list[PlaybackState | None] = []
+
+    def _report_paused(*_args: object) -> None:
+        _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
+        _update(mass, player)
+        states.append(_player(player).playback_state)
+
+    if reported == "during the stop":
+        _session_api(player).leave_session.side_effect = _report_paused
+    await mass.players.cmd_stop(SPEAKER_PLAYER)
+    if reported == "after the stop":
+        _report_paused()
+
+    assert states == [PlaybackState.IDLE]
+    assert _player(player).playback_state == PlaybackState.IDLE
+
+
+async def test_a_stop_ends_a_pause_in_a_file_without_a_report_of_the_speaker() -> None:
+    """Test a paused speaker is idle once stopped: it reports nothing new for the stop."""
+    mass = _mass()
+    player = _speaker(mass)
+    group = await _play_a_file(mass, player)
+    _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
+    _update(mass, player)
+    assert _player(player).playback_state == PlaybackState.PAUSED
+
+    await mass.players.cmd_stop(SPEAKER_PLAYER)
+
+    _session_api(player).leave_session.assert_awaited_once_with(OUR_SESSION)
+    assert _player(player).playback_state == PlaybackState.IDLE
 
 
 async def test_play_on_a_member_after_its_group_stopped_resumes_the_queue() -> None:
