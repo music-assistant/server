@@ -143,6 +143,8 @@ async def test_a_remaster_finds_the_similar_tracks_of_the_original(
     provider = Mock(spec=MusicProvider)
     provider.name = provider.instance_id = "spotify--test"
     provider.domain = "spotify"
+    provider.available = True
+    provider.is_streaming_provider = True
     provider.supported_features = {ProviderFeature.SEARCH, ProviderFeature.SIMILAR_TRACKS}
     provider.get_similar_tracks = AsyncMock(return_value=[something])
 
