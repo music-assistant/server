@@ -1418,15 +1418,16 @@ async def test_an_item_added_after_the_speaker_read_its_window_is_not_received()
     assert player.has_received_next_item(queues.items[1])
 
 
-async def test_an_item_the_window_holds_at_another_position_is_not_received() -> None:
-    """The speaker holds its window by position, so an item that moved since is not held."""
+async def test_an_item_that_replaced_one_the_window_holds_is_received() -> None:
+    """The speaker holds its window by position, so a replaced item there is not fetched cold."""
     player, queues = _make_player([_make_queue_item(f"track{i}") for i in range(4)])
     await _read_window(player, "track0@0")
-    queues.items.insert(1, _make_queue_item("guest"))
+    queues.items[1:] = [_make_queue_item(f"new{i}") for i in range(1, 6)]
 
-    # the window named track1 where the guest is now, and track2 where track1 is now
-    assert not player.has_received_next_item(queues.items[1])
-    assert not player.has_received_next_item(queues.items[2])
+    assert player.has_received_next_item(queues.items[1])
+    assert player.has_received_next_item(queues.items[3])
+    # the new tracks are more than the ones they replace: the last position is not held
+    assert not player.has_received_next_item(queues.items[4])
 
 
 async def test_a_window_read_before_the_current_load_is_not_received() -> None:
