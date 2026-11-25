@@ -412,11 +412,11 @@ async def realtime_pcm_pacer(
             await asyncio.sleep(expected_elapsed - actual_elapsed)
 
 
-async def audio_source_silence_keepalive(
+async def audio_source_silence_keepalive(  # noqa: PLR0915
     inner: AsyncGenerator[bytes],
     pcm_format: AudioFormat,
     silence_chunk_ms: int = 100,
-    idle_threshold_s: float | None = None,
+    idle_threshold_s: float = 0.3,
 ) -> AsyncGenerator[bytes]:
     """
     Wrap a live AudioSource PCM stream and emit silence during idle gaps.
@@ -424,8 +424,8 @@ async def audio_source_silence_keepalive(
     Plugin providers exposing an AudioSource may stop yielding bytes while the
     upstream device is paused (e.g. user paused in the Spotify app). Without
     bytes flowing the downstream consumer (ffmpeg / the player) may disconnect.
-    This wrapper inserts ``silence_chunk_ms`` worth of zero bytes whenever the
-    inner generator hasn't produced for ``idle_threshold_s`` seconds, while
+    Once the inner generator hasn't produced for ``idle_threshold_s`` seconds,
+    this wrapper emits zero bytes at realtime for the whole idle period, while
     relaying real bytes immediately when they arrive.
 
     Only meaningful for PCM streams — injecting raw zero bytes into a compressed
@@ -437,11 +437,9 @@ async def audio_source_silence_keepalive(
         silence chunk so it lines up to a frame boundary).
     :param silence_chunk_ms: Duration of each silence chunk in milliseconds.
     :param idle_threshold_s: Seconds without input before silence is inserted.
-        Defaults to the chunk duration so silence flows at realtime — critical
-        for keeping HTTP consumers (Sonos, Chromecast) connected.
+        The default rides out short event loop stalls without injecting
+        silence into a live source.
     """
-    if idle_threshold_s is None:
-        idle_threshold_s = silence_chunk_ms / 1000
     frame_size = pcm_format.channels * (pcm_format.bit_depth // 8)
     bytes_per_second = (
         pcm_format.sample_rate * frame_size if pcm_format.content_type.is_pcm() else 0
@@ -476,14 +474,31 @@ async def audio_source_silence_keepalive(
         else:
             await queue.put(None)
 
+    chunk_s = silence_bytes / bytes_per_second
+    loop = asyncio.get_running_loop()
     producer_task = asyncio.create_task(_producer())
     try:
+        last_audio = loop.time()
+        silence_sent_s = 0.0
         while True:
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=idle_threshold_s)
-            except TimeoutError:
-                yield silence_chunk
-                continue
+            if not queue.empty():
+                # wait_for with a zero timeout cancels the get before it reads a queued item
+                item = queue.get_nowait()
+            else:
+                # After the threshold, silence catches up with idle time one chunk per wait.
+                due = silence_sent_s + chunk_s if silence_sent_s else idle_threshold_s
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=max(0.0, last_audio + due - loop.time())
+                    )
+                except TimeoutError:
+                    # after a loop stall the producer may have queued audio during the timeout
+                    if queue.empty():
+                        yield silence_chunk
+                        silence_sent_s += chunk_s
+                    continue
+            last_audio = loop.time()
+            silence_sent_s = 0.0
             if item is None:
                 break
             if isinstance(item, Exception):
