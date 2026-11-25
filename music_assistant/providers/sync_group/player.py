@@ -1701,6 +1701,8 @@ class SyncGroupPlayer(PlayerProtocol):
         # them, so they are briefly without a leader until step 2 picks them back up.
         if session is not None:
             await session.set_members(player_ids_to_remove=[session.protocol_id])
+            # it plays nothing anymore, so its own protocol is its output again
+            self.mass.players.schedule_active_output_protocol_clear(old_leader)
 
         # 2. New leader's protocol takes over ownership tracking of the
         # remaining members. The members are already in the live session at the
