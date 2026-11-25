@@ -216,7 +216,13 @@ class GoLibrespotBackend(SpotifyConnectBackend):
     async def deactivate(self) -> None:
         """Release this device as the active Spotify Connect device."""
         assert self._client is not None
-        await self._client.stop()
+        # go-librespot handles a stop only between two writes of its audio, and once
+        # nothing reads the pipe it hangs in such a write: keep reading until it stopped
+        discard_task = self.mass.create_task(self._discard_audio())
+        try:
+            await self._client.stop()
+        finally:
+            discard_task.cancel()
 
     async def next(self) -> None:
         """Skip to the next track."""
@@ -392,6 +398,13 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         """Translate a single go-librespot websocket event and emit it normalized."""
         self.logger.debug("Received event [%s]: %s %s", self.name, event_type, data)
         await self._event_callback(self._translate_event(event_type, data))
+
+    async def _discard_audio(self) -> None:
+        """Read and drop the daemon's audio until it exits."""
+        if (read_chunk := self.get_audio_reader()) is None:
+            return
+        while await read_chunk():
+            pass
 
     def _translate_event(self, event_type: str, data: dict[str, Any]) -> BackendEvent:
         """Map a raw go-librespot event onto the normalized BackendEvent model."""
