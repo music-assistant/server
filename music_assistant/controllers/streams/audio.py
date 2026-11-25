@@ -499,6 +499,25 @@ def _take_source_length(
     return False
 
 
+def _confirmed_source_length(ffmpeg_proc: FFMpeg, delivered_seconds: float) -> int | None:
+    """
+    Return the length ffmpeg read from the source, where a finished stream can be judged by it.
+
+    :param ffmpeg_proc: The process that has read the source.
+    :param delivered_seconds: Media-time delivered, counted from the start of the item.
+    """
+    length = ffmpeg_proc.parsed_duration
+    if (
+        length
+        and ffmpeg_proc.duration_estimated
+        and abs(delivered_seconds - length) > _duration_tolerance(length)
+    ):
+        # an estimate is exact at a constant bitrate and far off otherwise, so it only
+        # counts when the delivered audio ends on it
+        return None
+    return length
+
+
 def _store_measured_duration(
     streamdetails: StreamDetails,
     delivered_seconds: float,
@@ -5491,12 +5510,11 @@ class StreamsAudio:
                 and seconds_received
                 and (ffmpeg_seek_position or not requested_seek_position)
             ):
+                delivered_seconds = ffmpeg_seek_position + seconds_received
                 _store_measured_duration(
                     streamdetails,
-                    ffmpeg_seek_position + seconds_received,
-                    source_duration=(
-                        None if ffmpeg_proc.duration_estimated else ffmpeg_proc.parsed_duration
-                    ),
+                    delivered_seconds,
+                    source_duration=_confirmed_source_length(ffmpeg_proc, delivered_seconds),
                     duration_estimated=duration_estimated,
                 )
 

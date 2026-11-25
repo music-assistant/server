@@ -1682,17 +1682,35 @@ async def test_get_media_stream_does_not_take_an_estimated_source_length_as_the_
     estimated: bool,
     expected: int,
 ) -> None:
-    """A length that ffmpeg only guessed does not make a source that stops there complete."""
+    """A length that ffmpeg only guessed does not make a source that stops past it complete."""
     streamdetails = _multi_part_streamdetails()
     audio = _make_audio_controller()
     fake_stream, _ = _recording_multi_file_stream()
     monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
-    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 120)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 100)
     monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", estimated)
 
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
 
     assert streamdetails.duration == expected
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_takes_an_estimated_source_length_the_playthrough_ends_on(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A file that ends on the length ffmpeg estimated for it is shorter than declared."""
+    streamdetails = _multi_part_streamdetails()
+    audio = _make_audio_controller()
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 120)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", True)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == 120
 
 
 @pytest.mark.parametrize(("estimated", "expected"), [(False, 3500), (True, 3600)])
