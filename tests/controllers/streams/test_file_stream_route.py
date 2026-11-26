@@ -13,7 +13,13 @@ import numpy as np
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer, make_mocked_request
-from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    RepeatMode,
+    StreamType,
+)
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
@@ -159,7 +165,9 @@ class _Rig:
         self.queue_item.streamdetails.seek_position = seek_position
         self.queue_item.streamdetails.buffer = self.buffer
         self.queue_data = PlayerQueueData(
-            queue=MagicMock(queue_id=QUEUE_ID, display_name="Queue"),
+            queue=MagicMock(
+                queue_id=QUEUE_ID, display_name="Queue", repeat_mode=RepeatMode.OFF, items=3
+            ),
             items=[self.queue_item],
             session_id=SESSION_ID,
         )
@@ -179,6 +187,7 @@ class _Rig:
         for name in (
             "serves_as_file",
             "stream_url_serves_as_file",
+            "_select_item_crossfade_mode",
             "_serve_file",
             "_send_file_part",
             "_encode_file",
@@ -726,6 +735,21 @@ async def test_a_stream_ends_when_its_session_is_no_longer_current(rig: _Rig) ->
     assert not resp.keep_alive
 
 
+def _repeat(rig: _Rig, repeat_mode: RepeatMode, *, crossfade: bool, items: int = 1) -> None:
+    """
+    Let the queue of a rig repeat.
+
+    :param rig: The rig.
+    :param repeat_mode: What the queue repeats.
+    :param crossfade: Whether the queue fades its tracks into each other.
+    :param items: The number of items of the queue.
+    """
+    queue = rig.queue_data.queue
+    queue.repeat_mode, queue.items = repeat_mode, items
+    if crossfade:
+        rig.ctrl.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+
+
 @pytest.mark.parametrize(
     ("change", "served_as_file"),
     [
@@ -735,19 +759,25 @@ async def test_a_stream_ends_when_its_session_is_no_longer_current(rig: _Rig) ->
         (lambda rig: setattr(rig.queue_item.streamdetails, "media_type", MediaType.RADIO), False),
         (lambda rig: rig.queue_item.extra_attributes.update(playback_speed=1.25), False),
         (lambda rig: rig.queue_item.extra_attributes.update(playback_speed=1.0), True),
+        # a track that is mixed with its neighbours is a file as well
         (
             lambda rig: setattr(
                 rig.ctrl.get_crossfade_mode, "return_value", CrossfadeMode.STANDARD_CROSSFADE
             ),
-            False,
+            True,
         ),
         (
             lambda rig: setattr(
                 rig.ctrl.get_crossfade_mode, "return_value", CrossfadeMode.SMART_CROSSFADE
             ),
-            False,
+            True,
         ),
-        (lambda rig: setattr(rig.ctrl.audio.fade_into_pending, "return_value", True), False),
+        (lambda rig: setattr(rig.ctrl.audio.fade_into_pending, "return_value", True), True),
+        # a track that repeats is a file, unless the play before it left its mixes in that file
+        (lambda rig: _repeat(rig, RepeatMode.ONE, crossfade=False), True),
+        (lambda rig: _repeat(rig, RepeatMode.ONE, crossfade=True), False),
+        (lambda rig: _repeat(rig, RepeatMode.ALL, crossfade=True, items=2), False),
+        (lambda rig: _repeat(rig, RepeatMode.ALL, crossfade=True, items=3), True),
         (lambda rig: setattr(rig.queue_item.streamdetails, "fade_in", True), False),
         (lambda rig: setattr(rig.queue_item.streamdetails, "tail_overlap", Mock()), False),
         (lambda rig: setattr(rig.queue_item.streamdetails, "allow_seek", False), False),
@@ -765,6 +795,10 @@ async def test_a_stream_ends_when_its_session_is_no_longer_current(rig: _Rig) ->
         "crossfade",
         "smart-fade",
         "fade-into-the-item-pending",
+        "repeat-one",
+        "repeat-one-with-crossfade",
+        "repeat-of-two-with-crossfade",
+        "repeat-of-three-with-crossfade",
         "fade-in",
         "voice-over",
         "not-seekable",
@@ -773,7 +807,7 @@ async def test_a_stream_ends_when_its_session_is_no_longer_current(rig: _Rig) ->
     ],
 )
 def test_what_is_served_as_a_file(rig: _Rig, change: Any, served_as_file: bool) -> None:
-    """Only a plain track at normal speed, as nothing is mixed into it, is served as a file."""
+    """Only a track at normal speed, without a fade-in or a voice-over, is served as a file."""
     change(rig)
 
     assert rig.ctrl.serves_as_file(rig.player, rig.queue_item, ContentType.WAV) is served_as_file

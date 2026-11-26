@@ -19,7 +19,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Seque
 from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urljoin, urlparse
 from weakref import WeakValueDictionary
 
@@ -115,6 +115,7 @@ from music_assistant.controllers.streams.audio_buffer import (
     AudioBuffer,
     AudioNotWanted,
     BufferUser,
+    read_position_ms,
 )
 from music_assistant.controllers.streams.audio_processing import (
     AudioOutputPlan,
@@ -337,6 +338,25 @@ class CrossfadeHandover:
             with suppress(Exception):
                 await self.source.aclose()
             self.source = None
+
+
+class ItemStreamMarks(Protocol):
+    """Takes the two points that divide the stream of a queue item with a fade at either end."""
+
+    def lead_in_ended(self, size: int, position_ms: int) -> None:
+        """
+        Take the point where the fade into the item ends and its own audio goes on.
+
+        :param size: The bytes the stream has yielded up to this point.
+        :param position_ms: The position in the item its own audio goes on from.
+        """
+
+    def source_read_out(self, size: int) -> None:
+        """
+        Take the point from where the stream yields the held tail of the item and its fade out.
+
+        :param size: The bytes the stream has yielded up to this point.
+        """
 
 
 def _snap_supported_rate_up(target: int, supported_sample_rates: list[int]) -> int:
@@ -1995,7 +2015,7 @@ class StreamsAudio:
                 analysis_tap.stop()
             streamdetails.seconds_streamed = bytes_received / pcm_format.pcm_sample_size
 
-    async def get_queue_item_stream(  # noqa: C901, PLR0912
+    async def get_queue_item_stream(  # noqa: C901, PLR0912, PLR0913
         self,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
@@ -2007,6 +2027,7 @@ class StreamsAudio:
         prepared_buffer: AudioBuffer | None = None,
         exact_seek: bool = False,
         consumer_connected: Callable[[], bool] | None = None,
+        seek_position_ms: int | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get the (PCM) audio stream for a single queue item.
@@ -2028,9 +2049,13 @@ class StreamsAudio:
         :param consumer_connected: Reports whether the consumer of this stream is still
             connected; once it reports False before the source is opened, the stream ends
             without audio and without marking the item.
+        :param seek_position_ms: The position to start at in whole milliseconds, read
+            exactly; takes the place of ``seek_position``.
         """
         streamdetails = queue_item.streamdetails
         assert streamdetails
+        if seek_position_ms is not None:
+            seek_position, exact_seek = seek_position_ms / 1000, True
 
         # streamdetails are cached and reused for retries; reset this before any
         # media-type-specific dispatch so AudioSource failures do not stick.
@@ -2105,7 +2130,8 @@ class StreamsAudio:
             # get or create the AudioBuffer (stores raw decoded PCM). This runs before the
             # filters are built because a source-capacity reselection can hand back another
             # provider's streamdetails, which everything below must then work with.
-            seek_position_ms = int(seek_position * 1000)
+            if seek_position_ms is None:
+                seek_position_ms = int(seek_position * 1000)
             audio_buffer: AudioBuffer | None
             try:
                 if prepared_buffer is not None:
@@ -2349,6 +2375,8 @@ class StreamsAudio:
         standard_crossfade_duration: int = 10,
         session_id: str | None = None,
         consumer_connected: Callable[[], bool] | None = None,
+        start_ms: int | None = None,
+        marks: ItemStreamMarks | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Return one queue item with a crossfade into the next item.
@@ -2364,6 +2392,11 @@ class StreamsAudio:
         :param consumer_connected: Reports whether the consumer of this stream is still
             connected; once it reports False, no source is opened for the item and no
             fade into the next item is prepared.
+        :param start_ms: The position in the item to go on from, for a stream that takes
+            over where another stream of the item was left: it plays no fade into the
+            item, reports none and stores no duration.
+        :param marks: Takes the points where the fade into the item ends and where the
+            held tail of the item starts.
         """
         queue = self.mass.player_queues.get(queue_item.queue_id)
         if not queue:
@@ -2374,9 +2407,14 @@ class StreamsAudio:
         # Popped only when it is this item's: the mix continuation is a one-shot
         # generator, so a duplicate prefetch of the same url must not consume its
         # twin's audio - while a request for another item must not steal (and
-        # close) a boundary that still belongs to the item after it.
-        handover = await self._claim_crossfade_handover(queue, queue_item, session_id)
-        if handover is None and not streamdetails.seek_position:
+        # close) a boundary that still belongs to the item after it. A stream that
+        # goes on mid-item leaves it to the stream of the item's start.
+        handover = (
+            None
+            if start_ms is not None
+            else await self._claim_crossfade_handover(queue, queue_item, session_id)
+        )
+        if handover is None and start_ms is None and not streamdetails.seek_position:
             # the outgoing stream may still be building this item's fade. A seek
             # discards the fade below either way, and waiting for one would only
             # hold the response open on audio that is about to be thrown away.
@@ -2412,15 +2450,16 @@ class StreamsAudio:
         )
         # report the fade this item was actually faded into; the fade leaving it is
         # only known once the next item's overlap has been selected further down
-        self._report_crossfade_mode(
-            queue.queue_id,
-            queue_item,
-            pcm_format,
-            handover.crossfade_mode if handover else CrossfadeMode.DISABLED,
-            session_id,
-            # only radio carries an overlay outside flow mode, and radio never takes this path
-            overlay_enabled=False,
-        )
+        if start_ms is None:
+            self._report_crossfade_mode(
+                queue.queue_id,
+                queue_item,
+                pcm_format,
+                handover.crossfade_mode if handover else CrossfadeMode.DISABLED,
+                session_id,
+                # only radio carries an overlay outside flow mode, and radio never takes this path
+                overlay_enabled=False,
+            )
 
         # Passes chunks straight through until the source has delivered the whole
         # item (the hold target is zero until buffer EOF); from that moment it
@@ -2512,6 +2551,13 @@ class StreamsAudio:
             handover = None
         else:
             discard_position = float(streamdetails.seek_position)
+        if start_ms is not None:
+            discard_position, exact_buffer_seek = start_ms / 1000, True
+        elif marks is not None:
+            # the position the buffer cuts the item's own audio at
+            marks.lead_in_ended(
+                bytes_written, read_position_ms(int(discard_position * 1000), exact_buffer_seek)
+            )
         # a repeat of this item loads its details again while this pass still streams
         start_position = streamdetails.seek_position
 
@@ -2529,6 +2575,7 @@ class StreamsAudio:
             session_id=session_id,
             exact_seek=exact_buffer_seek,
             consumer_connected=consumer_connected,
+            seek_position_ms=start_ms,
         )
         try:
             async for chunk in item_stream:
@@ -2541,14 +2588,17 @@ class StreamsAudio:
                 if len(tail_window) <= hold_target:
                     await asyncio.sleep(0)
                     continue
-                # yield everything above the window; the slice can run short of a
-                # whole second when the window is small, so credit what is actually
-                # yielded - a nominal full-second credit inflates the play log and
-                # the reported duration
-                while len(tail_window) > hold_target:
-                    pcm_slice = bytes(tail_window[: pcm_format.pcm_sample_size])
+                # yield everything above the window, in whole frames, so the window is
+                # cut at exactly its size however the audio came in; a slice can run
+                # short of a whole second, so credit what is actually yielded - a
+                # nominal full-second credit inflates the play log and the reported
+                # duration
+                excess = (len(tail_window) - hold_target) // frame_size * frame_size
+                while excess > 0:
+                    pcm_slice = bytes(tail_window[: min(excess, pcm_format.pcm_sample_size)])
                     yield pcm_slice
                     bytes_written += len(pcm_slice)
+                    excess -= len(pcm_slice)
                     del tail_window[: len(pcm_slice)]
                     await asyncio.sleep(0)
 
@@ -2560,6 +2610,8 @@ class StreamsAudio:
                 return
 
             #### HANDLE END OF TRACK
+            if marks is not None:
+                marks.source_read_out(bytes_written)
 
             # get next track for crossfade; without a fade out of this item, the next
             # item's own request loads it
@@ -2882,7 +2934,7 @@ class StreamsAudio:
         # an externally aborted source ends in a clean EOF mid-track, so the
         # streamed length must not be written back as the item's duration
         source_buffer = source_buffer or streamdetails.buffer
-        if source_buffer is None or not source_buffer.cancelled:
+        if start_ms is None and (source_buffer is None or not source_buffer.cancelled):
             uncredited_tail_seconds = uncredited_tail_bytes / pcm_format.pcm_sample_size
             # streamdetails.duration is in media-time; seconds_streamed is stream-time
             # (post-atempo), so we scale by playback_speed to recover media-time.

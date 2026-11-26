@@ -63,6 +63,7 @@ controllers/streams/
   stream_sources.py    - Ranking of the copies of a media item (local file, streaming accounts) in the order they are tried
   audio_buffer.py      - AudioBuffer: in-memory PCM audio buffering with seek support
   file_stream.py       - FileStream: a track as a WAV file with a declared length, for players that fetch files
+  mixed_track.py       - MixedTrack: the stream of a track with the mixes it starts and ends with, kept so a file can be cut from it
   audio_analysis.py    - AudioAnalysisController: analysis storage (audio_analysis.db) and scheduling
   audio_analysis_codec.py - Packed on-disk format of an analysis record (JSON header plus binary array payload)
   audio_analysis_database.py - AudioAnalysisDatabaseMixin: connection, schema version and quarantine of audio_analysis.db
@@ -215,13 +216,24 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 
 ### A Track as a File
 
-A player that is built around files (`PlayerProtocol.fetches_files`) wants the length of a track up front, and pauses, resumes and seeks by asking for a part of the file. For such a player `serve_queue_item_stream` serves a track as a WAV file: a `Content-Length`, `Accept-Ranges: bytes`, and a `206` for a `Range` request. `StreamsController.serves_as_file` decides: a track with a known duration, WAV as output codec, normal playback speed, and nothing mixed into its stream (no crossfade, no fade-in). Everything else keeps the stream without a length.
+A player that is built around files (`PlayerProtocol.fetches_files`) wants the length of a track up front, and pauses, resumes and seeks by asking for a part of the file. For such a player `serve_queue_item_stream` serves a track as a WAV file: a `Content-Length`, `Accept-Ranges: bytes`, and a `206` for a `Range` request. `StreamsController.serves_as_file` decides: a track with a known duration, WAV as output codec, normal playback speed, no fade-in and no declared tail overlap. Everything else keeps the stream without a length.
 
 - The file is virtual. Every request that needs audio gets an encode of its own, read from the track's `AudioBuffer` at the position that belongs to the byte offset, and that encode ends with its connection. Nothing goes to disk; only the first megabyte of a file is kept in memory, because players ask for the start again before they resume or seek.
 - The same offset always gives the same audio. A player may put the bytes of different requests next to each other, so an encode starts on a whole second, one to two seconds before the part that is asked, and drops what comes before it: filters and resamplers have settled by then. What is left is dither, when the output goes from more bits to 16.
 - The declared length is exact when the track was decoded to its end before the first request, and else its duration plus a second. Audio that ends before the declared length just ends the body; from then on the file has its real size, and a request at or past it gets a `416` with that size. More audio than declared is cut off.
 - Pacing stays with ffmpeg, as for every stream. A file hands out 30 seconds of head start, 10 per encode, so the encodes after the third start at playback speed.
 - One encode runs per file: a request for another part ends the one before it. A player has three files at most, and they go when the queue stops.
+
+In a queue with crossfade or smart fades the stream of a track is more than the track: it starts with the end of the mix that the track before it began (the lead-in), and it ends with the first part of the mix into the track after it. `get_queue_item_stream_with_smartfade` makes those mixes once and live, as for every player. `MixedTrack` runs that stream as passes and keeps what the mixes yield, so a file can be cut from it:
+
+- A pass that plays the track from its start takes the fade into it, which becomes the lead-in of the file. The track's own audio goes to the request that drives the pass, at the pace of that request. From the moment the track is read to its end the pass runs on by itself: the held tail and the mix are kept as the end of the file, and the rest of the mix goes to the next track as for any stream.
+- A later request gets the lead-in and the end from memory, and the audio between them from the track's buffer. When the end has not been made yet it runs a pass of its own from its position (`start_ms`), which takes no fade into the track and stores no duration. A pass ends with its request, unless it is making a lead-in or an end.
+- The track's own audio is read from a whole number of seconds after the lead-in, one to two seconds before the audio that is asked: a whole frame in every format, so the same samples as in the pass from the start. The tail that is held back for a fade is cut at exactly the fade window, so every pass starts the fade at the same moment. A pass never starts inside that tail: a request into the last seconds of a track reads the track from before it, so the mix is the one a playthrough makes.
+- The file declares the track from its start to its end, and four seconds more with smart fades, which can slow the end of a track down. Once the fade into the track is known the size is what the fade left of the track, and once the end is made it is the real size. The body ends where the mix has taken over.
+- Kept as PCM, for the track that plays and the one after it: the lead-in and the end, each at most the fade window (8 seconds by default, 45 with smart fades).
+- A track that comes around again while its file is still kept (a queue that repeats one track, or two) would get the file of its play before, with those mixes in it. Such a queue keeps the stream without a length.
+
+An item that declares a tail overlap keeps the stream without a length. The track it plays into is a file that starts with that mix.
 
 ## Audio Analysis
 

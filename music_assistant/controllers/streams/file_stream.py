@@ -4,7 +4,8 @@ A track served to a player as a file.
 Some players are built around files: they want the length of a track up front, and they
 pause, resume and seek by asking for a part of the file. For such a player a track becomes
 a WAV file with a declared length. The file is virtual: every part is encoded while it is
-sent, and only the start of the file is kept in memory.
+sent, and only the start of the file is kept in memory. A track that is mixed with its
+neighbours also keeps the audio of those mixes, see `MixedTrack`.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
     from aiohttp import web
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.queue_item import QueueItem
+
+    from music_assistant.controllers.streams.mixed_track import MixedTrack
 
 # Bytes of the start of a file that are kept in memory. Players ask for the start again
 # before they resume or seek, and mostly drop that request.
@@ -36,6 +39,9 @@ RUN_IN_SECONDS: Final[int] = 1
 
 # The track that plays and its neighbours.
 MAX_FILES_PER_PLAYER: Final[int] = 3
+
+# The track that plays and the one after it: the files that keep the audio of their mixes.
+MAX_MIXED_FILES_PER_PLAYER: Final[int] = 2
 
 # Seconds a player gets to hang up, or to ask for another part, after the start of a file
 # was sent to it from memory.
@@ -134,6 +140,8 @@ class FileStream:
         self._head_start = HEAD_START_PER_FILE
         # the request an encode of this file runs for
         self.request: web.Request | None = None
+        # the stream the file is cut from, for a track that is mixed with its neighbours
+        self.mix: MixedTrack | None = None
 
     @property
     def has_audio_in_memory(self) -> bool:
@@ -179,6 +187,15 @@ class FileStream:
         second = max(data_offset // self.byte_rate - RUN_IN_SECONDS, 0)
         return second, data_offset - second * self.byte_rate
 
+    def offset_of(self, pcm_size: int) -> int:
+        """
+        Return the offset in the file where an amount of the audio it is read from ends.
+
+        :param pcm_size: Bytes of audio, in the PCM format the file reads.
+        """
+        frames = pcm_size * self.output_format.sample_rate // self.pcm_format.pcm_sample_size
+        return self.header_size + frames * self.byte_rate // self.output_format.sample_rate
+
     def end_at(self, size: int) -> None:
         """
         Set the real size of the file, when its audio ended before the declared size.
@@ -186,6 +203,11 @@ class FileStream:
         :param size: Offset in the file where the audio ended.
         """
         self.size = min(self.size, size)
+
+    def close(self) -> None:
+        """Give up what the file keeps of the stream it is cut from."""
+        if self.mix is not None:
+            self.mix.close()
 
 
 class FileKey(NamedTuple):
@@ -211,7 +233,18 @@ class FileStreams:
         :param player_id: The player that fetches the file.
         :param key: The track and the playback it belongs to.
         """
-        return self._files.get(player_id, {}).get(key)
+        files = self._files.get(player_id, {})
+        if (file := files.get(key)) is not None:
+            return file
+        # a fade into a track moves the position the track starts at
+        return next(
+            (
+                file
+                for known, file in files.items()
+                if file.mix is not None and known[:3] == key[:3]
+            ),
+            None,
+        )
 
     def add(self, player_id: str, key: FileKey, file: FileStream) -> None:
         """
@@ -226,7 +259,11 @@ class FileStreams:
         unread = [known for known, other in files.items() if other.request is None]
         files[key] = file
         for known in unread[: max(len(files) - MAX_FILES_PER_PLAYER, 0)]:
-            del files[known]
+            files.pop(known).close()
+        # the audio of a mix is only kept for the track that plays and the one after it
+        for known in list(files)[:-MAX_MIXED_FILES_PER_PLAYER]:
+            if files[known].mix is not None and known in unread:
+                files.pop(known).close()
 
     def release(self, queue_id: str, current_session_id: str | None) -> None:
         """
@@ -238,6 +275,6 @@ class FileStreams:
         for player_id, files in list(self._files.items()):
             for key in list(files):
                 if key.queue_id == queue_id and key.session_id != current_session_id:
-                    del files[key]
+                    files.pop(key).close()
             if not files:
                 del self._files[player_id]
