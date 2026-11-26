@@ -823,7 +823,14 @@ async def test_get_stream_source_named_pipe_with_readrate_pacing() -> None:
 
     assert source.stream_type is StreamType.NAMED_PIPE
     assert source.path == str(sink.fifo_path)
-    assert source.extra_input_args == ["-readrate", "1", "-readrate_initial_burst", "0.5"]
+    assert source.extra_input_args == [
+        "-readrate",
+        "1",
+        "-readrate_initial_burst",
+        "0.5",
+        "-readrate_catchup",
+        "1",
+    ]
 
 
 async def test_get_stream_source_stale_generation_raises_without_recovery() -> None:

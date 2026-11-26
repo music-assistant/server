@@ -68,14 +68,18 @@ a FIFO. The daemon is spawned with `PULSE_SERVER`/`PULSE_SINK` pointing at its s
 
 - `get_stream_source()` is a **pure read** (it also runs from queue preload): it returns
   the FIFO as a `NAMED_PIPE` source or raises when no usable sink exists. ffmpeg reads the
-  FIFO directly and is the single pacing owner (`-readrate` with a small initial burst).
+  FIFO directly and paces it (`-readrate` with a small initial burst, `-readrate_catchup 1`).
+  The streams controller caps the read-ahead against the time actually played and freezes
+  ffmpeg while the source is paused: Spotify counts what is read as played, so reading
+  ahead across pauses would move its clock ahead of what is heard.
 - A **generation watcher** detects a restarted pulse daemon and recreates the sink;
   recreation always respawns the soloist daemon (it holds the sink name in its spawn env).
 - Failed sink volume operations **fail closed**: sink and daemon are torn down and rebuilt
   rather than risking audio through a sink with an unknown gain.
-- The pipe-sink **never signals end of stream**, so `stream_ends_on_pause` is False: the
-  provider actively stops the MA player on a `PAUSED` event (bounded, replaced by a quick
-  resume). The sink renders only while a client is connected — it emits silence while the
+- The pipe-sink **never signals end of stream**, so `stream_ends_on_pause` is False: on a
+  `PAUSED` event the provider holds the stream and pauses the MA player in place, so it stays
+  on the source and resumes where it was paused. The core pause timeout stops a player that stays
+  paused; the Spotify session is kept, so play in the app starts it again. The sink renders only while a client is connected — it emits silence while the
   daemon holds its stream open and nothing at all once the daemon drops it, and suspending
   the sink does not produce an EOF either. A reader that outlives the pause blocks until
   the stall timeout, so MA must end the stream itself.

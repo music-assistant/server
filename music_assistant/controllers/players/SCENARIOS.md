@@ -2767,3 +2767,22 @@ does one that pauses before the speaker got to play it. A pause of a source that
   - `test_paused_live_source.py::test_a_source_that_plays_on_before_the_speaker_stopped_is_not_paused`
   - `test_paused_live_source.py::test_a_speaker_that_refuses_the_pause_is_not_paused`
   - `test_paused_live_source.py::test_a_pause_of_another_source_leaves_the_player_alone`
+
+### SOURCE-7 · A speaker that can pause stays connected and plays on at once
+
+Spotify is paused on the Kitchen speaker, which can pause itself. Its stream stays open and the
+speaker is paused, after 2 s when the pause comes from the Spotify app, so a track change does not
+pause it, and at once when it comes from Music Assistant. Play goes on from the same connection, at
+once, and in step with the Spotify app. After the pause timeout of 30 s the server stops the
+speaker: the source stays selected, so play in the Spotify app starts it again. A source that plays
+on within the pause timeout is not stopped, and neither is a source that was selected again during
+the pause. A speaker that cannot pause is stopped and shows as paused, as in SOURCE-1.
+
+- End-to-end: **possible with** Spotify Connect (Soloist) on an AirPlay speaker of the lab, paused
+  for a few seconds and for longer than the pause timeout.
+- Proven by:
+  - `tests/providers/spotify_connect/test_pause_in_place.py::test_a_pause_past_the_grace_pauses_the_player`
+  - `tests/providers/spotify_connect/test_pause_in_place.py::test_a_player_that_cannot_pause_shows_as_paused`
+  - `tests/controllers/player_queues/test_source_pause_timeout.py::test_a_paused_source_is_stopped_after_the_pause_timeout`
+  - `tests/controllers/player_queues/test_source_pause_timeout.py::test_a_source_resumed_within_the_pause_timeout_is_kept`
+  - `tests/controllers/player_queues/test_source_pause_timeout.py::test_a_source_replaced_during_the_pause_is_kept`

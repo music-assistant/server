@@ -335,9 +335,12 @@ class SoloistBackend(SpotifyConnectBackend):
         read here — (re)creation is owned by the daemon supervisor and the
         generation watcher.
 
-        ffmpeg reads the FIFO directly and is the single pacing owner:
-        ``-readrate 1`` paces the read to realtime with a small initial burst
-        as jitter headroom — nothing else may sleep-pace this audio path.
+        ffmpeg reads the FIFO directly and paces the read: ``-readrate 1`` to
+        realtime with a small initial burst as jitter headroom, and
+        ``-readrate_catchup 1`` so it never reads faster than realtime to catch
+        up after a pause. The streams controller only caps what ffmpeg reads
+        ahead of the time actually played, so the pauses don't move Spotify's
+        clock (which counts what is read) ahead of what is heard.
 
         :raises AudioError: No usable capture sink is currently available.
         """
@@ -348,7 +351,14 @@ class SoloistBackend(SpotifyConnectBackend):
         return BackendStreamSource(
             stream_type=StreamType.NAMED_PIPE,
             path=str(sink.fifo_path),
-            extra_input_args=["-readrate", "1", "-readrate_initial_burst", "0.5"],
+            extra_input_args=[
+                "-readrate",
+                "1",
+                "-readrate_initial_burst",
+                "0.5",
+                "-readrate_catchup",
+                "1",
+            ],
         )
 
     def get_audio_reader(self) -> AudioChunkReader | None:

@@ -12,6 +12,7 @@ carries its identity.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
@@ -45,6 +46,17 @@ if TYPE_CHECKING:
 # for SEEK/VOLUME, the enabled state for SHUFFLE, the RepeatMode for REPEAT,
 # None for plain transport actions
 type SourceControlValue = int | bool | RepeatMode | None
+
+
+class SourcePause(StrEnum):
+    """How a live AudioSource holds its audio while it is paused on purpose."""
+
+    # not paused: a source that delivers no audio has stalled
+    NONE = "none"
+    # paused while the player plays on: the stream keeps the player fed with silence
+    FILL_SILENCE = "fill_silence"
+    # paused together with the player: the stream waits without feeding it
+    HOLD = "hold"
 
 
 class MediaCatalogMixin(Provider):
@@ -383,6 +395,17 @@ class AudioSourceMixin(AudioStreamMixin):
         :param streamdetails: Stream details of the active AudioSource.
         """
         return None
+
+    def get_source_pause(self, streamdetails: StreamDetails) -> SourcePause:
+        """
+        Return how the live audio is held while paused on purpose, so silence is no stall.
+
+        A source that stops delivering audio while it is paused would otherwise be ended
+        as stalled after STREAM_STALL_TIMEOUT.
+
+        :param streamdetails: Stream details of the active AudioSource.
+        """
+        return SourcePause.NONE
 
     async def on_source_control(
         self,
