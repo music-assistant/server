@@ -1664,6 +1664,15 @@ async def test_refused_keys_unload_the_provider(
         "music_assistant.providers.acoustid_lookup.provider.app_var", lambda _key: "APPKEY"
     )
     provider = _make_provider(user_key=user_key)
+    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    assert await provider.start_analysis(
+        "session-before", _make_streamdetails(), _make_audio_format()
+    )
     _install_http_response(provider, 400, {"status": "error", "error": error})
     unload = MagicMock()
     monkeypatch.setattr(provider, "unload_with_error", unload)
