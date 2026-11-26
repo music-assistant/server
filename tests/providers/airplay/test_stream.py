@@ -69,6 +69,7 @@ def _make_player() -> MagicMock:
     player.protocol = StreamingProtocol.AIRPLAY2
     player.protocol_override = None
     player.volume_level = 40
+    player.native_start_volume = None
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"
     player.device_info.manufacturer = "Acme, Inc."
@@ -3011,6 +3012,67 @@ async def test_wait_for_connection_sends_volume_when_muted_without_ownership() -
         await stream.wait_for_connection()
 
     send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_the_native_level_read_before_connecting() -> None:
+    """
+    A device that sets a level of its own when a session starts gets its native level.
+
+    The level is the one read before the device was reached, not the one it jumped to while
+    the session was set up, and it goes out again 2 seconds later.
+    """
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = False
+    player.native_start_volume = 7
+    stream = AirPlayStream(player)
+    process = MagicMock(closed=False)
+
+    async def start_process() -> None:
+        # the device jumps to a level of its own as the session is set up
+        player.native_start_volume = 60
+
+    def consume_task(awaitable: Any) -> MagicMock:
+        awaitable.close()
+        return MagicMock()
+
+    process.start = AsyncMock(side_effect=start_process)
+    player.provider.mass.create_task.side_effect = consume_task
+    player.provider.mass.call_later = MagicMock()
+    with (
+        patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
+        patch("music_assistant.providers.airplay.stream.AsyncProcess", return_value=process),
+        patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.connect()
+        stream._connected.set()
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_once_with("VOLUME=7")
+    player.provider.mass.call_later.assert_called_once_with(
+        2, stream._resend_native_start_volume, 7
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_start_volume_goes_out_again_only_while_the_native_level_stands() -> None:
+    """The repeat never undoes a level the user or an automation set since the start."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    with patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command:
+        player.native_start_volume = 7
+        await stream._resend_native_start_volume(7)
+        send_command.assert_awaited_once_with("VOLUME=7")
+
+        send_command.reset_mock()
+        player.native_start_volume = 25
+        await stream._resend_native_start_volume(7)
+        send_command.assert_not_awaited()
 
 
 @pytest.mark.asyncio
