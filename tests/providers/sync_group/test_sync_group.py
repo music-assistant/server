@@ -961,6 +961,7 @@ class TestDynamicLeaderSwitch:
         _make_member(mass, "fresh_player", "sonos", audio=["airplay"])
         # the old leader was streaming on its own, so its session holds nobody else
         session = _protocol(old_leader, "airplay")
+        session._attr_playback_state = PlaybackState.PLAYING
         session.set_members = AsyncMock()  # type: ignore[method-assign]
         sgp.sync_leader = old_leader
         sgp._attr_group_members = ["old_leader", "fresh_player"]
@@ -974,6 +975,17 @@ class TestDynamicLeaderSwitch:
         _member_changes(session).assert_not_awaited()
         mass.players.wait_for_player_update.assert_called()
         assert "old_leader" not in sgp._attr_group_members
+
+    async def test_a_silent_departing_leader_is_stopped_without_waiting(self) -> None:
+        """A leader whose output is silent already reports nothing new, so nothing waits."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader")
+
+        await sgp._stop_departing_leader(leader)
+
+        mass.players._handle_cmd_stop.assert_awaited_once_with("leader")
+        mass.players.wait_for_player_update.assert_not_called()
 
     async def test_dynamic_leader_switch_follows_live_session_order(self) -> None:
         """
@@ -2840,6 +2852,22 @@ class TestPowerlessLifecycle:
 
         mass.players._handle_cmd_stop.assert_any_await("leader")
         # session stays intact
+        assert sgp.sync_leader is leader
+
+    async def test_hold_silences_the_leader_and_keeps_the_group(self) -> None:
+        """hold() silences the output of the leader and leaves the group formed."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader")
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        output = _protocol(leader, "sonos")
+
+        with patch.object(output, "hold", AsyncMock()) as hold:
+            await sgp.hold()
+
+        hold.assert_awaited_once()
+        mass.players._handle_cmd_stop.assert_not_awaited()
         assert sgp.sync_leader is leader
 
 

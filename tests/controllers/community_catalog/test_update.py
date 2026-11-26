@@ -138,7 +138,7 @@ async def test_update_reloads_a_dependent_of_the_dev_folder(
 
     async def start(self: CommunityCatalogController) -> None:
         self.mass.dev_mode = True
-        self.mass.dev_providers_path = str(dependent.parent)
+        self.mass.dev_providers_paths = (str(dependent.parent),)
         await original_start(self)
 
     with patch.object(CommunityCatalogController, "start", start):

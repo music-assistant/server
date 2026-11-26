@@ -1086,7 +1086,12 @@ class AirPlayPlayer(PlayerProtocol):
             return
 
         cur_volume = self.volume_level or 0
-        if abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3:
+        # Only the owner of the volume hands the device its level back. While another
+        # control owns it, the level that control set would come back rounded to whole
+        # percents, which can move the device a step on its own scale.
+        if self.owns_volume and (
+            abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3
+        ):
             self.mass.create_task(self._adopt_device_volume(volume))
         else:
             self._attr_volume_level = volume

@@ -29,7 +29,13 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import CrossfadeHandover, StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.controller import StreamsController
-from music_assistant.controllers.streams.file_stream import FileKey, FileStream, FileStreams
+from music_assistant.controllers.streams.file_stream import (
+    FileKey,
+    FileStream,
+    FileStreams,
+    mp3_frame_count,
+    mp3_frame_offset,
+)
 from music_assistant.controllers.streams.mixed_track import SMART_FADE_STRETCH, MixedTrack
 from music_assistant.controllers.streams.smart_fades.models import CrossfadeTimingInfo
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version
@@ -60,6 +66,8 @@ PCM_F32 = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=RATE, bit_
 PCM_16 = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=RATE, bit_depth=16)
 WAV_16 = AudioFormat(content_type=ContentType.WAV, sample_rate=RATE, bit_depth=16)
 WAV_24 = AudioFormat(content_type=ContentType.WAV, sample_rate=RATE, bit_depth=24)
+MP3 = AudioFormat(content_type=ContentType.MP3, sample_rate=RATE, bit_depth=16)
+MP3_BYTES_PER_SECOND = 40000
 # the crossfade of the queue, and what its mix cuts off the end of a track before it blends
 WINDOW = 4
 TRIMMED = 0.2 - 1 / RATE
@@ -258,16 +266,17 @@ class _Rig:
         :param stall_at: The bytes after which the player stops reading for a while.
         """
         download = _Download(wanted, stall_at)
+        fmt = self.output_format.content_type.value
         request = make_mocked_request(
             method,
-            f"/single/{SESSION_ID}/{QUEUE_ID}/{item_id}/{PLAYER_ID}.wav",
+            f"/single/{SESSION_ID}/{QUEUE_ID}/{item_id}/{PLAYER_ID}.{fmt}",
             headers={"Range": byte_range} if byte_range else None,
             match_info={
                 "session_id": SESSION_ID,
                 "queue_id": QUEUE_ID,
                 "queue_item_id": item_id,
                 "player_id": PLAYER_ID,
-                "fmt": "wav",
+                "fmt": fmt,
             },
             writer=download.writer,
             protocol=download.protocol,
@@ -495,6 +504,86 @@ async def test_parts_of_two_mixed_tracks_join_into_one_download(name: str) -> No
             assert np.abs(_samples(joined) - _samples(download)).max() <= case.tolerance
     assert joined_a[:HEADER_SIZE] == download_a[:HEADER_SIZE]
     assert joined_b[:HEADER_SIZE] == download_b[:HEADER_SIZE]
+
+
+def _mp3_size(seconds: float) -> int:
+    """
+    Return the size of an MP3 file.
+
+    :param seconds: Length of the audio of the file.
+    """
+    return mp3_frame_offset(mp3_frame_count(round(seconds * RATE)), RATE)
+
+
+async def test_parts_of_two_mixed_mp3_tracks_join_into_one_download() -> None:
+    """
+    Two tracks that are mixed into each other are MP3 files as well.
+
+    A mix is made once and kept as it goes to the encoder, so every part of a file is
+    encoded from the same audio, and its frames are those of the file fetched in one go.
+    """
+    await check_ffmpeg_version()
+    length = JOIN_SECONDS + 0.37
+    tracks = _pair(seconds=length)
+
+    async def _rig() -> _Rig:
+        rig = _Rig(tracks, output_format=MP3)
+        await rig.decode()
+        return rig
+
+    # the pace is not what this is about, and would make the test last as long as the tracks
+    with patch(
+        "music_assistant.controllers.streams.controller.output_pacing_args", return_value=[]
+    ):
+        whole = await _rig()
+        resp_a, download_a = await whole.fetch("a")
+        _, download_b = await whole.fetch("b")
+        assert whole.passes == [None, None]
+        # the file declared the whole track, and ends with the last frame of its mix
+        assert resp_a.content_length == _mp3_size(length)
+        assert len(download_a) == _mp3_size(length - TRIMMED)
+        assert len(download_b) == _mp3_size(length - WINDOW + TRIMMED)
+        with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as refusal:
+            await whole.fetch("a", f"bytes={len(download_a)}-")
+        assert refusal.value.headers["Content-Range"] == f"bytes */{len(download_a)}"
+
+        parts = await _rig()
+        kept, ahead, piece = 6 * KIB_16, 12 * KIB_16, 3 * KIB_16
+        _, start = await parts.fetch("a", wanted=kept)
+        _, further_on = await parts.fetch("a", f"bytes={ahead}-", wanted=piece)
+        _, between = await parts.fetch("a", f"bytes={kept}-", wanted=ahead - kept)
+        _, rest = await parts.fetch("a", f"bytes={ahead + piece}-")
+        # every request so far ran a pass from its own position
+        assert parts.passes[0] is None
+        assert len(parts.passes) == 4
+        in_end = round((length - WINDOW + 1.5) * MP3_BYTES_PER_SECOND)
+        _, inside_end = await parts.fetch("a", f"bytes={in_end}-", wanted=2 * KIB_16)
+
+        lead_in = round(TRIMMED / 2 * MP3_BYTES_PER_SECOND)
+        _, from_lead_in = await parts.fetch("b", f"bytes={lead_in}-", wanted=KIB_16)
+        _, start_b = await parts.fetch("b", wanted=lead_in)
+        _, rest_b = await parts.fetch("b", f"bytes={lead_in + KIB_16}-")
+
+    assert start + between + further_on + rest == download_a
+    assert inside_end == download_a[in_end : in_end + 2 * KIB_16]
+    assert start_b + from_lead_in + rest_b == download_b
+
+
+@pytest.mark.parametrize(
+    ("crossfade_mode", "stretch"),
+    [(CrossfadeMode.STANDARD_CROSSFADE, 0), (CrossfadeMode.SMART_CROSSFADE, SMART_FADE_STRETCH)],
+)
+async def test_a_mixed_mp3_file_declares_the_longest_its_stream_can_be(
+    crossfade_mode: CrossfadeMode, stretch: int
+) -> None:
+    """The seconds a smart fade can add to a track are frames of the MP3 it is served as."""
+    rig = _Rig(_pair(PCM_16), output_format=MP3, pcm_format=PCM_16, crossfade_mode=crossfade_mode)
+    await rig.decode()
+
+    resp, _ = await rig.fetch("a", method="HEAD")
+
+    assert resp.content_length == _mp3_size(TRACK_SECONDS + stretch)
+    assert rig.passes == []
 
 
 async def test_a_file_is_the_stream_of_a_plain_playthrough(rig: _Rig) -> None:

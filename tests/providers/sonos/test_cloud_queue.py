@@ -722,7 +722,11 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
 
 @pytest.mark.parametrize(
     ("codec", "policies"),
-    [("wav", [{"canSeek": True}, None]), ("flac", [None, None])],
+    [
+        ("wav", [{"canSeek": True}, None]),
+        ("mp3", [{"canSeek": True}, None]),
+        ("flac", [None, None]),
+    ],
 )
 async def test_only_a_track_served_as_a_file_allows_a_seek(
     codec: str, policies: list[dict[str, bool] | None]

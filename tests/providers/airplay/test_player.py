@@ -1444,6 +1444,34 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
     mock_update.assert_called_once()
 
 
+def test_a_device_level_is_not_written_back_while_the_native_protocol_owns_the_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level the device reports is only recorded while another control owns the volume.
+
+    Written back it would come back rounded to whole percents and could move the device
+    a step away from the level that control set.
+    """
+    player = _attach_to_player(airplay_player, own=_native_protocol("wiim"))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 30
+    airplay_player.last_command_sent = time.time() - 10
+    airplay_player.stream = MagicMock(running=True, send_cli_command=AsyncMock())
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.update_volume_from_device(7)
+
+    airplay_player.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
+    airplay_player.stream.send_cli_command.assert_not_called()
+    assert airplay_player._attr_volume_level == 7
+    airplay_player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.protocol_id, CONF_STORED_VOLUME, 7
+    )
+    mock_update.assert_called_once()
+
+
 def test_release_foreign_mute_latch_clears_mute_owned_by_other_control(
     airplay_player: AirPlayPlayer,
 ) -> None:

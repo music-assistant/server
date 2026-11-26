@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import PodcastEpisode, Track
 
 from music_assistant.providers.spotify.provider import (
     _PLAYLIST_PAGINATION_STATE_LIMIT,
@@ -124,6 +125,22 @@ def _spotify_track(track_id: str) -> dict[str, Any]:
     }
 
 
+def _spotify_episode(episode_id: str) -> dict[str, Any]:
+    """Return the minimum Spotify episode payload accepted by the parser."""
+    return {
+        "type": "episode",
+        "id": episode_id,
+        "name": episode_id,
+        "duration_ms": 600000,
+        "external_urls": {"spotify": f"https://open.spotify.com/episode/{episode_id}"},
+        "show": {
+            "id": "show-1",
+            "name": "Show",
+            "external_urls": {"spotify": "https://open.spotify.com/show/show-1"},
+        },
+    }
+
+
 def _playlist_page(total: int, track_id: str) -> dict[str, Any]:
     """Return a Spotify playlist page containing one playable track."""
     return {"total": total, "items": [{"track": _spotify_track(track_id)}]}
@@ -153,6 +170,7 @@ async def test_multipage_traversal_reuses_pagination_metadata() -> None:
             "snapshot-1",
             limit=50,
             offset=offset,
+            additional_types="track,episode",
             use_global_session=False,
         )
         for offset in (0, 50, 100)
@@ -272,6 +290,7 @@ async def test_playlist_snapshot_request(
         "snapshot-1",
         limit=50,
         offset=50,
+        additional_types="track,episode",
         use_global_session=use_global_session,
     )
     harness.set_global.assert_not_awaited()
@@ -315,6 +334,7 @@ async def test_playlist_items_hidden_from_developer_session_are_read_globally() 
         "s1",
         limit=50,
         offset=50,
+        additional_types="track,episode",
         use_global_session=True,
     )
     assert get_data_mock.await_args_list == [
@@ -444,6 +464,7 @@ async def test_cold_nonzero_page_fetches_pagination_metadata() -> None:
         "cold-snapshot",
         limit=50,
         offset=100,
+        additional_types="track,episode",
         use_global_session=False,
     )
     assert tracks[0].position == 101
@@ -545,6 +566,7 @@ async def test_restricted_playlist_metadata_retries_with_global_session() -> Non
         "snapshot-1",
         limit=50,
         offset=0,
+        additional_types="track,episode",
         use_global_session=True,
     )
     harness.set_global.assert_awaited_once_with(PLAYLIST_ID)
@@ -680,3 +702,54 @@ async def test_playlist_pagination_state_is_bounded() -> None:
         await harness.provider.get_playlist_tracks(f"playlist-{index}", page=1)
 
     assert len(harness.provider._playlist_pagination_states) == _PLAYLIST_PAGINATION_STATE_LIMIT
+
+
+async def test_playlist_episodes_are_parsed_as_episodes() -> None:
+    """Episodes in a playlist come back as podcast episodes, not as tracks with the episode id."""
+    harness = _make_provider()
+    harness.get_snapshot.return_value = {"checksum": "snapshot-1", "total": 2}
+    harness.get_page.return_value = {
+        "total": 2,
+        "items": [{"item": _spotify_episode("episode-1")}, {"item": _spotify_track("track-1")}],
+    }
+
+    items = await harness.provider.get_playlist_tracks(PLAYLIST_ID)
+
+    assert harness.get_page.await_args is not None
+    assert harness.get_page.await_args.kwargs["additional_types"] == "track,episode"
+    assert isinstance(items[0], PodcastEpisode)
+    assert isinstance(items[1], Track)
+    assert [(item.item_id, item.position) for item in items] == [("episode-1", 1), ("track-1", 2)]
+
+
+async def test_remove_playlist_items_uses_episode_uri_for_episodes() -> None:
+    """Removing an episode from a playlist sends an episode URI, not a track URI."""
+    harness = _make_provider()
+    pages = {
+        0: {"items": [{"item": _spotify_episode("episode-1")}]},
+        1: {"items": [{"track": _spotify_track("track-1")}]},
+    }
+
+    async def get_data(_endpoint: str, *, offset: int, **_kwargs: Any) -> dict[str, Any]:
+        return pages[offset]
+
+    get_data_mock = AsyncMock(side_effect=get_data)
+    delete_data_mock = AsyncMock()
+    harness.provider._get_data = get_data_mock  # type: ignore[method-assign]
+    harness.provider._delete_data = delete_data_mock  # type: ignore[method-assign]
+
+    await harness.provider.remove_playlist_tracks(PLAYLIST_ID, (1, 2))
+
+    assert all(
+        request.kwargs["additional_types"] == "track,episode"
+        for request in get_data_mock.await_args_list
+    )
+    delete_data_mock.assert_awaited_once_with(
+        f"playlists/{PLAYLIST_ID}/items",
+        data={
+            "items": [
+                {"uri": "spotify:episode:episode-1"},
+                {"uri": "spotify:track:track-1"},
+            ]
+        },
+    )

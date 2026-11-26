@@ -5,7 +5,7 @@
 Brotli>=1.0.9
 aioaudiobookshelf==0.2.2
 aiodns>=4.0.4
-aiofiles==24.1.0
+aiofiles==25.1.0
 aiohttp==3.14.4
 aiohttp_asyncmdnsresolver==0.2.0
 aiohttp-fast-zlib==0.3.0
@@ -13,13 +13,13 @@ aiohttp-socks==0.12.0
 aiojellyfin==0.14.1
 aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive
 aiomusiccast==0.15.0
-aiosendspin[server]==10.3.0
+aiosendspin[server]==11.0.0
 aioslimproto==3.6.8
 aiosonos==0.5.1
 aiosqlite==0.22.1
 aiosxm==0.3.1
 aiovban==1.1.0
-alexapy==1.30.0
+alexapy==1.37.0
 async-upnp-client==0.49.0
 audible==0.13.1
 auntie-sounds==3.3.2

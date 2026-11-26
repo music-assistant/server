@@ -15,7 +15,7 @@ dependencies = [
   "aiohttp==3.14.4",
   "aiohttp-fast-zlib==0.3.0",
   "aiohttp-socks==0.12.0",
-  "aiofiles==24.1.0",
+  "aiofiles==25.1.0",
   "aiosqlite==0.22.1",
   "awesomeversion>=24.6.0",
   "certifi==2026.10.19",
