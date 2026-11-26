@@ -12,10 +12,14 @@ from music_assistant_models.enums import ContentType, MediaType, PlaybackState
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH
+from music_assistant.constants import (
+    CONF_ENABLE_ICY_METADATA,
+    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
+)
 from music_assistant.providers.webradio.provider import (
     WebRadioPlayer,
     WebRadioProvider,
+    _icy_title_for_queue,
     _Station,
     _Subscriber,
 )
@@ -68,8 +72,6 @@ def _make_provider(*, fixed_content_length: bool = False) -> WebRadioProvider:
         unregister_route=lambda: None,
     )
     station.output_format = AudioFormat(content_type=ContentType.MP3, bit_rate=320)
-    station.icy_preference = "basic"
-    station.icy_chunk_size = CHUNK_SIZE
     station.current_metadata = METADATA
     provider._stations = {station.slug: station}
     return provider
@@ -280,6 +282,28 @@ def test_the_queue_source_carries_the_id_of_the_player() -> None:
     player.mass.player_queues.get.assert_called_once_with(PLAYER_ID)
 
 
+async def test_station_hides_the_icy_metadata_setting() -> None:
+    """A station supplies the ICY metadata setting hidden, so core does not add a visible one."""
+    entries = await _make_player().get_config_entries()
+
+    icy_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_ICY_METADATA)
+    assert icy_entry.hidden
+
+
+def test_listeners_are_told_the_title_of_what_plays() -> None:
+    """The title is the one the stream reports, else the name of the item, else a fallback."""
+    queue = MagicMock()
+    queue.current_item.name = "Artist - Track"
+    queue.current_item.streamdetails.stream_title = "Now on air"
+    assert _icy_title_for_queue(queue) == "Now on air"
+
+    queue.current_item.streamdetails.stream_title = None
+    assert _icy_title_for_queue(queue) == "Artist - Track"
+
+    queue.current_item = None
+    assert _icy_title_for_queue(queue) == "Music Assistant"
+
+
 def test_mark_idle_clears_the_playback_state() -> None:
     """An idle station reports no media and no elapsed time."""
     player = _make_player()
@@ -341,7 +365,6 @@ async def _run_producer(
     provider.__dict__["_run_one_flow_session"] = AsyncMock(return_value=exit_reason)
     player = MagicMock(playback_state=PlaybackState.PLAYING)
     player.mark_idle.side_effect = lambda: setattr(player, "playback_state", PlaybackState.IDLE)
-    player.get_config_value.return_value = "basic"
     station.protocol = player
     await asyncio.wait_for(provider._run_producer(station), timeout=5)
     return station
@@ -537,8 +560,6 @@ async def _broadcast_session(
             start_item=start_item,
             flow_pcm_format=PCM_FORMAT,
             output_format=MagicMock(),
-            icy_preference="disabled",
-            chunk_size=CHUNK_SIZE,
         )
     assert exit_reason == "ended"
     received: list[bytes] = []
@@ -608,6 +629,18 @@ async def test_live_item_whose_source_fails_ends_the_session() -> None:
     assert received == CHUNKS[:1]
 
 
+async def test_the_short_chunk_a_session_ends_on_is_broadcast() -> None:
+    """The last audio of a session reaches the listener, however short its chunk is."""
+    provider = _make_provider()
+    tail = CHUNKS[1][:10]
+
+    received = await _broadcast_session(
+        provider, _item("radio", MediaType.RADIO), live_audio=_audio([CHUNKS[0], tail])
+    )
+
+    assert received == [CHUNKS[0], tail]
+
+
 async def test_play_media_presets_flow_mode_only_for_media_that_ends() -> None:
     """A track is played as a flow from the start, a live item never is."""
     flow_modes: dict[MediaType, bool] = {}
@@ -641,22 +674,33 @@ async def test_listener_is_refused_right_away_when_nothing_is_playing() -> None:
 
 
 async def _listen(
-    provider: WebRadioProvider, request_line: str, *, broadcast_ends: bool = True
+    provider: WebRadioProvider,
+    request_line: str,
+    *,
+    broadcast_ends: bool = True,
+    chunks: list[bytes] | None = None,
+    want_icy: bool = True,
 ) -> tuple[dict[str, str], bytes]:
     """
     Tune in like a radio that reads the raw response, returning its headers and body.
 
     :param provider: The provider serving the station.
     :param request_line: The first line of the radio's HTTP request.
-    :param broadcast_ends: Whether the broadcast ends after its three chunks.
+    :param broadcast_ends: Whether the broadcast ends after its chunks.
+    :param chunks: The audio the station broadcasts, three full chunks by default.
+    :param want_icy: Whether the radio asks for the titles of what plays.
     """
     station = provider._stations["kitchen"]
-    subscriber = _Subscriber(queue=asyncio.Queue(), want_icy=True)
-    for chunk in (*CHUNKS, None) if broadcast_ends else CHUNKS:
+    subscriber = _Subscriber(queue=asyncio.Queue(), want_icy=want_icy)
+    chunks = chunks or CHUNKS
+    for chunk in (*chunks, None) if broadcast_ends else chunks:
         subscriber.queue.put_nowait(chunk)
 
     async def handler(request: web.Request) -> web.StreamResponse:
-        return await provider._serve_subscriber(request, station, subscriber)
+        with patch(
+            "music_assistant.providers.webradio.provider._ICY_METADATA_INTERVAL", CHUNK_SIZE
+        ):
+            return await provider._serve_subscriber(request, station, subscriber)
 
     app = web.Application()
     app.router.add_get(station.url_path, handler)
@@ -665,7 +709,8 @@ async def _listen(
     try:
         reader, writer = await asyncio.open_connection(server.host, server.port)
         try:
-            writer.write(f"{request_line}\r\nHost: radio\r\nIcy-MetaData: 1\r\n\r\n".encode())
+            icy_header = "Icy-MetaData: 1\r\n" if want_icy else ""
+            writer.write(f"{request_line}\r\nHost: radio\r\n{icy_header}\r\n".encode())
             await writer.drain()
             raw = await asyncio.wait_for(reader.read(-1), timeout=5)
         finally:
@@ -714,6 +759,39 @@ async def test_listener_is_told_the_name_of_the_player() -> None:
     headers, _ = await _listen(provider, "GET /webradio/kitchen.mp3 HTTP/1.0")
 
     assert headers["icy-name"] == "Garden radio"
+
+
+async def test_listener_that_asks_for_no_titles_gets_the_audio_alone() -> None:
+    """A radio that does not ask for titles gets the bare audio, with no interval announced."""
+    headers, body = await _listen(
+        _make_provider(), "GET /webradio/kitchen.mp3 HTTP/1.0", want_icy=False
+    )
+
+    assert "icy-metaint" not in headers
+    assert body == b"".join(CHUNKS)
+
+
+async def test_metadata_stays_in_step_after_a_short_chunk() -> None:
+    """The short chunk a session ends on is sent, and titles still come every interval."""
+    short = CHUNKS[1][:24]
+
+    _, body = await _listen(
+        _make_provider(),
+        "GET /webradio/kitchen.mp3 HTTP/1.0",
+        chunks=[CHUNKS[0], short, CHUNKS[2], CHUNKS[2]],
+    )
+
+    assert body == (
+        CHUNKS[0]
+        + METADATA
+        + short
+        + CHUNKS[2][:40]
+        + b"\x00"
+        + CHUNKS[2][40:]
+        + CHUNKS[2][:40]
+        + b"\x00"
+        + CHUNKS[2][40:]
+    )
 
 
 async def test_http_11_listener_gets_chunked_by_default() -> None:

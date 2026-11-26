@@ -20,6 +20,7 @@ from music_assistant_models.errors import AudioError
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
+    CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
     CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_OUTPUT_CODEC,
     CONF_REQUIRES_FIXED_CONTENT_LENGTH,
@@ -38,7 +39,6 @@ from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
-    CONF_ENTRY_ENABLE_ICY_METADATA_BASIC,
     CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
     CONF_STATIONS,
     CONF_STREAM_URL_LABEL,
@@ -61,8 +61,9 @@ if TYPE_CHECKING:
     from music_assistant.models.player import Player
 
 
-_ICY_FULL_INTERVAL: int = 256_000
-_ICY_STANDARD_INTERVAL: int = 16_384
+# Size in bytes of an encoded chunk, and the audio a listener gets between two
+# ICY metadata blocks (icy-metaint).
+_ICY_METADATA_INTERVAL: int = 16_384
 # Per-listener queue depth. A subscriber that can't keep up has its queue
 # filled and is dropped instead of stalling the producer.
 _SUBSCRIBER_QUEUE_SIZE: int = 32
@@ -113,8 +114,6 @@ class _Station:
     resume_from_queue: bool = False
     # Populated by the producer once output config is known.
     output_format: AudioFormat | None = None
-    icy_preference: str = "disabled"
-    icy_chunk_size: int = 0
     current_metadata: bytes = b""
 
     @property
@@ -425,23 +424,14 @@ class WebRadioProvider(PlayerProvider):
                 media_type=start_item.media_type,
             )
 
-            icy_preference = station.protocol.get_config_value(
-                CONF_ENTRY_ENABLE_ICY_METADATA_BASIC.key, "basic", return_type=str
-            )
-            chunk_size = _producer_chunk_size(icy_preference, output_format)
-
             station.output_format = output_format
-            station.icy_preference = icy_preference
-            station.icy_chunk_size = chunk_size
             station.current_metadata = b""
             station.producer_ready.set()
 
             self.logger.debug(
-                "Producer started for station %s: output=%s icy=%s chunk_size=%d",
+                "Producer started for station %s: output=%s",
                 station.slug,
                 output_format.output_format_str,
-                icy_preference,
-                chunk_size,
             )
 
             first_iteration = True
@@ -472,8 +462,6 @@ class WebRadioProvider(PlayerProvider):
                     start_item=start_item,
                     flow_pcm_format=flow_pcm_format,
                     output_format=output_format,
-                    icy_preference=icy_preference,
-                    chunk_size=chunk_size,
                 )
 
                 if exit_reason == "stopped":
@@ -539,8 +527,6 @@ class WebRadioProvider(PlayerProvider):
         start_item: QueueItem,
         flow_pcm_format: AudioFormat,
         output_format: AudioFormat,
-        icy_preference: str,
-        chunk_size: int,
     ) -> str:
         """
         Run one ffmpeg pipeline to completion, fed by the queue flow or by a single live item.
@@ -550,8 +536,6 @@ class WebRadioProvider(PlayerProvider):
         :param start_item: Queue item from which the stream starts.
         :param flow_pcm_format: PCM format coming out of the queue flow.
         :param output_format: Encoded format pushed to subscribers.
-        :param icy_preference: Per-station ICY mode (``disabled``/``basic``/``full``).
-        :param chunk_size: Encoded chunk size in bytes; also the icy-metaint value.
         :return: ``"stopped"`` (user pressed stop/pause), ``"no_subscribers"``
             (last listener left), or ``"ended"`` (queue exhausted or session
             superseded by a skip).
@@ -575,7 +559,7 @@ class WebRadioProvider(PlayerProvider):
             # listeners across the producer-restart gap on skip; bigger
             # bursts close the gap further at the cost of more skip latency.
             extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "2"],
-            chunk_size=chunk_size,
+            chunk_size=_ICY_METADATA_INTERVAL,
         )
         session_started = False
         async with aclosing(stream):
@@ -584,19 +568,11 @@ class WebRadioProvider(PlayerProvider):
                     # The queue measures its position against the audio of this session.
                     station.protocol.restart_elapsed_time()
                     session_started = True
-                # iter_chunked yields a short chunk only at ffmpeg EOF. Emitting
-                # one would desync the client's icy-metaint counter for the rest
-                # of the connection, so drop it (we lose <1s of audio at session
-                # end).
-                if len(chunk) < chunk_size:
-                    continue
-
-                if icy_preference != "disabled":
-                    title, image_url = _icy_metadata_for_queue(queue, icy_preference)
-                    new_metadata = format_icy_metadata_frame(title, image_url)
-                    if new_metadata != station.current_metadata:
-                        self.logger.debug("Station %s ICY metadata: %s", station.slug, title)
-                        station.current_metadata = new_metadata
+                title = _icy_title_for_queue(queue)
+                new_metadata = format_icy_metadata_frame(title)
+                if new_metadata != station.current_metadata:
+                    self.logger.debug("Station %s ICY metadata: %s", station.slug, title)
+                    station.current_metadata = new_metadata
 
                 slow = self._broadcast_chunk(station, chunk)
                 for sub in slow:
@@ -723,8 +699,6 @@ class WebRadioProvider(PlayerProvider):
         output_format = station.output_format
         assert output_format is not None  # guaranteed by producer_ready
 
-        enable_icy = subscriber.want_icy and station.icy_preference != "disabled"
-
         station_name = _sanitize_header(station.protocol.display_name)
         headers = {
             **DEFAULT_STREAM_HEADERS,
@@ -736,8 +710,8 @@ class WebRadioProvider(PlayerProvider):
             "icy-br": str(get_bit_rate(output_format)),
             "icy-pub": "0",
         }
-        if enable_icy:
-            headers["icy-metaint"] = str(station.icy_chunk_size)
+        if subscriber.want_icy:
+            headers["icy-metaint"] = str(_ICY_METADATA_INTERVAL)
 
         # Without a Content-Length an HTTP/1.1 listener gets chunked transfer encoding
         # and an HTTP/1.0 one a plain stream until the connection closes. A listener
@@ -757,34 +731,33 @@ class WebRadioProvider(PlayerProvider):
             "Listener subscribed: station=%s output=%s icy=%s",
             station.slug,
             output_format.output_format_str,
-            enable_icy,
+            subscriber.want_icy,
         )
 
+        bytes_until_metadata = _ICY_METADATA_INTERVAL
         try:
             while True:
                 chunk = await subscriber.queue.get()
                 if chunk is None:
                     break
+                if subscriber.want_icy:
+                    # A session ends on a short chunk, so the metadata is not always
+                    # due on a chunk boundary: count the audio bytes per listener.
+                    audio, chunk = chunk, b""
+                    while audio:
+                        head, audio = audio[:bytes_until_metadata], audio[bytes_until_metadata:]
+                        chunk += head
+                        bytes_until_metadata -= len(head)
+                        if bytes_until_metadata == 0:
+                            chunk += _next_metadata_frame(station, subscriber)
+                            bytes_until_metadata = _ICY_METADATA_INTERVAL
                 try:
                     await resp.write(chunk)
                 except BrokenPipeError, ConnectionResetError, ConnectionError:
                     break
 
-                frame = b""
-                if enable_icy:
-                    current = station.current_metadata
-                    if current and current != subscriber.last_metadata_seen:
-                        frame = current
-                        subscriber.last_metadata_seen = current
-                    else:
-                        frame = _ICY_NO_CHANGE_FRAME
-                    try:
-                        await resp.write(frame)
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
-                        break
-
                 if bytes_left is not None:
-                    bytes_left -= len(chunk) + len(frame)
+                    bytes_left -= len(chunk)
                     if bytes_left <= 0:
                         # End the response, so the listener reconnects for a new one.
                         break
@@ -794,26 +767,19 @@ class WebRadioProvider(PlayerProvider):
         return resp
 
 
-def _producer_chunk_size(icy_preference: str, output_format: AudioFormat) -> int:
-    """
-    Return the producer's encoded-chunk size in bytes.
-
-    With ICY enabled this value also serves as ``icy-metaint``.
-
-    :param icy_preference: Per-station ICY preference value.
-    :param output_format: Encoded output format.
-    """
-    if icy_preference == "full":
-        return _ICY_FULL_INTERVAL
-    if icy_preference == "basic":
-        return _ICY_STANDARD_INTERVAL
-    return calculate_content_length(output_format)
-
-
 def _head_response(codec: str) -> web.Response:
     """Build a minimal response for a HEAD probe on a station URL."""
     headers = {**DEFAULT_STREAM_HEADERS, "Content-Type": get_mime_type(codec)}
     return web.Response(status=200, headers=headers)
+
+
+def _next_metadata_frame(station: _Station, subscriber: _Subscriber) -> bytes:
+    """Return the ICY metadata block a listener is due: the title when it changed for it."""
+    current = station.current_metadata
+    if current and current != subscriber.last_metadata_seen:
+        subscriber.last_metadata_seen = current
+        return current
+    return _ICY_NO_CHANGE_FRAME
 
 
 def _disconnect_subscriber(subscriber: _Subscriber) -> None:
@@ -852,27 +818,14 @@ def _join_at_live_position(queue: PlayerQueue, start_item: QueueItem) -> None:
     streamdetails.seek_position = seek_seconds
 
 
-def _icy_metadata_for_queue(queue: PlayerQueue, icy_preference: object) -> tuple[str, str | None]:
-    """
-    Return the title (and optional image URL) to advertise via ICY metadata.
-
-    :param queue: Active queue for the station.
-    :param icy_preference: Per-player ICY preference value; ``"full"`` enables
-        the StreamURL field in addition to StreamTitle.
-    :return: Tuple of (title, image_url-or-None).
-    """
+def _icy_title_for_queue(queue: PlayerQueue) -> str:
+    """Return the title to advertise via ICY metadata for the queue's current item."""
     current_item = queue.current_item
-    title = "Music Assistant"
-    image_url: str | None = None
     if current_item is None:
-        return title, image_url
+        return "Music Assistant"
     if current_item.streamdetails and current_item.streamdetails.stream_title:
-        title = current_item.streamdetails.stream_title
-    elif current_item.name:
-        title = current_item.name
-    if icy_preference == "full" and current_item.image is not None:
-        image_url = current_item.image.path
-    return title, image_url
+        return current_item.streamdetails.stream_title
+    return current_item.name or "Music Assistant"
 
 
 class WebRadioPlayer(PlayerProtocol):
@@ -941,7 +894,8 @@ class WebRadioPlayer(PlayerProtocol):
         """Return player-level config entries."""
         return [
             CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
-            CONF_ENTRY_ENABLE_ICY_METADATA_BASIC,
+            # Keeps core's own ICY metadata setting out of the UI: a station always sends titles.
+            CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
             CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
             ConfigEntry(
                 key=CONF_STREAM_URL_LABEL,
