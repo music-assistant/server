@@ -16,7 +16,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
 )
-from music_assistant_models.errors import AudioError
+from music_assistant_models.errors import AudioError, UnsupportedFeaturedException
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
@@ -412,6 +412,14 @@ class WebRadioProvider(PlayerProvider):
         try:
             queue, start_item = self._resolve_pending_media(station)
             if queue is None or start_item is None:
+                if station.pending_media is not None:
+                    # The media cannot be started, so the station must not go on
+                    # reporting that it plays.
+                    self.logger.warning(
+                        "Station %s has nothing it can broadcast, going idle", station.slug
+                    )
+                    self.clear_pending_media(station.slug)
+                    station.protocol.mark_idle()
                 station.producer_ready.set()
                 return
 
@@ -818,6 +826,12 @@ def _join_at_live_position(queue: PlayerQueue, start_item: QueueItem) -> None:
     streamdetails.seek_position = seek_seconds
 
 
+def _is_startable(media: PlayerMedia) -> bool:
+    """Return whether a station can broadcast the given media."""
+    # A station broadcasts the items of its own queue only.
+    return media.queue_item_id is not None
+
+
 def _icy_title_for_queue(queue: PlayerQueue) -> str:
     """Return the title to advertise via ICY metadata for the queue's current item."""
     current_item = queue.current_item
@@ -939,7 +953,19 @@ class WebRadioPlayer(PlayerProtocol):
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Mark the station as playing and queue the media for its broadcast."""
+        """
+        Mark the station as playing and queue the media for its broadcast.
+
+        :param media: The media to broadcast.
+        :raises UnsupportedFeaturedException: When a station cannot broadcast the media.
+        """
+        if not _is_startable(media):
+            raise UnsupportedFeaturedException(
+                f"{self.display_name} can only broadcast what is played from its queue",
+                translation_key="source_not_supported",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
         # The station has no external sink: audio only leaves the box when an
         # HTTP listener connects. Until then the queue holds at the start item
         # and the broadcast begins from it when the first listener tunes in.

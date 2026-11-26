@@ -9,8 +9,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import ContentType, MediaType, PlaybackState
-from music_assistant_models.errors import AudioError
+from music_assistant_models.errors import AudioError, UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENABLE_ICY_METADATA,
@@ -387,6 +388,21 @@ async def test_producer_goes_idle_when_the_queue_ran_out() -> None:
     assert station.pending_media is None
 
 
+async def test_producer_goes_idle_when_its_media_cannot_be_started() -> None:
+    """A station whose pending item left the queue stops reporting that it plays."""
+    provider = _make_provider()
+    station = provider._stations["kitchen"]
+    _queue_with_items(provider, "third")
+    cast("MagicMock", provider.mass.player_queues).get_item.side_effect = lambda *_: None
+    provider.set_pending_media("kitchen", MagicMock(queue_item_id="removed"))
+
+    await asyncio.wait_for(provider._run_producer(station), timeout=5)
+
+    assert station.pending_media is None
+    assert station.protocol.playback_state == PlaybackState.IDLE
+    cast("MagicMock", provider.logger).warning.assert_called_once()
+
+
 async def test_producer_stops_when_no_item_follows_a_flow_that_ended_early() -> None:
     """A flow that core ended early leaves the station idle, and stopped if nothing follows."""
     with patch("music_assistant.providers.webradio.provider._NEXT_SESSION_TIMEOUT", 0.01):
@@ -659,6 +675,42 @@ async def test_play_media_presets_flow_mode_only_for_media_that_ends() -> None:
         MediaType.RADIO: False,
         MediaType.AUDIO_SOURCE: False,
     }
+
+
+@pytest.mark.parametrize("media_type", [MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM])
+async def test_play_media_refuses_media_that_is_not_a_queue_item(media_type: MediaType) -> None:
+    """Media from outside the station's queue is refused and leaves the station as it was."""
+    provider = MagicMock()
+    player = _make_player(provider)
+    player._attr_playback_state = PlaybackState.IDLE
+    current_media = player._attr_current_media
+    media = PlayerMedia(uri="spotify_connect://source", media_type=media_type, source_id=PLAYER_ID)
+
+    with pytest.raises(UnsupportedFeaturedException) as raised:
+        await player.play_media(media)
+
+    assert raised.value.translation_key == "source_not_supported"
+    assert raised.value.translation_owner == provider.translation_owner
+    assert raised.value.translation_args == ["Kitchen"]
+    assert player.playback_state == PlaybackState.IDLE
+    assert player._attr_current_media is current_media
+    provider.set_pending_media.assert_not_called()
+    cast("MagicMock", player.update_state).assert_not_called()
+
+
+async def test_play_media_starts_a_queue_item() -> None:
+    """An item of the station's queue is marked as playing and handed to the broadcast."""
+    provider = MagicMock()
+    player = _make_player(provider)
+    player._attr_playback_state = PlaybackState.IDLE
+    player.mass = MagicMock()
+    media = PlayerMedia(uri="queue://item", media_type=MediaType.TRACK, queue_item_id="first")
+
+    await player.play_media(media)
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player._attr_current_media is media
+    provider.set_pending_media.assert_called_once_with("kitchen", media)
 
 
 async def test_listener_is_refused_right_away_when_nothing_is_playing() -> None:

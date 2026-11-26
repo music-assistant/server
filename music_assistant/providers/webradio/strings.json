@@ -7,5 +7,8 @@
     "stream_url": {
       "label": "Stream URL: {0}"
     }
+  },
+  "errors": {
+    "source_not_supported": "{0} can only broadcast what is played from its Music Assistant queue. Anything else, such as Spotify Connect or an announcement, is not supported."
   }
 }
