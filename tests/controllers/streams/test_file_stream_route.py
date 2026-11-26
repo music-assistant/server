@@ -706,11 +706,11 @@ async def test_every_encode_is_paced_with_a_head_start_out_of_the_files_budget(r
     seek = HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2
 
     await rig.fetch(wanted=KIB_16)
-    for _ in range(3):
+    for _ in range(6):
         await rig.fetch(f"bytes={seek}-", wanted=KIB_16)
 
     # an encode starts a whole second before its part: 1.5 s that the player never gets
-    assert [_burst(pacing) for pacing in rig.pacing] == [10, 11.5, 11.5, 1.5]
+    assert [_burst(pacing) for pacing in rig.pacing] == [6, 7.5, 7.5, 7.5, 7.5, 1.5, 1.5]
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
@@ -1167,9 +1167,7 @@ async def test_a_part_from_the_middle_of_an_mp3(unpaced_encoder: list[list[str]]
     assert stream["seek_position_ms"] == 3000 + 5 * MP3_BLOCK_MS
     # the output that is dropped costs the player none of its head start
     dropped = (first - 5 * MP3_BLOCK_SIZE) / MP3_BYTES_PER_SECOND
-    assert [_burst(pacing) for pacing in unpaced_encoder] == [
-        pytest.approx(10 + dropped, abs=0.001)
-    ]
+    assert [_burst(pacing) for pacing in unpaced_encoder] == [pytest.approx(6 + dropped, abs=0.001)]
     rig.ctrl.mass.player_queues.track_loaded_in_buffer.assert_called_once_with(QUEUE_ID, ITEM_ID)
 
 
