@@ -101,6 +101,24 @@ def _controller() -> Any:
     return ctrl
 
 
+def _dynamic_playlist(item_id: str, instance: str) -> Playlist:
+    """Build a dynamic playlist of the given provider instance."""
+    playlist = Playlist(
+        item_id=item_id,
+        provider=instance,
+        name=f"Radio {item_id}",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=instance.split("--", maxsplit=1)[0],
+                provider_instance=instance,
+            )
+        },
+    )
+    playlist.is_dynamic = True
+    return playlist
+
+
 def _set_sources(ctrl: Any) -> None:
     """Give the server one source of the listener and one another member keeps private."""
     set_music_source_access(
@@ -271,9 +289,12 @@ async def test_each_item_plays_for_whom_enqueued_it(
     [(BLOCKED_INSTANCE, True), (EVERYONE_INSTANCE, False)],
     ids=["only on the adding user's source", "on a source of both"],
 )
+@pytest.mark.parametrize(
+    "dynamic_playlist", [False, True], ids=["track onto a dynamic queue", "dynamic playlist"]
+)
 @patch(GET_CURRENT_USER)
-async def test_an_add_to_a_dynamic_queue_must_be_playable_for_its_owner(
-    mock_get_user: Mock, instance: str, refused: bool
+async def test_an_added_source_must_be_playable_for_the_queue_owner(
+    mock_get_user: Mock, dynamic_playlist: bool, instance: str, refused: bool
 ) -> None:
     """The pool builds an added source's tracks for the queue's owner, who must be able to play it."""
     listener = User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
@@ -295,15 +316,16 @@ async def test_an_add_to_a_dynamic_queue_must_be_playable_for_its_owner(
     mock_get_user.return_value = listener
     await ctrl.play_media("q1", _track("t1", OWN_INSTANCE, OWN_INSTANCE), QueueOption.REPLACE)
     queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
-    radio = Playlist(
-        item_id="radio", provider="radio_playlist", name="Radio", provider_mappings=set()
-    )
-    radio.is_dynamic = True
-    queue_data.source_items = [radio]
-    queue_data.queue.is_dynamic = True
+    added: Track | Playlist
+    if dynamic_playlist:
+        # a dynamic playlist turns any queue into a dynamic one
+        added = _dynamic_playlist("p3", instance)
+    else:
+        queue_data.source_items = [_dynamic_playlist("radio", OWN_INSTANCE)]
+        queue_data.queue.is_dynamic = True
+        added = _track("t3", instance, instance)
 
     mock_get_user.return_value = housemate
-    added = _track("t3", instance, instance)
     if refused:
         with pytest.raises(MediaNotFoundError) as err:
             await ctrl.play_media("q1", added, QueueOption.ADD)

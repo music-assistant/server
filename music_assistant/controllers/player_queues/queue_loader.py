@@ -1039,6 +1039,26 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             QueueOption.NEXT,
                         )
 
+                    # the user picked this exact track to play next, so it must be inserted literally
+                    plays_next_track = (
+                        option == QueueOption.NEXT and media_item.media_type == MediaType.TRACK
+                    )
+                    # the pool builds the tracks of a source for the queue's owner, which an add
+                    # onto someone else's queue leaves in place
+                    if (
+                        (
+                            is_dynamic_source(media_item)
+                            or (already_dynamic and not plays_next_track)
+                        )
+                        and option in (QueueOption.ADD, QueueOption.NEXT)
+                        and not isinstance(media_item, BrowseFolder)
+                        and queue_data.userid != playback_userid
+                        and not self._starts_afresh(queue_data, option)
+                    ):
+                        self.mass.music.check_item_playable_for_user(
+                            media_item, await resolve_playback_user(self.mass, queue_id)
+                        )
+
                     # like the shuffle state below, the first item that resolves decides for the batch
                     if not first_item_resolved:
                         first_item_resolved = True
@@ -1108,10 +1128,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             queue_id, option, batch_shuffle
                         )
 
-                    # the user picked this exact track to play next, so it must be inserted literally
-                    plays_next_track = (
-                        option == QueueOption.NEXT and media_item.media_type == MediaType.TRACK
-                    )
                     # collect media_items to play
                     if is_dynamic_source(media_item):
                         # a dynamic playlist/station supplies its own tracks on demand; just mark it
@@ -1130,13 +1146,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     elif already_dynamic and not plays_next_track:
                         # feed the already-active pool: keep the finite item as a (materialized) source
                         if not isinstance(media_item, BrowseFolder):
-                            if queue_data.userid != playback_userid and not self._starts_afresh(
-                                queue_data, option
-                            ):
-                                # the pool builds the tracks of a source for the queue's owner
-                                self.mass.music.check_item_playable_for_user(
-                                    media_item, await resolve_playback_user(self.mass, queue_id)
-                                )
                             source_items.append(media_item)
                     else:
                         # a play-next track never becomes a source: the pool would re-dispatch it
