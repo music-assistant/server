@@ -542,17 +542,15 @@ async def _broadcast_session(
     start_item: MagicMock,
     *,
     pending_item_id: str | None = None,
-    live_audio: AsyncGenerator[bytes] | None = None,
+    audio: AsyncGenerator[bytes] | None = None,
 ) -> list[bytes]:
     """
     Run one session from the given item, returning what a listener of the station received.
 
-    The flow stream carries the first two chunks and the stream of a live item all three.
-
     :param provider: The provider serving the station.
     :param start_item: The queue item the session starts from.
     :param pending_item_id: The item play_media named, the start item by default.
-    :param live_audio: The audio core hands out for a live item, all three chunks by default.
+    :param audio: The audio core hands out for the item, all three chunks by default.
     """
     station = provider._stations["kitchen"]
     subscriber = _Subscriber(queue=asyncio.Queue(), want_icy=False)
@@ -567,8 +565,7 @@ async def _broadcast_session(
 
     mass = cast("MagicMock", provider.mass)
     mass.player_queues.player_media_from_queue_item = AsyncMock()
-    mass.streams.audio.get_queue_flow_stream.side_effect = lambda **_: _audio(CHUNKS[:2])
-    mass.streams.get_stream.side_effect = lambda *_: live_audio or _audio(CHUNKS)
+    mass.streams.get_stream.side_effect = lambda *_, **__: audio or _audio(CHUNKS)
     with patch("music_assistant.providers.webradio.provider.get_ffmpeg_stream", encode):
         exit_reason = await provider._run_one_flow_session(
             station=station,
@@ -586,63 +583,70 @@ async def _broadcast_session(
     return received
 
 
-@pytest.mark.parametrize("media_type", [MediaType.RADIO, MediaType.AUDIO_SOURCE])
-async def test_live_item_is_broadcast_from_its_own_stream(media_type: MediaType) -> None:
-    """A live item reaches the listener through core's stream of its media, not the flow."""
+@pytest.mark.parametrize("media_type", [MediaType.TRACK, MediaType.RADIO, MediaType.AUDIO_SOURCE])
+async def test_every_item_is_broadcast_from_the_stream_core_hands_out(
+    media_type: MediaType,
+) -> None:
+    """A track and a live item both reach the listener through core's stream of the media."""
     provider = _make_provider()
 
-    received = await _broadcast_session(provider, _item("radio", media_type))
+    received = await _broadcast_session(provider, _item("first", media_type))
 
     assert received == CHUNKS
     mass = cast("MagicMock", provider.mass)
     mass.streams.audio.get_queue_flow_stream.assert_not_called()
+    # core plays a track as a flow of the queue, and turns the flow off for a live item
     mass.streams.get_stream.assert_called_once_with(
-        provider._stations["kitchen"].pending_media, PCM_FORMAT, "webradio_kitchen"
+        provider._stations["kitchen"].pending_media,
+        PCM_FORMAT,
+        "webradio_kitchen",
+        force_flow_mode=True,
     )
     mass.player_queues.player_media_from_queue_item.assert_not_awaited()
 
 
-async def test_live_item_resumed_from_the_queue_gets_its_own_media() -> None:
-    """A broadcast that resumes on a live item play_media did not name streams that item."""
+@pytest.mark.parametrize("media_type", [MediaType.TRACK, MediaType.RADIO])
+async def test_item_resumed_from_the_queue_gets_its_own_media(media_type: MediaType) -> None:
+    """A broadcast that resumes on an item play_media did not name streams that item."""
     provider = _make_provider()
-    radio = _item("radio", MediaType.RADIO)
+    current = _item("third", media_type)
 
-    received = await _broadcast_session(provider, radio, pending_item_id="first")
+    received = await _broadcast_session(provider, current, pending_item_id="first")
 
     assert received == CHUNKS
     mass = cast("MagicMock", provider.mass)
-    mass.player_queues.player_media_from_queue_item.assert_awaited_once_with(radio)
+    mass.player_queues.player_media_from_queue_item.assert_awaited_once_with(current)
     mass.streams.get_stream.assert_called_once_with(
         mass.player_queues.player_media_from_queue_item.return_value,
         PCM_FORMAT,
         "webradio_kitchen",
+        force_flow_mode=True,
     )
 
 
-async def test_track_is_broadcast_from_the_flow_stream() -> None:
-    """A track reaches the listener through the queue's flow stream."""
-    provider = _make_provider()
-    track = _item("first")
-
-    received = await _broadcast_session(provider, track)
-
-    assert received == CHUNKS[:2]
-    mass = cast("MagicMock", provider.mass)
-    mass.streams.get_stream.assert_not_called()
-    assert mass.streams.audio.get_queue_flow_stream.call_args.kwargs["start_queue_item"] is track
-
-
-async def test_live_item_whose_source_fails_ends_the_session() -> None:
-    """A live source that fails ends the session with the audio it gave, without raising."""
+@pytest.mark.parametrize("media_type", [MediaType.TRACK, MediaType.RADIO])
+async def test_item_whose_source_fails_ends_the_session(media_type: MediaType) -> None:
+    """A source that fails ends the session with the audio it gave, without raising."""
     provider = _make_provider()
 
     received = await _broadcast_session(
         provider,
-        _item("radio", MediaType.RADIO),
-        live_audio=_audio(CHUNKS[:1], AudioError("source gone")),
+        _item("first", media_type),
+        audio=_audio(CHUNKS[:1], AudioError("source gone")),
     )
 
     assert received == CHUNKS[:1]
+    cast("MagicMock", provider.logger).warning.assert_called_once()
+
+
+async def test_session_core_has_no_audio_for_ends_without_audio() -> None:
+    """A session core hands out nothing for, as for a stale queue session, just ends."""
+    provider = _make_provider()
+
+    received = await _broadcast_session(provider, _item("first"), audio=_audio([]))
+
+    assert received == []
+    cast("MagicMock", provider._stations["kitchen"].protocol.update_state).assert_not_called()
 
 
 async def test_the_short_chunk_a_session_ends_on_is_broadcast() -> None:
@@ -651,7 +655,7 @@ async def test_the_short_chunk_a_session_ends_on_is_broadcast() -> None:
     tail = CHUNKS[1][:10]
 
     received = await _broadcast_session(
-        provider, _item("radio", MediaType.RADIO), live_audio=_audio([CHUNKS[0], tail])
+        provider, _item("radio", MediaType.RADIO), audio=_audio([CHUNKS[0], tail])
     )
 
     assert received == [CHUNKS[0], tail]
