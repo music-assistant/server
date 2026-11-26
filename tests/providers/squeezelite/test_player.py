@@ -391,31 +391,17 @@ def _saved_power_states(mass: MagicMock) -> list[object]:
     ]
 
 
-@pytest.mark.parametrize("saved_power", [True, None])
-async def test_a_player_that_was_on_or_is_new_comes_up_powered_on(
-    saved_power: bool | None,
-) -> None:
-    """After a boot or a server restart a player that was on, or is new, comes up on."""
+@pytest.mark.parametrize("saved_power", [True, False, None])
+async def test_setting_up_a_player_sends_no_power_command(saved_power: bool | None) -> None:
+    """The player connected in its saved power state already, so setup leaves it as it is."""
     player, mass = _connecting_player({PlayerFeature.POWER}, saved_power)
     await player.setup()
-    cast("MagicMock", player.client).power.assert_awaited_once_with(True)
-    mass.players.register.assert_awaited_once_with(player)
-
-
-async def test_powering_on_after_connecting_starts_no_playback() -> None:
-    """The device is powered on itself: Music Assistant's power command would run its auto play."""
-    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=True)
-    await player.setup()
+    cast("MagicMock", player.client).power.assert_not_awaited()
+    # Music Assistant's power command would also run its auto play
     mass.players.cmd_power.assert_not_awaited()
     mass.player_queues.resume.assert_not_called()
-
-
-async def test_a_player_that_was_switched_off_stays_off_after_connecting() -> None:
-    """Rebooting a player does not turn on one that was off, as on LMS."""
-    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=False)
-    await player.setup()
-    cast("MagicMock", player.client).power.assert_not_awaited()
     mass.players.register.assert_awaited_once_with(player)
+    assert player._power_tracking
 
 
 async def test_a_player_without_power_control_is_not_powered_on() -> None:
