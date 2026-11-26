@@ -338,9 +338,10 @@
     },
     "volume_control": {
       "label": "Volume Control",
+      "description": "Native volume control uses the player's own control, also while it plays over another protocol such as AirPlay. Follow protocol sets the volume through the protocol that plays, which may use a different scale.",
       "options": {
         "native": "Native volume control",
-        "follow_protocol": "Auto-select (based on active/preferred protocol)",
+        "follow_protocol": "Follow protocol",
         "none": "None"
       },
       "disabled_reasons": {
@@ -349,9 +350,10 @@
     },
     "mute_control": {
       "label": "Mute Control",
+      "description": "Native mute control uses the player's own control, also while it plays over another protocol such as AirPlay. Follow protocol mutes through the protocol that plays.",
       "options": {
         "native": "Native mute control",
-        "follow_protocol": "Auto-select (based on active/preferred protocol)",
+        "follow_protocol": "Follow protocol",
         "none": "None",
         "fake": "Fake mute control"
       },

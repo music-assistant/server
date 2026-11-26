@@ -1417,8 +1417,8 @@ class PlayerConfigMixin:
                 disabled=PlayerFeature.VOLUME_MUTE not in own_features,
             )
         ]
-        # "auto" hands the control to the protocol that renders. It comes after "native", so it
-        # is only the default for a player without a native control.
+        # "follow protocol" hands the control to the protocol that renders. It comes after
+        # "native", so it is only the default for a player without a native control.
         for protocol in player.audio_protocols:
             if not protocol.available_for_playback:
                 continue
