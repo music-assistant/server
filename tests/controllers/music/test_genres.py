@@ -2015,6 +2015,38 @@ class TestGenreLookupAndScanner:
 
         assert valid_name in await _linked_genre_names(mass, MediaType.TRACK, track.item_id)
 
+    @pytest.mark.parametrize(
+        "scan_method", ["_bulk_scan_media_genres", "_bulk_scan_unmapped_genres"]
+    )
+    async def test_scanner_searches_genre_lookup_by_index(
+        self,
+        mass: MusicAssistant,
+        genre_ctrl: GenreController,
+        monkeypatch: pytest.MonkeyPatch,
+        scan_method: str,
+    ) -> None:
+        """The mapping statements search the genre lookup by index instead of scanning it."""
+        database = mass.music.database
+        track = await _add_test_track(mass, f"PlanTrack{scan_method}")
+        await _set_track_genres(mass, int(track.item_id), [f"PlanGenre{scan_method}"])
+        plans: list[list[str]] = []
+        execute = database.execute
+
+        async def _explain_and_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+            if "gl.raw_name" in query:
+                rows = await database.get_rows_from_query(
+                    f"EXPLAIN QUERY PLAN {query}", values, limit=0
+                )
+                plans.append([row["detail"] for row in rows])
+            return await execute(query, values)
+
+        monkeypatch.setattr(database, "execute", _explain_and_execute)
+        await getattr(genre_ctrl, scan_method)()
+
+        assert plans
+        for details in plans:
+            assert any(d.startswith("SEARCH gl ") and "(raw_name=?)" in d for d in details), details
+
 
 # ===================================================================
 # Group J: Base Class Integration (3 tests)

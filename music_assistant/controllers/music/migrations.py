@@ -55,7 +55,7 @@ from music_assistant.controllers.music.constants import (
     DB_SCHEMA_VERSION,
 )
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
-from music_assistant.controllers.music.helpers import genre_lookup_cte
+from music_assistant.controllers.music.helpers import genre_lookup_table
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.controllers.streams.audio_analysis_codec import encode
 from music_assistant.controllers.streams.audio_analysis_database import create_analysis_tables
@@ -496,27 +496,26 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                 )
         await db.commit()
 
-        # 2d: Build CTE with (raw_name, genre_id) and do one INSERT per
+        # 2d: Build a lookup with (raw_name, genre_id) and do one INSERT per
         # media type using json_each to map media items directly to genres.
         # One raw_name can map to multiple genre_ids (n:n).
         if raw_name_to_genres:
-            cte, cte_params = genre_lookup_cte(raw_name_to_genres)
-
-            for table, media_type in media_tables:
-                full_query = (
-                    f"{cte} INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}"
-                    f"(genre_id, media_id, media_type, alias) "
-                    f"SELECT gl.genre_id, {table}.item_id, "
-                    f"'{media_type.value}', TRIM(g.value) "
-                    f"FROM {table}, "
-                    f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
-                    f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
-                    f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
-                    f"AND json_extract({table}.metadata, '$.genres') != '[]'"
-                )
-                logger.debug("Genre migration - %s query:\n%s", media_type.value, full_query)
-                await db.execute(full_query, cte_params)
-                await db.commit()
+            async with genre_lookup_table(database, raw_name_to_genres) as genre_lookup:
+                for table, media_type in media_tables:
+                    full_query = (
+                        f"INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}"
+                        f"(genre_id, media_id, media_type, alias) "
+                        f"SELECT gl.genre_id, {table}.item_id, "
+                        f"'{media_type.value}', TRIM(g.value) "
+                        f"FROM {table}, "
+                        f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
+                        f"JOIN {genre_lookup} gl ON gl.raw_name = LOWER(TRIM(g.value)) "
+                        f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
+                        f"AND json_extract({table}.metadata, '$.genres') != '[]'"
+                    )
+                    logger.debug("Genre migration - %s query:\n%s", media_type.value, full_query)
+                    await db.execute(full_query)
+                    await db.commit()
 
     if prev_version <= 29:
         # Smart fades analyses were previously computed on silence-stripped audio,
