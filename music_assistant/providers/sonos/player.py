@@ -785,6 +785,10 @@ class SonosPlayer(PlayerProtocol):
         self.bump_cloud_queue_version()
         # a new load serves fresh positions; what the old one fetched says nothing about it
         self._served_bindings.clear()
+        if (reported := self._attr_current_media) is not None and reported.queue_item_id:
+            # the item reported last belongs to the replaced load: until the speaker reports
+            # on this one, it would move the queue back to the item that played before
+            self._attr_current_media = replace(reported, queue_item_id=None)
 
         if media.media_type == MediaType.ANNOUNCEMENT:
             # We cannot use play_stream_url for announcements because Sonos treats those
@@ -1473,7 +1477,10 @@ class SonosPlayer(PlayerProtocol):
             )
             if active_service == MusicService.MUSIC_ASSISTANT and not foreign_session:
                 current_media.source_id = self._attr_active_source
-                current_media.queue_item_id = self._playing_item_id(current_item["id"])
+                # an item of a replaced load says nothing about the queue position; the
+                # coordinator made the load the group plays
+                if (group_parent or self).from_current_load(current_item["id"]):
+                    current_media.queue_item_id = self._playing_item_id(current_item["id"])
         # radio stream info
         if container and container.get("name") and active_group.playback_metadata.get("streamInfo"):
             images = container.get("images", [])
