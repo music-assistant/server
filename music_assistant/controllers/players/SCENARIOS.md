@@ -2333,6 +2333,21 @@ alone until that ends.
 - End-to-end: **possible with** a device that plays by itself, such as one with a vendor's own app.
 - Proven by: `test_grouping.py::test_a_member_of_a_fixed_group_that_plays_something_of_its_own_is_left_alone`
 
+### GROUP-73 · A sync group whose leader refuses its members does not keep that leader
+
+Downstairs is a sync group of Kitchen and Office, in that order, and Kitchen refuses to take Office
+as its member, as a speaker does that is asked to lead a stereo pair. The user plays Downstairs: the
+play fails with Kitchen's refusal, Downstairs is not formed and none of its members shows it as
+active. The user puts Office first in its settings and plays it again: Office leads and Kitchen
+follows it. A member that Kitchen did take before it refused another one is let go again. A
+Downstairs that already plays keeps its leader when that leader refuses to take a member back.
+
+- End-to-end: **possible with** a WiiM stereo pair, which another WiiM speaker can not lead.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_whose_leader_refuses_its_members_forgets_that_leader`
+  - `test_grouping.py::test_a_sync_group_whose_leader_refuses_a_member_lets_the_ones_it_took_go`
+  - `test_grouping.py::test_a_formed_sync_group_keeps_its_leader_when_it_can_not_take_a_member_back`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
