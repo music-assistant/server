@@ -23,7 +23,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_PASSWORD, CONF_SYNC_ADJUST
+from music_assistant.constants import ATTR_VOLUME_TARGET, CONF_PASSWORD, CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import Player
@@ -1333,6 +1333,95 @@ def test_owns_volume_false_when_another_control_owns_it(
     player.volume_control_for_output.return_value = control
 
     assert airplay_player.owns_volume is False
+
+
+@pytest.mark.parametrize("domain", ["wiim", "bose_soundtouch"])
+def test_native_start_volume_is_the_level_of_a_device_that_sets_its_own(
+    airplay_player: AirPlayPlayer, domain: str
+) -> None:
+    """A WiiM or Bose SoundTouch whose native protocol owns the volume starts at that level."""
+    player = _attach_to_player(airplay_player, own=_native_protocol(domain, volume_level=7))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume == 7
+    player.volume_control_for_output.assert_called_once_with(airplay_player.protocol_id)
+
+
+def test_native_start_volume_is_none_for_a_device_that_keeps_its_own_level(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A device not known to set a level of its own, such as a MusicCast receiver, gets none."""
+    player = _attach_to_player(airplay_player, own=_native_protocol("musiccast"))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume is None
+
+
+@pytest.mark.parametrize("control", ["test_player", "dlna_player", "media_player.amplifier"])
+def test_native_start_volume_is_none_when_the_native_protocol_does_not_own_the_volume(
+    airplay_player: AirPlayPlayer, control: str
+) -> None:
+    """The level of any other control is not the level of the device itself."""
+    player = _attach_to_player(
+        airplay_player,
+        own=_native_protocol("wiim"),
+        controls={"dlna_player": MagicMock(underlying_protocol_id=None)},
+    )
+    player.volume_control_for_output.return_value = control
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume is None
+
+
+def test_native_start_volume_is_none_while_the_player_is_muted(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A muted player is not handed a level that would make it heard."""
+    player = _attach_to_player(airplay_player, own=_native_protocol("wiim"))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = True
+
+    assert airplay_player.native_start_volume is None
+
+
+def test_native_start_volume_is_none_while_not_attached(airplay_player: AirPlayPlayer) -> None:
+    """A protocol without a player has no native protocol to take a level from."""
+    assert airplay_player.native_start_volume is None
+
+
+@pytest.mark.parametrize(
+    ("target", "commanded"),
+    [((25, 101.0), True), ((25, 99.0), False), (None, False)],
+)
+def test_volume_commanded_since_follows_the_last_volume_command(
+    airplay_player: AirPlayPlayer, target: tuple[int, float] | None, commanded: bool
+) -> None:
+    """Only a volume command given through Music Assistant after the moment counts."""
+    player = _attach_to_player(airplay_player)
+    player.extra_data = {} if target is None else {ATTR_VOLUME_TARGET: target}
+
+    assert airplay_player.volume_commanded_since(100.0) is commanded
+
+
+def test_volume_commanded_since_is_false_while_not_attached(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A protocol without a player has no volume commands to look at."""
+    assert airplay_player.volume_commanded_since(100.0) is False
+
+
+def _native_protocol(domain: str, volume_level: int = 30) -> MagicMock:
+    """
+    Build the native protocol of a player.
+
+    :param domain: Domain of the provider the native protocol belongs to.
+    :param volume_level: The level the native protocol reports.
+    """
+    return MagicMock(
+        provider=MagicMock(domain=domain), volume_level=volume_level, underlying_protocol_id=None
+    )
 
 
 def test_update_volume_from_device_keeps_native_parent_feedback(
