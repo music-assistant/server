@@ -20,11 +20,15 @@ SESSION_ID = "sess-1"
 TRACK_S = 10
 
 
-def _controller() -> tuple[PlayerQueuesController, list[Coroutine[Any, Any, None]]]:
-    """Return a flow-mode queue 9 s into the last of three tracks, all streamed in one session."""
+def _controller(
+    item_ids: tuple[str, ...] = ("a", "b", "c"),
+    streamed_ids: tuple[str, ...] = ("a", "b", "c"),
+    position: float = 2 * TRACK_S + 9,
+) -> tuple[PlayerQueuesController, list[Coroutine[Any, Any, None]]]:
+    """Return a flow-mode queue at `position` s into one session that streamed `streamed_ids`."""
     items = [
         QueueItem(queue_id=QUEUE_ID, queue_item_id=item_id, name=item_id, duration=TRACK_S)
-        for item_id in ("a", "b", "c")
+        for item_id in item_ids
     ]
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = MagicMock()
@@ -50,12 +54,12 @@ def _controller() -> tuple[PlayerQueuesController, list[Coroutine[Any, Any, None
     )
     queue_data = PlayerQueueData(queue=queue, items=items)
     queue_data.session_id = queue_data.started_session_id = SESSION_ID
-    queue_data.served_item_ids = dict.fromkeys(("a", "b", "c"), SESSION_ID)
+    queue_data.served_item_ids = dict.fromkeys(streamed_ids, SESSION_ID)
     queue_data.flow_mode_stream_log = [
-        PlayLogEntry(item_id, seconds_streamed=TRACK_S) for item_id in ("a", "b", "c")
+        PlayLogEntry(item_id, seconds_streamed=TRACK_S) for item_id in streamed_ids
     ]
     ctrl._queue_data = {QUEUE_ID: queue_data}
-    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, 2 * TRACK_S + 9))
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, position))
     return ctrl, tasks
 
 
@@ -105,3 +109,37 @@ async def test_restart_at_zero_after_the_end_ends_the_queue() -> None:
     assert isinstance(mark_ended, MagicMock)
     mark_ended.assert_called_once_with(QUEUE_ID)
     assert queue.current_index == 2
+
+
+async def test_restart_at_zero_after_a_format_restart_plays_the_next_track_once() -> None:
+    """
+    A flow stream that ends early for a sample rate change is played again from 0 s as well.
+
+    The queue must go on with the first track of the next stream, not replay the last one.
+    """
+    ctrl, tasks = _controller(("a", "b", "c", "d"), ("a", "b"), TRACK_S + 9)
+    queue = ctrl._queue_data[QUEUE_ID].queue
+    assert queue.current_index == 1
+    ctrl.queue_buffer_completed(QUEUE_ID, queue_exhausted=False)
+
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, 0.9))
+    assert queue.current_index == 1
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, 2.9))
+    assert queue.current_index == 1
+    ctrl._update_queue_from_player(_player(PlaybackState.IDLE, 0))
+    await asyncio.wait_for(_run(tasks), 5)
+
+    play_index = ctrl.play_index
+    assert isinstance(play_index, AsyncMock)
+    play_index.assert_awaited_once_with(QUEUE_ID, 2)
+
+
+async def test_fully_streamed_session_still_follows_the_player_from_its_start() -> None:
+    """A short queue streamed in full before it plays (or a seek to its start) moves on as before."""
+    ctrl, _tasks = _controller(position=0.5)
+    queue = ctrl._queue_data[QUEUE_ID].queue
+    ctrl.queue_buffer_completed(QUEUE_ID, queue_exhausted=True)
+
+    for position, index in ((0.5, 0), (TRACK_S + 1, 1), (2 * TRACK_S + 1, 2)):
+        ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, position))
+        assert queue.current_index == index

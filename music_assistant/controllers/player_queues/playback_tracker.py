@@ -45,6 +45,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.constants import (
+    FLOW_STARTED_OVER_POSITION,
     PLAYED_TO_END_MARGIN,
     SLEEP_TIMER_NATURAL_END_MARGIN,
 )
@@ -121,6 +122,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # so we need to calculate the current index and elapsed time
                 # (already returned in media-time)
                 current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+                if self._flow_started_over(queue, player, current_index):
+                    return True
             elif item_id := self._parse_player_current_item_id(queue_id, player):
                 # normal mode, the player itself will report the current item
                 elapsed_time = player.corrected_elapsed_time or 0
@@ -450,6 +453,29 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # so we just return the queue index and the elapsed time
             return queue.current_index, queue.elapsed_time
         return queue_index, track_time
+
+    def _flow_started_over(
+        self, queue: PlayerQueue, player: Player, reported_index: int | None
+    ) -> bool:
+        """Return whether the player started its fully streamed flow over, sticky per session."""
+        queue_data = self._queue_data[queue.queue_id]
+        session_id = queue_data.session_id
+        if session_id is None or queue_data.flow_buffer_completed != session_id:
+            return False
+        if queue_data.flow_started_over == session_id:
+            return True
+        if (
+            player.corrected_elapsed_time or 0
+        ) >= FLOW_STARTED_OVER_POSITION or reported_index == queue.current_index:
+            return False
+        # a player that treats the flow stream as a radio station plays it again from 0 s
+        # once it ran out, before its request for more of it fails
+        self.logger.debug(
+            "%s started the flow stream over after it ended, keeping the queue where it was",
+            queue.display_name,
+        )
+        queue_data.flow_started_over = session_id
+        return True
 
     @staticmethod
     def _position_is_reliable(player: Player) -> bool:
