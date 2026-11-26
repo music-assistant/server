@@ -77,7 +77,7 @@ async def request_link(http_session: ClientSession, device: str) -> LinkRequest:
         http_session,
         "POST",
         ACOUSTID_REQUEST_LINK_URL,
-        data={"device": device[:MAX_DEVICE_LENGTH]},
+        data={"device": "".join(char for char in device if char.isprintable())[:MAX_DEVICE_LENGTH]},
     )
     user = payload.get("user")
     link = user.get("link") if isinstance(user, dict) else None
