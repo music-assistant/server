@@ -788,6 +788,17 @@ class AirPlayPlayer(PlayerProtocol):
                 return
             await self.stream.send_cli_command("ACTION=PAUSE")
 
+    async def hold(self) -> None:
+        """
+        Park the session while what the player plays is paused, keeping its speakers connected.
+
+        The next play_media plays on over the same connections. A speaker that lost its
+        connection is stopped instead.
+        """
+        if (session := self.session) and await session.standby():
+            return
+        await self.stop()
+
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         # the player is being (re)purposed on purpose: drop any pending
