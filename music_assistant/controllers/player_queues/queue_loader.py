@@ -86,6 +86,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.provider_access import (
     playback_sources_for,
+    playback_user_or_stand_in,
     resolve_playback_user,
     resolve_playback_user_or_stand_in,
 )
@@ -1061,7 +1062,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             # a dynamic source can rest on more than its own provider (a radio
                             # on its seed), so the owner must be able to fetch it as well
                             try:
-                                with user_auth_context(owner):
+                                with user_auth_context(playback_user_or_stand_in(owner)):
                                     await self.mass.music.get_item(
                                         media_item.media_type,
                                         media_item.item_id,
@@ -1267,7 +1268,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     else await resolve_playback_user(self.mass, queue_id)
                 )
                 # the pool is built for the queue's owner, who may not be the one adding
-                with user_auth_context(owner):
+                with user_auth_context(playback_user_or_stand_in(owner)):
                     await self._enter_dynamic_mode(queue_id, option)
             # only explicit play-next tracks are inserted literally; container expansions are
             # already in the pool via their source

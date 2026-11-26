@@ -389,7 +389,17 @@ async def resolve_playback_user_or_stand_in(mass: MusicAssistant, queue_item: Qu
     :param mass: The MusicAssistant instance.
     :param queue_item: The queue item that plays.
     """
-    return await resolve_queue_item_user(mass, queue_item) or _ANONYMOUS_PLAYBACK_USER
+    return playback_user_or_stand_in(await resolve_queue_item_user(mass, queue_item))
+
+
+def playback_user_or_stand_in(user: User | None) -> User:
+    """
+    Return the user to fetch media as for a playback of the given user.
+
+    :param user: The user the playback is for, None for anonymous playback, which gets the
+        stand-in user.
+    """
+    return user or _ANONYMOUS_PLAYBACK_USER
 
 
 async def playback_sources(mass: MusicAssistant, queue_item: QueueItem) -> PlaybackSources:
