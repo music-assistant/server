@@ -2,7 +2,7 @@
   "config_entries": {
     "stations": {
       "label": "Stations",
-      "description": "One station per line. Each station appears as a virtual MA player with its own queue, served on its own HTTP URL. The URL is shown on each station's player settings page. Renaming a station changes its URL."
+      "description": "One station per line. Each station appears as a virtual MA player with its own queue, served on its own HTTP URL. The URL is shown on each station's player settings page. Renaming a station changes its URL and creates a new player."
     },
     "stream_url": {
       "label": "Stream URL: {0}"

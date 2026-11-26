@@ -85,7 +85,6 @@ class _Station:
     """Runtime registration data for a single web broadcast station."""
 
     slug: str
-    protocol_id: str
     protocol: WebRadioPlayer
     # Only set while the station is attached to its player: its URL exists only then.
     url_path: str = ""
@@ -175,7 +174,6 @@ class WebRadioProvider(PlayerProvider):
             if (station := self._stations.get(slug)) is None:
                 station = _Station(
                     slug=slug,
-                    protocol_id=protocol_id,
                     protocol=WebRadioPlayer(
                         provider=self,
                         protocol_id=protocol_id,

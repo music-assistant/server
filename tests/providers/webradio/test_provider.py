@@ -60,7 +60,6 @@ def _make_provider(*, fixed_content_length: bool = False) -> WebRadioProvider:
     provider.logger = MagicMock()
     station = _Station(
         slug="kitchen",
-        protocol_id="webradio_kitchen",
         protocol=_make_player(provider, fixed_content_length=fixed_content_length),
         url_path="/webradio/kitchen.mp3",
         unregister_route=lambda: None,
