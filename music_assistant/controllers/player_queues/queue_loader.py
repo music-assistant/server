@@ -1246,7 +1246,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # content as materialized TRACKS seed(s), dynamic playlists as DYNAMIC seed(s).
                 # Only rebuilt when this enqueue changed the sources, so a play-next insert
                 # leaves the tail untouched.
-                await self._enter_dynamic_mode(queue_id, option)
+                owner = (
+                    playback_user
+                    if queue_data.userid == playback_userid
+                    else await resolve_playback_user(self.mass, queue_id)
+                )
+                # the pool is built for the queue's owner, who may not be the one adding
+                with user_auth_context(owner):
+                    await self._enter_dynamic_mode(queue_id, option)
             # only explicit play-next tracks are inserted literally; container expansions are
             # already in the pool via their source
             media_items = play_next_items

@@ -29,6 +29,7 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from tests.common import set_music_source_access
 
 GET_CURRENT_USER = "music_assistant.controllers.player_queues.queue_loader.get_current_user"
@@ -312,7 +313,10 @@ async def test_an_added_source_must_be_playable_for_the_queue_owner(
     ctrl.mass.webserver.auth.get_user = AsyncMock(
         side_effect={USER_ID: listener, OTHER_USER_ID: housemate}.get
     )
-    ctrl._enter_dynamic_mode = AsyncMock()
+    rebuilt_as: list[User | None] = []
+    ctrl._enter_dynamic_mode = AsyncMock(
+        side_effect=lambda *_args: rebuilt_as.append(get_current_user())
+    )
     mock_get_user.return_value = listener
     await ctrl.play_media("q1", _track("t1", OWN_INSTANCE, OWN_INSTANCE), QueueOption.REPLACE)
     queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
@@ -335,6 +339,8 @@ async def test_an_added_source_must_be_playable_for_the_queue_owner(
 
     assert (added in queue_data.source_items) is not refused
     assert queue_data.userid == USER_ID
+    # the pool is rebuilt for the owner, not for the one adding
+    assert rebuilt_as == ([] if refused else [listener])
 
 
 @patch(GET_CURRENT_USER)
