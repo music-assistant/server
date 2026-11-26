@@ -922,8 +922,8 @@ class SyncGroupPlayer(PlayerProtocol):
         Form syncgroup by syncing all (possible) members.
 
         :raises ResourceBusyError: When the leader stays busy; the group is then left as it was.
-        :raises PlayerCommandFailed: When the leader refuses the members; a group that was not
-            formed yet is then left without a leader.
+        :raises PlayerCommandFailed: When the leader refuses members; a group that was not
+            formed yet is then dissolved again.
         """
         # select new sync leader if needed; pin the leader ref: a concurrent command (e.g. a
         # dissolve) may clear or replace self.sync_leader while we await below
@@ -1035,12 +1035,11 @@ class SyncGroupPlayer(PlayerProtocol):
                     )
                 except Exception:
                     if leader_recorded and self.sync_leader is leader:
-                        # a leader that refuses the members does not form the group: the
-                        # next form selects one again from the members as they are then
-                        self.sync_leader = None
+                        # a leader that refuses members does not form the group: the ones it
+                        # did take are released, and the next form selects a leader again
+                        # from the members as they are then
                         self._attr_group_members = previous_members
-                        self._update_attributes()
-                        self.update_state()
+                        await self._dissolve_syncgroup()
                     raise
             return None
 

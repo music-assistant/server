@@ -2339,12 +2339,13 @@ Downstairs is a sync group of Kitchen and Office, in that order, and Kitchen ref
 as its member, as a speaker does that is asked to lead a stereo pair. The user plays Downstairs: the
 play fails with Kitchen's refusal, Downstairs is not formed and none of its members shows it as
 active. The user puts Office first in its settings and plays it again: Office leads and Kitchen
-follows it. A Downstairs that already plays keeps its leader when that leader refuses to take a
-member back.
+follows it. A member that Kitchen did take before it refused another one is let go again. A
+Downstairs that already plays keeps its leader when that leader refuses to take a member back.
 
 - End-to-end: **possible with** a WiiM stereo pair, which another WiiM speaker can not lead.
 - Proven by:
   - `test_grouping.py::test_a_sync_group_whose_leader_refuses_its_members_forgets_that_leader`
+  - `test_grouping.py::test_a_sync_group_whose_leader_refuses_a_member_lets_the_ones_it_took_go`
   - `test_grouping.py::test_a_formed_sync_group_keeps_its_leader_when_it_can_not_take_a_member_back`
 
 ## Where playback goes
