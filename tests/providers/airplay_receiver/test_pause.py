@@ -71,6 +71,8 @@ async def test_a_pause_of_the_client_pauses_the_player(provider: MagicMock) -> N
     await _paused(provider)
 
     assert provider.daemon.paused_player_id == PLAYER_ID
+    # the stream of the silenced player ends instead of waiting for audio
+    provider._write_silence_to_unblock_stream.assert_awaited_once_with(provider.daemon)
 
 
 async def test_a_seek_of_the_client_does_not_pause_the_player(provider: MagicMock) -> None:
