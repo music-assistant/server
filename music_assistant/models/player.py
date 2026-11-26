@@ -2266,9 +2266,9 @@ class Player:
         """
         Resolve the control a volume or mute command goes to right now.
 
-        Without a selection in the config that is the active output while it plays or is
-        paused, else the native protocol while it can be reached, else the active output,
-        else any available protocol with the feature.
+        Without a selection in the config that is the native protocol while it can be
+        reached, else the active output, else any available protocol with the feature.
+        With "auto" selected, the active output comes first while it plays or is paused.
 
         :param feature: The feature the control has to support.
         :param conf_key: Config key holding the control selection.
@@ -2284,6 +2284,10 @@ class Player:
                 return protocol.protocol_id
             if _control := self.mass.players.get_player_control(str(conf)):
                 return _control.id
+        if not conf and self._own_controls(feature):
+            # without a selection the own protocol keeps the control, also while another
+            # output renders
+            return PLAYER_CONTROL_NATIVE
         # handle auto-select logic if not explicitly set in config
         active_protocol = self._active_output_protocol
         if (
@@ -2354,6 +2358,10 @@ class Player:
                 return protocol.protocol_id
             if _control := self.mass.players.get_player_control(str(conf)):
                 return _control.id
+        if not conf and self._own_controls(feature):
+            # without a selection the own protocol keeps the control, also while another
+            # output renders
+            return PLAYER_CONTROL_NATIVE
         # Availability is not checked - the named output is the one about to render.
         if (
             output_protocol_id != "native"
