@@ -784,7 +784,7 @@ class AudibleHelper:
         }
 
         # Add images
-        image_path = audiobook_data.get("product_images", {}).get("500")
+        image_path = (audiobook_data.get("product_images") or {}).get("500")
         book.metadata.images = UniqueList(self._create_images(image_path))
 
         # Chapters are not fetched during parsing - they are fetched lazily when streaming
@@ -1006,7 +1006,7 @@ class AudibleHelper:
         }
 
         # Add images
-        image_path = podcast_data.get("product_images", {}).get("500")
+        image_path = (podcast_data.get("product_images") or {}).get("500")
         podcast.metadata.images = UniqueList(self._create_images(image_path))
 
         return podcast
@@ -1087,7 +1087,7 @@ class AudibleHelper:
         )
 
         # Add images
-        image_path = episode_data.get("product_images", {}).get("500")
+        image_path = (episode_data.get("product_images") or {}).get("500")
         episode.metadata.images = UniqueList(self._create_images(image_path))
 
         return episode
