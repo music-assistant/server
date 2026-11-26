@@ -293,6 +293,17 @@ class MetadataReader:
                 self.on_metadata({"play_state": "stopped"})
             return
 
+        # A flush stops the audio: the client paused, or it seeks and resumes right away
+        if item_type == "ssnc" and code == "pfls":
+            if self.on_metadata:
+                self.on_metadata({"play_state": "flushed"})
+            return
+
+        if item_type == "ssnc" and code == "prsm":
+            if self.on_metadata:
+                self.on_metadata({"play_state": "resumed"})
+            return
+
         # Parse core metadata (from iTunes/iOS)
         if item_type == "core" and data is not None:
             self._parse_core_metadata(code, data)
@@ -370,10 +381,6 @@ class MetadataReader:
             # Send progress updates immediately (not batched with mden)
             if self.on_metadata and "elapsed_time" in self._current_metadata:
                 self.on_metadata({"elapsed_time": self._current_metadata["elapsed_time"]})
-        elif code == "paus":  # Paused
-            self._current_metadata["paused"] = True
-        elif code == "prsm":  # Playing/resumed
-            self._current_metadata["paused"] = False
         elif code == "svrg":  # mDNS service to publish (mdns_backend = "metadata")
             if self.on_metadata and (service := self._parse_mdns_service(data)):
                 self.on_metadata({"mdns_service": service})
