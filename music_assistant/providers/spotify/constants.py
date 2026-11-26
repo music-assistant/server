@@ -100,3 +100,6 @@ SCOPE = [
 
 # Other Constants
 LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
+
+# Item types requested from a playlist, so episodes come back as episode objects
+PLAYLIST_ITEM_TYPES = "track,episode"
