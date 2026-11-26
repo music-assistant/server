@@ -206,10 +206,9 @@ class ARDAudiothek(MusicProvider):
             if self.token:
                 headers = {"Authorization": f"Bearer {self.token}"}
 
-            self._client = Client(
-                transport=_create_aiohttptransport(headers),
-                fetch_schema_from_transport=True,
-            )
+            # no schema is fetched: ARD checks each query itself, and the schema it
+            # publishes does not pass local validation
+            self._client = Client(transport=_create_aiohttptransport(headers))
             self._client_initialized = True
             self._client_token = self.token
 
