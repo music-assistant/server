@@ -60,7 +60,7 @@ deadline = time.monotonic() + 30
 while not interrupted and time.monotonic() < deadline:
     time.sleep(0.01)
 if interrupted:
-    time.sleep(1)
+    time.sleep(0.5)
     sys.stdout.write("{_SLOW_EXIT_LINE}\\n" * {_SLOW_EXIT_LINES})
     sys.stdout.flush()
 """
