@@ -63,10 +63,11 @@ steady stream in the source's own format.
 
 ### Autostart
 
-Clients that advertise the `line_sense` feature report whether a signal is
-present on their input. Per the spec the server decides what to do with that,
-and this provider turns it into playback: pick a target under the device's own
-settings and the source starts there when a signal appears, and stops again
+Source clients report whether a signal is present on their input, and older
+clients only when they advertise the `line_sense` feature. Per the spec the
+server decides what to do with that, and this provider turns it into
+playback: pick a target under the device's own settings and the source
+starts there when a signal appears, and stops again
 after the signal has been gone for a minute. The target list covers everything
 that renders audio, groups and multi-channel players included, and a device
 that is a player itself defaults to playing its own line-in.
@@ -79,8 +80,8 @@ line-sense: a client keeps streaming silence after a record ends, so the
 no-audio timeout never fires and the queue would otherwise sit
 playing silence indefinitely.
 
-Devices without `line_sense` have no trigger to offer, so they get no setting
-and stay manual.
+Older devices without `line_sense` have no trigger to offer, so they get no
+setting and stay manual.
 
 ## Architecture
 
