@@ -22,11 +22,12 @@ from .constants import (
     CONF_CLI_JSON_PORT,
     CONF_CLI_TELNET_PORT,
     CONF_DISCOVERY,
+    CONF_STORED_POWER,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
     DEFAULT_SLIMPROTO_PORT,
 )
-from .player import SqueezelitePlayer
+from .player import SqueezelitePlayer, is_protocol_only_device
 from .sendspin_bridge import BRIDGE_STREAM_PATH, SendspinBridgeManager
 
 if TYPE_CHECKING:
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
 
     from aiosendspin.clock import Clock
     from aioslimproto.cli import SlimCLICommand
+    from aioslimproto.client import SlimClient
     from music_assistant_models.event import MassEvent
 
 
@@ -110,6 +112,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             cli_command_handler=self._handle_cli_command,
             clock=self._server_time,
             initial_volume=self._get_initial_volume,
+            initial_power=self._get_initial_power,
         )
 
     async def loaded_in_mass(self) -> None:
@@ -343,3 +346,16 @@ class SqueezelitePlayerProvider(PlayerProvider):
             key=player_id, provider=self.instance_id, category=CACHE_CATEGORY_PREV_STATE
         )
         return cast("int", last_state[1]) if last_state else DEFAULT_PLAYER_VOLUME
+
+    async def _get_initial_power(self, client: SlimClient) -> bool | None:
+        """
+        Return the power state a slimproto player starts in on connect, None for the default (off).
+
+        A player that was on, or is new, starts on; one that was switched off stays off.
+
+        :param client: The connecting client, with its player id and device model known.
+        """
+        if is_protocol_only_device(client.device_model):
+            # audio protocols are powered on with the stream (see SqueezelitePlayer)
+            return None
+        return self.mass.config.get_protocol_value(client.player_id, CONF_STORED_POWER, True)
