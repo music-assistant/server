@@ -497,7 +497,10 @@ class NativeGroupCoordinator:
             raise PlayerCommandFailed(
                 f"Cannot add {member.display_name} to {leader.display_name}: a stereo pair or "
                 "other speaker set can only lead a group, "
-                f"add {leader.display_name} to {member.display_name} instead"
+                f"add {leader.display_name} to {member.display_name} instead",
+                translation_key="set_can_only_lead",
+                translation_owner=self._provider.translation_owner,
+                translation_args=[member.display_name, leader.display_name],
             )
 
     @staticmethod
