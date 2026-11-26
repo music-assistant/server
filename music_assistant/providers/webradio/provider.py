@@ -69,8 +69,9 @@ _SUBSCRIBER_QUEUE_SIZE: int = 32
 # ICY "no-change" frame: a zero length byte with no payload.
 _ICY_NO_CHANGE_FRAME: bytes = b"\x00"
 _PRODUCER_READY_TIMEOUT: float = 10.0
-# How long the producer waits for the play_media of the next queue session.
-_NEXT_SESSION_TIMEOUT: float = 5.0
+# How long the producer waits for the play_media of the next queue session, which core
+# only sends once it has resolved the next item (slow for some radio stations).
+_NEXT_SESSION_TIMEOUT: float = 10.0
 # Media without an end, which core never plays inside a flow stream.
 _LIVE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE)
 
@@ -508,13 +509,13 @@ class WebRadioProvider(PlayerProvider):
                     station.protocol.mark_idle()
                     if exhausted:
                         break
-                # Wait for the new play_media that owns the new session.
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(
-                        station.pending_media_event.wait(), timeout=_NEXT_SESSION_TIMEOUT
-                    )
-                if station.protocol.playback_state != PlaybackState.PLAYING:
-                    # No next item arrived, so there is nothing to carry on with.
+                # Wait for the new play_media that owns the new session. The pending
+                # media is the item of the session that just ended, so without a new
+                # one there is nothing to carry on with.
+                if (
+                    not await self._next_media_arrived(station)
+                    or station.protocol.playback_state != PlaybackState.PLAYING
+                ):
                     self.clear_pending_media(station.slug)
                     break
                 self.logger.debug(
@@ -631,6 +632,21 @@ class WebRadioProvider(PlayerProvider):
             self.logger.warning(
                 "Live stream of %s failed on station %s: %s", queue_item.name, station.slug, err
             )
+
+    async def _next_media_arrived(self, station: _Station) -> bool:
+        """Wait for the next play_media, False when none arrives in time or the station stops."""
+        waiters = [
+            asyncio.create_task(station.pending_media_event.wait()),
+            asyncio.create_task(station.stop_event.wait()),
+        ]
+        try:
+            await asyncio.wait(
+                waiters, timeout=_NEXT_SESSION_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        return station.pending_media_event.is_set() and not station.stop_event.is_set()
 
     def _resolve_pending_media(
         self, station: _Station

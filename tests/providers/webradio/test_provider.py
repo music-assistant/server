@@ -373,6 +373,36 @@ async def test_producer_stops_when_no_item_follows_a_flow_that_ended_early() -> 
     assert station.pending_media is None
 
 
+async def test_producer_never_restarts_the_item_of_a_session_that_was_replaced() -> None:
+    """When core is slow to send the next item, the station stops, not replays the old one."""
+    provider = _make_provider()
+    # the queue moves on to a new session while the old one plays, but the play_media
+    # of the new session has not arrived yet
+    sessions = iter(["old"])
+    cast("MagicMock", provider.mass.player_queues).queue_data_or_none.side_effect = (
+        lambda _queue_id: MagicMock(session_id=next(sessions, "new"))
+    )
+    with patch("music_assistant.providers.webradio.provider._NEXT_SESSION_TIMEOUT", 0.01):
+        station = await _run_producer(provider, "ended")
+
+    cast("AsyncMock", provider.__dict__["_run_one_flow_session"]).assert_awaited_once()
+    assert station.pending_media is None
+
+
+async def test_producer_stops_waiting_for_the_next_item_when_the_station_is_stopped() -> None:
+    """A stop during the wait for the next item ends the broadcast right away."""
+    provider = _make_provider()
+    station = provider._stations["kitchen"]
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.01, station.stop_event.set)
+
+    started = loop.time()
+    await _run_producer(provider, "ended", exhausted=False)
+
+    assert loop.time() - started < 1
+    cast("AsyncMock", provider.__dict__["_run_one_flow_session"]).assert_awaited_once()
+
+
 async def test_live_start_item_is_not_joined_at_a_position() -> None:
     """A broadcast that carries on from a radio item does not seek, one from a track does."""
     joined: list[MediaType] = []
