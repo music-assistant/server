@@ -2273,7 +2273,8 @@ class Player:
 
         Without a selection in the config that is the native protocol while it can be
         reached, else the active output, else any available protocol with the feature.
-        With "auto" selected, the active output comes first while it plays or is paused.
+        With "follow protocol" selected, the active output comes first while it plays or is
+        paused.
 
         :param feature: The feature the control has to support.
         :param conf_key: Config key holding the control selection.
