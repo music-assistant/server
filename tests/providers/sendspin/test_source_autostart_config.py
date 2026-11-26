@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 def _player(
     *,
     negotiated_role_ids: list[str],
-    line_sense: bool,
+    line_sense: bool | None,
     known_players: list[str],
     unavailable_players: list[str] | None = None,
     non_audio_players: dict[str, PlayerType] | None = None,
@@ -37,7 +37,9 @@ def _player(
         SimpleNamespace(
             negotiated_role_ids=negotiated_role_ids,
             info_or_none=SimpleNamespace(
-                source_support=SimpleNamespace(features=SimpleNamespace(line_sense=line_sense))
+                source_support=None
+                if line_sense is None
+                else SimpleNamespace(features=SimpleNamespace(line_sense=line_sense))
             ),
         ),
     )
@@ -74,6 +76,12 @@ def test_no_autostart_entries_without_line_sense() -> None:
     """A source that cannot report signal presence has no trigger, so it gets no setting."""
     player = _player(negotiated_role_ids=["source@v1"], line_sense=False, known_players=["speaker"])
     assert player._get_source_autostart_config_entries() == []
+
+
+def test_a_source_without_source_support_offers_the_setting() -> None:
+    """A source on the current spec sends no source@v1_support and always reports its signal."""
+    player = _player(negotiated_role_ids=["source@v1"], line_sense=None, known_players=["speaker"])
+    assert _target_entry(player) is not None
 
 
 def test_no_autostart_entries_for_a_client_without_a_source_role() -> None:

@@ -235,7 +235,7 @@ _PEAK_BOOST_DECAY_US = 250_000
 _PEAK_BOOST_SCALE = 0.3
 # Ignore onsets below this normalized strength so low-confidence peaks don't
 # scroll the palette or lift brightness. Tunable.
-_PEAK_MIN_STRENGTH = 0.1
+_PEAK_MIN_STRENGTH = 0.2
 
 
 @dataclass(frozen=True, slots=True)

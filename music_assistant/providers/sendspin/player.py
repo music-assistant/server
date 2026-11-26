@@ -636,8 +636,12 @@ class SendspinBasePlayer(Player):
         if "source" not in self._negotiated_families():
             return False
         info = self.api.info_or_none
-        support = info.source_support if info else None
-        features = support.features if support else None
+        if info is None:
+            return False
+        # Clients on the current spec always report a signal and send no source@v1_support.
+        if info.source_support is None:
+            return True
+        features = info.source_support.features
         return bool(features and features.line_sense)
 
     @property
