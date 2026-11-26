@@ -402,7 +402,9 @@ AIRPLAY_VOLUME_ECHO_GRACE_S: Final[float] = 2.0
 # 100%). While that native protocol owns the volume, a session to such a device starts
 # at its native level. Only devices whose AirPlay scale is their native scale are
 # listed: one with another scale needs its level converted first. Any other device gets
-# no start volume and keeps the level it has.
+# no start volume and keeps the level it has. Only a protocol with the native role
+# counts: a device such a provider only controls (a generic LinkPlay device of the wiim
+# provider) is not known to set a level of its own.
 AIRPLAY_NATIVE_START_VOLUME_PROVIDERS: Final[frozenset[str]] = frozenset(
     {"wiim", "bose_soundtouch"}
 )

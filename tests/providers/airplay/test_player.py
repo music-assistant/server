@@ -1359,6 +1359,19 @@ def test_native_start_volume_is_none_for_a_device_that_keeps_its_own_level(
     assert airplay_player.native_start_volume is None
 
 
+def test_native_start_volume_is_none_for_a_device_its_provider_only_controls(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A device the wiim provider only controls (a generic LinkPlay device) gets none."""
+    player = _attach_to_player(
+        airplay_player, own=_native_protocol("wiim", role=ProtocolRole.CONTROL)
+    )
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume is None
+
+
 @pytest.mark.parametrize("control", ["test_player", "dlna_player", "media_player.amplifier"])
 def test_native_start_volume_is_none_when_the_native_protocol_does_not_own_the_volume(
     airplay_player: AirPlayPlayer, control: str
@@ -1412,15 +1425,21 @@ def test_volume_commanded_since_is_false_while_not_attached(
     assert airplay_player.volume_commanded_since(100.0) is False
 
 
-def _native_protocol(domain: str, volume_level: int = 30) -> MagicMock:
+def _native_protocol(
+    domain: str, volume_level: int = 30, role: ProtocolRole = ProtocolRole.NATIVE
+) -> MagicMock:
     """
     Build the native protocol of a player.
 
     :param domain: Domain of the provider the native protocol belongs to.
     :param volume_level: The level the native protocol reports.
+    :param role: The role the protocol has on its device.
     """
     return MagicMock(
-        provider=MagicMock(domain=domain), volume_level=volume_level, underlying_protocol_id=None
+        provider=MagicMock(domain=domain),
+        volume_level=volume_level,
+        underlying_protocol_id=None,
+        role=role,
     )
 
 

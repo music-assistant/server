@@ -1248,7 +1248,11 @@ class AirPlayPlayer(PlayerProtocol):
         if player.volume_control_for_output(self.protocol_id) != PLAYER_CONTROL_NATIVE:
             return None
         native = player.get_control_protocol(PLAYER_CONTROL_NATIVE)
-        if native is None or native.provider.domain not in AIRPLAY_NATIVE_START_VOLUME_PROVIDERS:
+        if (
+            native is None
+            or native.role != ProtocolRole.NATIVE
+            or native.provider.domain not in AIRPLAY_NATIVE_START_VOLUME_PROVIDERS
+        ):
             return None
         return native.volume_level
 
