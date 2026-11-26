@@ -56,6 +56,7 @@ COMMANDS: dict[str, tuple[str, dict[str, Any]]] = {
     "next": ("players/cmd/next", {}),
     "previous": ("players/cmd/previous", {}),
     "seek": ("players/cmd/seek", {"position": 30}),
+    "skip": ("players/cmd/skip", {"seconds": 30}),
     "shuffle": ("players/cmd/shuffle", {"shuffle_enabled": True}),
     "repeat": ("players/cmd/repeat", {"repeat_mode": RepeatMode.ALL}),
     "resume": ("players/cmd/resume", {}),
@@ -83,7 +84,17 @@ DEVICE_METHODS = [
     "select_source",
     "power",
 ]
-QUEUE_METHODS = ["stop", "pause", "resume", "next", "previous", "seek", "set_shuffle", "set_repeat"]
+QUEUE_METHODS = [
+    "stop",
+    "pause",
+    "resume",
+    "next",
+    "previous",
+    "seek",
+    "skip",
+    "set_shuffle",
+    "set_repeat",
+]
 
 
 @contextlib.asynccontextmanager
