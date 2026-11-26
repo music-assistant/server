@@ -782,11 +782,20 @@ def test_a_track_without_stream_details_can_be_served_as_a_file(rig: _Rig) -> No
         (f"{BASE_URL}/single/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.wav", True),
         (f"{BASE_URL}/single/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.flac", False),
         (f"{BASE_URL}/flow/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.wav", False),
-        (f"{BASE_URL}/single/{SESSION_ID}/{QUEUE_ID}/pos/3/{PLAYER_ID}.wav", False),
+        (f"{BASE_URL}/single/{SESSION_ID}/{QUEUE_ID}/pos/3/{PLAYER_ID}.wav", True),
+        (f"{BASE_URL}/single/{SESSION_ID}/{QUEUE_ID}/pos/x/{PLAYER_ID}.wav", False),
         (f"{BASE_URL}/announcement/{PLAYER_ID}.wav", False),
         ("http://radio.example.com/stream.wav", False),
     ],
-    ids=["single-wav", "single-flac", "flow", "queue-position", "announcement", "foreign"],
+    ids=[
+        "single-wav",
+        "single-flac",
+        "flow",
+        "queue-position",
+        "no-position",
+        "announcement",
+        "foreign",
+    ],
 )
 def test_a_stream_url_tells_whether_it_is_answered_as_a_file(
     rig: _Rig, url: str, served_as_file: bool

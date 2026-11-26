@@ -1016,13 +1016,19 @@ class StreamsController(CoreController):
         single_url_prefix = f"{self.base_url}/single/"
         if not stream_url.startswith(single_url_prefix):
             return False
-        # <session_id>/<queue_id>/<queue_item_id>/<player_id>.<fmt>
+        # <session_id>/<queue_id>/<queue_item_id>/<player_id>.<fmt>, or with the item named
+        # by its position in the queue: <session_id>/<queue_id>/pos/<index>/<player_id>.<fmt>
         url_parts = stream_url.removeprefix(single_url_prefix).split("/")
-        if len(url_parts) != 4:
+        item: str | int
+        if len(url_parts) == 4:
+            item = url_parts[2]
+        elif len(url_parts) == 5 and url_parts[2] == "pos" and url_parts[3].isdecimal():
+            item = int(url_parts[3])
+        else:
             return False
-        player_id, _, fmt = url_parts[3].partition(".")
+        player_id, _, fmt = url_parts[-1].partition(".")
         player = self.mass.players.get_output_protocol(player_id)
-        queue_item = self.mass.player_queues.get_item(url_parts[1], url_parts[2])
+        queue_item = self.mass.player_queues.get_item(url_parts[1], item)
         if player is None or queue_item is None:
             return False
         return self.serves_as_file(player, queue_item, ContentType.try_parse(fmt))
