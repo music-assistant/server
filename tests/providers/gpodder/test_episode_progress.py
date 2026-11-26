@@ -290,7 +290,7 @@ async def test_listing_shows_what_is_new_and_leaves_the_playlog_to_the_sync(
 
 
 async def test_actions_are_fetched_once_per_pass(provider: GPodder) -> None:
-    """Back to back lookups share the episode actions, each restored as its own kind."""
+    """Lookups across podcasts share the episode actions, each restored as its own kind."""
     stored: dict[str, Any] = {}
 
     async def get_with_freshness(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
@@ -307,8 +307,9 @@ async def test_actions_are_fetched_once_per_pass(provider: GPodder) -> None:
         for key in [key for key in stored if key.startswith(prefix)]:
             stored.pop(key)
 
+    other_feed = "https://example.com/other.xml"
     _serve(provider)
-    provider.feeds = {FEED}
+    provider.feeds = {FEED, other_feed}
     client = cast("Mock", provider._client)
     client.update_progress = AsyncMock()
     cache = provider.mass.cache
@@ -320,6 +321,7 @@ async def test_actions_are_fetched_once_per_pass(provider: GPodder) -> None:
     ):
         fetched = [_progress(x) async for x in provider.get_podcast_episodes(FEED)]
         await asyncio.sleep(0)
+        _ = [x async for x in provider.get_podcast_episodes(other_feed)]
         cached = [_progress(x) async for x in provider.get_podcast_episodes(FEED)]
         # episode 2 was marked unplayed, which a play action would report as finished
         resume = await provider.get_resume_position(f"{FEED} guid-2", MediaType.PODCAST_EPISODE)
