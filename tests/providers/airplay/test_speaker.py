@@ -406,9 +406,9 @@ def test_a_speaker_sends_no_volume_report_of_its_own() -> None:
     apple_tv, speaker, _ = _home_theater()
 
     with patch.object(apple_tv, "update_volume_from_device") as update:
-        speaker.update_volume_from_device(40)
+        speaker.update_volume_from_device(40, -18.0)
 
-    update.assert_called_once_with(40)
+    update.assert_called_once_with(40, -18.0)
     assert cast("MagicMock", speaker.provider).mass.config.set_protocol_value.call_count == 0
 
 

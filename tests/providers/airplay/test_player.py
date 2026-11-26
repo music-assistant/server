@@ -1463,16 +1463,19 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
     mock_update.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_a_device_level_is_set_on_the_device_while_the_native_protocol_owns_the_volume(
-    airplay_player: AirPlayPlayer,
-) -> None:
+async def _report_device_level(
+    airplay_player: AirPlayPlayer, native_domain: str, volume: int, airplay_volume: float
+) -> MagicMock:
     """
-    A level the device reports is set over AirPlay, also while its own control owns the volume.
+    Have the device report a level while its native protocol owns the volume.
 
-    A Sonos holds a change made with its own controls until the sender sets that level.
+    :param airplay_player: The AirPlay protocol the device reports on.
+    :param native_domain: Domain of the provider of the native protocol.
+    :param volume: The reported level on the 0-100 scale.
+    :param airplay_volume: The reported AirPlay volume in dB.
+    :return: The running stream the level is set on.
     """
-    player = _attach_to_player(airplay_player, own=_native_protocol("sonos"))
+    player = _attach_to_player(airplay_player, own=_native_protocol(native_domain))
     player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
     airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
     airplay_player._attr_volume_level = 3
@@ -1482,11 +1485,39 @@ async def test_a_device_level_is_set_on_the_device_while_the_native_protocol_own
     adoptions: list[Coroutine[Any, Any, None]] = []
     airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
 
-    airplay_player.update_volume_from_device(5)
+    airplay_player.update_volume_from_device(volume, airplay_volume)
     while adoptions:
         await adoptions.pop()
+    return stream
 
-    stream.send_cli_command.assert_awaited_once_with("VOLUME=5")
+
+@pytest.mark.asyncio
+async def test_a_device_level_is_set_on_the_device_while_the_native_protocol_owns_the_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level the device reports is set over AirPlay, also while its own control owns the volume.
+
+    A Sonos holds a change made with its own controls until the sender sets that level.
+    """
+    stream = await _report_device_level(airplay_player, "sonos", 5, -28.5)
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME_DB=-28.500000")
+    assert airplay_player._attr_volume_level == 5
+
+
+@pytest.mark.asyncio
+async def test_a_device_level_goes_back_exactly_as_the_device_reported_it(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level the device reports goes back in dB as reported, not rounded to a whole percent.
+
+    A WiiM reports its level 5 as -28.65 dB; set again as 5% (-28.5 dB) it lands on 6.
+    """
+    stream = await _report_device_level(airplay_player, "wiim", 5, -28.65)
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME_DB=-28.650000")
     assert airplay_player._attr_volume_level == 5
 
 

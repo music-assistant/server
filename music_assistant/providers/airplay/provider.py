@@ -1606,7 +1606,7 @@ class AirPlayProvider(PlayerProvider):
                                 player.stream.send_cli_command(f"VOLUME={player.volume_level or 0}")
                             )
                     volume = convert_airplay_volume(airplay_volume)
-                    player.update_volume_from_device(volume)
+                    player.update_volume_from_device(volume, airplay_volume)
             elif "dmcp.volume=" in path:
                 # volume change request from device (e.g. volume buttons)
                 volume = int(path.split("dmcp.volume=", 1)[-1])

@@ -892,17 +892,7 @@ class AirPlayPlayer(PlayerProtocol):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        # Record before sending: the connect-time volume push reads this attribute,
-        # so a send that suspends first would let that push send the stale level.
-        self._attr_volume_level = volume_level
-        if self.volume_muted is not True:
-            for endpoint in self.endpoints:
-                if endpoint.stream and endpoint.stream.running:
-                    await endpoint.stream.send_cli_command(f"VOLUME={volume_level}")
-        self.update_state()
-        self._sync_bridge_volume()
-        # store last state in playerconfig
-        self.mass.config.set_protocol_value(self.protocol_id, CONF_STORED_VOLUME, volume_level)
+        await self._set_volume(volume_level, f"VOLUME={volume_level}")
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME_MUTE command on the player."""
@@ -1091,8 +1081,13 @@ class AirPlayPlayer(PlayerProtocol):
             self._volume_reports_ignored_until, time.time() + seconds
         )
 
-    def update_volume_from_device(self, volume: int) -> None:
-        """Update volume from device feedback."""
+    def update_volume_from_device(self, volume: int, airplay_volume: float | None = None) -> None:
+        """
+        Update volume from device feedback.
+
+        :param volume: The level the device reported, on the 0-100 scale.
+        :param airplay_volume: The AirPlay volume (dB) the device reported, if it gave one.
+        """
         if self.ignore_volume_reports:
             return
 
@@ -1100,7 +1095,7 @@ class AirPlayPlayer(PlayerProtocol):
         # The level goes back to the device whichever control owns the volume: a Sonos holds
         # a change made with its own controls (app, buttons, its API) until the sender sets it.
         if abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3:
-            self.mass.create_task(self._adopt_device_volume(volume))
+            self.mass.create_task(self._adopt_device_volume(volume, airplay_volume))
         else:
             self._attr_volume_level = volume
             self.mass.config.set_protocol_value(self.protocol_id, CONF_STORED_VOLUME, volume)
@@ -1433,20 +1428,45 @@ class AirPlayPlayer(PlayerProtocol):
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
-    async def _adopt_device_volume(self, volume: int) -> None:
+    async def _adopt_device_volume(self, volume: int, airplay_volume: float | None) -> None:
         """
         Take over a level the device set itself.
 
-        :param volume: The level the device reported.
+        :param volume: The level the device reported, on the 0-100 scale.
+        :param airplay_volume: The AirPlay volume (dB) the device reported, if it gave one.
         """
         ignored_until = self._volume_reports_ignored_until
-        await self.volume_set(volume)
+        # Handed back exactly as reported: rounded to a whole percent it can move the device
+        # a step on its own scale (a WiiM reports its level 5 as -28.65 dB, 5% puts it on 6).
+        command = (
+            f"VOLUME={volume}" if airplay_volume is None else f"VOLUME_DB={airplay_volume:.6f}"
+        )
+        await self._set_volume(volume, command)
         # Writing the level back is a volume command like any other and opens the echo
         # window, but this one only hands the device its own level: leaving the window
         # open would swallow the rest of a volume the user is still turning up. A longer
         # window opened while this was in flight (an announcement) still stands.
         if self._volume_reports_ignored_until <= time.time() + AIRPLAY_VOLUME_ECHO_GRACE_S:
             self._volume_reports_ignored_until = ignored_until
+
+    async def _set_volume(self, volume_level: int, command: str) -> None:
+        """
+        Set a level on the device and record it.
+
+        :param volume_level: The level on the 0-100 scale.
+        :param command: The cliairplay command that sets the level on the device.
+        """
+        # Record before sending: the connect-time volume push reads this attribute,
+        # so a send that suspends first would let that push send the stale level.
+        self._attr_volume_level = volume_level
+        if self.volume_muted is not True:
+            for endpoint in self.endpoints:
+                if endpoint.stream and endpoint.stream.running:
+                    await endpoint.stream.send_cli_command(command)
+        self.update_state()
+        self._sync_bridge_volume()
+        # store last state in playerconfig
+        self.mass.config.set_protocol_value(self.protocol_id, CONF_STORED_VOLUME, volume_level)
 
     def _control_routes_to_self(self, control: str) -> bool:
         """Return True if the given (resolved) control of the player routes to this protocol."""
