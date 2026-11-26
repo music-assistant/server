@@ -1,46 +1,156 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
 <svg
-   width="128"
-   height="128"
-   viewBox="0 0 33.866662 33.866662"
+   viewBox="0 0 1024 1024"
+   role="img"
+   aria-labelledby="title desc"
    version="1.1"
-   id="svg1"
-   xml:space="preserve"
+   id="svg8"
+   sodipodi:docname="web-broadcast-icon-color.svg"
    inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="icon.svg"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns:xlink="http://www.w3.org/1999/xlink"
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg"><sodipodi:namedview
-     id="namedview1"
-     pagecolor="#64ffff"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <sodipodi:namedview
+     id="namedview8"
+     pagecolor="#ffffff"
      bordercolor="#000000"
      borderopacity="0.25"
      inkscape:showpageshadow="2"
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     inkscape:zoom="1"
-     inkscape:cx="220.5"
-     inkscape:cy="306.5"
+     inkscape:zoom="0.87011719"
+     inkscape:cx="512"
+     inkscape:cy="512"
      inkscape:window-width="1920"
      inkscape:window-height="1129"
-     inkscape:window-x="-8"
+     inkscape:window-x="1912"
      inkscape:window-y="-8"
      inkscape:window-maximized="1"
-     inkscape:current-layer="layer1" /><defs
-     id="defs1" /><g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
-     id="layer1"><image
-       width="33.866665"
-       height="33.866665"
-       preserveAspectRatio="none"
-       xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACABAMAAAAxEHz4AAAAHlBMVEU3ZmZ2hxEZS3gzSF0AZsQB&#10;et0AjvCEi5Wvutn7/vtMIMPJAAAAAXRSTlMAQObYZgAAA31JREFUaN7tmj2T0zAQhlPg/BBTcLS4&#10;yNGlkGZC50LyHF0aeaAlRS4tQy7nlsDE+rfoy7Lss2xpxUBzW5AQ+3307molf8ytVv8kKK0YpSVQ&#10;nVV1Fwyi7+Uy9vHj18NgqYC6ji1FnUp4CaghRaxqCq3DuhdQECFzc6bg2Rx31VIhEVqoCVvSjwjC&#10;esUGhNkk3owA1aADsuW5VIDtVCewnrAHAbSJ9ZKFOYAiVAsWRoD1i0bO5i0ovR/AFi0oPRqtJ1a5&#10;m0o21wtjA2I8Nmzk0rjy67fzuwsz3/ZhXThBKHUVWKwBS+gsBHRxf2Wg1CEYC/vQBIxzahcG02Vk&#10;oQms3d2w+zIF8CWwdptobSagmthWkKeC2aANbQ5lqAF3PTlNVC6sIc8F0uD2vjXg29vFFd6uBM8M&#10;zhgY7Mi6JKVnDQVcpfYyB08LzRpY9au4KlcgA/4VEGjAJBG2C/ktsLBdyGuBJhmY30a3YD0FRqq+&#10;I2RwQJloQFvIUgBlogFlIRWgM/jCY6M9mxwU4IED4uwAGgig7QEgA5wzC/gccPalOI1/+m0Byxlc&#10;DkUK4FLIOE0VIQQgR08AdHIgoJeDAK4cArgWxSugF2+aWwpgI05IAGzUYTBgY3RQgFXBAI4GBmhe&#10;AekA/t8B9sDxeElxcAMvZ32gLRIBh0TADbYjtcfjoXANRAL0sOpAty81MQBj282g4DGA4iVgEwO4&#10;OoDu+8cYQDHhoIkADNI2bXTPIwDXQdqH6QqEAHTa7aG7NkQDutZpG++N4ixgE3CnOVvEExig63bP&#10;4YCbIDzycEDIre5E9HeqFQxwdp4XngEh9KQDwIIQigWAIIrmTiIYYflgrD4o6c8lGCMiAIhQTXh4&#10;fsL2GBJHsfgQn1QoxWAaQzRL/kPF/1QKRPxIsXruatWY4ndMsRlWDqr0QitAkixOkGp5BBPhQAV+&#10;ENvooyRopQlvdc/SikCVHYA0bZ7nd/yMBuGfQ3OCBez4NwHITy2JA2zNyw/09Sb1+Ts+dLDzpfA0&#10;BjQ/FSDnP1BUWIDOQOTwKw6ALOCDBnwEAnYd4P0Q4H2aakcA7AEszgJaqEGwA8S/hxWRMjJdxOYK&#10;m0YL+MSV/o4jIGDHlYWmRcBGEuW65G9P0Rn0AF3wWAPyBZ5dN4LwjKJL0ANgYV9mAmO7SrTgvE+F&#10;G0ixMHylCtcDMX/pDwP+AGlYAENTDvd6AAAAAElFTkSuQmCC&#10;"
-       id="image1"
-       x="0.39687476"
-       y="0.39687756" /></g></svg>
+     inkscape:current-layer="svg8" />
+  <title
+     id="title">Web Broadcast</title>
+  <desc
+     id="desc">A play symbol surrounded by radio transmission waves.</desc>
+  <defs
+     id="defs4">
+    <linearGradient
+       id="wave"
+       x1="0"
+       y1="0"
+       x2="0.85"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#16c8df"
+         id="stop1" />
+      <stop
+         offset="1"
+         stop-color="#0874bd"
+         id="stop2" />
+    </linearGradient>
+    <linearGradient
+       id="disc"
+       x1="408.32"
+       y1="350"
+       x2="615.68"
+       y2="674"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#19c6df"
+         id="stop3" />
+      <stop
+         offset="1"
+         stop-color="#0755a2"
+         id="stop4" />
+    </linearGradient>
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#wave"
+       id="linearGradient8"
+       x1="287.6453"
+       y1="116.58469"
+       x2="554.93442"
+       y2="431.04247"
+       gradientTransform="scale(0.53479215,1.8698853)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#wave"
+       id="linearGradient9"
+       x1="1312.6595"
+       y1="116.58469"
+       x2="1579.9486"
+       y2="431.04247"
+       gradientTransform="scale(0.53479215,1.8698853)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#wave"
+       id="linearGradient10"
+       x1="514.66797"
+       y1="178.4726"
+       x2="693.69484"
+       y2="389.09243"
+       gradientTransform="matrix(0.55426273,0,0,1.8041985,-40,0)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#wave"
+       id="linearGradient11"
+       x1="1121.3698"
+       y1="178.60656"
+       x2="1300.531"
+       y2="389.38448"
+       gradientTransform="matrix(0.55467875,0,0,1.8028453,40,0)"
+       gradientUnits="userSpaceOnUse" />
+  </defs>
+  <!-- Outer and inner broadcast waves -->
+  <!-- Central stream/play mark -->
+  <g
+     id="g12"
+     transform="matrix(1.4261569,0,0,1.4502912,-217.04304,-237.44471)">
+    <path
+       d="m 300,240 a 360,360 0 0 0 0,544"
+       id="path4"
+       style="fill:none;stroke:url(#linearGradient8);stroke-width:44;stroke-linecap:round" />
+    <path
+       d="m 724,240 a 360,360 0 0 1 0,544"
+       id="path5"
+       style="fill:none;stroke:url(#linearGradient9);stroke-width:44;stroke-linecap:round" />
+    <path
+       d="m 340,344 a 230,230 0 0 0 0,336"
+       id="path6"
+       style="fill:none;stroke:url(#linearGradient10);stroke-width:44;stroke-linecap:round" />
+    <path
+       d="m 684,344 a 230,230 0 0 1 0,336"
+       id="path7"
+       style="fill:none;stroke:url(#linearGradient11);stroke-width:44;stroke-linecap:round" />
+    <circle
+       cx="512"
+       cy="512"
+       r="162"
+       fill="url(#disc)"
+       id="circle7"
+       style="fill:url(#disc)" />
+    <path
+       d="m 474,410 q -12,-7 -12,11 v 182 q 0,18 16,8 l 144,-85 q 20,-12 0,-24 z"
+       fill="#ffffff"
+       id="path8" />
+  </g>
+  <metadata
+     id="metadata8">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>Web Broadcast</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+</svg>
