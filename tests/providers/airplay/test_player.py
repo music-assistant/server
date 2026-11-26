@@ -1463,32 +1463,88 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
     mock_update.assert_called_once()
 
 
-def test_a_device_level_is_not_written_back_while_the_native_protocol_owns_the_volume(
+async def _report_device_level(
+    airplay_player: AirPlayPlayer, native_domain: str, volume: int, airplay_volume: float
+) -> MagicMock:
+    """
+    Have the device report a level while its native protocol owns the volume.
+
+    :param airplay_player: The AirPlay protocol the device reports on.
+    :param native_domain: Domain of the provider of the native protocol.
+    :param volume: The reported level on the 0-100 scale.
+    :param airplay_volume: The reported AirPlay volume in dB.
+    :return: The running stream the level is set on.
+    """
+    player = _attach_to_player(airplay_player, own=_native_protocol(native_domain))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 3
+    airplay_player.last_command_sent = time.time() - 10
+    stream = MagicMock(running=True, send_cli_command=AsyncMock())
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    airplay_player.update_volume_from_device(volume, airplay_volume)
+    while adoptions:
+        await adoptions.pop()
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_a_device_level_is_set_on_the_device_while_the_native_protocol_owns_the_volume(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """
-    A level the device reports is only recorded while another control owns the volume.
+    A level the device reports is set over AirPlay, also while its own control owns the volume.
 
-    Written back it would come back rounded to whole percents and could move the device
-    a step away from the level that control set.
+    A Sonos holds a change made with its own controls until the sender sets that level.
     """
-    player = _attach_to_player(airplay_player, own=_native_protocol("wiim"))
-    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    stream = await _report_device_level(airplay_player, "sonos", 5, -28.5)
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME_DB=-28.500000")
+    assert airplay_player._attr_volume_level == 5
+
+
+@pytest.mark.asyncio
+async def test_a_device_level_goes_back_exactly_as_the_device_reported_it(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level the device reports goes back in dB as reported, not rounded to a whole percent.
+
+    A WiiM reports its level 5 as -28.65 dB; set again as 5% (-28.5 dB) it lands on 6.
+    """
+    stream = await _report_device_level(airplay_player, "wiim", 5, -28.65)
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME_DB=-28.650000")
+    assert airplay_player._attr_volume_level == 5
+
+
+@pytest.mark.asyncio
+async def test_a_new_level_one_step_away_right_after_a_command_goes_back(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Every new level the device reports goes back, also one step away right after a command.
+
+    A Sonos turned up step by step asks for each level in turn; a level left out stays
+    unapplied, so a sweep would stop at its first step.
+    """
     airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
-    airplay_player._attr_volume_level = 30
-    airplay_player.last_command_sent = time.time() - 10
-    airplay_player.stream = MagicMock(running=True, send_cli_command=AsyncMock())
+    airplay_player._attr_volume_level = 5
+    airplay_player.last_command_sent = time.time()
+    stream = MagicMock(running=True, send_cli_command=AsyncMock())
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
 
-    with patch.object(AirPlayPlayer, "update_state") as mock_update:
-        airplay_player.update_volume_from_device(7)
+    airplay_player.update_volume_from_device(6, -28.2)
+    while adoptions:
+        await adoptions.pop()
 
-    airplay_player.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
-    airplay_player.stream.send_cli_command.assert_not_called()
-    assert airplay_player._attr_volume_level == 7
-    airplay_player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
-        airplay_player.protocol_id, CONF_STORED_VOLUME, 7
-    )
-    mock_update.assert_called_once()
+    stream.send_cli_command.assert_awaited_once_with("VOLUME_DB=-28.200000")
+    assert airplay_player._attr_volume_level == 6
 
 
 def test_release_foreign_mute_latch_clears_mute_owned_by_other_control(
