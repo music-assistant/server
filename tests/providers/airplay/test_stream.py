@@ -1318,7 +1318,8 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delivered_volume_command_arms_the_echo_grace() -> None:
+@pytest.mark.parametrize("command", ["VOLUME=40", "VOLUME_DB=-28.650000"])
+async def test_delivered_volume_command_arms_the_echo_grace(command: str) -> None:
     """
     A delivered volume command makes the player ignore the echo of it.
 
@@ -1330,7 +1331,7 @@ async def test_delivered_volume_command_arms_the_echo_grace() -> None:
     stream._cli_proc = _make_cli_proc()
 
     with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)):
-        assert await stream.send_cli_command("VOLUME=40") is True
+        assert await stream.send_cli_command(command) is True
 
     player.suppress_volume_reports.assert_called_once_with()
 
