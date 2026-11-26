@@ -1178,7 +1178,7 @@ def test_release_workflow_template_dispatch_never_fails_the_release() -> None:
     job = jobs["notify_template"]
 
     assert job["needs"] == ["resolve", "publish_release"]
-    assert job["if"] == "inputs.channel != 'stable'"
+    assert job["if"] == "inputs.channel == 'nightly' || inputs.channel == 'beta'"
     assert job["permissions"] == {}
     assert not any("notify_template" in str(other.get("needs", "")) for other in jobs.values())
     *guarded_steps, warning = job["steps"]
