@@ -28,7 +28,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerOptionValueType
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import CONF_PASSWORD
+from music_assistant.constants import ATTR_VOLUME_TARGET, CONF_PASSWORD
 from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
@@ -1235,6 +1235,17 @@ class AirPlayPlayer(PlayerProtocol):
         if native is None or native.provider.domain not in AIRPLAY_NATIVE_START_VOLUME_PROVIDERS:
             return None
         return native.volume_level
+
+    def volume_commanded_since(self, since: float) -> bool:
+        """
+        Return whether a volume command went to the player through Music Assistant since then.
+
+        :param since: A time.monotonic() timestamp.
+        """
+        if (player := self.player) is None:
+            return False
+        target = player.extra_data.get(ATTR_VOLUME_TARGET)
+        return target is not None and target[1] > since
 
     def release_foreign_mute_latch(self) -> None:
         """Clear our mute latch when another control owns the mute of this output."""

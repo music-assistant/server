@@ -23,7 +23,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_PASSWORD, CONF_SYNC_ADJUST
+from music_assistant.constants import ATTR_VOLUME_TARGET, CONF_PASSWORD, CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import Player
@@ -1389,6 +1389,27 @@ def test_native_start_volume_is_none_while_the_player_is_muted(
 def test_native_start_volume_is_none_while_not_attached(airplay_player: AirPlayPlayer) -> None:
     """A protocol without a player has no native protocol to take a level from."""
     assert airplay_player.native_start_volume is None
+
+
+@pytest.mark.parametrize(
+    ("target", "commanded"),
+    [((25, 101.0), True), ((25, 99.0), False), (None, False)],
+)
+def test_volume_commanded_since_follows_the_last_volume_command(
+    airplay_player: AirPlayPlayer, target: tuple[int, float] | None, commanded: bool
+) -> None:
+    """Only a volume command given through Music Assistant after the moment counts."""
+    player = _attach_to_player(airplay_player)
+    player.extra_data = {} if target is None else {ATTR_VOLUME_TARGET: target}
+
+    assert airplay_player.volume_commanded_since(100.0) is commanded
+
+
+def test_volume_commanded_since_is_false_while_not_attached(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A protocol without a player has no volume commands to look at."""
+    assert airplay_player.volume_commanded_since(100.0) is False
 
 
 def _native_protocol(domain: str, volume_level: int = 30) -> MagicMock:

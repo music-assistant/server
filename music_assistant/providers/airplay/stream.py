@@ -431,10 +431,11 @@ class AirPlayStream:
             self.mass.call_later(2, self._send_current_volume)
         elif self.player.renders_audio and (level := self._native_start_volume) is not None:
             # A device that sets a level of its own when a session starts without one is
-            # handed the native level it had before connecting. The repeat only goes out
-            # while that level still stands, so it never undoes a change made meanwhile.
+            # handed the native level it had before connecting. The repeat also corrects a
+            # level the device only sets after this first command, but never undoes a
+            # volume command given through Music Assistant meanwhile.
             await self.send_cli_command(f"VOLUME={level}")
-            self.mass.call_later(2, self._resend_native_start_volume, level)
+            self.mass.call_later(2, self._resend_native_start_volume, level, time.monotonic())
         # settle the position and any artwork that missed the bundle budget
         # on top of the identity push above
         self.player.on_player_media_updated()
@@ -1927,14 +1928,18 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
 
-    async def _resend_native_start_volume(self, level: int) -> None:
+    async def _resend_native_start_volume(self, level: int, sent_at: float) -> None:
         """
-        Send the native start volume again while the native level is still the same.
+        Send the native start volume again, unless it no longer applies or was overruled.
+
+        It is overruled by a volume command given through Music Assistant since it was sent.
 
         :param level: The native level the session started at.
+        :param sent_at: When that level was first sent, as a time.monotonic() timestamp.
         """
-        if self.player.native_start_volume == level:
-            await self.send_cli_command(f"VOLUME={level}")
+        if self.player.native_start_volume is None or self.player.volume_commanded_since(sent_at):
+            return
+        await self.send_cli_command(f"VOLUME={level}")
 
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""

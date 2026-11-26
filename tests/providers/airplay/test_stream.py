@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
@@ -3054,25 +3054,38 @@ async def test_wait_for_connection_sends_the_native_level_read_before_connecting
 
     send_command.assert_awaited_once_with("VOLUME=7")
     player.provider.mass.call_later.assert_called_once_with(
-        2, stream._resend_native_start_volume, 7
+        2, stream._resend_native_start_volume, 7, ANY
     )
 
 
 @pytest.mark.asyncio
-async def test_native_start_volume_goes_out_again_only_while_the_native_level_stands() -> None:
-    """The repeat never undoes a level the user or an automation set since the start."""
+@pytest.mark.parametrize(
+    ("native_level", "commanded", "resent"),
+    [
+        (7, False, True),  # nothing changed
+        (60, False, True),  # the device set a level of its own after the first command
+        (25, True, False),  # a volume command went through Music Assistant meanwhile
+        (None, False, False),  # the player was muted meanwhile
+    ],
+)
+async def test_native_start_volume_goes_out_again_unless_overruled(
+    native_level: int | None, commanded: bool, resent: bool
+) -> None:
+    """The repeat corrects the device itself, but never undoes a volume set meanwhile."""
     player = _make_player()
+    player.native_start_volume = native_level
+    player.volume_commanded_since = MagicMock(return_value=commanded)
     stream = AirPlayStream(player)
 
     with patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command:
-        player.native_start_volume = 7
-        await stream._resend_native_start_volume(7)
-        send_command.assert_awaited_once_with("VOLUME=7")
+        await stream._resend_native_start_volume(7, 123.0)
 
-        send_command.reset_mock()
-        player.native_start_volume = 25
-        await stream._resend_native_start_volume(7)
+    if resent:
+        send_command.assert_awaited_once_with("VOLUME=7")
+    else:
         send_command.assert_not_awaited()
+    if native_level is not None:
+        player.volume_commanded_since.assert_called_once_with(123.0)
 
 
 @pytest.mark.asyncio
