@@ -111,6 +111,18 @@ async def test_restart_at_zero_after_the_end_ends_the_queue() -> None:
     assert queue.current_index == 2
 
 
+async def test_restart_at_zero_reported_as_a_position_jump_keeps_the_last_track() -> None:
+    """The jump back to 0 s can reach the queue as an elapsed time correction first."""
+    ctrl, _tasks = _controller()
+    queue = ctrl._queue_data[QUEUE_ID].queue
+    ctrl.queue_buffer_completed(QUEUE_ID, queue_exhausted=True)
+
+    ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PLAYING, 0.0))
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, 0.7))
+
+    assert queue.current_index == 2
+
+
 async def test_restart_at_zero_after_a_format_restart_plays_the_next_track_once() -> None:
     """
     A flow stream that ends early for a sample rate change is played again from 0 s as well.

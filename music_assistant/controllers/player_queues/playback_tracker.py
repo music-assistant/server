@@ -122,8 +122,6 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # so we need to calculate the current index and elapsed time
                 # (already returned in media-time)
                 current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
-                if self._flow_started_over(queue, player, current_index):
-                    return True
             elif item_id := self._parse_player_current_item_id(queue_id, player):
                 # normal mode, the player itself will report the current item
                 elapsed_time = player.corrected_elapsed_time or 0
@@ -448,7 +446,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 stream_pos_in_item = elapsed_time_queue_total - played_time
                 track_time = track_sec_skipped + stream_pos_in_item * entry_speed
                 break
-        if not self._position_is_reliable(player):
+        if not self._position_is_reliable(player) or self._flow_started_over(
+            queue, player, queue_index
+        ):
             # if the player is not playing, we can't be sure that the elapsed time is correct
             # so we just return the queue index and the elapsed time
             return queue.current_index, queue.elapsed_time
@@ -457,7 +457,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
     def _flow_started_over(
         self, queue: PlayerQueue, player: Player, reported_index: int | None
     ) -> bool:
-        """Return whether the player started its fully streamed flow over, sticky per session."""
+        """Return whether the player plays its fully streamed flow again, sticky per session."""
         queue_data = self._queue_data[queue.queue_id]
         session_id = queue_data.session_id
         if session_id is None or queue_data.flow_buffer_completed != session_id:
