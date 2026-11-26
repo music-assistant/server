@@ -922,6 +922,8 @@ class SyncGroupPlayer(PlayerProtocol):
         Form syncgroup by syncing all (possible) members.
 
         :raises ResourceBusyError: When the leader stays busy; the group is then left as it was.
+        :raises PlayerCommandFailed: When the leader refuses the members; a group that was not
+            formed yet is then left without a leader.
         """
         # select new sync leader if needed; pin the leader ref: a concurrent command (e.g. a
         # dissolve) may clear or replace self.sync_leader while we await below
@@ -945,6 +947,8 @@ class SyncGroupPlayer(PlayerProtocol):
                 self._attr_group_members,
                 leader.name,
             )
+            leader_recorded = self.sync_leader is None
+            previous_members = list(self._attr_group_members)
             self.sync_leader = leader
 
             # ensure the sync leader is first in the list
@@ -1025,9 +1029,19 @@ class SyncGroupPlayer(PlayerProtocol):
                         return None
                 # use _handle_set_members directly to avoid the redirect loop
                 # (cmd_set_members redirects sync-leader targets back to this syncgroup)
-                return await self.mass.players._handle_set_members(
-                    leader, player_ids_to_add=members_to_sync, new_content=new_content
-                )
+                try:
+                    return await self.mass.players._handle_set_members(
+                        leader, player_ids_to_add=members_to_sync, new_content=new_content
+                    )
+                except Exception:
+                    if leader_recorded and self.sync_leader is leader:
+                        # a leader that refuses the members does not form the group: the
+                        # next form selects one again from the members as they are then
+                        self.sync_leader = None
+                        self._attr_group_members = previous_members
+                        self._update_attributes()
+                        self.update_state()
+                    raise
             return None
 
     @asynccontextmanager
