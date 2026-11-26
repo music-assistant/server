@@ -134,8 +134,6 @@ class FileStream:
         self._head_start = HEAD_START_PER_FILE
         # the request an encode of this file runs for
         self.request: web.Request | None = None
-        # whether the queue was told that the player loads this file
-        self.loaded = False
 
     @property
     def has_audio_in_memory(self) -> bool:

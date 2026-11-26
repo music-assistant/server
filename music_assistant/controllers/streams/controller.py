@@ -2819,6 +2819,7 @@ class StreamsController(CoreController):
             file.size,
         )
         stream_failure: AudioError | None = None
+        loaded = False
         self._active_output_streams += 1
         try:
             async with aclosing(
@@ -2841,10 +2842,12 @@ class StreamsController(CoreController):
                         break
                     file.keep(offset, data)
                     offset += len(data)
-                    if not file.loaded:
-                        file.loaded = True
+                    if not loaded:
+                        loaded = True
                         # inform the queue that the track is now loaded in the buffer
-                        # so for example the next track can be enqueued
+                        # so for example the next track can be enqueued. Told for every
+                        # part that is encoded: a player that seeks, or that plays the
+                        # track again, needs its next track handed over again
                         self.mass.player_queues.track_loaded_in_buffer(
                             queue_item.queue_id, queue_item.queue_item_id
                         )

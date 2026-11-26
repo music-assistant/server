@@ -359,8 +359,6 @@ async def test_a_range_request_gets_that_part_of_the_file(
     assert resp.headers["Accept-Ranges"] == "bytes"
     assert resp.content_length == last - first + 1
     assert body == whole_file[first : last + 1]
-    # the player was told once that it loads the track
-    rig.ctrl.mass.player_queues.track_loaded_in_buffer.assert_called_once()
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
@@ -599,6 +597,25 @@ async def test_the_start_of_a_file_is_answered_from_memory(rig: _Rig) -> None:
     assert read_ahead == whole_file[: 750 * 1024]
     assert inside == whole_file[300000:400000]
     assert rig.encodes == 1
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_the_queue_is_told_of_every_part_that_is_encoded(rig: _Rig) -> None:
+    """A player that seeks or plays a track again gets its next track handed over again."""
+    await rig.decode()
+    loaded = rig.ctrl.mass.player_queues.track_loaded_in_buffer
+    await rig.fetch()
+    assert loaded.call_count == 1
+
+    # the start again, dropped at once: nothing is encoded for it
+    await rig.fetch(wanted=KIB_16)
+    assert loaded.call_count == 1
+
+    await rig.fetch(f"bytes={100 * KIB_16}-")
+    await rig.fetch()
+
+    assert loaded.call_count == 3
+    loaded.assert_called_with(QUEUE_ID, ITEM_ID)
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
