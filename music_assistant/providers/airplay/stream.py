@@ -42,6 +42,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_RAOP_CREDENTIALS,
+    PROGRESS_RESEND_DRIFT_S,
     RAOP_DEFAULT_PORT,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
@@ -256,6 +257,8 @@ class AirPlayStream:
         self._metadata_lock = asyncio.Lock()
         self._artwork_render_generations: set[int] = set()
         self._last_progress_sent: int | None = None
+        # when the last progress was sent: the receiver counts on from it while playing
+        self._last_progress_sent_at: float = 0.0
         # Media position (seconds) mapped to the first sample of the current
         # START anchor. The binary reports "playing elapsed_ms" relative to that
         # anchor (resetting to ~0 at each START), so elapsed is this base plus
@@ -986,13 +989,15 @@ class AirPlayStream:
                 elif not metadata.image_url or not needs_artwork:
                     self._metadata_artwork_checksum = artwork_checksum
             if progress is not None and (
-                self._last_progress_sent is None or abs(progress - self._last_progress_sent) >= 2
+                self._last_progress_sent is None
+                or abs(progress - self._receiver_progress()) >= PROGRESS_RESEND_DRIFT_S
             ):
                 # duration rides along so the seek-rebased remaining time
                 # reaches the device without re-sending the metadata identity
                 duration_cmd = f"DURATION={duration}\n" if metadata else ""
                 if await self.send_cli_command(f"{duration_cmd}PROGRESS={progress}"):
                     self._last_progress_sent = progress
+                    self._last_progress_sent_at = time.time()
 
         if artwork_url is not None:
             if defer_artwork_followup:
@@ -1919,6 +1924,13 @@ class AirPlayStream:
             return state_media
         return metadata
 
+    def _receiver_progress(self) -> float:
+        """Return where the receiver's own progress is now, counted on from the last one sent."""
+        last = self._last_progress_sent or 0
+        if self.player.playback_state != PlaybackState.PLAYING:
+            return last
+        return last + max(0.0, time.time() - self._last_progress_sent_at)
+
     async def _send_start_progress_anchor(self, audible_unix_ms: int, generation: int) -> None:
         """
         Send a RAOP progress anchor once an acknowledged start becomes audible.
@@ -1943,9 +1955,10 @@ class AirPlayStream:
                 or not self.connected
             ):
                 return
-            progress = int(self._start_position + max(0, cli_clock_time(clock) - audible))
+            progress = round(self._start_position + max(0, cli_clock_time(clock) - audible))
             if await self.send_cli_command(f"PROGRESS={progress}"):
                 self._last_progress_sent = progress
+                self._last_progress_sent_at = time.time()
 
     async def _send_current_metadata(
         self, send_artwork: bool = True, defer_artwork_followup: bool = False
@@ -1960,7 +1973,7 @@ class AirPlayStream:
         metadata = self._current_metadata()
         if not metadata:
             return
-        progress = int(metadata.corrected_elapsed_time or 0)
+        progress = round(metadata.corrected_elapsed_time or 0)
         await self.send_metadata(
             progress,
             metadata,

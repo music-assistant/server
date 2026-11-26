@@ -221,9 +221,9 @@ class _PlayerDaemon:
             and metadata.elapsed_time is not None
             and metadata.elapsed_time_last_updated is not None
         ):
-            now = int(time.time())
+            now = time.time()
             if not playing:
-                metadata.elapsed_time += int(now - metadata.elapsed_time_last_updated)
+                metadata.elapsed_time += round(now - metadata.elapsed_time_last_updated)
             metadata.elapsed_time_last_updated = now
         self.playing = playing
 
@@ -1324,7 +1324,7 @@ class SpotifyConnectProvider(PluginProvider):
             self._set_position_ref(daemon, float(event.metadata.position))
         elif event.type is BackendEventType.POSITION and event.position is not None:
             daemon.stream_metadata.elapsed_time = event.position
-            daemon.stream_metadata.elapsed_time_last_updated = int(time.time())
+            daemon.stream_metadata.elapsed_time_last_updated = time.time()
             self._track_position(daemon, float(event.position))
 
         if event.type is BackendEventType.VOLUME and event.volume is not None:
@@ -1404,7 +1404,7 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.stream_metadata.description = None
         daemon.stream_metadata.duration = metadata.duration
         daemon.stream_metadata.elapsed_time = metadata.position
-        daemon.stream_metadata.elapsed_time_last_updated = int(time.time())
+        daemon.stream_metadata.elapsed_time_last_updated = time.time()
 
     async def _handle_volume_event(self, daemon: _PlayerDaemon, volume: int) -> None:
         """

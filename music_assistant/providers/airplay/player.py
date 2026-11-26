@@ -1439,7 +1439,7 @@ class AirPlayPlayer(PlayerProtocol):
         metadata = owner.player.current_media if owner and owner.player else None
         if not metadata:
             return
-        progress = int(metadata.corrected_elapsed_time or 0)
+        progress = round(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
     async def _stop_locked(self) -> None:

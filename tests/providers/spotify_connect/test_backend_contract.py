@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import time
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import (
@@ -1829,3 +1829,18 @@ async def test_reselect_during_handoff_kick_is_no_reopen(monkeypatch: pytest.Mon
     await provider.on_source_selected(_PLAYER_ID, "proto_new", "queue_new", "sess2")
 
     assert backend.calls == [("play", ("spotify:playlist:ctx", None)), ("set_volume", 25)]
+
+
+async def test_a_reported_position_keeps_the_time_it_was_reported_at() -> None:
+    """The position is anchored at the exact moment, not the whole second before it."""
+    provider, daemon, _mass = _make_provider(FakeBackend(), playing=True)
+
+    with patch(
+        "music_assistant.providers.spotify_connect.provider.time.time", return_value=1000.75
+    ):
+        await provider._handle_backend_event(
+            daemon, BackendEvent(BackendEventType.POSITION, position=42)
+        )
+
+    assert daemon.stream_metadata.elapsed_time == 42
+    assert daemon.stream_metadata.elapsed_time_last_updated == 1000.75

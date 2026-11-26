@@ -5012,3 +5012,42 @@ async def test_the_stereo_pair_losing_the_stream_of_its_first_homepod_stops() ->
         await stream._stderr_reader()
 
     pair.provider.mass.create_task.assert_any_call("stop-coro")
+
+
+@pytest.mark.parametrize(
+    ("state", "progress", "resent"),
+    [
+        # the receiver counted on to 13 meanwhile: a source back at 10 is corrected
+        (PlaybackState.PLAYING, 10, True),
+        # the receiver counted on to 13 by itself: nothing to correct
+        (PlaybackState.PLAYING, 13, False),
+        # a paused receiver does not count on
+        (PlaybackState.PAUSED, 10, False),
+    ],
+    ids=["playing_drifted", "playing_in_step", "paused_in_step"],
+)
+async def test_progress_is_resent_against_the_receivers_own_count(
+    state: PlaybackState, progress: int, resent: bool
+) -> None:
+    """
+    A receiver counts on from the last progress it was sent; only drift from that is resent.
+
+    :param state: The player's playback state.
+    :param progress: The progress of the update.
+    :param resent: Whether the update reaches the receiver.
+    """
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    cast("MagicMock", stream.player).playback_state = state
+    stream._last_progress_sent = 10
+    stream._last_progress_sent_at = 1000.0
+    with (
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send,
+        patch("music_assistant.providers.airplay.stream.time.time", return_value=1003.0),
+    ):
+        await stream.send_metadata(progress, None)
+
+    if resent:
+        send.assert_awaited_once_with(f"PROGRESS={progress}")
+    else:
+        send.assert_not_awaited()
