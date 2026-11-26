@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Final
 
+from music_assistant.providers.sendspin_lights.analyzer import COLOR_MODES as ANALYZER_COLOR_MODES
+
+CONF_BACKEND: Final[str] = "backend"
+CONF_ZIGBEE_NAME: Final[str] = "zigbee_name"
+# the ZHA lamps as "<ieee>/<zones>" strings, in the order of their channels
+CONF_ZIGBEE_LIGHTS: Final[str] = "zigbee_lights"
 CONF_BRIDGE_HOST: Final[str] = "bridge_host"
 CONF_BRIDGE_ID: Final[str] = "bridge_id"
 CONF_ACTION_PAIR: Final[str] = "pair"
@@ -13,10 +19,18 @@ CONF_BRIGHTNESS: Final[str] = "brightness"
 CONF_COLOR_MODE: Final[str] = "color_mode"
 CONF_HUE_LATENCY_MS: Final[str] = "hue_latency_ms"
 
+# Where the lights are streamed to; an instance without a stored backend uses the Hue bridge.
+BACKEND_HUE_BRIDGE: Final[str] = "hue_bridge"
+BACKEND_ZHA: Final[str] = "zha"
+
 # Visualization modes; first entry is the default. Used to build the config
 # options and to migrate away orphaned stored values from older versions.
-COLOR_MODES: Final[tuple[str, ...]] = ("smooth", "ambient", "flashing", "energetic")
+COLOR_MODES: Final[tuple[str, ...]] = ANALYZER_COLOR_MODES
 DEFAULT_COLOR_MODE: Final[str] = COLOR_MODES[0]
+
+# Cap below 1.0 so Hue Color bulbs don't push to the gamut edge where the
+# firmware can fall back to off-color (sometimes green) interpolation.
+PALETTE_CEILING: Final[float] = 0.85
 
 DEFAULT_BRIGHTNESS: Final[int] = 100
 
@@ -32,7 +46,7 @@ HUE_DEVICE_TYPE: Final[str] = "music_assistant#hue_entertainment"
 
 # 17 mel bins over 20-20kHz: enough resolution to map distinct bands to lights
 # while keeping the per-frame payload small (bin ~10 ≈ 3.5kHz is the musical
-# ceiling, see _CHANNEL_BIN_MAX in the analyzer).
+# ceiling, see _CHANNEL_BIN_MAX in sendspin_lights.analyzer).
 SPECTRUM_BINS: Final[int] = 17
 SPECTRUM_SCALE: Final = "mel"
 SPECTRUM_F_MIN: Final[int] = 20

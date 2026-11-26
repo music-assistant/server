@@ -37,7 +37,7 @@
     },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
-      "description": "Shifts when audio is heard on this device relative to the other players in a synced group. \nNegative values make this device play earlier; positive values make it play later. \nUse a negative value when this device is connected to a TV, AV receiver or amplifier that adds a processing delay, which makes it play slightly behind the rest of the group. \nExample: if this device lags the group by about 100 ms, set it to -100 to pull it back into sync."
+      "description": "Shifts when audio is heard on this device relative to the other players in a synced group. \nPositive values make this device play earlier; negative values make it play later. \nUse a positive value when this device is connected to a TV, AV receiver or amplifier that adds a processing delay, which makes it play slightly behind the rest of the group. \nExample: if this device lags the group by about 100 ms, set it to 100 to pull it back into sync."
     },
     "pairing_pin": {
       "label": "Enter the 4-digit pairing code shown on the device"
@@ -57,9 +57,16 @@
     "verbose_ptp_logging": {
       "label": "Verbose PTP daemon logging",
       "description": "Log the shared PTP clock daemon's per-packet timing trace (Announce/Sync/Follow_Up) when verbose logging is active. Only useful when diagnosing multi-room clock sync issues; it floods the log at ~10 lines per second."
+    },
+    "homepods_only": {
+      "label": "Play on HomePods only"
     }
   },
   "setup_flow": {
+    "homepods_only_offer": {
+      "title": "Play on HomePods only?",
+      "description": "The Apple TV shows what plays and its remote controls the music, for which it needs to be paired with a code shown on its screen. Switch this on to play on the HomePods only, without pairing. You can change this later in the player options."
+    },
     "pair_pin": {
       "title": "Pair with your device",
       "description": "A pairing code is shown on the screen of your device. Enter it below to complete pairing."
@@ -98,7 +105,12 @@
     "pairing_failed": "Pairing did not complete. Make sure the device is awake and reachable, then try again.",
     "pairing_wrong_pin": "The device rejected the pairing code. Start pairing again and enter the new code shown on its screen."
   },
+  "player_options": {
+    "homepods_only": {
+      "name": "Play on HomePods only"
+    }
+  },
   "manifest": {
-    "description": "Stream to AirPlay-enabled devices on your local network."
+    "description": "Stream to AirPlay-enabled devices on your local network, such as HomePod and Apple TV."
   }
 }

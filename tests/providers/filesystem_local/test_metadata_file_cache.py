@@ -35,6 +35,7 @@ def _provider() -> Any:
     provider._sync_nfo_by_dir = {}
     provider._sync_nfo_index_ready = False
     provider._missing_album_artist_warned = set()
+    provider._changed_artist_paths = set()
     return provider
 
 
@@ -108,6 +109,22 @@ async def test_changed_nfo_queues_representative_track() -> None:
     # its reparse must bypass this provider's short-lived album/artist caches, or an
     # unrelated concurrent parse of the same folder could hand back the pre-change data
     assert force_refresh_tracks == {"Artist/Album/t1.mp3"}
+    assert provider._changed_artist_paths == set()
+
+
+async def test_changed_artist_nfo_marks_its_artist_for_a_refresh() -> None:
+    """A changed artist.nfo marks its artist folder, even when its track is already queued."""
+    provider = _provider()
+    meta = _item("Artist/artist.nfo", checksum="2")
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/artist.nfo": {"token": "1", "track": "Artist/Album/t1.mp3"}}
+    )
+    track_item = _item("Artist/Album/t1.mp3")
+    items_to_process: list[tuple[FileSystemItem, str | None]] = [(track_item, "abc")]
+
+    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process, set())
+
+    assert provider._changed_artist_paths == {"Artist"}
 
 
 async def test_changed_image_queues_representative_track_and_invalidates_it() -> None:

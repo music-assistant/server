@@ -104,6 +104,58 @@ def test_docker_with_a_bind_volume() -> None:
     ]
 
 
+def test_docker_with_an_overlay_volume() -> None:
+    """A merged (overlay) folder of the host mapped in as a volume is a container volume."""
+    overlay_volume = (
+        "715 702 0:96 / /media_unified ro,relatime - overlay overlay ro,lowerdir=/mnt/pool/a:"
+        "/mnt/pool/b,upperdir=/mnt/pool/c,workdir=/mnt/pool/.work,redirect_dir=on"
+    )
+    mounts = parse_mountinfo(
+        "\n".join([*_fixture("docker_bind_volume").splitlines(), overlay_volume]),
+        excluded_paths=CONTAINER_DATA_PATHS,
+        in_container=True,
+        supervisor=False,
+    )
+
+    assert mounts == [
+        MediaMount("/media/music", "ext4", read_only=True, kind=StorageKind.CONTAINER_VOLUME),
+        MediaMount("/media_unified", "overlay", read_only=True, kind=StorageKind.CONTAINER_VOLUME),
+    ]
+
+
+@pytest.mark.parametrize(
+    "mountpoint",
+    [
+        "/mnt/user/system/docker/overlay2/0123abcd/merged",
+        "/host/home/user/.local/share/containers/storage/overlay/0123abcd/merged",
+        "/host/run/containerd/io.containerd.runtime.v2.task/moby/0123abcd/rootfs",
+        "/host/var/lib/containers/storage/overlay/0123abcd/merged",
+        "/host/run/k3s/containerd/io.containerd.runtime.v2.task/k8s.io/0123abcd/rootfs",
+        "/host/docker/rootfs/overlayfs/0123abcd",
+    ],
+)
+def test_container_roots_in_a_volume_are_no_location(mountpoint: str) -> None:
+    """The roots of other containers, in a host folder mapped in as a volume, hold no media."""
+    assert _parse(_line(mountpoint, "overlay"), in_container=True) == {}
+
+
+@pytest.mark.parametrize(
+    "mountpoint", ["/merged", "/media/merged", "/rootfs", "/pool/overlay/merged"]
+)
+def test_overlay_volume_named_like_a_container_root(mountpoint: str) -> None:
+    """An overlay volume is a location even when its folder has the name of a container root."""
+    assert _parse(_line(mountpoint, "overlay"), in_container=True) == {
+        mountpoint: MediaMount(
+            mountpoint, "overlay", read_only=False, kind=StorageKind.CONTAINER_VOLUME
+        )
+    }
+
+
+def test_overlay_outside_a_container_is_no_location() -> None:
+    """On a host, an overlay is the root filesystem of a container it runs."""
+    assert _parse(_line("/home/user/.local/share/containers/merged", "overlay")) == {}
+
+
 def test_docker_without_volumes() -> None:
     """A container without volumes has no media location at all."""
     mounts = parse_mountinfo(
@@ -196,9 +248,9 @@ def test_efi_system_partition_is_excluded(mountpoint: str) -> None:
     assert _parse(_line(mountpoint, "vfat")) == {}
 
 
-@pytest.mark.parametrize("fstype", ["overlay", "tmpfs", "squashfs", "proc", "cgroup2", "fuse"])
+@pytest.mark.parametrize("fstype", ["tmpfs", "squashfs", "proc", "cgroup2", "fuse"])
 def test_filesystems_that_hold_no_media_are_excluded(fstype: str) -> None:
-    """The container root and pseudo filesystems are never a media location."""
+    """Pseudo filesystems are never a media location."""
     assert _parse(_line("/music", fstype)) == {}
 
 

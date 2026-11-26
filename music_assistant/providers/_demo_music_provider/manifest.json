@@ -4,6 +4,7 @@
   "name": "Demo Music Provider",
   "description": "Test/Example Music Provider for Music Assistant.",
   "codeowners": ["@yourgithubusername"],
+  "provides": ["artist", "album", "track", "playlist"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/demo/"
 }

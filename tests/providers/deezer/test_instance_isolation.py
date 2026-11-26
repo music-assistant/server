@@ -48,7 +48,7 @@ async def test_clients_use_the_shared_session() -> None:
     provider = _provider("deezer--first", "arl-one", mass)
 
     with (
-        patch("music_assistant.providers.deezer.provider.DeezerGQLClient") as gql_client,
+        patch("music_assistant.providers.deezer.provider.ThrottledGQLClient") as gql_client,
         patch("music_assistant.providers.deezer.provider.GWClient") as gw_client,
     ):
         gql_client.return_value.get_me = AsyncMock(return_value=Mock(id="user123"))

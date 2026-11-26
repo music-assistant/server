@@ -15,13 +15,15 @@ from unittest.mock import Mock
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
-from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
+from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import MASS_USER_AGENT
+from music_assistant.helpers.audio import create_streaming_wave_header
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
-    CACHE_ATTR_HLS_CMAF_BLOCKED,
+    CACHE_ATTR_FFMPEG_VERSION,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
@@ -31,13 +33,14 @@ from music_assistant.helpers.ffmpeg import (
     apply_stream_info,
     check_ffmpeg_version,
     get_ffmpeg_args,
-    get_ffmpeg_hls_cmaf_input_args,
     get_ffmpeg_overlay_stream,
     get_ffmpeg_stream,
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
     probe_audio_stream,
+    seeks_by_byte_offset,
 )
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.music_provider import ProviderStreamLimitError
 
 
@@ -159,6 +162,32 @@ def test_get_ffmpeg_args_no_fastseek_outside_http_mp3_seek(
     assert _input_fflags(args) == []
 
 
+@pytest.mark.parametrize(
+    ("content_type", "input_path", "extra_input_args", "by_byte_offset"),
+    [
+        (ContentType.MP3, "https://example.invalid/book.mp3", ["-ss", "30"], True),
+        (ContentType.MPEG, "https://example.invalid/book.mp3", ["-ss", "30"], True),
+        # fastseek asked for by the caller or the MP3 probe, whatever the format says
+        (ContentType.UNKNOWN, "-", ["-fflags", "+fastseek", "-ss", "30"], True),
+        (ContentType.MP3, "https://example.invalid/book.mp3", [], False),
+        (ContentType.FLAC, "https://example.invalid/track.flac", ["-ss", "30"], False),
+        (ContentType.MP3, "/media/book.mp3", ["-ss", "30"], False),
+        (ContentType.MP3, "https://example.invalid/book.mp3", ["-f", "mp3", "-ss", "30"], False),
+    ],
+)
+def test_seeks_by_byte_offset(
+    content_type: ContentType,
+    input_path: str,
+    extra_input_args: list[str],
+    by_byte_offset: bool,
+) -> None:
+    """Only a seek that ffmpeg takes by byte offset lands off the requested position."""
+    assert (
+        seeks_by_byte_offset(input_path, AudioFormat(content_type=content_type), extra_input_args)
+        is by_byte_offset
+    )
+
+
 def _split_at_input(args: list[str]) -> tuple[list[str], list[str]]:
     """Split generated ffmpeg args into the part describing the input and the output."""
     idx = args.index("-i")
@@ -228,6 +257,39 @@ def test_get_ffmpeg_args_skips_tls_verify_on_request(
 
     input_args, _ = _split_at_input(args)
     assert _has_tls_verify_off(input_args) is expected
+
+
+def _user_agents(args: list[str]) -> list[str]:
+    """Return the values of every -user_agent option in the args."""
+    return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "-user_agent"]
+
+
+@pytest.mark.parametrize(
+    ("input_path", "extra_input_args", "expected"),
+    [
+        ("https://host/a.mp3", [], [MASS_USER_AGENT]),
+        ("http://host/a.mp3", ["-headers", "Cookie: a=b\r\n"], [MASS_USER_AGENT]),
+        ("https://host/a.mp3", ["-user_agent", "Caller/1.0"], ["Caller/1.0"]),
+        ("https://host/a.mp3", ["-headers", "user-agent: Caller/1.0\r\n"], []),
+        ("/music/a.mp3", [], []),
+        ("-", [], []),
+    ],
+    ids=["https", "http-other-headers", "caller-option", "caller-header", "local-file", "pipe"],
+)
+def test_get_ffmpeg_args_identifies_to_http_inputs(
+    input_path: str, extra_input_args: list[str], expected: list[str]
+) -> None:
+    """An http input gets our user agent, unless the caller already sets one."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path=input_path,
+        extra_input_args=extra_input_args,
+    )
+
+    input_args, _ = _split_at_input(args)
+    assert _user_agents(input_args) == expected
 
 
 def test_multichannel_pcm_folds_down_without_stretching(tmp_path: Path) -> None:
@@ -749,6 +811,39 @@ async def test_ffmpeg_stream_surfaces_stdin_feeder_error(source_error: Exception
     assert err.value.__cause__ is source_error
 
 
+@pytest.mark.parametrize("bit_depth", [16, 24])
+async def test_ffmpeg_stream_writes_plain_wave_header(bit_depth: int) -> None:
+    """A WAV stream starts with the plain PCM header, also above 16 bit."""
+    frames = 4410
+    output_format = AudioFormat(
+        content_type=ContentType.WAV, sample_rate=44100, bit_depth=bit_depth, channels=2
+    )
+
+    async def audio_input() -> AsyncGenerator[bytes]:
+        yield b"\x01\x02\x03\x04" * frames
+
+    data = b"".join(
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=audio_input(),
+                input_format=AudioFormat(
+                    content_type=ContentType.PCM_S16LE,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    channels=2,
+                ),
+                output_format=output_format,
+            )
+        )
+    )
+
+    header = create_streaming_wave_header(output_format)
+    assert data[: len(header)] == header
+    # format tag 1 (PCM): players such as Sonos refuse WAVE_FORMAT_EXTENSIBLE (0xFFFE)
+    assert int.from_bytes(data[20:22], "little") == 1
+    assert len(data) - len(header) == frames * 2 * bit_depth // 8
+
+
 def _limit_error() -> ProviderStreamLimitError:
     """Build a provider capacity error for a provider with a single stream slot."""
     provider = Mock(max_concurrent_streams=1, instance_id="spotify--test")
@@ -832,6 +927,34 @@ async def test_overlay_stream_keeps_provider_stream_limit(overlay_file: Path) ->
         )
 
     assert err.value is limit_error
+
+
+async def test_ffmpeg_stream_keeps_a_source_refusal_and_logs_it_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A live source refusing the consumer surfaces as itself, without a feeder warning."""
+    refusal = AudioSourceRefusedError("No AirPlay client is streaming to this receiver")
+
+    async def refusing_input() -> AsyncGenerator[bytes]:
+        raise refusal
+        yield b""  # type: ignore[unreachable]  # pragma: no cover
+
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(AudioSourceRefusedError) as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=refusing_input(),
+                input_format=_PCM_FORMAT,
+                output_format=_PCM_FORMAT,
+            )
+        )
+
+    assert err.value is refusal
+    feeder_records = [
+        record for record in caplog.records if "stdin feeder task ended" in record.getMessage()
+    ]
+    assert feeder_records
+    assert all(record.levelno == logging.DEBUG for record in feeder_records)
 
 
 async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:
@@ -1065,6 +1188,7 @@ def test_overlay_mixer_reconnects_for_http_sources() -> None:
     """An http overlay source additionally gets the reconnect options."""
     (overlay,) = _build_overlay_mixer("http://host/sound.mp3", _PCM_FORMAT, 100).inputs
     assert "-reconnect" in overlay.input_args
+    assert _user_agents(overlay.input_args) == [MASS_USER_AGENT]
     assert overlay.input_args[-2:] == ["-stream_loop", "-1"]
 
 
@@ -1529,114 +1653,44 @@ def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> N
     assert abs(_rms_db(out) - _rms_db(main)) < 0.5
 
 
-async def test_get_ffmpeg_hls_cmaf_input_args_relax_a_build_that_blocks_cmaf() -> None:
-    """A build whose HLS demuxer rejects CMAF gets the extension check turned off."""
-    await set_global_cache_values({CACHE_ATTR_HLS_CMAF_BLOCKED: True})
-
-    assert get_ffmpeg_hls_cmaf_input_args() == ["-extension_picky", "0"]
-
-
-async def test_get_ffmpeg_hls_cmaf_input_args_leave_a_capable_build_alone() -> None:
-    """A build that accepts CMAF keeps its extension check, which guards hostile playlists."""
-    await set_global_cache_values({CACHE_ATTR_HLS_CMAF_BLOCKED: False})
-
-    assert get_ffmpeg_hls_cmaf_input_args() == []
-
-
-# Trimmed `ffmpeg -h demuxer=hls` output for the three generations of the segment extension
-# check: absent before 7.1.1, present without CMAF in 7.1.1, present with CMAF from 7.1.2 on.
-_HLS_OPTIONS_WITHOUT_CHECK = b"""Demuxer hls [Apple HTTP Live Streaming]:
-hls demuxer AVOptions:
-  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav")
-  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
-"""
-_HLS_OPTIONS_BLOCKING_CMAF = b"""Demuxer hls [Apple HTTP Live Streaming]:
-hls demuxer AVOptions:
-  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav")
-  -extension_picky   <boolean>    .D......... Be picky with all extensions matching (default true)
-  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
-"""
-_HLS_OPTIONS_ALLOWING_CMAF = b"""Demuxer hls [Apple HTTP Live Streaming]:
-hls demuxer AVOptions:
-  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav,cmfv,cmfa,ec3,fmp4")
-  -allowed_segment_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav,cmfv,cmfa,ec3,fmp4,html")
-  -extension_picky   <boolean>    .D......... Be picky with all extensions matching (default true)
-  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
-"""
 _FFMPEG_VERSION_OUTPUT = (
-    b"ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers\n"
-    b"configuration: --enable-libsoxr\n"
+    "ffmpeg version {} Copyright (c) 2000-2025 the FFmpeg developers\n"
+    "configuration: --enable-libsoxr\n"
 )
 
 
-def _fake_ffmpeg_probes(
-    monkeypatch: pytest.MonkeyPatch, hls_options: bytes, hls_returncode: int = 0
-) -> None:
-    """Answer the version and HLS demuxer probes with canned output."""
+def _fake_ffmpeg_version(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
+    """Answer the version probe with canned output."""
 
     async def _check_output(
-        *args: str, _env: dict[str, str] | None = None, _timeout: float | None = None
+        *_args: str, _env: dict[str, str] | None = None, _timeout: float | None = None
     ) -> tuple[int, bytes]:
-        if "-h" in args:
-            return (hls_returncode, hls_options)
-        return (0, _FFMPEG_VERSION_OUTPUT)
+        return (0, _FFMPEG_VERSION_OUTPUT.format(version).encode())
 
     monkeypatch.setattr("music_assistant.helpers.ffmpeg.check_output", _check_output)
 
 
-async def test_check_ffmpeg_version_finds_a_demuxer_that_blocks_cmaf(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("version", ["7.0", "7.1.1"])
+async def test_check_ffmpeg_version_refuses_a_build_before_8(
+    monkeypatch: pytest.MonkeyPatch, version: str
 ) -> None:
-    """A demuxer that is picky about extensions but does not know CMAF blocks those segments."""
-    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_BLOCKING_CMAF)
+    """A build before 8.0 lacks `-readrate_catchup`, which every pacing profile passes."""
+    _fake_ffmpeg_version(monkeypatch, version)
+
+    with pytest.raises(AudioError, match="is not supported"):
+        await check_ffmpeg_version()
+
+
+@pytest.mark.parametrize("version", ["8.0", "9.0.1"])
+async def test_check_ffmpeg_version_accepts_a_build_from_8_on(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """A build from 8.0 on passes the check and has its version cached."""
+    _fake_ffmpeg_version(monkeypatch, version)
 
     await check_ffmpeg_version()
 
-    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is True
-
-
-async def test_check_ffmpeg_version_leaves_a_demuxer_that_whitelists_cmaf_alone(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A demuxer that lists CMAF among the extensions it accepts needs no relaxation."""
-    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_ALLOWING_CMAF)
-
-    await check_ffmpeg_version()
-
-    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
-
-
-async def test_check_ffmpeg_version_leaves_a_demuxer_without_the_check_alone(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A demuxer that never gained the extension check accepts CMAF as it is."""
-    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_WITHOUT_CHECK)
-
-    await check_ffmpeg_version()
-
-    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
-
-
-async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An unreadable probe must not relax a check that may well be doing its job."""
-    _fake_ffmpeg_probes(monkeypatch, b"Unknown demuxer 'hls'.\n", hls_returncode=1)
-
-    await check_ffmpeg_version()
-
-    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
-
-
-async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_exits_nonzero(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Output that reads as blocking is worthless once the probe itself reported failure."""
-    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_BLOCKING_CMAF, hls_returncode=1)
-
-    await check_ffmpeg_version()
-
-    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+    assert get_global_cache_value(CACHE_ATTR_FFMPEG_VERSION) == version
 
 
 # -- probe_audio_stream --
@@ -1746,7 +1800,21 @@ async def test_probe_audio_stream_opens_the_input_like_the_decoder(
     read_args_start = proc.args.index(_INPUT_READ_ARGS[0])
     assert proc.args[read_args_start : read_args_start + len(_INPUT_READ_ARGS)] == _INPUT_READ_ARGS
     assert proc.args.index("-user_agent") < proc.args.index("-i")
+    # the source's own user agent replaces ours
+    assert _user_agents(proc.args) == ["test"]
     assert proc.args[-2:] == ["-i", "https://example.com/a.flac"]
+
+
+async def test_probe_audio_stream_identifies_to_http_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe sends the same user agent as the decoder."""
+    proc = _FakeProbeProcess(_probe_output(codec_name="flac", sample_rate="44100", channels=2))
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    await probe_audio_stream("https://example.com/a.flac")
+
+    assert _user_agents(proc.args[: proc.args.index("-i")]) == [MASS_USER_AGENT]
 
 
 @pytest.mark.parametrize("verify_ssl", [False, True])
@@ -1862,3 +1930,21 @@ def test_apply_stream_info_keeps_a_declared_content_type() -> None:
         24,
         1,
     )
+
+
+@pytest.mark.parametrize("estimated", [True, False])
+async def test_log_reader_notes_a_duration_that_ffmpeg_only_estimated(estimated: bool) -> None:
+    """The duration is flagged as an estimate when ffmpeg says it guessed it from the bitrate."""
+    ffmpeg = FFMpeg(audio_input="-", input_format=_PCM_FORMAT, output_format=_PCM_FORMAT)
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        if estimated:
+            yield "[mp3 @ 0x55d0c8a1b2c0] Estimating duration from bitrate, this may be inaccurate"
+        yield "  Duration: 00:59:00.00, start: 0.000000, bitrate: 128 kb/s"
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    await ffmpeg._log_reader_task()
+
+    assert ffmpeg.parsed_duration == 3540
+    assert ffmpeg.duration_estimated is estimated

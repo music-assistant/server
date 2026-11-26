@@ -28,6 +28,8 @@ async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]
     # remove_item_from_library routes audio analysis cleanup through the AA controller
     mass_minimal.streams = MagicMock()
     mass_minimal.streams.audio_analysis.delete_audio_analysis = AsyncMock()
+    # a lookup on the providers remembers what it found in the cache
+    await mass_minimal.cache._setup_database()
     await controller._setup_database()
     yield controller
     if controller._database:
@@ -102,7 +104,7 @@ async def test_same_isrc_from_two_providers_dedupes(music: MusicController) -> N
 
     assert library_track_1.item_id == library_track_2.item_id
     assert len(library_track_2.provider_mappings) == 2
-    assert await music.tracks.library_count() == 1
+    assert await music.database.get_count(music.tracks.db_table) == 1
 
 
 async def test_formatted_isrc_from_two_providers_dedupes(music: MusicController) -> None:
@@ -142,7 +144,7 @@ async def test_matching_checks_more_than_fifty_external_id_candidates(
     )
 
     assert matched.item_id == expected.item_id
-    assert await music.tracks.library_count() == 51
+    assert await music.database.get_count(music.tracks.db_table) == 51
 
 
 async def test_non_unique_external_id_candidates_are_all_verified(
@@ -174,7 +176,7 @@ async def test_non_unique_external_id_candidates_are_all_verified(
 
     assert matched.item_id == expected.item_id
     assert matched.item_id != unrelated.item_id
-    assert await music.albums.library_count() == 2
+    assert await music.database.get_count(music.albums.db_table) == 2
     assert {mapping.provider_instance for mapping in matched.provider_mappings} == {
         "apple_music_1",
         "qobuz_1",

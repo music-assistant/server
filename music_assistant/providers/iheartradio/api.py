@@ -29,11 +29,13 @@ from .constants import (
     API_TIMEOUT,
     CACHE_CATEGORY_CATALOG,
     CACHE_CATEGORY_PODCASTS,
+    CACHE_CATEGORY_RECS,
     CACHE_CATEGORY_SEARCH,
     CACHE_CATEGORY_STATIONS,
     CACHE_TTL_CATALOG,
     CACHE_TTL_EPISODES,
     CACHE_TTL_PODCAST,
+    CACHE_TTL_RECS,
     CACHE_TTL_SEARCH,
     CACHE_TTL_STATION,
     EPISODE_PAGE_LIMIT,
@@ -252,6 +254,22 @@ class IHeartRadioApiClient:
         """Return the genres live stations are grouped by."""
         payload = await self.get_json(PATH_GENRES, {"genreType": "liveStation"})
         return json_items(payload.get("genres")) if isinstance(payload, dict) else []
+
+    @use_cache(CACHE_TTL_RECS, category=CACHE_CATEGORY_RECS)
+    async def get_recommendations(self, path: str) -> list[dict[str, Any]]:
+        """
+        Return the items of one of the signed-in account's recommendation lists.
+
+        :param path: The API path of the recommendation list.
+        """
+        payload = await self.get_json(path)
+        tiles = payload.get("tiles") if isinstance(payload, dict) else None
+        if not isinstance(tiles, list):
+            # raised rather than returned empty, so a broken answer is logged and not cached
+            raise InvalidDataError(
+                f"iHeartRadio returned an invalid recommendation list for {path}"
+            )
+        return [tile["item"] for tile in json_items(tiles) if isinstance(tile.get("item"), dict)]
 
     @use_cache(CACHE_TTL_CATALOG, category=CACHE_CATEGORY_CATALOG)
     async def get_artist_profile(self, artist_id: str) -> dict[str, Any]:

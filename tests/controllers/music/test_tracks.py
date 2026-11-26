@@ -1,6 +1,7 @@
 """Tests for the tracks controller."""
 
 import pathlib
+import time
 from collections.abc import AsyncGenerator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
@@ -16,8 +17,11 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderID,
+    LoginFailed,
     MediaNotFoundError,
+    ProviderPermissionDenied,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
@@ -35,18 +39,23 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DB_TABLE_TRACKS
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT
 from music_assistant.controllers.music.media.tracks import (
+    DEFAULT_RATE_LIMIT_PAUSE,
+    MAX_CONSECUTIVE_PROVIDER_FAILURES,
+    ProviderMatchFailures,
     TrackProviderMatch,
     TrackProviderMatchResult,
     TracksController,
 )
 from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.throttle_retry import _give_up
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.builtin.constants import CONF_KEY_TRACKS, StoredItem
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 
 from .helpers import ISRC, create_album, create_track
 
@@ -267,7 +276,7 @@ async def test_match_provider_isrc_hit_must_pass_track_comparison(
         mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
 
     assert mappings == []
-    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz")
+    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz", limit=MATCH_SEARCH_LIMIT)
 
 
 async def test_match_provider_rejects_an_isrc_hit_for_another_song(
@@ -284,7 +293,7 @@ async def test_match_provider_rejects_an_isrc_hit_for_another_song(
         mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
 
     assert mappings == []
-    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz")
+    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz", limit=MATCH_SEARCH_LIMIT)
 
 
 async def test_match_provider_skips_an_unavailable_isrc_hit(music: MusicController) -> None:
@@ -689,7 +698,11 @@ async def test_matches_compatible_reuses_hydrated_album_evidence(
 
 @pytest.mark.parametrize(
     "error",
-    [TimeoutError(), ResourceTemporarilyUnavailable("Provider temporarily unavailable")],
+    [
+        TimeoutError(),
+        ResourceTemporarilyUnavailable("Provider temporarily unavailable"),
+        RetriesExhausted("Not retrying, asked to wait 120 seconds"),
+    ],
 )
 async def test_full_track_album_falls_back_after_transient_failure(
     music: MusicController,
@@ -1432,6 +1445,48 @@ async def test_find_provider_match_keeps_fallback_after_later_timeout(
     assert search_provider.await_count == 2
 
 
+async def test_find_provider_match_raises_a_later_rate_limit(
+    music: MusicController,
+) -> None:
+    """A rate limit on a later artist query is raised even with a candidate in hand."""
+    base = create_track("spotify_1", "base")
+    base.artists.append(
+        ItemMapping(
+            item_id="other-artist",
+            provider="spotify_1",
+            name="Other Artist",
+            media_type=MediaType.ARTIST,
+        )
+    )
+    candidate = create_track("qobuz_1", "candidate")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(
+                side_effect=(
+                    SearchResults(tracks=[candidate]),
+                    RateLimited("Qobuz rate limit", backoff_time=60),
+                )
+            ),
+        ),
+        patch.object(music.tracks, "get_provider_item", AsyncMock(return_value=candidate)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        pytest.raises(RateLimited),
+    ):
+        await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+        )
+
+
 async def test_find_provider_match_raises_on_later_hydration_failure(
     music: MusicController,
 ) -> None:
@@ -1870,6 +1925,37 @@ async def test_enrich_provider_mappings_skips_album_lookup_for_existing_domains(
 
     assert result.track.provider_mappings == source.provider_mappings
     get_full_track_album.assert_not_awaited()
+    find_provider_match.assert_not_awaited()
+
+
+async def test_enrich_provider_mappings_ignores_a_pause_of_a_provider_it_does_not_ask(
+    music: MusicController,
+) -> None:
+    """A rate limited provider is not reported for an item that needs no lookup on it."""
+    source = create_track("spotify_1", "source")
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Spotify"
+    provider.instance_id = "spotify_1"
+    provider.domain = "spotify"
+    provider.available = True
+    provider.is_streaming_provider = True
+    provider_failures = ProviderMatchFailures()
+    provider_failures.record_failure("spotify_1", RateLimited("Spotify rate limit"))
+    find_provider_match = AsyncMock()
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(music.mass, "get_provider", return_value=provider),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"spotify_1"},
+            provider_failures=provider_failures,
+        )
+
+    assert result.rate_limited_providers == ()
+    assert result.track.provider_mappings == source.provider_mappings
     find_provider_match.assert_not_awaited()
 
 
@@ -2930,10 +3016,18 @@ async def test_enrich_provider_mappings_drops_unavailable_source_mappings(
     assert result.track.provider_mappings == set()
 
 
-async def test_enrich_provider_mappings_stops_after_provider_failure(
+@pytest.mark.parametrize(
+    "error",
+    [
+        ResourceTemporarilyUnavailable("Search timed out"),
+        RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+    ],
+)
+async def test_enrich_provider_mappings_stops_after_consecutive_provider_failures(
     music: MusicController,
+    error: Exception,
 ) -> None:
-    """A timed-out provider is not queried again for every remaining migration track."""
+    """A temporarily failing provider keeps serving the next items until it fails one too many."""
     source = create_track("spotify_1", "source")
     provider = MagicMock(spec=MusicProvider)
     provider.name = "Qobuz"
@@ -2941,7 +3035,7 @@ async def test_enrich_provider_mappings_stops_after_provider_failure(
     provider.domain = "qobuz"
     provider.available = True
     provider.is_streaming_provider = True
-    failed_provider_instances: set[str] = set()
+    provider_failures = ProviderMatchFailures()
 
     with (
         patch.object(
@@ -2957,7 +3051,7 @@ async def test_enrich_provider_mappings_stops_after_provider_failure(
         patch.object(
             music.tracks,
             "find_provider_match",
-            AsyncMock(side_effect=ResourceTemporarilyUnavailable("Search timed out")),
+            AsyncMock(side_effect=error),
         ) as find_match,
         patch.object(
             music.mass,
@@ -2965,23 +3059,188 @@ async def test_enrich_provider_mappings_stops_after_provider_failure(
             return_value=provider,
         ),
     ):
-        first_result = await music.tracks.enrich_provider_mappings(
+        for _ in range(MAX_CONSECUTIVE_PROVIDER_FAILURES):
+            failed_result = await music.tracks.enrich_provider_mappings(
+                source,
+                provider_instance_ids={"qobuz_1"},
+                provider_failures=provider_failures,
+            )
+            assert failed_result.failed_providers == ("Qobuz",)
+        dropped_result = await music.tracks.enrich_provider_mappings(
             source,
             provider_instance_ids={"qobuz_1"},
-            failed_provider_instances=failed_provider_instances,
-        )
-        second_result = await music.tracks.enrich_provider_mappings(
-            source,
-            provider_instance_ids={"qobuz_1"},
-            failed_provider_instances=failed_provider_instances,
+            provider_failures=provider_failures,
         )
 
-    assert failed_provider_instances == {"qobuz_1"}
+    # every item is tried until the streak is full, the one after it is not
+    assert find_match.await_count == MAX_CONSECUTIVE_PROVIDER_FAILURES
+    assert provider_failures.unusable == {"qobuz_1"}
+    # the last call skips querying (already confirmed failed) but must still report
+    # the provider as failed, or this entry would be misattributed as "no match found"
+    assert dropped_result.failed_providers == ("Qobuz",)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(RateLimited("Qobuz rate limit", backoff_time=90), id="rate-limited"),
+        # what a provider behind the retry helper reports for a long Retry-After
+        pytest.param(
+            _give_up(RateLimited("Qobuz rate limit", backoff_time=90), 90),
+            id="retries-exhausted",
+        ),
+    ],
+)
+async def test_enrich_provider_mappings_pauses_a_rate_limited_provider(
+    music: MusicController,
+    error: Exception,
+) -> None:
+    """A rate limited provider is left alone for the wait it asked for, not dropped."""
+    source = create_track("spotify_1", "source")
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Qobuz"
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.available = True
+    provider.is_streaming_provider = True
+    provider_failures = ProviderMatchFailures()
+    attempts = MAX_CONSECUTIVE_PROVIDER_FAILURES + 1
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        patch.object(
+            music.tracks, "find_provider_match", AsyncMock(side_effect=error)
+        ) as find_match,
+        patch.object(music.mass, "get_provider", return_value=provider),
+    ):
+        results = [
+            await music.tracks.enrich_provider_mappings(
+                source,
+                provider_instance_ids={"qobuz_1"},
+                provider_failures=provider_failures,
+            )
+            for _ in range(attempts)
+        ]
+
+    # only the item that ran into the limit costs a request, the rest are held back
     assert find_match.await_count == 1
-    assert first_result.failed_providers == ("Qobuz",)
-    # the second call skips querying (already confirmed failed) but must still report
-    # the instance as failed, or this entry would be misattributed as "no match found"
-    assert second_result.failed_providers == ("qobuz_1",)
+    # a rate limit is not a provider failure, so the breaker stays out of it
+    assert provider_failures.unusable == set()
+    assert all(result.failed_providers == () for result in results)
+    assert all(result.rate_limited_providers == ("Qobuz",) for result in results)
+
+
+async def test_enrich_provider_mappings_asks_again_once_the_wait_is_over(
+    music: MusicController,
+) -> None:
+    """A provider takes part in the run again once its rate limit has passed."""
+    source = create_track("spotify_1", "source")
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Qobuz"
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.available = True
+    provider.is_streaming_provider = True
+    provider_failures = ProviderMatchFailures()
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(side_effect=RateLimited("Qobuz rate limit", backoff_time=90)),
+        ) as find_match,
+        patch.object(music.mass, "get_provider", return_value=provider),
+    ):
+        await music.tracks.enrich_provider_mappings(
+            source, provider_instance_ids={"qobuz_1"}, provider_failures=provider_failures
+        )
+        # the wait has passed by the time the next item is resolved
+        provider_failures.rate_limited_until["qobuz_1"] = time.monotonic() - 1
+        await music.tracks.enrich_provider_mappings(
+            source, provider_instance_ids={"qobuz_1"}, provider_failures=provider_failures
+        )
+
+    assert find_match.await_count == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "pause"),
+    [
+        pytest.param(RateLimited("Qobuz rate limit", backoff_time=90), 90, id="retry-after"),
+        # a rate limit the retry helper gave up on names no wait of its own
+        pytest.param(
+            _give_up(RateLimited("Qobuz rate limit", backoff_time=90), 90),
+            DEFAULT_RATE_LIMIT_PAUSE,
+            id="given-up",
+        ),
+        # what Spotify raises itself for a rate limit
+        pytest.param(
+            RetriesExhausted("Rate limited", translation_key=RateLimited.translation_key),
+            DEFAULT_RATE_LIMIT_PAUSE,
+            id="no-retry-after",
+        ),
+    ],
+)
+def test_provider_match_failures_pauses_a_rate_limited_provider(
+    error: Exception, pause: int
+) -> None:
+    """A rate limit holds the provider back for its wait, also when another item succeeds."""
+    failures = ProviderMatchFailures()
+
+    failures.record_failure("qobuz_1", error)
+    # an item that was already under way answers after the limit
+    failures.record_success("qobuz_1")
+
+    assert failures.rate_limited("qobuz_1")
+    assert not failures.blocked("qobuz_1")
+    remaining = failures.rate_limited_until["qobuz_1"] - time.monotonic()
+    assert remaining == pytest.approx(pause, abs=1)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [LoginFailed("Invalid token"), ProviderUnavailableError("Provider unavailable")],
+)
+def test_provider_match_failures_drops_a_provider_that_can_serve_nothing(
+    error: Exception,
+) -> None:
+    """A provider that can serve no item at all is dropped at once, without a streak."""
+    failures = ProviderMatchFailures()
+
+    failures.record_failure("qobuz_1", error)
+
+    assert failures.blocked("qobuz_1")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError(),
+        # raised for a single item outside the account's scope
+        ProviderPermissionDenied("Track is outside this account's scope"),
+        # not a rate limit, so it counts like any other failure
+        RetriesExhausted("Retries exhausted, failed after 5 attempts"),
+    ],
+)
+def test_provider_match_failures_streak_is_reset_by_a_success(error: Exception) -> None:
+    """Failures have to follow each other to drop a provider."""
+    failures = ProviderMatchFailures()
+
+    for _ in range(MAX_CONSECUTIVE_PROVIDER_FAILURES - 1):
+        failures.record_failure("qobuz_1", error)
+    failures.record_success("qobuz_1")
+    for _ in range(MAX_CONSECUTIVE_PROVIDER_FAILURES - 1):
+        failures.record_failure("qobuz_1", error)
+
+    assert not failures.blocked("qobuz_1")
+    assert not failures.rate_limited("qobuz_1")
+
+    failures.record_failure("qobuz_1", error)
+
+    assert failures.blocked("qobuz_1")
 
 
 async def test_enrich_provider_mappings_reports_unavailable_allowed_provider(
@@ -2995,7 +3254,7 @@ async def test_enrich_provider_mappings_reports_unavailable_allowed_provider(
     provider.domain = "qobuz"
     provider.available = False
     provider.is_streaming_provider = True
-    failed_provider_instances: set[str] = set()
+    provider_failures = ProviderMatchFailures()
 
     with (
         patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
@@ -3006,13 +3265,13 @@ async def test_enrich_provider_mappings_reports_unavailable_allowed_provider(
         result = await music.tracks.enrich_provider_mappings(
             source,
             provider_instance_ids={"qobuz_1"},
-            failed_provider_instances=failed_provider_instances,
+            provider_failures=provider_failures,
         )
 
     # never queried - the caller should still learn this instance couldn't be tried
     find_match.assert_not_awaited()
     assert result.failed_providers == ("Qobuz",)
-    assert failed_provider_instances == {"qobuz_1"}
+    assert provider_failures.unusable == {"qobuz_1"}
 
 
 async def test_enrich_provider_mappings_reports_fully_unloaded_allowed_provider(
@@ -3020,7 +3279,7 @@ async def test_enrich_provider_mappings_reports_fully_unloaded_allowed_provider(
 ) -> None:
     """An allowed instance that has fully unloaded is reported, not silently skipped."""
     source = create_track("spotify_1", "source")
-    failed_provider_instances: set[str] = set()
+    provider_failures = ProviderMatchFailures()
 
     with (
         patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
@@ -3032,14 +3291,14 @@ async def test_enrich_provider_mappings_reports_fully_unloaded_allowed_provider(
         result = await music.tracks.enrich_provider_mappings(
             source,
             provider_instance_ids={"qobuz_1"},
-            failed_provider_instances=failed_provider_instances,
+            provider_failures=provider_failures,
         )
 
     # never queried - the caller should still learn this instance couldn't be tried,
     # using its instance id as display name since no provider object remains
     find_match.assert_not_awaited()
     assert result.failed_providers == ("qobuz_1",)
-    assert failed_provider_instances == {"qobuz_1"}
+    assert provider_failures.unusable == {"qobuz_1"}
 
 
 def test_get_provider_mapping_breaks_quality_ties_deterministically() -> None:

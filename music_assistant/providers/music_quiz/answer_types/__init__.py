@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from music_assistant.providers.music_quiz.answer_types.base import QuizAnswerType
+from music_assistant.providers.music_quiz.answer_types.hint_text import HintTextAnswerType
 from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
     MultipleChoiceAnswerType,
 )
@@ -13,6 +14,7 @@ from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 ANSWER_TYPES: dict[MusicQuizAnswerType, type[QuizAnswerType]] = {
     MusicQuizAnswerType.MULTIPLE_CHOICE: MultipleChoiceAnswerType,
     MusicQuizAnswerType.TIMELINE: TimelineAnswerType,
+    MusicQuizAnswerType.HINT_TEXT: HintTextAnswerType,
 }
 
 

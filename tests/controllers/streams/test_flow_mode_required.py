@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
@@ -17,17 +17,23 @@ PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100, 
 
 
 def _controller() -> Any:
-    """Return a streams controller with one gapless, non-flow HTTP player."""
+    """Return a streams controller with one gapless, non-flow HTTP player and its output protocol."""
     controller: Any = StreamsController.__new__(StreamsController)
     controller._base_url = "http://mass:8097"
     controller._flow_mode_owners = {}
     controller._boundary_mix_owners = {}
     controller.mass = mass = MagicMock()
     player = MagicMock()
-    player.config.get_value.side_effect = lambda _key, default=None: default
     player.flow_mode = False
     player.supports_gapless = True
+    # no group that hands its members one shared stream
+    player.own_protocol.get_shared_stream.return_value = None
     mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    protocol.config.get_value.side_effect = lambda _key, default=None: default
+    protocol.flow_mode = False
+    mass.players.get_output_protocol.return_value = protocol
+    _set_gapless(controller, True)
     mass.player_queues.get.return_value = SimpleNamespace(
         queue_id="queue-1",
         crossfade_enabled=False,
@@ -35,6 +41,13 @@ def _controller() -> Any:
         overlay_source=None,
     )
     return controller
+
+
+def _set_gapless(controller: Any, supported: bool) -> None:
+    """Set whether the output protocol of the player plays gapless."""
+    controller.mass.players.get_output_protocol.return_value.supports_feature.side_effect = (
+        lambda feature: supported if feature == PlayerFeature.GAPLESS_PLAYBACK else False
+    )
 
 
 def _media(media_type: MediaType = MediaType.SOUND_EFFECT) -> PlayerMedia:
@@ -110,7 +123,7 @@ async def test_a_boundary_mix_requirement_puts_only_a_player_without_gapless_in_
 ) -> None:
     """Mixed boundaries need flow mode only on a player that cannot play gapless."""
     controller = _controller()
-    controller.mass.players.get_player.return_value.supports_gapless = supports_gapless
+    _set_gapless(controller, supports_gapless)
     controller.set_boundary_mix_required("queue-1", "ai_radio", True)
 
     url = await controller.resolve_stream_url("player-1", _media())
@@ -125,7 +138,7 @@ def test_a_boundary_mix_requirement_gets_the_flow_stream_without_gapless() -> No
     controller._get_flow_start_item = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._count_as_output_stream = lambda stream: stream
-    controller.mass.players.get_player.return_value.supports_gapless = False
+    _set_gapless(controller, False)
     controller.set_boundary_mix_required("queue-1", "ai_radio", True)
 
     controller.get_stream(_media(), PCM_FORMAT, player_id="player-1")
@@ -173,3 +186,48 @@ def test_item_boundaries_are_not_mixed_for_an_unknown_player() -> None:
     controller.mass.players.get_player.return_value = None
 
     assert controller.mixes_item_boundaries("queue-1") is False
+
+
+@pytest.mark.parametrize(
+    ("crossfade", "media_type", "flow_owner", "mix_owner", "tail_overlap", "blends"),
+    [
+        (False, MediaType.TRACK, False, False, None, False),
+        (True, MediaType.TRACK, False, False, None, True),
+        # only a track is crossfaded
+        (True, MediaType.SOUND_EFFECT, False, False, None, False),
+        (False, MediaType.SOUND_EFFECT, True, False, None, True),
+        (False, MediaType.TRACK, False, True, None, True),
+        (False, MediaType.TRACK, False, False, 1.5, True),
+    ],
+)
+def test_a_flow_stream_blends_its_items_when_their_boundaries_are_mixed(
+    crossfade: bool,
+    media_type: MediaType,
+    flow_owner: bool,
+    mix_owner: bool,
+    tail_overlap: float | None,
+    blends: bool,
+) -> None:
+    """A crossfade, a declared tail overlap and a plugin that asks for it blend the items."""
+    controller = _controller()
+    controller.get_crossfade_mode = lambda _queue: (
+        CrossfadeMode.STANDARD_CROSSFADE if crossfade else CrossfadeMode.DISABLED
+    )
+    controller.set_flow_mode_required("queue-1", "plugin", flow_owner)
+    controller.set_boundary_mix_required("queue-1", "plugin", mix_owner)
+    queue = controller.mass.player_queues.get.return_value
+    start_item = SimpleNamespace(
+        media_type=media_type, streamdetails=SimpleNamespace(tail_overlap=tail_overlap)
+    )
+
+    assert controller.flow_stream_blends_items(queue, start_item) is blends
+
+
+def test_a_flow_stream_of_an_item_without_stream_details_blends_nothing() -> None:
+    """An item that is not resolved yet declares no tail overlap."""
+    controller = _controller()
+    controller.get_crossfade_mode = lambda _queue: CrossfadeMode.DISABLED
+    queue = controller.mass.player_queues.get.return_value
+    start_item = SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None)
+
+    assert controller.flow_stream_blends_items(queue, start_item) is False

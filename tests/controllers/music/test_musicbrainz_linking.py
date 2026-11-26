@@ -25,13 +25,16 @@ from music_assistant.helpers.compare import set_keep_remasters_apart
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzMedia,
     MusicBrainzRecording,
+    MusicBrainzRelation,
     MusicBrainzRelease,
     MusicBrainzTrack,
+    MusicBrainzUrl,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+RELEASE_ID = "5d9c6e8a-1c3b-4f2e-9a7d-2b8c4e6f0a11"
 RECORDING_ID = "0c1d2e3f-4a5b-4c6d-9e8f-7a6b5c4d3e22"
 OTHER_RECORDING_ID = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c33"
 SPOTIFY_ALBUM_URL = "https://open.spotify.com/album/7eyQXxuf2nGj9d2367Gi5f"
@@ -129,7 +132,7 @@ def _recording(
 def _release(*media: Sequence[MusicBrainzRecording]) -> MusicBrainzRelease:
     """Return a MusicBrainz release with the given recordings, one sequence per medium."""
     return MusicBrainzRelease(
-        id="5d9c6e8a-1c3b-4f2e-9a7d-2b8c4e6f0a11",
+        id=RELEASE_ID,
         title="In Rainbows",
         media=[
             MusicBrainzMedia(
@@ -182,6 +185,7 @@ def _harness(
     *,
     loaded: dict[str, list[str]],
     owners: dict[tuple[str, str], str] | None = None,
+    owner_mbids: dict[str, str] | None = None,
     provider_errors: dict[str, Exception] | None = None,
     provider_items: dict[str, Track] | None = None,
 ) -> Iterator[_Harness]:
@@ -191,6 +195,7 @@ def _harness(
     :param db_item: The library item under test; also what the controller loads by id.
     :param loaded: Provider instance ids per loaded provider domain.
     :param owners: Library item id per (provider instance, provider item id) already held.
+    :param owner_mbids: MusicBrainz release id per holding library item id.
     :param provider_errors: Error the provider raises per provider item id.
     :param provider_items: Track the provider returns per provider item id.
     """
@@ -210,7 +215,10 @@ def _harness(
 
     async def _owner(item_id: str, instance: str) -> Album | None:
         if owner_id := (owners or {}).get((instance, item_id)):
-            return _library_album(owner_id)
+            owner = _library_album(owner_id)
+            if mbid := (owner_mbids or {}).get(owner_id):
+                owner.mbid = mbid
+            return owner
         return None
 
     async def _provider_item(item_id: str, _instance: str, **_kwargs: object) -> Album | Track:
@@ -270,6 +278,57 @@ async def test_linker_drops_a_link_another_library_item_holds() -> None:
 
     assert [m.provider_domain for m in added] == ["tidal"]
     assert harness.stored_mappings() == set(added)
+    harness.merge.assert_not_awaited()
+
+
+@pytest.mark.parametrize("owner_mbid", [None, RELEASE_ID])
+async def test_linker_merges_the_album_holding_a_link_of_its_release(
+    owner_mbid: str | None,
+) -> None:
+    """An identified album takes in the album holding a linked album of the same release."""
+    album = _library_album("1")
+    album.mbid = RELEASE_ID
+    tidal = ProviderMapping(
+        item_id="79280548", provider_domain="tidal", provider_instance="tidal_1"
+    )
+    with _harness(
+        album,
+        loaded={"tidal": ["tidal_1"]},
+        owners={("tidal_1", "79280548"): "99"},
+        owner_mbids={"99": owner_mbid} if owner_mbid else None,
+    ) as harness:
+        harness.merge.return_value = _library_album("1", tidal)
+        added = await harness.ctrl.link_musicbrainz_mappings(album, [TIDAL_ALBUM_URL])
+
+    harness.merge.assert_awaited_once_with(1, 99)
+    assert [m.provider_domain for m in added] == ["tidal"]
+    assert tidal in album.provider_mappings
+
+
+async def test_linker_keeps_apart_the_album_holding_a_link_of_another_release() -> None:
+    """An album identified as another release keeps the linked album, as does any track."""
+    album = _library_album("1")
+    album.mbid = RELEASE_ID
+    with _harness(
+        album,
+        loaded={"tidal": ["tidal_1"]},
+        owners={("tidal_1", "79280548"): "99"},
+        owner_mbids={"99": "0f1e2d3c-4b5a-4968-8776-5a4b3c2d1e00"},
+    ) as harness:
+        added = await harness.ctrl.link_musicbrainz_mappings(album, [TIDAL_ALBUM_URL])
+
+    assert added == []
+    harness.merge.assert_not_awaited()
+
+    track = _library_track("1", 1, mbid=RECORDING_ID)
+    with _harness(
+        track,
+        loaded={"spotify": ["spotify_1"]},
+        owners={("spotify_1", "2Ex8hBvUhZjXjJpZjJZ0aA"): "99"},
+    ) as harness:
+        added = await harness.ctrl.link_musicbrainz_mappings(track, [SPOTIFY_TRACK_URL])
+
+    assert added == []
     harness.merge.assert_not_awaited()
 
 
@@ -471,9 +530,11 @@ def _album_harness(
     """
     ctrl = AlbumsController.__new__(AlbumsController)
     ctrl.logger = logging.getLogger("test.musicbrainz.linking")
+    ctrl._logged_hints = set()
     ctrl.mass = Mock()
     ctrl.mass.music.database.deferred_commit = MagicMock()
     ctrl.mass.music.tracks.update_item_in_library = AsyncMock()
+    ctrl.mass.music.tracks.merge_recording_duplicates = AsyncMock(return_value=set())
     ctrl.mass.music.tracks.add_unclaimed_provider_mappings = AsyncMock()
 
     async def _tracklist(item_id: str, _instance: str) -> list[Track]:
@@ -510,6 +571,43 @@ async def test_release_tracks_fill_recording_ids_isrcs_and_marker_by_position() 
     assert all(track.metadata.last_musicbrainz_lookup is not None for track in updated)
 
 
+@pytest.mark.parametrize("on_musicbrainz", [False, True])
+async def test_release_tracks_log_the_isrcs_musicbrainz_lacks_once(
+    caplog: pytest.LogCaptureFixture, on_musicbrainz: bool
+) -> None:
+    """The ISRCs MusicBrainz lacks are logged once, numbered across the release's mediums."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    db_tracks = [
+        _library_track("t1", 1, isrcs=["GBSTK0700001"]),
+        _library_track("t2", 2, isrcs=["GBSTK0700002"]),
+        _library_track("d2", 1, disc_number=2, isrcs=["GBSTK0700003"]),
+    ]
+    release = _release(
+        [
+            _recording(RECORDING_ID, "Track 1", None, "GBSTK0700001"),
+            _recording(OTHER_RECORDING_ID, "Track 2", None, *(["GBSTK0700002"] * on_musicbrainz)),
+        ],
+        [
+            _recording(
+                "7f6e5d4c-3b2a-4c1d-8e0f-a1b2c3d4e5f6",
+                "Track 1",
+                None,
+                "GBSTK0700003" if on_musicbrainz else "GBSTK0700009",
+            )
+        ],
+    )
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+
+    hints = [(x.levelno, x.getMessage()) for x in caplog.records if "MagicISRC" in x.getMessage()]
+    expected = (
+        'Album "In Rainbows" has ISRCs MusicBrainz lacks, add them all at once with MagicISRC: '
+        f"https://magicisrc.kepstin.ca/?mbid={release.id}&isrc2=GBSTK0700002&isrc3=GBSTK0700003"
+    )
+    assert hints == ([] if on_musicbrainz else [(logging.DEBUG, expected)])
+
+
 async def test_release_tracks_skip_a_length_or_title_mismatch() -> None:
     """A recording that is 20 seconds off or named differently is not the library track."""
     db_tracks = [_library_track("t1", 1, duration=200), _library_track("t2", 2)]
@@ -520,6 +618,37 @@ async def test_release_tracks_skip_a_length_or_title_mismatch() -> None:
         await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
 
     assert harness.updated_tracks() == []
+
+
+async def test_release_tracks_match_a_movement_title_by_a_shared_isrc() -> None:
+    """A track titled by its movement alone is the recording at its position sharing its ISRC."""
+    db_tracks = [
+        _library_track("t1", 1, name="I. Allegro con brio", isrcs=["DEF058130201"]),
+        _library_track("t2", 2, name="II. Andante con moto", duration=200, isrcs=["DEF058130202"]),
+    ]
+    release = _release(
+        [
+            _recording(
+                RECORDING_ID,
+                "Symphony no. 5 in C minor, op. 67: I. Allegro con brio",
+                238000,
+                "DEF058130201",
+            ),
+            # the same ISRC but 20 seconds longer is not the track
+            _recording(
+                OTHER_RECORDING_ID,
+                "Symphony no. 5 in C minor, op. 67: II. Andante con moto",
+                220000,
+                "DEF058130202",
+            ),
+        ]
+    )
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+
+    assert [(track.item_id, track.mbid) for track in harness.updated_tracks()] == [
+        ("t1", RECORDING_ID)
+    ]
 
 
 async def test_release_tracks_keep_an_existing_recording_id() -> None:
@@ -575,6 +704,284 @@ async def test_release_tracks_that_gain_nothing_are_not_rewritten() -> None:
     with _album_harness() as harness:
         await harness.ctrl.link_album_tracks(_library_album(), [complete], release)
     harness.tracks.update_item_in_library.assert_not_awaited()
+
+
+SPOTIFY_TRACK = ProviderMapping(
+    item_id="sp", provider_domain="spotify", provider_instance="spotify_1"
+)
+THIRD_RECORDING_ID = "7f6e5d4c-3b2a-4c1d-8e0f-a1b2c3d4e5f6"
+
+
+def _two_disc_release() -> MusicBrainzRelease:
+    """Return a release of two mediums whose titles name the work as well as the movement."""
+    return _release(
+        [
+            _recording(RECORDING_ID, "Symphony no. 5: I. Allegro con brio", 442000),
+            _recording(OTHER_RECORDING_ID, "Symphony no. 5: II. Andante con moto", 590000),
+        ],
+        [_recording(THIRD_RECORDING_ID, "Symphony no. 5: III. Allegro", 312000)],
+    )
+
+
+def _service_tracks(*durations: int, numbers: Sequence[int] = (1, 2, 3)) -> list[Track]:
+    """Return a streaming service's tracks of the album on one disc, titled with the composer."""
+    return [
+        _library_track(
+            f"t{number}",
+            number,
+            name=f"Beethoven: Symphony No. 5: Movement {number}",
+            duration=duration,
+            disc_number=1,
+            mappings=[SPOTIFY_TRACK],
+        )
+        for number, duration in zip(numbers, durations, strict=True)
+    ]
+
+
+async def test_release_tracks_of_a_service_album_lining_up_match_in_order() -> None:
+    """A service's tracks matching the release in count and every length take its recordings."""
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            _library_album(), _service_tracks(440, 593, 311), _two_disc_release()
+        )
+
+    assert [(track.item_id, track.mbid) for track in harness.updated_tracks()] == [
+        ("t1", RECORDING_ID),
+        ("t2", OTHER_RECORDING_ID),
+        ("t3", THIRD_RECORDING_ID),
+    ]
+
+
+@pytest.mark.parametrize(
+    "db_tracks",
+    [
+        pytest.param(_service_tracks(440, 593, 340), id="one length off"),
+        pytest.param(_service_tracks(440, 593, 0), id="one length unknown"),
+        pytest.param(_service_tracks(440, 593, numbers=(1, 2)), id="fewer tracks"),
+        pytest.param(_service_tracks(440, 593, 311, numbers=(1, 2, 4)), id="numbering gap"),
+    ],
+)
+async def test_release_tracks_of_a_service_album_not_lining_up_need_their_titles(
+    db_tracks: list[Track],
+) -> None:
+    """A service whose tracks differ from the release in count, length or numbering keeps the title check."""
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, _two_disc_release())
+
+    assert harness.updated_tracks() == []
+
+
+async def test_release_tracks_in_order_win_over_a_repeated_title_at_the_same_position() -> None:
+    """A service splitting the discs elsewhere keeps the order match where a title repeats."""
+    release = _release(
+        [
+            _recording(RECORDING_ID, "Aria", 180000),
+            _recording(OTHER_RECORDING_ID, "Variatio 1", 120000),
+        ],
+        [_recording(THIRD_RECORDING_ID, "Variatio 1", 125000)],
+    )
+    db_tracks = [
+        _library_track("t1", 1, name="Aria", duration=180, disc_number=1, mappings=[SPOTIFY_TRACK]),
+        _library_track(
+            "t2", 1, name="Variatio 1", duration=120, disc_number=2, mappings=[SPOTIFY_TRACK]
+        ),
+        _library_track(
+            "t3", 2, name="Variatio 1", duration=125, disc_number=2, mappings=[SPOTIFY_TRACK]
+        ),
+    ]
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+
+    assert [(track.item_id, track.mbid) for track in harness.updated_tracks()] == [
+        ("t1", RECORDING_ID),
+        ("t2", OTHER_RECORDING_ID),
+        ("t3", THIRD_RECORDING_ID),
+    ]
+
+
+async def test_release_tracks_also_from_local_files_are_not_matched_in_order() -> None:
+    """A streaming track that is also a local file keeps the title check, as its tags number it."""
+    local_file = ProviderMapping(
+        item_id="f", provider_domain="filesystem_local", provider_instance="filesystem_local_1"
+    )
+    db_tracks = _service_tracks(440, 593, 311)
+    db_tracks[0].provider_mappings.add(local_file)
+    streaming = {"spotify_1": Mock(is_streaming_provider=True)}
+    providers = Mock(
+        side_effect=lambda instance, **_: streaming.get(instance, Mock(is_streaming_provider=False))
+    )
+    with _album_harness() as harness, patch.object(harness.ctrl.mass, "get_provider", providers):
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, _two_disc_release())
+
+    assert harness.updated_tracks() == []
+
+
+async def test_release_tracks_in_order_keep_another_recording_id() -> None:
+    """A track holding another recording id is left alone by the order match."""
+    db_tracks = _service_tracks(440, 593, 311)
+    db_tracks[1].mbid = "5a4f3e2d-1c0b-4a9f-8e7d-6c5b4a3f2e11"
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, _two_disc_release())
+
+    assert [track.item_id for track in harness.updated_tracks()] == ["t1", "t3"]
+
+
+async def test_release_tracks_of_local_files_are_not_matched_in_order() -> None:
+    """Local files keep the title check, as their tags carry their own recording ids."""
+    local_files = Mock(return_value=Mock(is_streaming_provider=False))
+    with _album_harness() as harness, patch.object(harness.ctrl.mass, "get_provider", local_files):
+        await harness.ctrl.link_album_tracks(
+            _library_album(), _service_tracks(440, 593, 311), _two_disc_release()
+        )
+
+    assert harness.updated_tracks() == []
+
+
+SPOTIFY_LINKED_ALBUM = ProviderMapping(
+    item_id="7eyQXxuf2nGj9d2367Gi5f", provider_domain="spotify", provider_instance="spotify_1"
+)
+TIDAL_LINKED_ALBUM = ProviderMapping(
+    item_id="79280548", provider_domain="tidal", provider_instance="tidal_1"
+)
+
+
+def _linking_release(*links: str) -> MusicBrainzRelease:
+    """Return the two disc release with the given streaming album links."""
+    release = _two_disc_release()
+    release.relations = [
+        MusicBrainzRelation(type="free streaming", url=MusicBrainzUrl(resource=link))
+        for link in links
+    ]
+    return release
+
+
+def _length_hints(caplog: pytest.LogCaptureFixture) -> list[tuple[int, str]]:
+    """Return the level and text of the logged hints about differing track lengths."""
+    return [(x.levelno, x.getMessage()) for x in caplog.records if "lengths" in x.getMessage()]
+
+
+@pytest.mark.parametrize(
+    ("durations", "hint_tracks"),
+    [
+        pytest.param((440, 593, 340), "3", id="one length off"),
+        pytest.param((440, 593, 0), None, id="one length unknown"),
+        pytest.param((300, 593, 340), "1, 3", id="two lengths off"),
+    ],
+)
+async def test_release_tracks_of_a_linked_service_album_match_in_order_whatever_the_lengths(
+    caplog: pytest.LogCaptureFixture, durations: tuple[int, ...], hint_tracks: str | None
+) -> None:
+    """The release linking the album on a service matches its tracks in order, lengths or not."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    album = _library_album("1", SPOTIFY_LINKED_ALBUM)
+    release = _linking_release(SPOTIFY_ALBUM_URL)
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            album, _service_tracks(*durations), release, link_providers=False
+        )
+
+    assert [(track.item_id, track.mbid) for track in harness.updated_tracks()[:3]] == [
+        ("t1", RECORDING_ID),
+        ("t2", OTHER_RECORDING_ID),
+        ("t3", THIRD_RECORDING_ID),
+    ]
+    expected = (
+        []
+        if hint_tracks is None
+        else [
+            (
+                logging.DEBUG,
+                'MusicBrainz links album "In Rainbows" on spotify to release '
+                f"https://musicbrainz.org/release/{release.id}, but the lengths of tracks "
+                f"{hint_tracks} (counted across discs) differ; if spotify plays another "
+                "version, remove the link from the release",
+            )
+        ]
+    )
+    assert _length_hints(caplog) == expected
+
+
+async def test_release_tracks_of_a_linked_service_album_need_the_release_track_count() -> None:
+    """A linked service holding fewer tracks than the release keeps the title check."""
+    album = _library_album("1", SPOTIFY_LINKED_ALBUM)
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            album,
+            _service_tracks(440, 593, numbers=(1, 2)),
+            _linking_release(SPOTIFY_ALBUM_URL),
+            link_providers=False,
+        )
+
+    assert harness.updated_tracks() == []
+
+
+async def test_release_tracks_count_only_the_link_of_the_same_service(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The release linking the album on one service says nothing about its tracks on another."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    album = _library_album("1", SPOTIFY_LINKED_ALBUM, TIDAL_LINKED_ALBUM)
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            album,
+            _service_tracks(440, 593, 340),
+            _linking_release(TIDAL_ALBUM_URL),
+            link_providers=False,
+        )
+
+    assert harness.updated_tracks() == []
+    ((_, hint),) = _length_hints(caplog)
+    assert hint.startswith('Album "In Rainbows" on spotify has the track count')
+
+
+async def test_release_tracks_without_a_link_need_every_length_to_agree(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One length off leaves an unlinked service's tracks to the title check, with a hint."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    release = _two_disc_release()
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            _library_album(), _service_tracks(440, 593, 340), release
+        )
+
+    assert harness.updated_tracks() == []
+    assert _length_hints(caplog) == [
+        (
+            logging.DEBUG,
+            'Album "In Rainbows" on spotify has the track count of MusicBrainz release '
+            f"https://musicbrainz.org/release/{release.id}, but the lengths of tracks 3 (counted "
+            "across discs) differ; it may be another edition on spotify or a wrong length on "
+            "MusicBrainz, compare with another service",
+        )
+    ]
+
+
+async def test_release_tracks_without_a_link_log_no_hint_for_an_unknown_length(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A length unknown on either side is no difference, so nothing is logged."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            _library_album(), _service_tracks(440, 593, 0), _two_disc_release()
+        )
+
+    assert harness.updated_tracks() == []
+    assert _length_hints(caplog) == []
+
+
+async def test_release_tracks_compare_the_length_on_the_release() -> None:
+    """The length a track has on the release counts, not the length of its recording."""
+    release = _release([_recording(RECORDING_ID, "Track 1", 237000)])
+    release.media[0].tracks[0].length = 300000
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            _library_album(), [_library_track("t1", 1, duration=300)], release
+        )
+
+    (updated,) = harness.updated_tracks()
+    assert updated.mbid == RECORDING_ID
 
 
 async def test_provider_tracks_are_matched_by_isrc_before_position() -> None:

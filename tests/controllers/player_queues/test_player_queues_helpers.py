@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
-from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.enums import ImageType, MediaType, PlaybackState, PlayerType
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -23,6 +26,7 @@ from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
+from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
     find_dynamic_source,
@@ -34,11 +38,13 @@ from music_assistant.controllers.player_queues.helpers import (
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.players.constants import SwitchedOffAction
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
     from music_assistant_models.media_items import MediaItemType
 
-    from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 
 _PROVIDER_MAPPINGS = {
     ProviderMapping(item_id="x", provider_domain="test", provider_instance="test")
@@ -264,14 +270,53 @@ class _FakeLock:
 class _FakePlayer:
     def __init__(self, player_id: str) -> None:
         self.player_id = player_id
+        self.name = player_id
+        self.offline_by_power_control = False
+        self.type = PlayerType.PLAYER
+        # for a group player: its members that are switched off at their power control
+        self.switched_off_members: list[str] = []
 
 
 class _FakePlayers:
     def __init__(self, player_ids: set[str]) -> None:
         self._players = {player_id: _FakePlayer(player_id) for player_id in player_ids}
+        self.translation_owner = "core.players"
+        self.locks_held = 0
+        # (player_id, whether a lock was held) for every power on
+        self.powered_on: list[tuple[str, bool]] = []
+        # runs while a power on waits for the player (or the members of the group) to start up
+        self.during_wait: Callable[[str], Awaitable[None]] | None = None
 
-    def get_group_and_player_lock(self, queue_id: str, strict: bool = False) -> _FakeLock:
-        return _FakeLock()
+    @contextlib.asynccontextmanager
+    async def get_group_and_player_lock(self, queue_id: str) -> AsyncIterator[None]:
+        self.locks_held += 1
+        try:
+            yield
+        finally:
+            self.locks_held -= 1
+
+    def resolve_player_id(self, player_id: str) -> str:
+        return player_id
+
+    async def _power_on_switched_off_player(self, player_id: str) -> _FakePlayer:
+        self.powered_on.append((player_id, self.locks_held > 0))
+        if self.during_wait is not None:
+            await self.during_wait(player_id)
+        player = self._players[player_id]
+        player.offline_by_power_control = False
+        return player
+
+    def _resolve_play_media_target(self, player: _FakePlayer) -> _FakePlayer:
+        return player
+
+    def _members_to_power_on(self, owner: _FakePlayer) -> list[str]:
+        return owner.switched_off_members
+
+    async def _power_on_members(self, owner: _FakePlayer) -> set[str]:
+        self.powered_on.append((owner.player_id, self.locks_held > 0))
+        if self.during_wait is not None:
+            await self.during_wait(owner.player_id)
+        return set()
 
     def get_player(self, player_id: str) -> _FakePlayer | None:
         return self._players.get(player_id)
@@ -283,8 +328,10 @@ class _FakeMass:
 
 
 class _FakeQueue:
-    def __init__(self) -> None:
+    def __init__(self, state: PlaybackState = PlaybackState.IDLE) -> None:
         self.extra_attributes: dict[str, Any] = {}
+        self.state = state
+        self.active = True
 
 
 class _FakeController:
@@ -297,6 +344,8 @@ class _FakeController:
             for queue_id, queue in queues.items()
         }
         self.calls: list[str] = []
+        # the queues whose pending step was dropped
+        self.dropped: list[str] = []
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
         self.calls.append(f"signal:{queue_id}")
@@ -305,6 +354,11 @@ class _FakeController:
         self, player: _FakePlayer, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         self.calls.append(f"refresh:{player.player_id}")
+
+    def _drop_pending_step(self, queue_id: str) -> None:
+        self.dropped.append(queue_id)
+
+    _show_play_action = PlayerQueuesController._show_play_action
 
 
 def _flag_value(ctrl: PlayerQueuesController, queue_id: str) -> bool:
@@ -334,6 +388,46 @@ async def _nested(self: PlayerQueuesController, queue_id: str, sink: list[bool])
 async def _boom(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
     """Raise to exercise the cleanup path."""
     raise RuntimeError("boom")
+
+
+@handle_play_action(switched_off=SwitchedOffAction.POWER_ON)
+async def _start_playback(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
+    """Stand in for an action that starts playback."""
+    return "playing"
+
+
+@handle_play_action(switched_off=SwitchedOffAction.POWER_ON)
+async def _record_while_playing(
+    self: PlayerQueuesController, queue_id: str, sink: list[tuple[bool, int]]
+) -> str:
+    """Stand in for an action that starts playback, recording the flag and refcount of its queue."""
+    sink.append((_flag_value(self, queue_id), self._queue_data[queue_id].play_action_refcount))
+    return "playing"
+
+
+@handle_play_action(starts_unless_playing=True)
+async def _seek(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
+    """Stand in for an action that makes a queue that does not play start playing."""
+    return "seeked"
+
+
+@handle_play_action(switched_off=SwitchedOffAction.IGNORE)
+async def _ignored(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
+    """Stand in for an action with nothing to do on a switched off player."""
+    return "ran"
+
+
+@handle_play_action(switched_off=SwitchedOffAction.RUN)
+async def _run_as_is(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
+    """Stand in for an action that handles a switched off player itself."""
+    return "ran"
+
+
+def _switched_off(ctrl: _FakeController, queue_id: str) -> _FakePlayers:
+    """Switch the player of the given queue off at its power control."""
+    players = ctrl.mass.players
+    players._players[queue_id].offline_by_power_control = True
+    return players
 
 
 class TestHandlePlayAction:
@@ -390,6 +484,244 @@ class TestHandlePlayAction:
             await _boom(cast("PlayerQueuesController", ctrl), "q1")
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+    async def test_a_switched_off_player_is_refused_by_default(self) -> None:
+        """An action on a switched off player is refused before it takes any lock."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        _switched_off(ctrl, "q1")
+        sink: list[bool] = []
+
+        with pytest.raises(PlayerUnavailableError, match="switched off") as error:
+            await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink)
+
+        assert error.value.translation_key == "player_switched_off"
+        assert error.value.translation_owner == "core.players"
+        assert error.value.translation_args == ["q1"]
+        assert sink == []
+        assert ctrl.calls == []
+
+    async def test_a_switched_off_player_is_powered_on_before_the_locks(self) -> None:
+        """An action that starts playback powers the player on before it takes the locks."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        players = _switched_off(ctrl, "q1")
+
+        assert await _start_playback(cast("PlayerQueuesController", ctrl), "q1") == "playing"
+
+        assert players.powered_on == [("q1", False)]
+
+    async def test_a_start_or_a_seek_drops_a_pending_step_when_it_arrives(self) -> None:
+        """An action that starts playback or seeks drops a pending step, another one does not."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        host = cast("PlayerQueuesController", ctrl)
+        _switched_off(ctrl, "q1")
+
+        assert await _ignored(host, "q1") is None
+        assert await _run_as_is(host, "q1") == "ran"
+        with pytest.raises(PlayerUnavailableError, match="switched off"):
+            await _flag_during(host, "q1", [])
+        assert ctrl.dropped == []
+
+        with pytest.raises(PlayerUnavailableError, match="switched off"):
+            await _seek(host, "q1")
+        assert ctrl.dropped == ["q1"]
+        assert await _start_playback(host, "q1") == "playing"
+        assert ctrl.dropped == ["q1", "q1"]
+
+    @pytest.mark.parametrize("wait", ["starts up", "fails"])
+    async def test_a_queue_registered_anew_during_the_power_on_is_flagged(self, wait: str) -> None:
+        """
+        An action that waited for the power on flags the queue record that exists by then.
+
+        The record the queue had when the wait began showed the start meanwhile: it is
+        cleared without an update, as it is no longer published.
+
+        :param wait: How the wait for the player ends.
+        """
+        stale_queue, new_queue = _FakeQueue(), _FakeQueue()
+        ctrl = _FakeController({"q1": stale_queue})
+        players = _switched_off(ctrl, "q1")
+
+        async def _register_anew(player_id: str) -> None:
+            ctrl._queue_data[player_id] = PlayerQueueData(queue=cast("PlayerQueue", new_queue))
+            if wait == "fails":
+                raise PlayerUnavailableError("Player q1 could not be reached")
+
+        players.during_wait = _register_anew
+        sink: list[tuple[bool, int]] = []
+
+        if wait == "fails":
+            with pytest.raises(PlayerUnavailableError):
+                await _record_while_playing(cast("PlayerQueuesController", ctrl), "q1", sink)
+            assert sink == []
+            assert ctrl.calls == ["signal:q1"], (
+                "the record that is no longer published is signalled"
+            )
+        else:
+            result = await _record_while_playing(cast("PlayerQueuesController", ctrl), "q1", sink)
+            assert result == "playing"
+            assert sink == [(True, 1)], "the queue registered anew does not show the action"
+            assert new_queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+            assert ctrl._queue_data["q1"].play_action_refcount == 0
+            # on for the record the wait began with, on for the new one, cleared on the new one
+            assert ctrl.calls == ["signal:q1", "signal:q1", "refresh:q1", "signal:q1"], (
+                f"the queue updates are not those of the record that is published: {ctrl.calls}"
+            )
+        assert stale_queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False, (
+            "the flag is left behind on the queue record that was replaced"
+        )
+
+    @pytest.mark.parametrize("state", [PlaybackState.IDLE, PlaybackState.PAUSED])
+    async def test_a_queue_that_does_not_play_shows_the_start_while_its_player_starts_up(
+        self, state: PlaybackState
+    ) -> None:
+        """
+        A start on a queue that does not play shows from the start of the wait for its player.
+
+        :param state: What the queue does when the start arrives.
+        """
+        queue = _FakeQueue(state)
+        ctrl = _FakeController({"q1": queue})
+        players = _switched_off(ctrl, "q1")
+        during_wait: list[tuple[bool, list[str]]] = []
+
+        async def _record(_player_id: str) -> None:
+            during_wait.append(
+                (_flag_value(cast("PlayerQueuesController", ctrl), "q1"), list(ctrl.calls))
+            )
+
+        players.during_wait = _record
+        sink: list[tuple[bool, int]] = []
+
+        await _record_while_playing(cast("PlayerQueuesController", ctrl), "q1", sink)
+
+        assert during_wait == [(True, ["signal:q1"])], (
+            f"the {state.value} queue does not show the start while its player starts up"
+        )
+        assert sink == [(True, 1)]
+        assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
+        # one update when the flag goes on, one when it is cleared
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
+
+    @pytest.mark.parametrize("state", [PlaybackState.IDLE, PlaybackState.PLAYING])
+    async def test_a_group_shows_the_start_while_it_waits_for_a_member_unless_it_plays(
+        self, state: PlaybackState
+    ) -> None:
+        """
+        A start of a group shows during the wait for its members while the group does not play.
+
+        A group that plays shows it only once the action holds the locks, so its pause and
+        stop stay usable meanwhile.
+
+        :param state: What the queue of the group does when the start arrives.
+        """
+        queue = _FakeQueue(state)
+        ctrl = _FakeController({"q1": queue})
+        players = ctrl.mass.players
+        group = players._players["q1"]
+        group.type = PlayerType.GROUP
+        group.switched_off_members = ["den"]
+        during_wait: list[bool] = []
+
+        async def _record(_player_id: str) -> None:
+            during_wait.append(_flag_value(cast("PlayerQueuesController", ctrl), "q1"))
+
+        players.during_wait = _record
+        sink: list[tuple[bool, int]] = []
+
+        await _record_while_playing(cast("PlayerQueuesController", ctrl), "q1", sink)
+
+        shows = state != PlaybackState.PLAYING
+        assert during_wait == [shows], (
+            f"the {state.value} group shows the start while it waits for a member: "
+            f"{during_wait[0]}, expected {shows}"
+        )
+        assert sink == [(True, 1)]
+        assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+    @pytest.mark.parametrize("ending", ["called off", "not reached", "cancelled"])
+    async def test_the_start_shows_no_more_once_its_wait_ends_without_it(self, ending: str) -> None:
+        """
+        A start whose wait for the player is called off, fails or is cancelled shows no more.
+
+        :param ending: How the wait ends.
+        """
+        queue = _FakeQueue()
+        ctrl = _FakeController({"q1": queue})
+        players = _switched_off(ctrl, "q1")
+        waiting = asyncio.Event()
+
+        async def _end(_player_id: str) -> None:
+            waiting.set()
+            if ending == "called off":
+                raise PlayerUnavailableError("Player q1 is switched off")
+            if ending == "not reached":
+                raise PlayerUnavailableError("Player q1 could not be reached")
+            await asyncio.Event().wait()
+
+        players.during_wait = _end
+        start = asyncio.create_task(_start_playback(cast("PlayerQueuesController", ctrl), "q1"))
+        await waiting.wait()
+        if ending == "cancelled":
+            start.cancel()
+
+        with pytest.raises(
+            asyncio.CancelledError if ending == "cancelled" else PlayerUnavailableError
+        ):
+            await start
+
+        assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False, (
+            f"the start still shows after its wait was {ending}"
+        )
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
+
+    async def test_an_action_during_the_wait_leaves_the_start_showing(self) -> None:
+        """An action that runs and ends while a start waits for its player leaves it showing."""
+        queue = _FakeQueue()
+        ctrl = _FakeController({"q1": queue})
+        players = _switched_off(ctrl, "q1")
+        after_the_other_action: list[tuple[bool, int]] = []
+
+        async def _run_another_action(_player_id: str) -> None:
+            await _run_as_is(cast("PlayerQueuesController", ctrl), "q1")
+            after_the_other_action.append(
+                (
+                    _flag_value(cast("PlayerQueuesController", ctrl), "q1"),
+                    ctrl._queue_data["q1"].play_action_refcount,
+                )
+            )
+
+        players.during_wait = _run_another_action
+
+        await _start_playback(cast("PlayerQueuesController", ctrl), "q1")
+
+        assert after_the_other_action == [(True, 1)], (
+            "an action that ended during the wait cleared the start that still waits"
+        )
+        assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+    async def test_an_ignored_action_does_nothing_on_a_switched_off_player(self) -> None:
+        """An action with nothing to act on returns without running or signalling."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        players = _switched_off(ctrl, "q1")
+
+        assert await _ignored(cast("PlayerQueuesController", ctrl), "q1") is None
+
+        assert ctrl.calls == []
+        assert players.powered_on == []
+
+    async def test_an_action_that_handles_it_runs_as_is(self) -> None:
+        """An action that handles a switched off player itself runs under the locks as usual."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        players = _switched_off(ctrl, "q1")
+
+        assert await _run_as_is(cast("PlayerQueuesController", ctrl), "q1") == "ran"
+
+        assert players.powered_on == []
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
 
 
 class TestSpaceByArtist:

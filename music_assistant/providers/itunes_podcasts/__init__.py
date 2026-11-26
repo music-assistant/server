@@ -22,7 +22,7 @@ from music_assistant_models.enums import (
     StreamType,
     TaskScheduleType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -249,7 +249,7 @@ class ITunesPodcastsProvider(MusicProvider):
         self, prov_episode_id: str
     ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
         """Get the transcript for a podcast episode."""
-        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ", 1)
         podcast = await self._cache_get_podcast(podcast_id)
         return await get_episode_transcript(
             mass=self.mass,
@@ -366,7 +366,7 @@ class ITunesPodcastsProvider(MusicProvider):
                     cache_expiration=self._get_cache_expiration(),
                 )
                 self.logger.debug("Synced podcast %s.", podcast.name)
-            except MediaNotFoundError:
+            except MediaNotFoundError, ProviderUnavailableError:
                 # If we are not able to refresh the podcast, we must prevent the sync
                 # from deleting the podcast from the library - that is both a breaking change
                 # (pre March 2026) and certainly not desired just because of some downtime.
@@ -428,7 +428,7 @@ class ITunesPodcastsProvider(MusicProvider):
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
-        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ", 1)
         podcast = await self._cache_get_podcast(podcast_id)
         podcast_cover = podcast.get("cover_url")
         episodes = podcast.get("episodes", [])
@@ -445,7 +445,7 @@ class ITunesPodcastsProvider(MusicProvider):
             )
             if mass_episode is None:
                 continue
-            _, _guid_or_stream_url = mass_episode.item_id.split(" ")
+            _, _guid_or_stream_url = mass_episode.item_id.split(" ", 1)
             # this is enough, as internal
             if guid_or_stream_url == _guid_or_stream_url:
                 await enrich_episode_chapters(
@@ -464,7 +464,7 @@ class ITunesPodcastsProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for item."""
-        podcast_id, guid_or_stream_url = item_id.split(" ")
+        podcast_id, guid_or_stream_url = item_id.split(" ", 1)
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         if stream_url is None:
             raise MediaNotFoundError

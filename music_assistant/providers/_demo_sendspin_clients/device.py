@@ -12,7 +12,6 @@ from aiohttp import ClientError
 from aiosendspin.client import PairingSupport, SendspinClient
 from aiosendspin.models.core import DeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.source import ClientHelloSourceFeatures, ClientHelloSourceSupport
 from aiosendspin.models.types import AudioCodec, Roles
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.keys import Identity, generate_psk, psk_id_for
@@ -170,11 +169,6 @@ class FakeSendspinDevice:
                 # applying them, and reporting the result back needs the connection's own
                 # (non-public) state API. Advertising them would leave the control inert.
                 supported_commands=[],
-            ),
-            source_support=(
-                ClientHelloSourceSupport(features=ClientHelloSourceFeatures(line_sense=True))
-                if self.scenario.source_role
-                else None
             ),
             pairing_support=self._pairing_support(),
             session=self._session,

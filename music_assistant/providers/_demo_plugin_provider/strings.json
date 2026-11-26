@@ -1,0 +1,13 @@
+{
+  "menu_actions": {
+    "show_item": {
+      "label": "Ask the demo plugin about this"
+    }
+  },
+  "config_actions": {
+    "show_item": "The demo plugin was asked about {0}"
+  },
+  "page": {
+    "label": "Demo plugin page"
+  }
+}

@@ -5,10 +5,19 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Album, BrowseFolder, Playlist
+from music_assistant_models.media_items import (
+    Album,
+    BrowseFolder,
+    Playlist,
+    RecommendationFolder,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.spotify import SUPPORTED_FEATURES
 from music_assistant.providers.spotify.provider import SpotifyProvider
 from tests.common import use_real_create_task
 
@@ -44,6 +53,32 @@ def _make_playlist_obj(playlist_id: str, name: str) -> dict[str, Any]:
 
 def _make_category_obj(category_id: str, name: str) -> dict[str, Any]:
     return {"id": category_id, "name": name}
+
+
+def _make_recently_played_entry(
+    track_id: str, name: str, *, is_local: bool = False
+) -> dict[str, Any]:
+    return {
+        "played_at": "2026-11-21T06:00:00Z",
+        "track": {
+            "id": track_id,
+            "name": name,
+            "duration_ms": 180000,
+            "explicit": False,
+            "is_local": is_local,
+            "is_playable": True,
+            "external_ids": {},
+            "external_urls": {"spotify": f"https://open.spotify.com/track/{track_id}"},
+            "artists": [
+                {
+                    "id": "artist1",
+                    "name": "Test Artist",
+                    "external_urls": {"spotify": "https://open.spotify.com/artist/artist1"},
+                }
+            ],
+            "album": _make_album_obj("album1", "Test Album"),
+        },
+    }
 
 
 @pytest.fixture
@@ -233,12 +268,20 @@ async def test_browse_root_prepends_curated_folders(
 
     result = await provider.browse("spotify--test://")
 
-    assert [f.item_id for f in result] == ["new-releases", "categories", "artists"]
+    assert [f.item_id for f in result] == [
+        "new-releases",
+        "categories",
+        "recently-played",
+        "artists",
+    ]
     new_releases = next(
         f for f in result if isinstance(f, BrowseFolder) and f.item_id == "new-releases"
     )
     categories = next(
         f for f in result if isinstance(f, BrowseFolder) and f.item_id == "categories"
+    )
+    recently_played = next(
+        f for f in result if isinstance(f, BrowseFolder) and f.item_id == "recently-played"
     )
     assert new_releases.translation_key == "new_releases"
     assert new_releases.path == "spotify--test://new-releases"
@@ -246,6 +289,9 @@ async def test_browse_root_prepends_curated_folders(
     assert categories.translation_key == "genres_and_moods"
     assert categories.path == "spotify--test://categories"
     assert categories.is_playable is False
+    assert recently_played.translation_key == "recently_played"
+    assert recently_played.path == "spotify--test://recently-played"
+    assert recently_played.is_playable is True
 
 
 @pytest.mark.asyncio
@@ -256,12 +302,15 @@ async def test_browse_dispatches_to_helpers(
     new_releases: list[Album] = []
     folders: list[BrowseFolder] = []
     playlists: list[Playlist] = []
+    tracks: list[Track] = []
     get_new_releases = AsyncMock(return_value=new_releases)
     get_categories = AsyncMock(return_value=folders)
     get_category_playlists = AsyncMock(return_value=playlists)
+    get_recently_played = AsyncMock(return_value=tracks)
     monkeypatch.setattr(provider, "_get_new_releases", get_new_releases)
     monkeypatch.setattr(provider, "_get_categories", get_categories)
     monkeypatch.setattr(provider, "_get_category_playlists", get_category_playlists)
+    monkeypatch.setattr(provider, "_get_recently_played", get_recently_played)
 
     assert await provider.browse("spotify--test://new-releases") is new_releases
     get_new_releases.assert_awaited_once_with()
@@ -271,3 +320,75 @@ async def test_browse_dispatches_to_helpers(
 
     assert await provider.browse("spotify--test://categories/pop") is playlists
     get_category_playlists.assert_awaited_once_with("pop", "de_DE")
+
+    assert await provider.browse("spotify--test://recently-played") is tracks
+    get_recently_played.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_get_recently_played_returns_deduplicated_tracks(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """_get_recently_played parses tracks in order, skipping local, invalid, and duplicate ids."""
+    get_data.return_value = {
+        "items": [
+            _make_recently_played_entry("t1", "Track 1"),
+            _make_recently_played_entry("local-1", "Local Track", is_local=True),
+            _make_recently_played_entry("t1", "Track 1"),
+            {"track": {"name": "missing id"}},
+            None,
+            _make_recently_played_entry("t2", "Track 2"),
+        ]
+    }
+
+    result = await provider._get_recently_played()
+
+    get_data.assert_awaited_once_with("me/player/recently-played", limit=50)
+    assert [track.item_id for track in result] == ["t1", "t2"]
+    assert all(isinstance(track, Track) for track in result)
+
+
+@pytest.mark.asyncio
+async def test_get_recently_played_handles_not_found(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """_get_recently_played returns an empty list when the endpoint is unavailable."""
+    get_data.side_effect = MediaNotFoundError("nope")
+
+    result = await provider._get_recently_played()
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_recommendations_and_items(
+    provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spotify exposes a 'Recently played on Spotify' recommendation row via _get_recently_played."""
+    assert ProviderFeature.RECOMMENDATIONS in SUPPORTED_FEATURES
+
+    folders = await provider.get_recommendations()
+    assert len(folders) == 1
+    folder = folders[0]
+    assert isinstance(folder, RecommendationFolder)
+    assert folder.item_id == "recently_played"
+    assert folder.name == "Recently played on Spotify"
+    assert folder.provider == "spotify--test"
+    assert folder.translation_key == "recently_played"
+    assert folder.icon == "mdi-history"
+
+    sample_tracks = [
+        Track(item_id="t1", provider="spotify--test", name="Track 1", provider_mappings=set()),
+        Track(item_id="t2", provider="spotify--test", name="Track 2", provider_mappings=set()),
+    ]
+    get_recently_played = AsyncMock(return_value=sample_tracks)
+    monkeypatch.setattr(provider, "_get_recently_played", get_recently_played)
+
+    items = await provider.get_recommendation_items("recently_played")
+    assert isinstance(items, UniqueList)
+    assert [item.item_id for item in items] == ["t1", "t2"]
+    get_recently_played.assert_awaited_once_with()
+
+    unknown_items = await provider.get_recommendation_items("unknown_row")
+    assert isinstance(unknown_items, UniqueList)
+    assert list(unknown_items) == []

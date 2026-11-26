@@ -9,7 +9,7 @@ in
   env.GREET = "devenv";
 
   # https://devenv.sh/packages/
-  packages = [ pkgs.git pkgs.ffmpeg_7 ];
+  packages = [ pkgs.git pkgs.ffmpeg_8 ];
 
   # https://devenv.sh/languages/
   languages.python = {

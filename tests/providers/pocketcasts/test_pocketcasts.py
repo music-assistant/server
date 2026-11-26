@@ -132,6 +132,44 @@ async def test_sync_reports_resume_position(
     assert episodes[0].resume_position_ms == 300000
 
 
+async def test_listening_status_is_fetched_once_per_pass(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Listing podcasts back to back shares the account-wide status, and a save asks again."""
+    stored: dict[str, Any] = {}
+
+    async def get_with_freshness(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        return (stored[key], True, True) if key in stored else (None, False, False)
+
+    async def store(key: str, data: Any, **_kwargs: Any) -> None:
+        stored[key] = data
+
+    async def drop(key: str, **_kwargs: Any) -> None:
+        stored.pop(key, None)
+
+    client.get_podcast_episodes.return_value = ("Podcast One", [_feed_episode(duration=1000)])
+    client.get_in_progress_episodes.return_value = []
+    client.get_history.return_value = []
+    cache = provider.mass.cache
+    with (
+        patch.object(cache, "get_with_freshness", get_with_freshness),
+        patch.object(cache, "set", store),
+        patch.object(cache, "delete", drop),
+    ):
+        episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
+        _ = [episode async for episode in provider.get_podcast_episodes("podcast-2")]
+        await provider.get_resume_position("podcast-1:episode-1", MediaType.PODCAST_EPISODE)
+        assert client.get_in_progress_episodes.await_count == 1
+        assert client.get_history.await_count == 1
+
+        await provider.on_played(
+            MediaType.PODCAST_EPISODE, "podcast-1:episode-1", False, 300, episodes[0]
+        )
+        _ = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
+        assert client.get_in_progress_episodes.await_count == 2
+        assert client.get_history.await_count == 2
+
+
 async def test_get_podcast_episode_handles_null_fields(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:

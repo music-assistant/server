@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, StreamType
@@ -13,7 +12,10 @@ from niconico.objects.video.watch import (  # noqa: TC002 - pydantic resolves th
 )
 from pydantic import BaseModel
 
-from music_assistant.helpers.hls import HLSMediaPlaylist, HLSMediaPlaylistParser
+from music_assistant.providers.nicovideo.constants import (
+    DOMAND_BID_COOKIE_NAME,
+    NICOVIDEO_USER_AGENT,
+)
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
 from music_assistant.providers.nicovideo.helpers import create_audio_format
 
@@ -21,31 +23,13 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
 
-@dataclass
-class NicovideoStreamData:
-    """
-    Type-safe container for nicovideo HLS streaming data.
-
-    This dataclass is stored in StreamDetails.data to pass
-    HLS-specific information to get_audio_stream().
-
-    Attributes:
-        domand_bid: Authentication cookie value
-        parsed_hls_playlist: Pre-parsed HLS playlist data (fetched once during conversion)
-    """
-
-    domand_bid: str
-    parsed_hls_playlist: HLSMediaPlaylist
-
-
 class StreamConversionData(BaseModel):
     """Data needed for StreamDetails conversion."""
 
     watch_data: WatchData
     selected_audio: WatchMediaAudio
-    hls_url: str
+    media_playlist_url: str
     domand_bid: str
-    hls_playlist_text: str
 
 
 class NicovideoStreamConverter(NicovideoConverterBase):
@@ -53,14 +37,14 @@ class NicovideoStreamConverter(NicovideoConverterBase):
     Handles StreamDetails conversion for nicovideo.
 
     This converter transforms nicovideo video data into MusicAssistant StreamDetails
-    using StreamType.CUSTOM for optimized HLS streaming with fast seeking support.
+    that point at the HLS media playlist of the selected audio.
     """
 
     def convert_from_conversion_data(
         self, conversion_data: StreamConversionData, track: Track
     ) -> StreamDetails:
         """
-        Convert StreamConversionData into StreamDetails for custom HLS streaming with seeking.
+        Convert StreamConversionData into StreamDetails for HLS streaming with seeking.
 
         :param conversion_data: Data containing video info, audio selection, and HLS details.
         :param track: The track of the video, used for the stream metadata.
@@ -74,8 +58,6 @@ class NicovideoStreamConverter(NicovideoConverterBase):
         # Do not use album image intentionally
         image = track.image
 
-        parsed_playlist = HLSMediaPlaylistParser(conversion_data.hls_playlist_text).parse()
-
         return StreamDetails(
             provider=self.provider.instance_id,
             item_id=video_id,
@@ -84,12 +66,16 @@ class NicovideoStreamConverter(NicovideoConverterBase):
                 bit_rate=selected_audio.bit_rate,
             ),
             media_type=MediaType.TRACK,
-            # CUSTOM stream type enables optimized seeking for nicovideo's fMP4-based HLS:
-            # 1. Generate dynamic playlist starting near target position (coarse seek)
-            # 2. Use input-side -ss for precise positioning (fine-tune)
-            # Without playlist reconstruction, input-side -ss on HLS results in empty output
-            # because FFmpeg cannot identify target segments before parsing the playlist.
-            stream_type=StreamType.CUSTOM,
+            # HTTP rather than HLS: StreamType.HLS fetches the playlist without the domand_bid
+            # cookie, while ffmpeg sends the headers below on every playlist, key and segment
+            # request
+            stream_type=StreamType.HTTP,
+            path=conversion_data.media_playlist_url,
+            extra_input_args=[
+                "-headers",
+                f"User-Agent: {NICOVIDEO_USER_AGENT}\r\n"
+                f"Cookie: {DOMAND_BID_COOKIE_NAME}={conversion_data.domand_bid}\r\n",
+            ],
             duration=watch_data.video.duration,
             stream_metadata=StreamMetadata(
                 title=track.name,
@@ -98,10 +84,6 @@ class NicovideoStreamConverter(NicovideoConverterBase):
                 image_url=image.path if image else None,
             ),
             loudness=selected_audio.integrated_loudness,
-            data=NicovideoStreamData(
-                domand_bid=conversion_data.domand_bid,
-                parsed_hls_playlist=parsed_playlist,
-            ),
             allow_seek=True,
             can_seek=True,
         )

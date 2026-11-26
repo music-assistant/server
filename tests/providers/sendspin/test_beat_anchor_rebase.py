@@ -45,12 +45,9 @@ def _player(monkeypatch: pytest.MonkeyPatch) -> SendspinPlayer:
         raising=False,
     )
     monkeypatch.setattr(SendspinPlayer, "synced_to", property(lambda _self: None), raising=False)
-    monkeypatch.setattr(SendspinPlayer, "player_id", "leader", raising=False)
+    monkeypatch.setattr(SendspinPlayer, "protocol_id", "leader", raising=False)
     monkeypatch.setattr(
-        SendspinPlayer,
-        "state",
-        property(lambda _self: SimpleNamespace(current_media=_self._live_media)),
-        raising=False,
+        SendspinPlayer, "_player_media", property(lambda _self: _self._live_media), raising=False
     )
     monkeypatch.setattr(
         SendspinPlayer,
@@ -114,7 +111,7 @@ async def test_a_rebase_moves_the_published_beats_by_the_anchor_delta(
     )
 
     await player._send_beat_schedule(
-        cast("PlayerQueue", SimpleNamespace(queue_id="q1")),
+        cast("PlayerQueue", SimpleNamespace(queue_id="q1", flow_mode=True)),
         _queue_item(),
         _PROGRESS_MS,
         True,
@@ -145,7 +142,7 @@ async def test_a_track_change_during_the_analysis_await_drops_the_stale_publish(
     )
 
     await player._send_beat_schedule(
-        cast("PlayerQueue", SimpleNamespace(queue_id="q1")),
+        cast("PlayerQueue", SimpleNamespace(queue_id="q1", flow_mode=True)),
         _queue_item(),
         _PROGRESS_MS,
         True,

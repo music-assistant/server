@@ -11,13 +11,14 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import TYPE_CHECKING, Final, NoReturn
 
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_USER_AGENT, VERBOSE_LOG_LEVEL
 
 from .dsp import ComplexFilter, ComplexFilterInput
 from .json import json_loads
@@ -28,10 +29,9 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
 LOGGER = logging.getLogger("ffmpeg")
-MINIMAL_FFMPEG_VERSION = 7
+MINIMAL_FFMPEG_VERSION = 8
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
-CACHE_ATTR_HLS_CMAF_BLOCKED: Final[str] = "hls_cmaf_blocked"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 # Maximum seconds to spend detecting the format of a source before it is decoded.
 AUDIO_PROBE_TIMEOUT: Final[int] = 5
@@ -140,6 +140,8 @@ class FFMpeg(AsyncProcess):
         # Source duration in (whole) seconds as detected from the ffmpeg input log line,
         # or None if not yet parsed / not reported (e.g. live radio streams).
         self.parsed_duration: int | None = None
+        # ffmpeg only guessed the duration from the bitrate, as it does without a header
+        self.duration_estimated = False
         self._stdin_feeder_task: asyncio.Task[None] | None = None
         self._stdin_feeder_exception: Exception | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
@@ -263,6 +265,8 @@ class FFMpeg(AsyncProcess):
 
             # Source duration is reported separately from the stream info. Useful when
             # the provider didn't supply one (some podcast feeds report total_time=0).
+            if "Estimating duration from bitrate" in line:
+                self.duration_estimated = True
             if self.parsed_duration is None:
                 duration = parse_ffmpeg_duration(line)
                 if duration is not None:
@@ -335,8 +339,9 @@ class FFMpeg(AsyncProcess):
     def _is_expected_task_error(self, err: BaseException) -> bool:
         """Return whether a helper task error is an expected outcome rather than a failure."""
         # a provider with no free source-stream slot is a normal outcome of a
-        # speculative prefetch: the caller retries once the current stream releases it
-        return _is_stream_limit_error(err)
+        # speculative prefetch: the caller retries once the current stream releases it;
+        # a live source that refuses the consumer is logged by the streams controller
+        return _is_expected_source_error(err)
 
 
 def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
@@ -409,6 +414,21 @@ def tls_verify_args(input_path: str, verify_ssl: bool) -> list[str]:
     return ["-tls_verify", "0"]
 
 
+def user_agent_args(input_path: str, input_args: Sequence[str] = ()) -> list[str]:
+    """
+    Return the input args that identify Music Assistant to an HTTP source.
+
+    Nothing is returned for a source that is not a URL, or when the input args already set
+    a user agent of their own.
+
+    :param input_path: Local file path or URL of the source.
+    :param input_args: The input arguments the caller already passes for the source.
+    """
+    if not input_path.startswith("http") or _sets_user_agent(input_args):
+        return []
+    return ["-user_agent", MASS_USER_AGENT]
+
+
 async def probe_audio_stream(
     input_path: str,
     extra_input_args: Sequence[str] = (),
@@ -434,6 +454,7 @@ async def probe_audio_stream(
         *_INPUT_READ_ARGS,
         *extra_input_args,
         *tls_verify_args(input_path, verify_ssl),
+        *user_agent_args(input_path, extra_input_args),
         "-select_streams",
         "a:0",
         "-show_entries",
@@ -497,6 +518,16 @@ async def get_ffmpeg_stream(
     :param pass_fds: Descriptors ffmpeg needs to open its input(s).
     :param verify_ssl: Whether the certificate of an https source must be verified.
     """
+    wave_header = b""
+    if output_format.content_type == ContentType.WAV:
+        # ffmpeg writes a WAVE_FORMAT_EXTENSIBLE header above 16 bit or 48 kHz, which not
+        # every player accepts (a Sonos reports a corrupt file), so the plain header is
+        # written here and ffmpeg only delivers the samples that follow it
+        from .audio import create_streaming_wave_header  # noqa: PLC0415
+
+        wave_header = create_streaming_wave_header(output_format)
+        output_format = copy(output_format)
+        output_format.content_type = ContentType.from_bit_depth(output_format.bit_depth)
     async with FFMpeg(
         audio_input=audio_input,
         input_format=input_format,
@@ -511,6 +542,11 @@ async def get_ffmpeg_stream(
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
+            if wave_header:
+                # sent with the first audio, so a stream without audio stays empty
+                yield wave_header + chunk
+                wave_header = b""
+                continue
             yield chunk
         # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
         # excessive decode errors) closes stdout early, which ends the loop above before
@@ -639,6 +675,7 @@ def get_ffmpeg_args(
     # extra inputs: the read args lead the group so the caller can still override them
     input_args = [*_INPUT_READ_ARGS, *extra_input_args]
     input_args += tls_verify_args(input_path, verify_ssl)
+    input_args += user_agent_args(input_path, extra_input_args)
     if "-f" not in extra_input_args:
         # without an input format of their own, the caller leaves the input spec to us
         if input_path.startswith("http"):
@@ -668,10 +705,7 @@ def get_ffmpeg_args(
                 # that would trigger Range-less restarts from byte 0. MA-initiated seeks
                 # still work via -ss decode-and-discard.
                 input_args += ["-seekable", "0"]
-            if "-ss" in input_args and {
-                input_format.content_type,
-                input_format.codec_type,
-            } & {ContentType.MP3, ContentType.MPEG}:
+            if seeks_by_byte_offset(input_path, input_format, extra_input_args):
                 # without a Xing TOC ffmpeg parses every frame up to the target; fastseek
                 # jumps there by byte offset via a Range request instead
                 add_input_fflag(input_args, "+fastseek")
@@ -794,20 +828,28 @@ def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
     return args
 
 
-def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
+def seeks_by_byte_offset(
+    input_path: str, input_format: AudioFormat, extra_input_args: Sequence[str]
+) -> bool:
     """
-    Return HLS demuxer input arguments that let CMAF segments through, if any are needed.
+    Return whether ffmpeg jumps to a seek position by byte offset.
 
-    Pass these only for a playlist from a source known to serve CMAF, never for a playlist
-    URL that a user supplied.
+    :param input_path: The path ffmpeg reads from, or "-" for stdin.
+    :param input_format: The format of the input.
+    :param extra_input_args: The input args of the launch, including the seek.
     """
-    # The check this relaxes is hardening against hostile playlists, hence opt-in per caller.
-    # allowed_extensions cannot narrow it: the demuxer matches a segment URL against that
-    # option *and* against a hardcoded per-format extension list that no option reaches, so
-    # switching the check off is the only lever over the second one.
-    if get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED):
-        return ["-extension_picky", "0"]
-    return []
+    if "-ss" not in extra_input_args:
+        return False
+    if any("+fastseek" in arg for arg in extra_input_args):
+        return True
+    return (
+        "-f" not in extra_input_args
+        and input_path.startswith("http")
+        and bool(
+            {input_format.content_type, input_format.codec_type}
+            & {ContentType.MP3, ContentType.MPEG}
+        )
+    )
 
 
 def add_input_fflag(input_args: list[str], flag: str) -> None:
@@ -852,22 +894,11 @@ async def check_ffmpeg_version() -> None:
             f"Additional info: {returncode} {output.decode().strip()}"
         )
     libsoxr_support = "enable-libsoxr" in output.decode()
-    # 7.1.1 backported a segment extension check without whitelisting CMAF, so it rejects the
-    # .cmfa segments some services serve; 7.1.2 whitelisted them, see
-    # https://trac.ffmpeg.org/ticket/11526. Probe the demuxer rather than compare versions,
-    # which builds from git report as e.g. "N-121037-g1234567". A probe that fails reads as
-    # "not blocked", so the check stays in place. Drop this once every supported build
-    # whitelists CMAF.
-    returncode, hls_options = await check_output("ffmpeg", "-hide_banner", "-h", "demuxer=hls")
-    cmaf_blocked = (
-        returncode == 0 and b"extension_picky" in hls_options and b"cmfa" not in hls_options
-    )
     # use globals as in-memory cache
     await set_global_cache_values(
         {
             CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support,
             CACHE_ATTR_FFMPEG_VERSION: version,
-            CACHE_ATTR_HLS_CMAF_BLOCKED: cmaf_blocked,
         }
     )
 
@@ -965,6 +996,7 @@ def _build_overlay_mixer(
             "1",
         ]
     input_args += tls_verify_args(overlay_input, verify_ssl)
+    input_args += user_agent_args(overlay_input)
     input_args += ["-stream_loop", "-1"]
     # conform the overlay to the main stream's layout so amix sees two matching inputs;
     # an unnameable count is left to FFmpeg's own negotiation
@@ -1065,21 +1097,23 @@ def _raise_feeder_error(feeder_exception: Exception) -> NoReturn:
 
     :param feeder_exception: The exception raised by the FFmpeg stdin feeder.
     :raises ProviderStreamLimitError: When the source had no free stream slot.
+    :raises AudioSourceRefusedError: When the live source refused the consumer.
     :raises AudioError: For any other feeder failure, caused by the feeder exception.
     """
-    # keep the capacity error's type so callers can tell a busy source apart
-    if _is_stream_limit_error(feeder_exception):
+    # keep the type of a busy or refusing source's error so callers can tell it apart
+    if _is_expected_source_error(feeder_exception):
         raise feeder_exception
     raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
 
 
-def _is_stream_limit_error(err: BaseException) -> bool:
-    """Return whether the error means a provider had no free source-stream slot."""
-    # deferred import: the provider models pull the controller graph in at
+def _is_expected_source_error(err: BaseException) -> bool:
+    """Return whether the error means a source had no free stream slot or refused the consumer."""
+    # deferred imports: the provider models pull the controller graph in at
     # import time, which this low-level helper must stay clear of
+    from music_assistant.models.media_capabilities import AudioSourceRefusedError  # noqa: PLC0415
     from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
 
-    return isinstance(err, ProviderStreamLimitError)
+    return isinstance(err, ProviderStreamLimitError | AudioSourceRefusedError)
 
 
 def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:
@@ -1106,3 +1140,15 @@ def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:
     elif codec.is_lossless():
         info.bit_depth = _SAMPLE_FMT_BIT_DEPTH.get(stream.get("sample_fmt", ""))
     return info
+
+
+def _sets_user_agent(input_args: Sequence[str]) -> bool:
+    """Return whether the input args set a user agent, by option or inside -headers."""
+    for option, value in pairwise(input_args):
+        if option == "-user_agent":
+            return True
+        if option == "-headers" and any(
+            line.partition(":")[0].strip().lower() == "user-agent" for line in value.splitlines()
+        ):
+            return True
+    return False

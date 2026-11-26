@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from logging import Logger
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from aiojellyfin import ImageType as JellyImageType
@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.helpers.lyrics import convert_to_lrc_lyrics
 from music_assistant.helpers.util import parse_title_and_version
 
 from .const import (
@@ -31,6 +32,7 @@ from .const import (
     ITEM_KEY_ALBUM_ARTIST,
     ITEM_KEY_ALBUM_ARTISTS,
     ITEM_KEY_ALBUM_ID,
+    ITEM_KEY_ALBUM_NORMALIZATION_GAIN,
     ITEM_KEY_ARTIST_ITEMS,
     ITEM_KEY_CAN_DOWNLOAD,
     ITEM_KEY_CONTAINER,
@@ -53,6 +55,7 @@ from .const import (
     ITEM_KEY_PROVIDER_IDS,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_SORT_NAME,
+    ITEM_KEY_TRACK_NORMALIZATION_GAIN,
     ITEM_KEY_USER_DATA,
     MEDIA_IMAGE_TYPES,
     USER_DATA_KEY_IS_FAVORITE,
@@ -194,6 +197,8 @@ def audio_format(track: JellyTrack) -> AudioFormat:
     sources = track.get(ITEM_KEY_MEDIA_SOURCES, [])
     container = sources[0].get(ITEM_KEY_CONTAINER) if sources else None
     codec = audio_stream.get(ITEM_KEY_MEDIA_CODEC)
+    if container and container.lower() == "asf" and (codec or "").lower().startswith("wma"):
+        container = "wma"
 
     return AudioFormat(
         content_type=(ContentType.try_parse(container) if container else ContentType.UNKNOWN),
@@ -203,6 +208,14 @@ def audio_format(track: JellyTrack) -> AudioFormat:
         bit_rate=audio_stream.get("BitRate"),
         bit_depth=audio_stream.get("BitDepth", 16),
     )
+
+
+def parse_loudness(jellyfin_track: JellyTrack) -> tuple[float, float | None] | None:
+    """Return track and optional album loudness in LUFS from Jellyfin's ReplayGain fields."""
+    track_loudness = _gain_to_loudness(jellyfin_track.get(ITEM_KEY_TRACK_NORMALIZATION_GAIN))
+    if track_loudness is None:
+        return None
+    return track_loudness, _gain_to_loudness(jellyfin_track.get(ITEM_KEY_ALBUM_NORMALIZATION_GAIN))
 
 
 def parse_track(
@@ -276,6 +289,18 @@ def parse_track(
     user_data = jellyfin_track.get(ITEM_KEY_USER_DATA, {})
     track.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return track
+
+
+def parse_lyrics(raw: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return (plain_lyrics, lrc_lyrics) from a Jellyfin lyrics response."""
+    cues = raw.get("Lyrics") or []
+    if not cues:
+        return None, None
+    plain = "\n".join(cue.get("Text") or "" for cue in cues)
+    if not all(cue.get("Start") is not None for cue in cues):
+        return plain, None
+    lrc = convert_to_lrc_lyrics([(cue.get("Text") or "", cue["Start"] // 10_000) for cue in cues])
+    return plain, lrc or None
 
 
 def parse_playlist(
@@ -364,3 +389,11 @@ def _get_artwork(
             )
 
     return images
+
+
+def _gain_to_loudness(value: object) -> float | None:
+    """Convert a Jellyfin normalization gain in dB to loudness in LUFS."""
+    if not isinstance(value, (int, float)):
+        return None
+    # Jellyfin's gain targets the ReplayGain 2.0 reference level of -18 LUFS
+    return -18.0 - float(value)

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.enums import ChannelLayout
 from pywiim.model_names import is_known_wiim_model
 from wiim.consts import MANUFACTURER_AUDIO_PRO, MANUFACTURER_WIIM
 
@@ -20,6 +21,10 @@ if TYPE_CHECKING:
 OFFICIAL_MANUFACTURERS = (MANUFACTURER_WIIM, MANUFACTURER_AUDIO_PRO)
 
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
+
+# The channel a speaker plays in a native stereo pair (getSlaveList channel, group_channel).
+SET_CHANNEL_LEFT = 1
+SET_CHANNEL_RIGHT = 2
 
 
 def linkplay_group_compatible(
@@ -45,6 +50,42 @@ def linkplay_group_compatible(
     first_major = _wmrm_major(first)
     second_major = _wmrm_major(second)
     return first_major is not None and first_major == second_major
+
+
+def native_set_channel(slave: dict[str, Any]) -> int | None:
+    """
+    Return the channel of a slave in its leader's native set, None when the entry shows none.
+
+    A native set is a stereo pair (or another multichannel set) made in the WiiM Home app. Its
+    leader reports it this way only while the set plays alone, not while it is part of a
+    larger multiroom group.
+
+    :param slave: One entry of the slave list a leader reports.
+    """
+    channel = _int_field(slave, "group_channel")
+    return channel if channel > 0 else None
+
+
+def plays_set_channel(slave: dict[str, Any]) -> bool:
+    """
+    Return whether a slave plays the left or the right channel.
+
+    :param slave: One entry of the slave list a leader reports.
+    """
+    return _int_field(slave, "channel") in (SET_CHANNEL_LEFT, SET_CHANNEL_RIGHT)
+
+
+def native_set_layout(channels: list[int]) -> ChannelLayout | None:
+    """
+    Return the channel layout of the native set a leader leads, None when it leads none.
+
+    :param channels: The set channels of the leader's slaves that belong to its set.
+    """
+    if not channels:
+        return None
+    if channels in ([SET_CHANNEL_LEFT], [SET_CHANNEL_RIGHT]):
+        return ChannelLayout.STEREO
+    return ChannelLayout.UNKNOWN
 
 
 def is_official_manufacturer(manufacturer: str | None) -> bool:
@@ -151,6 +192,14 @@ def match_slave_uuid_to_player_id(
         if candidate_hex == target_hex:
             return player_id
     return None
+
+
+def _int_field(slave: dict[str, Any], key: str) -> int:
+    """Return an integer field of a slave list entry, 0 when it is missing or no number."""
+    try:
+        return int(slave.get(key, 0))
+    except TypeError, ValueError:
+        return 0
 
 
 def _wmrm_major(device_info: PywiimDeviceInfo) -> int | None:

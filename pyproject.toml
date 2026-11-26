@@ -15,7 +15,7 @@ dependencies = [
   "aiohttp==3.14.4",
   "aiohttp-fast-zlib==0.3.0",
   "aiohttp-socks==0.12.0",
-  "aiofiles==24.1.0",
+  "aiofiles==25.1.0",
   "aiosqlite==0.22.1",
   "awesomeversion>=24.6.0",
   "certifi==2026.10.19",
@@ -25,15 +25,16 @@ dependencies = [
   "chardet==7.6.0",
   "ifaddr==0.2.0",
   "getmac==0.9.6",
+  "hass-client==1.4.1",
   "mashumaro==3.22",
-  "music-assistant-models==1.1.229",
-  "music-assistant-frontend==2.17.350",
+  "music-assistant-models==1.1.252",
+  "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.382/music_assistant_frontend-2.17.382-py3-none-any.whl#sha256=3eb4cec6f9388dcfe5449b5884273e5906d4ed6b1a4e8be8ad385b1f5be83168",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==13.0.0",
   "podcastparser==0.6.11",
   "propcache>=0.2.1",
-  "python-slugify==9.1.1",
+  "python-slugify==9.1.3",
   "xmltodict==1.0.4",
   "defusedxml==0.7.1",
   "markdownify==1.2.3",
@@ -41,10 +42,10 @@ dependencies = [
   "zeroconf==0.151.5",
   "uv>=0.8.0",
   "librosa==1.0.0",
-  "numpy==2.3.5", # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
+  "numpy==2.5.5", # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
   "torch==2.13.0",
   "torchaudio==2.11.0",
-  "gql[all]==4.0.0",
+  "gql[all]==4.4.0",
   # TEMPORARY test-drive pin — replace with PyPI release before merge (see webrtc_aiolibdatachannel_plan.md Phase C)
   "aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive",
   "pyjwt[crypto]>=2.10.1",
@@ -64,7 +65,6 @@ test = [
   "psutil==7.2.2",
   "pytest==9.1.1",
   "pytest-aiohttp==1.1.1",
-  "pytest-codspeed==5.0.3",
   "pytest-cov==7.1.0",
   "pytest-timeout==2.4.0",
   "pytest-xdist==3.8.0",
@@ -86,16 +86,19 @@ mass = "music_assistant.__main__:main"
 # "childrens" is the normalized form of the "Children's" audiobook genre (apostrophe stripped)
 # "speaches" is the name of a self-hostable OpenAI-compatible speech server
 # "overal" is a Dutch word ("everywhere") in a VRT MAX station tagline
+# "trun" is the track run box of an MP4 file
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
 # tidal fixtures are captured API responses; foreign album/track titles aren't typos
+# dr_lyd fixtures are captured API responses, in Danish
 # instructions/*.instructions.md quotes reviewer comments verbatim (incl. their original typos)
-ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,overal,"
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,overal,trun,"
 skip = """*.js,*.svg,\
 .github/instructions/music-assistant-standards.instructions.md,\
 music_assistant/helpers/resources/countries.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
 music_assistant/providers/sonic_analysis/vendored_clap/**,\
 music_assistant/translations/*.json,\
+tests/providers/dr_lyd/fixtures/**,\
 tests/providers/tidal/fixtures/**,\
 NOTICE,\
 """
@@ -234,7 +237,6 @@ ignore = [
   "CPY001", # Just annoying, not really useful
   "LOG004", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
-  "BLE001",
   "FBT001",
   "FBT002",
   "FBT003",
@@ -243,7 +245,6 @@ ignore = [
   "PTH118",
   "PTH120",
   "PTH123",
-  "G004",
   "S106",
   "SLF001",
   "SIM102",

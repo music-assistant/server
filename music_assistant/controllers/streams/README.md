@@ -62,6 +62,8 @@ controllers/streams/
   audio_processing.py  - AudioProcessingManager: processing details (normalization, DSP, output quality) reported to clients
   stream_sources.py    - Ranking of the copies of a media item (local file, streaming accounts) in the order they are tried
   audio_buffer.py      - AudioBuffer: in-memory PCM audio buffering with seek support
+  file_stream.py       - FileStream: a track as a WAV or MP3 file with a declared length, for players that fetch files
+  mixed_track.py       - MixedTrack: the stream of a track with the mixes it starts and ends with, kept so a file can be cut from it
   audio_analysis.py    - AudioAnalysisController: analysis storage (audio_analysis.db) and scheduling
   audio_analysis_codec.py - Packed on-disk format of an analysis record (JSON header plus binary array payload)
   audio_analysis_database.py - AudioAnalysisDatabaseMixin: connection, schema version and quarantine of audio_analysis.db
@@ -117,6 +119,8 @@ Supporting modules in `helpers/`:
 - `AudioBuffer.read_chunk_for_analysis()` - Read one chunk for a passive analysis reader without mutating the buffer; raises when the chunk has been evicted (reader fell behind)
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
 - `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
+- `AudioBuffer.users` - The parties that wait for the buffer's audio or read it
+- `AudioBuffer.release_if_unneeded()` - Give up the audio and the source of a buffer that nobody reads and that left its queue's scope
 
 ### Buffer Lifecycle
 
@@ -127,13 +131,35 @@ Supporting modules in `helpers/`:
 4. Player requests stream -> get_queue_item_stream() calls buffer.get_stream()
 5. prepare_next_audio_buffer() pre-fills the item after the streamed one: 60s before the end of
    its stream, or for a realtime source once its audio has fully arrived
-6. _cleanup_stale_queue_buffers() clears old buffers to free memory
+6. The queue's release_unneeded_audio() gives up every buffer that left its scope and that
+   nothing reads
 ```
 
 A player that moves on to another track by itself, after a skip on the speaker or a track it gave up
 on, leaves the old track's buffer filling. On a provider with a stream limit that buffer holds the
 slot the new track needs, so the single-item route cancels it once the player asks for another track
 and no open request still streams the old one.
+
+A buffer keeps track of its users. `get_buffer()` lists whoever only waits for the first audio,
+`get_raw_stream()` every open read stream, and `get_queue_item_stream()` holds one `BufferUser` from
+the moment it takes the buffer until it ends, so the wait for a source slot and the time before its
+first read count as well. A stream also claims the queue item it decided to play, which holds the
+item's buffer before the stream has it and when someone else creates it: the item stream for its
+whole life, the flow stream from the moment it selects a track. The route that serves a single item
+to a speaker claims it as well (`claim_item()`), from the moment it accepts the request until the
+request ends: the item is held while the response is set up. A claim counts for the playback
+session its stream is part of, and no longer once the queue the item is on plays in another session
+or in none. The source of a buffer that still fills holds a stream slot of its provider, which lists
+those buffers in `stream_slot_holders`. The slot is taken in the name of the buffer's queue, and a
+source that delivers at playback pace can leave it reserved for that queue when it gives it back
+(the player queues README says when). `release_if_unneeded()` gives up the audio and the source of
+a buffer that no stream reads or holds to read and that left its queue's scope (the player queues
+README says when that is), whether its source still fills or has delivered everything. It makes the
+buffer invalid on the spot, so nobody takes it while its source unwinds, and a caller that only
+waited for its first audio gets no buffer. It runs when a user of a buffer leaves, when a claim
+ends, when the scope of its queue can have changed, and for every holder of a provider's slots when
+a track needs one and none is free; when none of them gives way, a debug line names the holders,
+their users and the streams that claim their items.
 
 ### Error Handling
 
@@ -157,7 +183,7 @@ StreamsController, combines queue processing and per-player output plans into co
 
 ## Stream Source Selection
 
-A library track often has several copies: a local file, the same track on one or more streaming services, another account of the same service. `_get_stream_details` builds the candidates in `_get_streamdetail_candidates`: each available mapping is expanded to the instances that can serve it (the mapped instance, then the other accounts of the same streaming catalog) and narrowed to the music sources the playback user may use. `rank_stream_sources` (`stream_sources.py`, pure, no provider calls) then orders them, and `_request_streamdetails` tries them in that order:
+A library track often has several copies: a local file, the same track on one or more streaming services, another account of the same service. `_get_stream_details` builds the candidates in `_get_streamdetail_candidates`: each available mapping is expanded to the instances that can serve it (the mapped instance, then the other accounts of the same streaming catalog) and narrowed to the music sources the playback user may use. Of a streaming service those are the accounts closest to the user (`helpers/provider_access.py`): their own, else the ones shared with them by name, else the ones shared with all. `rank_stream_sources` (`stream_sources.py`, pure, no provider calls) then orders them, and `_request_streamdetails` tries them in that order:
 
 1. **The pin**: the copy the queue item's listing had for it (`QueueItem.origin`, see the player queues README) comes first, except in the `best_quality_per_track` mode. Audiobooks and podcast episodes keep their pin in every mode, so their progress stays on the account they were started from.
 2. **Local first**: in the `prefer_local` mode, a non-streaming source (files, Plex, Subsonic, ...) before a streaming service.
@@ -168,6 +194,8 @@ A library track often has several copies: a local file, the same track on one or
 
 **Upgrade pass.** With `upgrade_below_quality` set, a first copy known to be below that tier gives way to every copy of a better tier: first the ones that reach the threshold, in the order above, then the others, the closer to the threshold the sooner. A copy of unknown format is not taken to be below the threshold, and its format is learned when it streams. It is the only setting that relaxes the pin, local first and the own-account preference; a source the playback user may not use never serves them. Audiobooks and podcast episodes are left out. When the first copy of a library track is still below the threshold after that pass, the other streaming services are searched for a match, at most once per queue item and within one `STREAM_SLOT_MATCH_TIMEOUT` for the whole search, and the candidates are ranked again. The search runs when an item's stream details are resolved, in practice the first time: for the item playback starts on that delays its start, for the items after it that is the next-track preparation, while the item before it plays. A reselection around a source at its stream limit does not search for a better copy. A match is stored as an unclaimed mapping, so a playback-time match never merges library items; a match of unknown quality is only stored, as it can not be judged against the threshold, and later plays learn its quality. A track no service has keeps the chosen copy, and a service without a match is not searched for that track again for a day (a `mass.cache` entry, which the stream-limit search honours as well).
 
+Accounts set to step in when a closer one is busy are ranked apart and follow all other candidates, so they only serve a stream that none of those can.
+
 Every candidate carries a short reason ("pinned", "own account", "hi-res 96/24", "upgrade: lossless 44.1/16 over lossy 320 kbps", ...), logged at debug level as the stream source order. An album picks its one source at enqueue time with `select_container_source`, which ranks whole listings in a similar way (local first, own accounts, a listing with every track, then quality); see the player queues README.
 
 ## Streaming Pipeline
@@ -175,7 +203,7 @@ Every candidate carries a short reason ("pinned", "own account", "hi-res 96/24",
 ```
 Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
     -> AudioBuffer (raw PCM storage, analysis providers read it here)
-    -> buffer.get_stream() -> Optional: FFmpeg (volume normalization, speed, fade-in)
+    -> buffer.get_stream() -> Optional: FFmpeg (volume normalization, limiter after a positive gain, speed, fade-in)
     -> Optional: Smart Fades (crossfade mixing between tracks)
     -> FFmpeg (encode to output format with player-specific DSP)
     -> HTTP Response / Direct PCM stream
@@ -186,9 +214,42 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 1. **HTTP endpoints** (`serve_queue_item_stream`, `serve_queue_flow_stream`): Used by players that consume HTTP streams (Chromecast, DLNA, Sonos, etc.)
 2. **Direct PCM** (`get_stream`): Used by player providers that consume raw PCM directly (AirPlay, Sendspin, etc.)
 
+### A Track as a File
+
+A player that is built around files (`PlayerProtocol.fetches_files`) wants the length of a track up front, and pauses, resumes and seeks by asking for a part of the file. For such a player `serve_queue_item_stream` serves a track as a WAV or an MP3 file: a `Content-Length`, `Accept-Ranges: bytes`, and a `206` for a `Range` request. `StreamsController.serves_as_file` decides: a track with a known duration, WAV or MP3 as output codec (the two whose size is known before the audio is encoded), normal playback speed, no fade-in and no declared tail overlap. Everything else keeps the stream without a length.
+
+- The file is virtual. Every request that needs audio gets an encode of its own, read from the track's `AudioBuffer` at the position that belongs to the byte offset, and that encode ends with its connection. Nothing goes to disk; only the first megabyte of a file is kept in memory, because players ask for the start again before they resume or seek.
+- The same offset always gives the same audio. A player may put the bytes of different requests next to each other, so an encode starts a second or more before the part that is asked, and drops what comes before it: filters and resamplers have settled by then. It starts on a whole frame of every format the audio passes through, which for a WAV file is a whole second. What is left is dither, when a WAV file goes from more bits to 16.
+- An MP3 file is frames of 1152 samples at 320 kbit/s and nothing else: no tag, no Xing header, and no bit reservoir (`-reservoir 0`), so no frame holds audio of another one. It has one frame more than its audio fills, and a frame is 144 x bit rate / sample rate bytes. At 44.1 kHz that is no whole number, and the encoder pads frames with a byte in a pattern that starts over every 49 frames (51200 bytes); `mp3_frame_offset` follows it. An encode starts on a frame where that pattern starts over and that is a whole frame of every sample rate the audio passes through (every 1.28 seconds at 44.1 kHz, every 0.12 seconds at 48 kHz), a second or more before the part, and the encoder gets its audio without dither. Its frames are then the very bytes of one encode of the whole file. The last 128 bytes, where a renderer looks for an ID3v1 tag before it plays or seeks, are answered with zeros without an encode, also for a renderer that asks for them at the end of a size the file had before its audio ended short of it.
+- The declared length is exact when the track was decoded to its end before the first request, and else its duration plus a second. Audio that ends before the declared length just ends the body; from then on the file has its real size, and a request at or past it gets a `416` with that size. More audio than declared is cut off.
+- Pacing stays with ffmpeg, as for every stream. A file hands out 30 seconds of head start, 10 per encode, so the encodes after the third start at playback speed.
+- One encode runs per file: a request for another part ends the one before it. A player has three files at most, and they go when the queue stops.
+
+In a queue with crossfade or smart fades the stream of a track is more than the track: it starts with the end of the mix that the track before it began (the lead-in), and it ends with the first part of the mix into the track after it. `get_queue_item_stream_with_smartfade` makes those mixes once and live, as for every player. `MixedTrack` runs that stream as passes and keeps what the mixes yield, so a file can be cut from it:
+
+- A pass that plays the track from its start takes the fade into it, which becomes the lead-in of the file. The track's own audio goes to the request that drives the pass, at the pace of that request. From the moment the track is read to its end the pass runs on by itself: the held tail and the mix are kept as the end of the file, and the rest of the mix goes to the next track as for any stream.
+- A later request gets the lead-in and the end from memory, and the audio between them from the track's buffer. When the end has not been made yet it runs a pass of its own from its position (`start_ms`), which takes no fade into the track and stores no duration. A pass ends with its request, unless it is making a lead-in or an end.
+- The track's own audio is read from a whole number of seconds after the lead-in, one to two seconds before the audio that is asked: a whole frame in every format, so the same samples as in the pass from the start. The tail that is held back for a fade is cut at exactly the fade window, so every pass starts the fade at the same moment. A pass never starts inside that tail: a request into the last seconds of a track reads the track from before it, so the mix is the one a playthrough makes.
+- The file declares the track from its start to its end, and four seconds more with smart fades, which can slow the end of a track down. Once the fade into the track is known the size is what the fade left of the track, and once the end is made it is the real size. The body ends where the mix has taken over.
+- Kept as PCM, for the track that plays and the one after it: the lead-in and the end, each at most the fade window (8 seconds by default, 45 with smart fades).
+- A track that comes around again while its file is still kept (a queue that repeats one track, or two) would get the file of its play before, with those mixes in it. Such a queue keeps the stream without a length.
+
+An item that declares a tail overlap keeps the stream without a length. The track it plays into is a file that starts with that mix.
+
 ## Audio Analysis
 
-When a buffer starts from the beginning of an item (not for audio sources or sound effects), `audio_buffer.py` hands it to `AudioAnalysisController.start_analysis()`. Every audio analysis provider can accept the session and reads the same retained PCM at low priority, so a track is analysed while it plays without a second fetch. Results are stored in `audio_analysis.db`.
+When a buffer starts from the beginning of an item (not for audio sources or sound effects), `audio_buffer.py` hands it to `AudioAnalysisController.start_analysis()`. Every audio analysis provider that is offered the session can accept it and reads the same retained PCM at low priority, so a track is analysed while it plays without a second fetch. Results are stored in `audio_analysis.db`.
+
+A provider declares the media types it is offered in `media_types` (tracks only by default). `_start_analysis_on_providers()` offers a session, live or background, only to the providers that declared its media type.
+
+A live source (`MediaType.AUDIO_SOURCE`) has no buffer. `get_audio_source_stream()` hands its audio to `AudioAnalysisController.start_source_analysis()`, which offers it only to providers that declared `AUDIO_SOURCE`, and only when the source allows it (`AudioSource.allow_audio_analysis`, set by the plugin for a live input such as a line-in, unless the user disabled it in the settings of that input; off for what a streaming service delivers to a receiver). With no such provider nothing is started and the stream copies no audio. The session runs in realtime while the stream does and the source its session holds allows it (a plugin whose setting changes hands the session the rebuilt source with `PlayerController.refresh_source()`): audio is fed in one-second blocks without ever waiting, dropped beyond `LIVE_SOURCE_BACKLOG_SECONDS` while a provider falls behind, and a failure of the analysis switches it off for the rest of the stream instead of failing the stream. One worker owns the session from the providers' start to the end of the stream, and releases all of it at whatever stage it ends. Nothing of it is stored: no result, no failure, no place in the background scan.
+
+A radio station has one session, shared by every buffer that plays it: a later buffer of the station joins it, the reader goes on with another buffer when the one it reads ends, and skips ahead when it falls behind the played audio.
+
+A provider can report what plays in a live source or on a radio station with `AudioAnalysisProvider.report_stream_metadata()`, which `AudioAnalysisController.show_stream_metadata()` hands to the session. It returns whether the report is accepted; on False the provider stops recognising for that session. Reported metadata is display only and never stored. A recogniser returns quickly from `process_pcm_chunk` and recognises in a throttled task of its own (one sample every 30 to 60 seconds).
+
+- **Live source**: it is shown on the source's session (`PlayerController.show_analysis_metadata()`) while the owning plugin has reported nothing itself (`AudioSourceSession.stream_metadata_reported`), and only for the stream the analysis follows. It is withdrawn when the session ends or the reporting provider leaves it.
+- **Radio station**: it is kept on the station's session, never in `StreamDetails`, so the station's own metadata keeps its provenance. A report becomes due once the listener reaches the audio it came from (the reader's lead over the playback position of the buffer it reads) and is then shown on every queue whose buffer is joined. `AudioAnalysisController.shown_stream_metadata()` gives what a stream shows: the station's own metadata, or else the recognised one. The player's current media, its artwork and the ICY title Music Assistant relays all read it. Once the station sends metadata of its own, that wins for the rest of the session and reports are refused. The recognised title is withdrawn when the session ends, the reporting provider leaves it, or the station sends its own metadata.
 
 ### Loudness Measurement
 - Produced by the `loudness_analysis` provider (`providers/loudness_analysis/`): FFmpeg `ebur128` over up to 10 minutes of PCM
@@ -207,7 +268,7 @@ Smart fades mix the outgoing track's held-back tail (up to 45 seconds) with the 
 - `STANDARD_CROSSFADE`: `StandardCrossFade`, a fixed-length overlap after stripping trailing silence
 - `VOICE_OVER`: `VoiceOverFade`, a declared transition that plays as declared and is never planned
 
-An item that declares a tail overlap (`StreamDetails.tail_overlap`) plays it as `VOICE_OVER` into the item it was planned against, whatever the queue's crossfade setting: on the flow stream, and per item on a player that plays gapless, where the incoming item's request takes the smart fade stream to pick the mix up. A direct PCM stream of a single item never mixes its boundary. A plugin about to queue such items asks for the queue's boundaries to be mixed with `set_boundary_mix_required`; at each play start the controller then puts only a player whose selected output protocol cannot play gapless in flow mode.
+An item that declares a tail overlap (`StreamDetails.tail_overlap`) plays it as `VOICE_OVER` into the item it was planned against, whatever the queue's crossfade setting: on the flow stream, and per item on a player that plays gapless, where the incoming item's request takes the smart fade stream to pick the mix up. A plugin about to queue such items asks for the queue's boundaries to be mixed with `set_boundary_mix_required`; at each play start the controller then puts only a player whose selected output protocol cannot play gapless in flow mode.
 
 A smart crossfade falls back to the standard crossfade when a track has no analysis row with BPM and beats, when the planner raises `SmartFadeNotApplicable` (the held-back tail falls silent within its first 8 seconds, or no candidate fits), or when the build fails.
 

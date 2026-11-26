@@ -48,7 +48,8 @@ class CueTrack:
 class CueSheet:
     """Parsed CUE sheet data."""
 
-    file_path: str | None = None  # referenced audio file (None for embedded CUE)
+    file_path: str | None = None  # first referenced audio file (None for embedded CUE)
+    file_paths: list[str] = field(default_factory=list)  # every FILE entry, in order
     title: str | None = None  # album title
     performers: list[str] = field(default_factory=list)  # album artists, one PERFORMER line each
     sort_title: str | None = None  # REM ALBUMSORT
@@ -125,16 +126,10 @@ def parse_cue_sheet(cue_content: str) -> CueSheet:
                 sheet.title = value
 
         elif upper_line.startswith("FILE "):
-            # FILE "filename.flac" WAVE
-            # extract filename between quotes, ignore type
-            match = re.match(r'FILE\s+"([^"]+)"', line, re.IGNORECASE)
-            if match:
-                sheet.file_path = match.group(1)
-            else:
-                # handle unquoted filename: FILE filename.flac WAVE
-                parts = line.split(None, 2)
-                if len(parts) >= 2:
-                    sheet.file_path = parts[1]
+            if file_name := _parse_file_line(line):
+                sheet.file_paths.append(file_name)
+                if sheet.file_path is None:
+                    sheet.file_path = file_name
 
         elif upper_line.startswith("TRACK "):
             # TRACK 01 AUDIO
@@ -167,6 +162,20 @@ def parse_cue_sheet(cue_content: str) -> CueSheet:
             target.append(_unquote(line[6:]))
 
     return sheet
+
+
+def _parse_file_line(line: str) -> str | None:
+    """
+    Return the filename from a FILE line, ignoring the file type.
+
+    :param line: The full FILE line, e.g. ``FILE "album.flac" WAVE``.
+    """
+    match = re.match(r'FILE\s+"([^"]+)"', line, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    # handle unquoted filename: FILE filename.flac WAVE
+    parts = line.split(None, 2)
+    return parts[1] if len(parts) >= 2 else None
 
 
 def _parse_rem_line(line: str, sheet: CueSheet, current_track: CueTrack | None) -> None:

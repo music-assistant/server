@@ -3,8 +3,6 @@ Music Assistant
 
 **Music Assistant Server**
 
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/music-assistant/server?utm_source=badge)
-
 Music Assistant is a free, opensource Media library manager that connects to your streaming services and a wide range of connected speakers. The server is the beating heart, the core of Music Assistant and must run on an always-on device like a Raspberry Pi, a NAS or an Intel NUC or alike.
 
 **Documentation and support**
@@ -32,7 +30,7 @@ The only officially supported ways to run the Music Assistant server are:
 - **Home Assistant app** (recommended) — see https://music-assistant.io/installation/
 - **Docker container** — `ghcr.io/music-assistant/server`
 
-Both bundle every system dependency the server needs. Although Music Assistant's main code is Python, it depends on external/OS components — a recent **ffmpeg (7.0+)** with a specific codec set, native libraries (e.g. jemalloc and CIFS/NFS client libraries) and a few bundled binaries — which a plain PyPI/`pip` install can't provide. The server is therefore **not published to PyPI**; run it via the app or container above.
+Both bundle every system dependency the server needs. Although Music Assistant's main code is Python, it depends on external/OS components — a recent **ffmpeg (8.0+)** with a specific codec set, native libraries (e.g. jemalloc and CIFS/NFS client libraries) and a few bundled binaries — which a plain PyPI/`pip` install can't provide. The server is therefore **not published to PyPI**; run it via the app or container above.
 
 Third-party packages (e.g. Linux distributions) are not supported, and issues reported from them may be closed. The bundled credentials for the services Music Assistant integrates with are only licensed for our official builds (see [NOTICE](NOTICE)), so such builds must supply their own (see `music_assistant/helpers/app_vars.py`).
 
@@ -41,7 +39,7 @@ Third-party packages (e.g. Linux distributions) are not supported, and issues re
 
 ### Running from source (development)
 
-For local development you provide the system dependencies yourself — **Python 3.14+** and **ffmpeg 7.0+** are required.
+For local development you provide the system dependencies yourself — **Python 3.14+** and **ffmpeg 8.0+** are required.
 
 - `scripts/setup.sh` — create the virtualenv and install dependencies and pre-commit hooks
 - `python -m music_assistant --log-level debug` — run the server locally (listens on http://localhost:8095)

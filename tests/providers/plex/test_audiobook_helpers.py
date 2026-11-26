@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import requests
 
 from music_assistant.providers.plex.helpers import (
     PlexSectionInfo,
@@ -109,7 +110,7 @@ class TestLibraryUsesTrackProgress:
 
             def settings(self) -> list[Any]:
                 """Simulate a failing settings call."""
-                raise RuntimeError("Network error")
+                raise requests.exceptions.ConnectionError("Network error")
 
         assert _library_tracks_progress(BrokenSection()) is False
 

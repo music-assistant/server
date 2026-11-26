@@ -29,11 +29,12 @@ from zvuk_music.exceptions import (
     GraphQLError,
     NetworkError,
     NotFoundError,
+    RateLimitError,
     TimedOutError,
     UnauthorizedError,
 )
 
-from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.throttle_retry import MAX_RETRY_AFTER, ThrottlerManager
 
 from .constants import DEFAULT_LIMIT
 
@@ -42,13 +43,15 @@ LOGGER = logging.getLogger(__name__)
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 _NOT_FOUND_SENTINEL: Any = object()
+# seconds every request is held back after a rate limit response without a Retry-After
+_RATE_LIMIT_COOLDOWN = 60
 
 
 def handle_zvuk_errors(
     not_found_return: Any = _NOT_FOUND_SENTINEL,
 ) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Awaitable[_R]]]:
     """
-    Decorate async methods to map Zvuk API exceptions to MA errors.
+    Decorate async ZvukMusicClient methods to map Zvuk API exceptions to MA errors.
 
     :param not_found_return: Value to return on NotFoundError (e.g. None or []).
         If not provided, NotFoundError is not caught.
@@ -61,9 +64,10 @@ def handle_zvuk_errors(
             except UnauthorizedError as err:
                 raise LoginFailed("Invalid Zvuk Music token") from err
             except NetworkError as err:
-                msg = str(err).lower()
-                if "429" in msg or "too many requests" in msg or "rate limit" in msg:
-                    raise RateLimited("Zvuk Music rate limit", backoff_time=60) from err
+                # the decorated functions are client methods, so args[0] is the client
+                client = cast("ZvukMusicClient", args[0])
+                if (wait := client._cool_down_if_rate_limited(err)) is not None:
+                    raise RateLimited("Zvuk Music rate limit", backoff_time=wait) from err
                 LOGGER.error("Zvuk API error: %s", err)
                 raise ResourceTemporarilyUnavailable("Zvuk Music request failed") from err
             except TimedOutError as err:
@@ -96,7 +100,7 @@ class ZvukMusicClient:
         self._token = token
         self._client: ClientAsync | None = None
         self._user_id: str | None = None
-        self._throttler = Throttler(rate_limit=5, period=1.0)
+        self._throttler = ThrottlerManager(rate_limit=5, period=1)
 
     @property
     def user_id(self) -> str | None:
@@ -392,6 +396,7 @@ class ZvukMusicClient:
         try:
             return await client.like_track(track_id)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error liking track %s: %s", track_id, err)
             return False
 
@@ -406,6 +411,7 @@ class ZvukMusicClient:
         try:
             return await client.unlike_track(track_id)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error unliking track %s: %s", track_id, err)
             return False
 
@@ -420,6 +426,7 @@ class ZvukMusicClient:
         try:
             return await client.like_release(release_id)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error liking release %s: %s", release_id, err)
             return False
 
@@ -434,6 +441,7 @@ class ZvukMusicClient:
         try:
             return await client.unlike_release(release_id)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error unliking release %s: %s", release_id, err)
             return False
 
@@ -448,6 +456,7 @@ class ZvukMusicClient:
         try:
             return await client.like_artist(artist_id)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error liking artist %s: %s", artist_id, err)
             return False
 
@@ -462,6 +471,7 @@ class ZvukMusicClient:
         try:
             return await client.unlike_artist(artist_id)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error unliking artist %s: %s", artist_id, err)
             return False
 
@@ -476,6 +486,7 @@ class ZvukMusicClient:
         try:
             return await client.like_playlist(playlist_id)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error liking playlist %s: %s", playlist_id, err)
             return False
 
@@ -490,6 +501,7 @@ class ZvukMusicClient:
         try:
             return await client.unlike_playlist(playlist_id)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error unliking playlist %s: %s", playlist_id, err)
             return False
 
@@ -516,6 +528,7 @@ class ZvukMusicClient:
         try:
             return await client.delete_playlist(playlist_id)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error deleting playlist %s: %s", playlist_id, err)
             return False
 
@@ -531,6 +544,7 @@ class ZvukMusicClient:
         try:
             return await client.add_tracks_to_playlist(playlist_id, track_ids)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error adding tracks to playlist %s: %s", playlist_id, err)
             return False
 
@@ -546,6 +560,7 @@ class ZvukMusicClient:
         try:
             return await client.update_playlist(playlist_id, track_ids)
         except (BadRequestError, NetworkError, GraphQLError) as err:
+            self._cool_down_if_rate_limited(err)
             LOGGER.error("Error updating playlist %s: %s", playlist_id, err)
             return False
 
@@ -557,5 +572,18 @@ class ZvukMusicClient:
 
     async def _get_client(self) -> ClientAsync:
         """Acquire a throttle slot then return the connected client."""
-        await self._throttler.acquire()
-        return self._ensure_connected()
+        async with self._throttler.acquire():
+            return self._ensure_connected()
+
+    def _cool_down_if_rate_limited(self, err: Exception) -> int | None:
+        """
+        Hold back every further request when a request failed on a Zvuk rate limit.
+
+        :param err: The error the request failed with.
+        :return: Seconds the requests are held back, None when err is no rate limit.
+        """
+        if not isinstance(err, RateLimitError):
+            return None
+        wait = min(err.retry_after or _RATE_LIMIT_COOLDOWN, MAX_RETRY_AFTER)
+        self._throttler.set_cooldown(wait)
+        return wait

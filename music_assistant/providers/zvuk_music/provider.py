@@ -544,7 +544,7 @@ class ZvukMusicProvider(MusicProvider):
         except (ResourceTemporarilyUnavailable, ProviderUnavailableError, LoginFailed) as err:
             self.logger.debug("Failed to fetch lyrics for track %s: %s", track_id, err)
             return None
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - lyrics are optional, service errors vary
             self.logger.debug(
                 "Unexpected error while fetching lyrics for track %s: %s", track_id, err
             )
@@ -584,6 +584,7 @@ class ZvukMusicProvider(MusicProvider):
             self.logger.warning("Refusing to fetch image from untrusted host: %s", hostname)
             return str(path)
         headers: dict[str, str] = {
+            # mimics a browser on the Zvuk website, which serves these images (#3242)
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "

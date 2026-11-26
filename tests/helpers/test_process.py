@@ -10,7 +10,7 @@ import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from signal import SIGKILL
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -64,6 +64,62 @@ if interrupted:
     sys.stdout.write("{_SLOW_EXIT_LINE}\\n" * {_SLOW_EXIT_LINES})
     sys.stdout.flush()
 """
+
+# Exits once its stdin closes, like ffmpeg at the end of its input, but only after a
+# pause and after writing more to stdout than the pipe and asyncio's read buffer hold
+# together: unless something reads its stdout, it blocks on the full pipe instead of
+# exiting.
+_FLUSH_ON_EOF_CHILD = (
+    "import sys, time; sys.stdin.read(); time.sleep(0.3); "
+    "sys.stdout.write('x' * 2000000); sys.stdout.flush()"
+)
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+async def test_communicate_releases_streams(timeout: bool) -> None:
+    """Communication releases its streams for cleanup, including on timeout."""
+    proc = AsyncProcess(["ffprobe"], stdout=True, stderr=True)
+    proc.proc = MagicMock(returncode=None)
+    proc.proc.communicate = AsyncMock(
+        side_effect=TimeoutError if timeout else None, return_value=(b"output", b"error")
+    )
+    if timeout:
+        with pytest.raises(TimeoutError):
+            await proc.communicate()
+    else:
+        assert await proc.communicate() == (b"output", b"error")
+    assert proc.proc is not None
+    proc.proc.stdout.read = AsyncMock(return_value=b"")
+    proc.proc.stderr.readline = AsyncMock(return_value=b"")
+    assert await asyncio.wait_for(proc.read(-1), 0.1) == b""
+    assert await asyncio.wait_for(proc.read_stderr(), 0.1) == b""
+
+
+@pytest.mark.asyncio
+async def test_communicate_returns_the_output_of_a_process_that_already_exited() -> None:
+    """
+    A process that exited before it is asked for its output still hands it over.
+
+    A short-lived process such as a tag probe can finish and be reaped while the event
+    loop is busy, before its caller gets to communicate with it.
+    """
+    proc = AsyncProcess(["sh", "-c", "echo output; echo error >&2"], stdout=True, stderr=True)
+    await proc.start()
+    await proc.wait()
+
+    assert await proc.communicate() == (b"output\n", b"error\n")
+    await proc.close()
+
+
+@pytest.mark.asyncio
+async def test_communicate_refuses_a_closed_process() -> None:
+    """A process that was closed has no output left to hand over."""
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=True)
+    await proc.start()
+    await proc.close()
+
+    with pytest.raises(RuntimeError, match="closed process"):
+        await proc.communicate()
 
 
 @pytest.fixture(name="piped_process")
@@ -516,6 +572,34 @@ async def test_close_reaps_a_child_while_its_attached_stderr_reader_is_blocked(
 
     assert proc.returncode == -SIGKILL
     assert reader.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_close_cancelled_mid_drain_does_not_wait_out_its_stderr_reader() -> None:
+    """
+    Cancellation landing on the stdout drain does not leave close() waiting on stderr.
+
+    An attached stderr reader only ends once the child exits, which a child with
+    output left to write cannot do while nothing reads its stdout: waiting for that
+    reader first spends the whole release budget on a child the reap ends at once.
+    """
+    proc = AsyncProcess(
+        [sys.executable, "-c", _FLUSH_ON_EOF_CHILD], stdin=True, stdout=True, stderr=True
+    )
+    await proc.start()
+    reader = asyncio.create_task(_collect_lines(proc.iter_stderr(), [], asyncio.Event()))
+    proc.attach_stderr_reader(reader)
+    started = time.monotonic()
+
+    # the child writes nothing before its pause is over, so the cancellation lands on
+    # the stdout drain
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.1):
+            await proc.close()
+
+    # far below STREAM_RELEASE_TIMEOUT, and with its output read the child exits by itself
+    assert time.monotonic() - started < 2.5
+    assert proc.returncode == 0
 
 
 @pytest.mark.asyncio

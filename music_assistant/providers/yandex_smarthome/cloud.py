@@ -148,7 +148,7 @@ class CloudManager:
                     await ws.send_json(
                         {"request_id": request_id, "payload": {"error": "INTERNAL_ERROR"}}
                     )
-                except Exception:
+                except aiohttp.ClientError, OSError:
                     self._logger.debug("Failed to send error response for %s", request_id)
 
 

@@ -12,7 +12,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from .vectors import build_dimension_weights, compute_weighted_distance_vec
+from .vectors import build_dimension_weights, compute_weighted_distances
 
 
 class Candidate(NamedTuple):
@@ -112,61 +112,44 @@ def apply_mmr(
     if not candidates:
         return []
 
-    cand_vecs = {cid: np.array(vec, dtype=np.float64) for cid, vec, _d in candidates}
+    vecs = np.array([vec for _cid, vec, _d in candidates], dtype=np.float64)
     seed_arr = np.array(seed_vec, dtype=np.float64)
 
     if weights is not None:
-        # Build the per-dimension weight vector once; _similarity runs O(n²) times.
         dim_weights = build_dimension_weights(weights)
 
-        def _similarity(a: np.ndarray, b: np.ndarray) -> float:
-            d = compute_weighted_distance_vec(a, b, dim_weights)
-            return 1.0 / (1.0 + d)
+        def _similarity(target: np.ndarray) -> np.ndarray:
+            return 1.0 / (1.0 + compute_weighted_distances(vecs, target, dim_weights))
 
-        relevance: dict[str, float] = {
-            cid: _similarity(cand_vecs[cid], seed_arr) for cid, _vec, _d in candidates
-        }
     else:
-        seed_norm = float(np.linalg.norm(seed_arr))
+        norms = np.sqrt((vecs * vecs).sum(axis=1))
 
-        def _similarity(a: np.ndarray, b: np.ndarray) -> float:
-            na, nb = float(np.linalg.norm(a)), float(np.linalg.norm(b))
-            if na == 0 or nb == 0:
-                return 0.0
-            return float(np.dot(a, b) / (na * nb))
+        def _similarity(target: np.ndarray) -> np.ndarray:
+            sims = np.zeros(len(vecs), dtype=np.float64)
+            target_norm = float(np.sqrt((target * target).sum()))
+            if target_norm == 0.0:
+                return sims
+            nonzero = norms != 0.0
+            sims[nonzero] = (vecs[nonzero] * target).sum(axis=1) / (norms[nonzero] * target_norm)
+            return sims
 
-        relevance = {
-            cid: (_similarity(cand_vecs[cid], seed_arr) if seed_norm > 0 else 0.0)
-            for cid, _vec, _d in candidates
-        }
-
+    relevance = _similarity(seed_arr)
+    # Each candidate's highest similarity to any pick so far; 0.0 until the first pick.
+    redundancy = np.zeros(len(vecs), dtype=np.float64)
+    picked = np.zeros(len(vecs), dtype=bool)
     selected: list[tuple[str, float]] = []
-    remaining: set[str] = {cid for cid, _, _ in candidates}
-    dist_lookup = {cid: d for cid, _, d in candidates}
-    # Input-order list for deterministic tie-breaking, set for O(1) membership.
-    ordered_ids = [cid for cid, _, _ in candidates]
 
     for _ in range(min(limit, len(candidates))):
-        best_id: str | None = None
-        best_score = -float("inf")
-
-        for cid in ordered_ids:
-            if cid not in remaining:
-                continue
-            rel = relevance[cid]
-            if not selected:
-                redundancy = 0.0
-            else:
-                redundancy = max(_similarity(cand_vecs[cid], cand_vecs[sid]) for sid, _ in selected)
-            score = (1.0 - diversity) * rel - diversity * redundancy
-            if score > best_score:
-                best_score = score
-                best_id = cid
-
-        if best_id is None:
-            break
-        remaining.discard(best_id)
-        selected.append((best_id, dist_lookup[best_id]))
+        scores = (1.0 - diversity) * relevance - diversity * redundancy
+        scores[picked] = -np.inf
+        # argmax returns the first maximum, so ties keep input order
+        best = int(np.argmax(scores))
+        sims = _similarity(vecs[best])
+        # cosine similarity can be negative, so the first pick replaces the 0.0 start
+        redundancy = np.maximum(redundancy, sims) if selected else sims
+        picked[best] = True
+        cid, _vec, dist = candidates[best]
+        selected.append((cid, dist))
 
     return selected
 

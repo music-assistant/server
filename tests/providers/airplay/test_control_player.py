@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Coroutine
+from contextlib import AbstractContextManager
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +16,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
 )
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import MediaItemImage
@@ -35,14 +38,19 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
     COMPANION_DISCOVERY_TYPE,
     CONF_COMPANION_CREDENTIALS,
+    CONF_HOMEPODS_ONLY,
+    CONF_IGNORE_VOLUME,
     CONF_MRP_CREDENTIALS,
     CONF_NATIVE_MRP_CREDENTIALS,
+    CONF_STORED_VOLUME,
     EXTERNAL_ARTWORK_PATH_PREFIX,
     MRP_DISCOVERY_TYPE,
 )
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
 from music_assistant.providers.airplay.player import AirPlayPlayer, GenericAirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
+from music_assistant.providers.airplay.speaker import AirPlaySpeaker
+from music_assistant.providers.airplay.stream import AirPlayStream
 
 PLAYER_ID = "apaabbccddeeff"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF"
@@ -86,33 +94,28 @@ def _make_control_player(
     values = config_values or {}
     config.get_value.side_effect = lambda key, default=None: values.get(key, default)
     config.update.side_effect = values.update
-    provider.mass.config.get_base_player_config.return_value = config
+    provider.mass.config.get_base_protocol_config.return_value = config
     provider.mass.config.save_player_config = AsyncMock()
-    # Credentials live in the player's (encrypted) setup_data; serve them through the
-    # mass.config get/set surface that Player.get_setup_value / _update_setup_data use.
+    # Credentials live in the protocol's (encrypted) setup_data; serve them through the
+    # protocol config and the mass.config setter that _update_setup_data uses.
     # The same dict object is returned so tests can observe cleared/updated values.
     stored_setup_data = setup_data if setup_data is not None else {}
+    config.setup_data = stored_setup_data
 
-    def _config_get(key: str, default: object = None) -> object:
-        if key == f"players/{PLAYER_ID}/setup_data":
-            return stored_setup_data
-        if key == f"players/{PLAYER_ID}":
-            return {"player_id": PLAYER_ID}
-        return default
+    def _set_setup_value(protocol_id: str, key: str, value: object, **_kwargs: object) -> None:
+        assert protocol_id == PLAYER_ID
+        stored_setup_data[key] = value
 
-    def _config_set(key: str, value: object, **_kwargs: object) -> None:
-        prefix = f"players/{PLAYER_ID}/setup_data/"
-        if key.startswith(prefix):
-            stored_setup_data[key[len(prefix) :]] = value
-
-    provider.mass.config.get.side_effect = _config_get
-    provider.mass.config.set.side_effect = _config_set
+    provider.mass.config.set_protocol_setup_value.side_effect = _set_setup_value
     provider.mass.config.decrypt_string.side_effect = lambda value: value
     provider.mass.config.encrypt_string.side_effect = lambda value: value
     # raw player config values live in their own store (individual tests override
     # this); without it they would read back as (truthy) mocks
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, _key, default=None: default
+    provider.mass.config.get_player_value.side_effect = lambda _player_id, _key, default=None: (
+        default
+    )
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, _key, default=None: (
+        default
     )
     # Real Companion services advertise the flags under the mixed-case key
     # "rpFl"; zeroconf preserves TXT key casing as sent on the wire.
@@ -126,7 +129,7 @@ def _make_control_player(
     )
     return AirPlayControlPlayer(
         provider=provider,
-        player_id=PLAYER_ID,
+        protocol_id=PLAYER_ID,
         raop_discovery_info=None,
         airplay_discovery_info=_service_info(
             AIRPLAY_DISCOVERY_TYPE,
@@ -147,12 +150,12 @@ def _make_control_player(
     )
 
 
-def test_player_models_have_distinct_types() -> None:
-    """Generic and control-capable AirPlay endpoints use distinct player types."""
+def test_player_models_report_their_role() -> None:
+    """A generic endpoint is an audio protocol, a control-capable one the native protocol."""
     provider = MagicMock()
     generic = GenericAirPlayPlayer(
         provider=provider,
-        player_id="generic",
+        protocol_id="generic",
         raop_discovery_info=None,
         airplay_discovery_info=None,
         address="192.168.1.20",
@@ -162,8 +165,9 @@ def test_player_models_have_distinct_types() -> None:
     )
     controlled = _make_control_player()
 
-    assert generic.type == PlayerType.PROTOCOL
-    assert controlled.type == PlayerType.PLAYER
+    assert generic.role == ProtocolRole.AUDIO
+    assert controlled.role == ProtocolRole.NATIVE
+    assert generic.type == controlled.type == PlayerType.PLAYER
 
 
 @pytest.mark.parametrize(
@@ -190,12 +194,12 @@ def test_playback_state_churn_does_not_force_control_reconnect() -> None:
     """A receiver toggling volatile TXT state must not change the reconnect signature."""
     idle = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
-        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x4"},
+        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x4", "pgid": "idle"},
     )
-    # Same device while receiving a stream: only the session `flags` bit differs.
+    # Same device while receiving a stream: only the session `flags` bit and the group differ.
     streaming = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
-        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x404"},
+        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x404", "pgid": "session"},
     )
     assert AirPlayControlPlayer._service_signature(idle) == AirPlayControlPlayer._service_signature(
         streaming
@@ -217,6 +221,29 @@ def test_playback_state_churn_does_not_force_control_reconnect() -> None:
     )
     assert AirPlayControlPlayer._service_signature(idle) != AirPlayControlPlayer._service_signature(
         rekeyed
+    )
+
+
+@pytest.mark.parametrize(
+    ("service_type", "rotating_keys"),
+    [
+        (AIRPLAY_DISCOVERY_TYPE, ("btaddr",)),
+        (COMPANION_DISCOVERY_TYPE, ("rpAD", "rpBA", "rpHA", "rpHI", "rpHN")),
+    ],
+)
+def test_rotating_privacy_ids_do_not_force_control_reconnect(
+    service_type: str, rotating_keys: tuple[str, ...]
+) -> None:
+    """The privacy identifiers Apple devices rotate must not change the reconnect signature."""
+    before = _service_info(
+        service_type, properties={"rpFl": "0x36782"} | dict.fromkeys(rotating_keys, "1")
+    )
+    after = _service_info(
+        service_type, properties={"rpFl": "0x36782"} | dict.fromkeys(rotating_keys, "2")
+    )
+
+    assert AirPlayControlPlayer._service_signature(before) == (
+        AirPlayControlPlayer._service_signature(after)
     )
 
 
@@ -340,7 +367,7 @@ def test_duplicate_native_volume_update_is_ignored() -> None:
     with patch.object(player, "update_state") as update_state:
         player._handle_volume_update("companion", 42)
 
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
 
 
@@ -349,7 +376,7 @@ def test_native_volume_update_ignored_while_streaming() -> None:
     # volume_set routes to the stream while streaming and leaves the native device
     # volume alone, so a report about that separate knob must not clobber (or persist)
     # the level the user just set.
-    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player = _make_control_player()
     player.stream = MagicMock(running=True)
     player._attr_volume_level = 62
     player._attr_volume_muted = False
@@ -359,7 +386,7 @@ def test_native_volume_update_ignored_while_streaming() -> None:
 
     assert player.volume_level == 62
     assert player.volume_muted is False
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
 
 
@@ -378,8 +405,95 @@ def test_transient_mrp_volume_report_never_latches_mute() -> None:
 
     assert player.volume_muted is False
     assert player.volume_level == 62
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
+
+
+@pytest.mark.parametrize("muted", [False, True], ids=["audible", "muted"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["idle", "streaming"])
+def test_transient_mrp_volume_report_follows_the_homepod(streaming: bool, muted: bool) -> None:
+    """A level a HomePod reports over its transient MRP tunnel is taken over, never sent back."""
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    assert player._uses_transient_mrp is True
+    assert player._companion_device is None
+    player.stream = MagicMock(running=streaming)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = muted
+
+    with patch.object(player, "update_state"):
+        player._handle_volume_update("mrp", 30)
+
+    assert player.volume_muted is False
+    assert player.volume_level == 30
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_called_once_with(
+        PLAYER_ID, CONF_STORED_VOLUME, 30
+    )
+    cast("MagicMock", player.provider).bridge_manager.sync_volume.assert_called_with(PLAYER_ID)
+    player.stream.send_cli_command.assert_not_called()
+
+
+def test_homepod_echo_of_our_own_volume_is_ignored_while_streaming() -> None:
+    """A level a HomePod echoes back while a later one was sent already does not win."""
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_volume_level = 40
+    player._attr_volume_muted = False
+
+    with patch("music_assistant.providers.airplay.player.time.time", return_value=100.0):
+        player.suppress_volume_reports(2)
+        player._handle_volume_update("mrp", 30)
+    assert player.volume_level == 40
+
+    with (
+        patch("music_assistant.providers.airplay.player.time.time", return_value=102.0),
+        patch.object(player, "update_state"),
+    ):
+        player._handle_volume_update("mrp", 30)
+    assert player.volume_level == 30
+
+
+def test_homepod_volume_reports_can_be_ignored_while_streaming() -> None:
+    """The setting to ignore the volume reports of a device covers a streaming HomePod."""
+    player = _make_control_player(
+        model="HomePod Mini",
+        companion_flags="0x62792",
+        config_values={CONF_IGNORE_VOLUME: True},
+    )
+    player.stream = MagicMock(running=True)
+    player._attr_volume_level = 62
+
+    player._handle_volume_update("mrp", 30)
+
+    assert player.volume_level == 62
+
+
+@pytest.mark.parametrize("muted", [False, True], ids=["audible", "muted"])
+def test_a_zero_a_streaming_homepod_reports_changes_nothing(muted: bool) -> None:
+    """A 0 a HomePod reports while it streams leaves the level and the mute alone."""
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = muted
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("mrp", 0)
+
+    assert player.volume_muted is muted
+    assert player.volume_level == 62
+    update_state.assert_not_called()
+
+
+def test_mrp_volume_report_is_ignored_while_companion_owns_the_volume() -> None:
+    """An MRP level is ignored while Companion, which owns the volume, is connected."""
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=False)
+    player._companion_device = MagicMock(spec=AppleTV)
+    player._attr_volume_level = 62
+
+    with patch.object(player, "update_state"):
+        player._handle_volume_update("mrp", 30)
+
+    assert player.volume_level == 62
 
 
 def test_native_volume_update_applies_when_idle() -> None:
@@ -394,6 +508,119 @@ def test_native_volume_update_applies_when_idle() -> None:
 
     assert player.volume_level == 10
     update_state.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("source", "reported", "expected"),
+    [("companion", 10, (10, False)), ("command", 0, (62, True))],
+    ids=["level", "mute"],
+)
+def test_native_volume_update_reaches_the_sendspin_bridge(
+    source: str, reported: int, expected: tuple[int, bool]
+) -> None:
+    """A level the device reports, or a native mute, reaches the bridge as well."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+    seen: list[tuple[int | None, bool | None]] = []
+    bridge_manager = cast("MagicMock", player.provider).bridge_manager
+    bridge_manager.sync_volume.side_effect = lambda _protocol_id: seen.append(
+        (player.volume_level, player.volume_muted)
+    )
+
+    with patch.object(player, "update_state"):
+        player._handle_volume_update(source, reported)
+
+    assert seen == [expected]
+    bridge_manager.sync_volume.assert_called_with(PLAYER_ID)
+
+
+@pytest.mark.parametrize("source", ["companion", "mrp"])
+def test_a_zero_the_device_reports_itself_is_not_a_mute(source: str) -> None:
+    """A native volume of 0 the device reports leaves the level and the mute alone."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update(source, 0)
+
+    assert player.volume_muted is False
+    assert player.volume_level == 62
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
+    cast("MagicMock", player.provider).bridge_manager.sync_volume.assert_not_called()
+    update_state.assert_not_called()
+
+
+@pytest.mark.parametrize("unmute", ["command", "report"])
+async def test_only_a_native_mute_of_our_own_latches_and_an_unmute_clears_it(unmute: str) -> None:
+    """A native mute stays latched through a 0 the device echoes, until an unmute or a level."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 42
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.SetVolume
+    device.audio.set_volume = AsyncMock()
+    player._companion_device = device
+
+    with patch.object(player, "update_state"):
+        await player.volume_mute(True)
+        player._handle_volume_update("companion", 0)
+        muted_after_echo = player.volume_muted
+        if unmute == "command":
+            await player.volume_mute(False)
+        else:
+            player._handle_volume_update("companion", 30)
+
+    assert muted_after_echo is True
+    assert player.volume_muted is False
+    assert player.volume_level == (42 if unmute == "command" else 30)
+
+
+async def test_a_zero_reported_by_a_plain_apple_tv_leaves_its_later_room_audible() -> None:
+    """
+    An Apple TV reporting 0 while its audio goes to the TV plays its room at the room level.
+
+    Back as the carrier of a set, its speakers start their streams at the level of the set.
+    """
+    player = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "credentials"})
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+    with patch.object(player, "update_state"):
+        player._handle_volume_update("companion", 0)
+
+    set_txt = {"psgid": "3F2A9C1E", "psgsz": "2", "psgtp": "1", "gpn": "Study"}
+    cast("MagicMock", player.airplay_discovery_info).decoded_properties.update(
+        set_txt | {"pgmid": "0"}
+    )
+    provider = cast("MagicMock", player.provider)
+    provider.get_set_carrier.return_value = player
+    speaker = AirPlaySpeaker(
+        provider=provider,
+        protocol_id="apaabbccddee01",
+        raop_discovery_info=None,
+        airplay_discovery_info=_service_info(
+            AIRPLAY_DISCOVERY_TYPE,
+            properties={"deviceid": "AA:BB:CC:DD:EE:01", "features": AP2_FEATURES}
+            | set_txt
+            | {"pgmid": "1"},
+            address="192.168.1.11",
+        ),
+        address="192.168.1.11",
+        display_name="HomePod Study",
+        manufacturer="Apple",
+        model="HomePod",
+    )
+    stream = MagicMock(player=speaker, send_cli_command=AsyncMock(return_value=True))
+
+    assert player.carries_set
+    assert speaker.owner is player
+    await AirPlayStream._send_current_volume(stream)
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME=62")
 
 
 def test_control_pairing_is_optional_and_never_requires_setup() -> None:
@@ -624,7 +851,7 @@ async def test_airplay_provider_resolves_only_current_external_artwork() -> None
     player._mrp_device = device
     provider = AirPlayProvider.__new__(AirPlayProvider)
     provider.mass = MagicMock()
-    provider.mass.players.get_player.return_value = player
+    provider.mass.players.get_protocol.return_value = player
     artwork_path = f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{PLAYER_ID}/{artwork_id}"
 
     assert await provider.resolve_image(artwork_path) == b"artwork-bytes"
@@ -1108,11 +1335,14 @@ async def test_provider_selects_player_model_from_device_identity(
         )
     }
     provider._mrp_info_by_address = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
-    provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: True if key == "enabled" else default
+    provider.mass.players.get_protocol.return_value = None
+    provider.mass.players.wants_protocol.return_value = True
+    provider.mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default=None: (
+        default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -1147,6 +1377,8 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
     provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     companion_info = _service_info(
         COMPANION_DISCOVERY_TYPE,
         properties={"rpFl": "0x367A2"},
@@ -1162,9 +1394,10 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
 
     provider.mass.discovery.async_find_mdns_service = AsyncMock(side_effect=_find_service)
     provider.mass.players.register = AsyncMock()
-    provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: True if key == "enabled" else default
+    provider.mass.players.get_protocol.return_value = None
+    provider.mass.players.wants_protocol.return_value = True
+    provider.mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default=None: (
+        default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -1204,7 +1437,7 @@ async def test_companion_discovery_is_attached_and_retained_during_sleep() -> No
     set_companion_info = AsyncMock()
     player.set_companion_discovery_info = set_companion_info  # type: ignore[method-assign]
     provider.get_players = MagicMock(return_value=[player])  # type: ignore[method-assign]
-    provider.mass.players.get_player.return_value = player
+    provider.mass.players.get_protocol.return_value = player
     info = _service_info(COMPANION_DISCOVERY_TYPE)
 
     await provider._handle_companion_service_state_change(
@@ -1251,6 +1484,8 @@ async def test_mrp_discovery_is_attached_by_shared_address() -> None:
     provider = AirPlayProvider.__new__(AirPlayProvider)
     provider.mass = MagicMock()
     provider._mrp_info_by_address = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     player = _make_control_player(companion_flags=None)
     set_mrp_info = AsyncMock()
     player.set_mrp_discovery_info = set_mrp_info  # type: ignore[method-assign]
@@ -1280,7 +1515,7 @@ async def test_late_companion_discovery_never_changes_player_model() -> None:
     provider._bridge_manager = MagicMock(get_bridge=MagicMock(return_value=None))
     generic_player = GenericAirPlayPlayer(
         provider=provider,
-        player_id=PLAYER_ID,
+        protocol_id=PLAYER_ID,
         raop_discovery_info=None,
         airplay_discovery_info=_service_info(AIRPLAY_DISCOVERY_TYPE),
         address="192.168.1.10",
@@ -1318,11 +1553,14 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
-    provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: True if key == "enabled" else default
+    provider.mass.players.get_protocol.return_value = None
+    provider.mass.players.wants_protocol.return_value = True
+    provider.mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default=None: (
+        default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -1434,3 +1672,685 @@ async def test_launch_app_dispatches_to_device() -> None:
     with patch.object(player, "_device_for_feature", return_value=device):
         await player.async_launch_app("musicassistant://dashboard/show")
     device.apps.launch_app.assert_awaited_once_with("musicassistant://dashboard/show")
+
+
+def _record_reconnect_waits(delays: list[float]) -> AbstractContextManager[object]:
+    """Patch the reconnect wait to record its timeout and return without sleeping."""
+
+    async def _wait_for(coro: Coroutine[object, object, object], timeout: float) -> None:
+        coro.close()
+        delays.append(timeout)
+        raise TimeoutError
+
+    return patch(
+        "music_assistant.providers.airplay.control_player.asyncio.wait_for",
+        side_effect=_wait_for,
+    )
+
+
+async def test_failing_control_connect_backs_off_to_a_cap() -> None:
+    """A receiver that keeps refusing is retried with a doubling delay, capped at 10 min."""
+    player = _make_control_player()
+    delays: list[float] = []
+    connect = AsyncMock(side_effect=[True] * 7 + [False])
+
+    with (
+        patch.object(player, "_connect_control_services", connect),
+        _record_reconnect_waits(delays),
+    ):
+        await player._connection_loop()
+
+    assert delays == [30, 60, 120, 240, 480, 600, 600]
+
+
+async def test_channel_drop_during_successful_pass_is_retried() -> None:
+    """A channel that drops while the other one is still connecting gets reconnected."""
+    player = _make_control_player()
+    calls = 0
+
+    async def _connect() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            player._schedule_connection()
+        return False
+
+    with patch.object(player, "_connect_control_services", side_effect=_connect):
+        player._connection_task = asyncio.create_task(player._connection_loop())
+        await asyncio.wait_for(player._connection_task, 1)
+
+    assert calls == 2
+
+
+async def test_forced_control_reconnect_resets_backoff() -> None:
+    """A forced reconnect (new mDNS record, config or pairing) starts at the initial delay."""
+    player = _make_control_player()
+    delays: list[float] = []
+    # the cancellation stands in for the forced reconnect aborting the running loop
+    connect = AsyncMock(side_effect=[True, True, True, asyncio.CancelledError(), True, False])
+
+    with (
+        patch.object(player, "_connect_control_services", connect),
+        _record_reconnect_waits(delays),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await player._connection_loop()
+        player._schedule_connection(force=True)
+        await player._connection_loop()
+
+    assert delays == [30, 60, 120, 30]
+
+
+async def test_dropped_control_channel_wakes_backoff_wait() -> None:
+    """A live channel that drops reconnects without waiting out another channel's backoff."""
+    player = _make_control_player()
+    waiting = asyncio.Event()
+    calls = 0
+
+    async def _connect() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            waiting.set()
+            return True
+        return False
+
+    with patch.object(player, "_connect_control_services", side_effect=_connect):
+        task = asyncio.create_task(player._connection_loop())
+        player._connection_task = task
+        await waiting.wait()
+        await asyncio.sleep(0)
+        player._schedule_connection()
+        await asyncio.wait_for(task, 1)
+
+    assert calls == 2
+    # waking the loop keeps the failing channel's backoff
+    assert player._reconnect_delay == 60
+
+
+async def test_a_detach_ends_the_reconnect_backoff() -> None:
+    """A detach ends a loop that waits out its backoff, and a later channel drop starts none."""
+    player = _make_control_player()
+    waiting = asyncio.Event()
+
+    async def _connect() -> bool:
+        waiting.set()
+        return True
+
+    with (
+        patch.object(player, "_connect_control_services", side_effect=_connect),
+        patch.object(player, "_disconnect_control_services", AsyncMock()),
+    ):
+        task = asyncio.create_task(player._connection_loop())
+        player._connection_task = task
+        await waiting.wait()
+        await asyncio.sleep(0)
+        create_task = cast("MagicMock", player.mass.create_task)
+        create_task.reset_mock()
+
+        await player.on_detach()
+        player._schedule_connection()
+
+    assert task.done()
+    create_task.assert_not_called()
+    assert not player._reconnect_wakeup.is_set()
+
+
+async def test_an_attach_after_a_detach_connects_the_control_services_again() -> None:
+    """The same object attached again after a detach connects its control services again."""
+    player = _make_control_player()
+    cast("MagicMock", player.provider).bridge_manager.evaluate_bridge = AsyncMock()
+    cast("MagicMock", player.mass.create_task).side_effect = lambda coro, **_: asyncio.create_task(
+        coro
+    )
+    connect = AsyncMock(return_value=False)
+
+    async def _bind() -> None:
+        await player.on_config_updated()
+        await player.on_attach(MagicMock())
+        assert player._connection_task is not None
+        await asyncio.wait_for(player._connection_task, 1)
+
+    with (
+        patch.object(player, "_connect_control_services", connect),
+        patch.object(player, "_disconnect_control_services", AsyncMock()),
+    ):
+        await _bind()
+        connect.assert_awaited_once()
+        await player.on_detach()
+        connect.reset_mock()
+
+        await _bind()
+
+    connect.assert_awaited_once()
+
+
+def _make_set_player(
+    *, homepods_only: bool = False, config_values: dict[str, object] | None = None
+) -> tuple[AirPlayControlPlayer, MagicMock]:
+    """
+    Create an Apple TV that carries a home theater set, and the speaker of that set.
+
+    :param homepods_only: The stored value of the option to play on the HomePods only.
+    :param config_values: The settings of the set.
+    """
+    player = _make_control_player(
+        setup_data={CONF_COMPANION_CREDENTIALS: "credentials"}, config_values=config_values
+    )
+    cast("MagicMock", player.airplay_discovery_info).decoded_properties.update(
+        {"psgid": "3F2A9C1E", "psgsz": "2", "psgtp": "1", "pgmid": "0", "gpn": "Study"}
+    )
+    cast("MagicMock", player.mass.config).get_protocol_value.side_effect = (
+        lambda _protocol_id, key, default=None: (
+            homepods_only if key == CONF_HOMEPODS_ONLY else default
+        )
+    )
+    speaker = _make_speaker("192.168.1.61")
+    cast("MagicMock", player.provider).get_set_speakers.return_value = [speaker]
+    return player, speaker
+
+
+def _make_speaker(address: str) -> MagicMock:
+    """
+    Create a HomePod of a home theater set.
+
+    :param address: The address of the HomePod.
+    """
+    speaker = MagicMock(
+        stream=None,
+        address=address,
+        display_name=f"HomePod {address}",
+        protocol_id=f"ap{address}",
+        volume_echo_pending=False,
+        airplay_discovery_info=_service_info(
+            AIRPLAY_DISCOVERY_TYPE,
+            properties={"features": AP2_FEATURES, "model": "AudioAccessory6,1"},
+            address=address,
+        ),
+    )
+    speaker.name = f"HomePod {address}"
+    return speaker
+
+
+def _speaker_device(player: AirPlayControlPlayer) -> MagicMock:
+    """
+    Give a set a connection to its speaker that sets its volume, and return it.
+
+    :param player: The Apple TV that carries the set.
+    """
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.SetVolume
+    device.audio.set_volume = AsyncMock()
+    player._speaker = player.speakers[0]
+    player._speaker_device = device
+    return device
+
+
+@pytest.mark.parametrize("command", ["play", "play_media"])
+@pytest.mark.parametrize("homepods_only", [False, True])
+async def test_a_set_wakes_its_apple_tv_unless_it_plays_on_its_homepods_only(
+    command: str, homepods_only: bool
+) -> None:
+    """
+    A set has the power control and the wake of its Apple TV, which play leaves out.
+
+    With the HomePods only there is no session to wake the Apple TV for, and no power
+    control the players controller could switch it on with before playback.
+    """
+    player, speaker = _make_set_player(homepods_only=homepods_only)
+    player._attr_powered = False
+    # resume reaches the stream of the set, which plays on its speaker
+    speaker.stream = MagicMock(running=True, session=MagicMock())
+
+    assert (PlayerFeature.POWER in player.supported_features) is not homepods_only
+    with (
+        patch.object(AirPlayControlPlayer, "_wake_for_playback", AsyncMock()) as wake,
+        patch.object(AirPlayPlayer, command, AsyncMock()) as base_command,
+    ):
+        if command == "play":
+            await player.play()
+        else:
+            await player.play_media(MagicMock())
+
+    assert wake.await_count == (0 if homepods_only else 1)
+    base_command.assert_awaited_once()
+
+
+async def test_a_bridged_set_on_its_homepods_only_stops_through_the_bridge() -> None:
+    """A stop reaches the Sendspin bridge that feeds the speakers, not the Apple TV's remote."""
+    player, speaker = _make_set_player(homepods_only=True)
+    speaker.stream = MagicMock(running=True, session=None)
+    bridge_manager = cast("MagicMock", player.provider).bridge_manager
+    bridge_manager.stop_streaming.return_value = True
+
+    with patch.object(player, "_device_for_feature", return_value=None) as remote:
+        await player.stop()
+
+    bridge_manager.stop_streaming.assert_called_once_with(player.protocol_id)
+    remote.assert_not_called()
+
+
+async def test_the_volume_of_a_set_is_not_the_volume_of_its_apple_tv() -> None:
+    """The set's volume never goes to the Apple TV, nor does the Apple TV's volume come back."""
+    player, _ = _make_set_player()
+    device = MagicMock()
+    device.audio.set_volume = AsyncMock()
+
+    with patch.object(player, "_device_for_feature", return_value=device):
+        await player.volume_set(30)
+        await player.volume_mute(True)
+    player._handle_volume_update("companion", 70)
+
+    device.audio.set_volume.assert_not_awaited()
+    assert player.volume_level == 30
+    assert player.volume_muted is True
+
+
+@pytest.mark.parametrize("muted", [False, True], ids=["audible", "muted"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["idle", "streaming"])
+def test_a_set_follows_the_volume_of_its_speakers(streaming: bool, muted: bool) -> None:
+    """A level a speaker of the set reports is taken over, never sent back."""
+    player, speaker = _make_set_player()
+    speaker.stream = MagicMock(running=streaming)
+    device = _speaker_device(player)
+    # Companion owns the volume of the Apple TV, not the one of the speakers
+    player._companion_device = MagicMock(spec=AppleTV)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = muted
+
+    with patch.object(player, "update_state"):
+        player._handle_volume_update("speaker", 30)
+
+    assert player.volume_level == 30
+    assert player.volume_muted is False
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_called_once_with(
+        PLAYER_ID, CONF_STORED_VOLUME, 30
+    )
+    cast("MagicMock", player.provider).bridge_manager.sync_volume.assert_called_with(PLAYER_ID)
+    speaker.stream.send_cli_command.assert_not_called()
+    device.audio.set_volume.assert_not_called()
+
+
+def test_a_set_ignores_the_echo_of_its_own_volume_while_it_streams() -> None:
+    """A level echoed back within the window of any speaker that was sent one does not win."""
+    player, speaker = _make_set_player()
+    other = _make_speaker("192.168.1.62")
+    cast("MagicMock", player.provider).get_set_speakers.return_value = [speaker, other]
+    speaker.stream = MagicMock(running=True)
+    player._attr_volume_level = 62
+
+    other.volume_echo_pending = True
+    player._handle_volume_update("speaker", 30)
+    assert player.volume_level == 62
+
+    other.volume_echo_pending = False
+    with patch.object(player, "update_state"):
+        player._handle_volume_update("speaker", 30)
+    assert player.volume_level == 30
+
+
+def test_the_volume_reports_of_a_set_can_be_ignored_while_it_streams() -> None:
+    """The setting to ignore the volume reports of a device covers the speakers of a set."""
+    player, speaker = _make_set_player(config_values={CONF_IGNORE_VOLUME: True})
+    speaker.stream = MagicMock(running=True)
+    player._attr_volume_level = 62
+
+    player._handle_volume_update("speaker", 30)
+
+    assert player.volume_level == 62
+
+
+@pytest.mark.parametrize("muted", [False, True], ids=["audible", "muted"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["idle", "streaming"])
+def test_a_zero_a_speaker_of_a_set_reports_changes_nothing(streaming: bool, muted: bool) -> None:
+    """A 0 a speaker reports leaves the level and the mute of the set alone."""
+    player, speaker = _make_set_player()
+    speaker.stream = MagicMock(running=streaming)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = muted
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("speaker", 0)
+
+    assert player.volume_level == 62
+    assert player.volume_muted is muted
+    update_state.assert_not_called()
+
+
+def test_a_device_without_a_set_ignores_the_volume_of_a_former_speaker() -> None:
+    """A report over a connection to a speaker of a set that is gone changes nothing."""
+    player = _make_control_player()
+    player._attr_volume_level = 62
+
+    player._handle_volume_update("speaker", 30)
+
+    assert player.volume_level == 62
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["idle", "streaming"])
+async def test_the_volume_set_on_a_set_reaches_its_speakers(streaming: bool) -> None:
+    """A volume reaches the speakers over their streams, or over the connection while idle."""
+    player, speaker = _make_set_player()
+    speaker.stream = MagicMock(running=streaming, send_cli_command=AsyncMock())
+    device = _speaker_device(player)
+
+    with patch.object(player, "update_state"):
+        await player.volume_set(30)
+
+    assert player.volume_level == 30
+    if streaming:
+        speaker.stream.send_cli_command.assert_awaited_once_with("VOLUME=30")
+        device.audio.set_volume.assert_not_awaited()
+    else:
+        speaker.stream.send_cli_command.assert_not_awaited()
+        device.audio.set_volume.assert_awaited_once_with(30)
+
+
+async def test_an_idle_set_is_muted_on_its_speakers() -> None:
+    """Muting an idle set sets its speakers to 0, unmuting restores their level."""
+    player, _ = _make_set_player()
+    device = _speaker_device(player)
+    player._attr_volume_level = 42
+    muted: list[bool | None] = []
+
+    with patch.object(player, "update_state"):
+        for mute in (True, False):
+            await player.volume_mute(mute)
+            muted.append(player.volume_muted)
+
+    assert muted == [True, False]
+    assert [call.args for call in device.audio.set_volume.await_args_list] == [(0,), (42,)]
+    assert player.volume_level == 42
+
+
+async def test_unmuting_an_idle_set_restores_the_level_set_while_it_was_muted() -> None:
+    """A level set on a muted set while it streams is the one an unmute afterwards restores."""
+    player, speaker = _make_set_player()
+    device = _speaker_device(player)
+    player._attr_volume_level = 42
+
+    with patch.object(player, "update_state"):
+        await player.volume_mute(True)
+        speaker.stream = MagicMock(running=True, send_cli_command=AsyncMock())
+        await player.volume_set(30)
+        speaker.stream = None
+        await player.volume_mute(False)
+
+    assert device.audio.set_volume.await_args.args == (30,)
+    assert player.volume_level == 30
+
+
+async def test_a_set_connects_to_one_of_its_speakers() -> None:
+    """A set connects to its first speaker that answers, without any credentials."""
+    player, first = _make_set_player()
+    second = _make_speaker("192.168.1.62")
+    cast("MagicMock", player.provider).get_set_speakers.return_value = [first, second]
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.return_value = False
+
+    with patch(
+        "music_assistant.providers.airplay.control_player.pyatv.connect",
+        side_effect=[OSError("no route"), device],
+    ) as connect:
+        assert await player._connect_speaker() is False
+        # one connection is enough
+        assert await player._connect_speaker() is False
+
+    configs = [call.args[0] for call in connect.await_args_list]
+    assert [str(config.address) for config in configs] == [first.address, second.address]
+    service = configs[1].get_service(Protocol.AirPlay)
+    assert service is not None
+    assert service.credentials is None
+    assert service.identifier == second.protocol_id
+    storage = connect.await_args_list[1].kwargs["storage"]
+    settings = await storage.get_settings(configs[1])
+    assert settings.protocols.airplay.mrp_tunnel == MrpTunnel.Force
+    assert player._speaker_device is device
+    assert device.audio.listener is player._speaker_listener
+    # pyatv only keeps a weak reference to its listeners
+    assert player._speaker_listener is not None
+
+
+@pytest.mark.parametrize(("reported", "expected"), [(30, 30), (0, 62)])
+async def test_a_set_takes_over_the_level_known_at_connect(reported: int, expected: int) -> None:
+    """A level known at connect is taken over; a HomePod that reported none yet shows 0."""
+    player, _ = _make_set_player()
+    player._attr_volume_level = 62
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.Volume
+    device.audio.volume = reported
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.control_player.pyatv.connect", return_value=device
+        ),
+        patch.object(player, "update_state"),
+    ):
+        await player._connect_speaker()
+
+    assert player.volume_level == expected
+
+
+@pytest.mark.parametrize("set_remains", [True, False], ids=["other speaker", "no set"])
+async def test_a_set_lets_go_of_a_speaker_that_left_it(set_remains: bool) -> None:
+    """The connection to a HomePod that left the set moves to one that is in it, if any."""
+    player, _ = _make_set_player()
+    old_device = _speaker_device(player)
+    other = _make_speaker("192.168.1.62")
+    provider = cast("MagicMock", player.provider)
+    if set_remains:
+        provider.get_set_speakers.return_value = [other]
+    else:
+        assert player.airplay_discovery_info is not None
+        del player.airplay_discovery_info.decoded_properties["psgid"]
+    new_device = MagicMock(spec=AppleTV)
+    new_device.features.in_state.return_value = False
+
+    with patch(
+        "music_assistant.providers.airplay.control_player.pyatv.connect", return_value=new_device
+    ):
+        assert await player._connect_speaker() is False
+
+    old_device.close.assert_called_once()
+    assert player._speaker is (other if set_remains else None)
+    assert player._speaker_device is (new_device if set_remains else None)
+
+
+async def test_a_set_retries_until_one_of_its_speakers_answers() -> None:
+    """A speaker that does not answer is given up on after a while and tried again later."""
+    player, _ = _make_set_player()
+
+    async def _never(*_args: object, **_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.control_player.pyatv.connect", side_effect=_never
+        ) as connect,
+        patch("music_assistant.providers.airplay.control_player._SPEAKER_CONNECT_TIMEOUT", 0.01),
+    ):
+        assert await asyncio.wait_for(player._connect_speaker(), 1) is True
+
+    connect.assert_awaited_once()
+    assert player._speaker_device is None
+
+
+async def test_only_a_set_with_speakers_connects_to_one() -> None:
+    """Neither a plain Apple TV nor a set that has no speaker yet opens a connection."""
+    plain = _make_control_player()
+    empty, _ = _make_set_player()
+    cast("MagicMock", empty.provider).get_set_speakers.return_value = []
+
+    with patch("music_assistant.providers.airplay.control_player.pyatv.connect") as connect:
+        assert await plain._connect_speaker() is False
+        assert await empty._connect_speaker() is False
+
+    connect.assert_not_called()
+
+
+async def test_a_lost_connection_to_a_speaker_moves_to_another_one() -> None:
+    """A HomePod that drops out is replaced; what plays on the Apple TV itself is left alone."""
+    player, first = _make_set_player()
+    second = _make_speaker("192.168.1.62")
+    cast("MagicMock", player.provider).get_set_speakers.return_value = [first, second]
+    cast("MagicMock", player.mass.create_task).side_effect = lambda coro, **_: asyncio.create_task(
+        coro
+    )
+    device = _speaker_device(player)
+    mrp_device = MagicMock(spec=AppleTV)
+    player._mrp_device = mrp_device
+    other_device = MagicMock(spec=AppleTV)
+    other_device.features.in_state.return_value = False
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.control_player.pyatv.connect",
+            side_effect=[OSError("no route"), other_device],
+        ),
+        patch.object(player, "_connect_companion", AsyncMock(return_value=False)),
+        patch.object(player, "_clear_external_state") as clear,
+    ):
+        player._handle_connection_closed("speaker", device)
+        # pyatv reports the close of the device it lost as well
+        player._handle_connection_closed("speaker", device)
+        assert player._connection_task is not None
+        await asyncio.wait_for(player._connection_task, 1)
+
+    device.close.assert_called_once()
+    clear.assert_not_called()
+    assert player._speaker is second
+    assert player._speaker_device is other_device
+    assert player._mrp_device is mrp_device
+
+
+async def test_a_reconnect_of_the_apple_tv_leaves_the_connection_to_its_speaker() -> None:
+    """A changed record of the Apple TV does not touch the connection to a HomePod of its set."""
+    player, _ = _make_set_player()
+    device = _speaker_device(player)
+    player._restart_connections = True
+
+    with (
+        patch("music_assistant.providers.airplay.control_player.pyatv.connect") as connect,
+        patch.object(player, "_connect_companion", AsyncMock(return_value=False)),
+        patch.object(player, "_connect_mrp", AsyncMock(return_value=False)),
+    ):
+        assert await player._connect_control_services() is False
+
+    connect.assert_not_called()
+    device.close.assert_not_called()
+    assert player._speaker_device is device
+
+
+def test_a_new_speaker_gives_its_set_a_connection() -> None:
+    """A set that has no connection yet connects when its speakers change."""
+    player, _ = _make_set_player()
+
+    with patch.object(player, "_schedule_connection") as schedule:
+        # not attached yet: the attach itself connects
+        player.on_speakers_changed()
+        schedule.assert_not_called()
+
+        player.set_player(MagicMock())
+        player.on_speakers_changed()
+        schedule.assert_called_once_with()
+
+        _speaker_device(player)
+        player.on_speakers_changed()
+        schedule.assert_called_once_with()
+
+        # the connected one left the set
+        cast("MagicMock", player.provider).get_set_speakers.return_value = []
+        player.on_speakers_changed()
+        assert schedule.call_count == 2
+
+
+async def test_a_detached_set_closes_its_connection_before_its_speakers_are_released() -> None:
+    """The HomePods of a disabled set become players of their own without a second connection."""
+    player, _ = _make_set_player()
+    device = _speaker_device(player)
+    cast("MagicMock", player.mass.players).wants_protocol.return_value = False
+    closed_before_release: list[bool] = []
+
+    def _release(_set_id: str) -> None:
+        closed_before_release.append(device.close.called)
+
+    cast("MagicMock", player.provider).release_set_speakers = MagicMock(side_effect=_release)
+
+    await player.on_detach()
+
+    assert closed_before_release == [True]
+
+
+async def test_the_volume_of_an_idle_pair_is_the_native_volume_of_its_homepod() -> None:
+    """
+    The HomePod that carries a stereo pair is a speaker of it: its native volume is the pair's.
+
+    As for a HomePod of its own, a volume goes to the device and one it reports comes back.
+    """
+    player = _make_control_player()
+    cast("MagicMock", player.airplay_discovery_info).decoded_properties.update(
+        {"tsid": "7C1E5A20", "gid": "7C1E5A20+0+AABBCC003301", "gpn": "Loft"}
+    )
+    cast("MagicMock", player.provider).get_pair_position.return_value = 0
+    cast("MagicMock", player.provider).get_set_speakers.return_value = [MagicMock(stream=None)]
+    assert player.carries_set is True
+    device = MagicMock()
+    device.audio.set_volume = AsyncMock()
+
+    with patch.object(player, "_device_for_feature", return_value=device):
+        await player.volume_set(30)
+    player._handle_volume_update("companion", 45)
+
+    device.audio.set_volume.assert_awaited_once_with(30)
+    assert player.volume_level == 45
+
+
+def test_the_state_of_a_set_follows_its_speakers_while_they_play() -> None:
+    """While its speaker streams, the Apple TV going to standby or playing an app is ignored."""
+    player, speaker = _make_set_player()
+    speaker.stream = MagicMock(running=True, session=MagicMock())
+    player._attr_powered = True
+    player._attr_playback_state = PlaybackState.PLAYING
+    media = MagicMock()
+    player._attr_current_media = media
+
+    with patch.object(player, "update_state"):
+        player._handle_power_update("companion", PowerState.Off)
+        player._handle_playing_update(
+            Playing(device_state=DeviceState.Playing, title="An app on the TV")
+        )
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.current_media is media
+    # as for a plain Apple TV, a sleep reported while Music Assistant streams is ignored
+    assert player.powered is True
+
+
+@pytest.mark.parametrize("command", ["play", "play_media"])
+async def test_a_set_whose_apple_tv_does_not_wake_fails_to_play_as_a_plain_apple_tv(
+    command: str,
+) -> None:
+    """A wake for playback that fails raises for a set just as for a plain Apple TV."""
+    room, speaker = _make_set_player()
+    plain = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "credentials"})
+    speaker.stream = MagicMock(running=True, session=MagicMock())
+    device = MagicMock()
+    device.power.turn_on = AsyncMock(side_effect=pyatv_exceptions.CommandError("no answer"))
+    for apple_tv in (room, plain):
+        apple_tv._attr_powered = False
+
+    with (
+        patch.object(AirPlayControlPlayer, "_device_for_power_feature", return_value=device),
+        patch.object(AirPlayPlayer, "play", AsyncMock()),
+        patch.object(AirPlayPlayer, "play_media", AsyncMock()),
+        patch.object(AirPlayControlPlayer, "_stream_active", True),
+    ):
+        args = (MagicMock(),) if command == "play_media" else ()
+        for apple_tv in (room, plain):
+            with pytest.raises(PlayerCommandFailed, match="no answer"):
+                await getattr(apple_tv, command)(*args)
+        # and so do its power and a wake asked for itself, such as for a dashboard
+        with pytest.raises(PlayerCommandFailed, match="no answer"):
+            await room.power(True)
+        with pytest.raises(PlayerCommandFailed, match="no answer"):
+            await room.wake()

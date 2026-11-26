@@ -3,25 +3,34 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
+from music_assistant_models.enums import MediaType, PlaybackState, QueueOption, RepeatMode
 from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
+import music_assistant.controllers.streams.audio_buffer as buffer_mod
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import locks as players_locks
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 from tests.common import bare_player_controller
+from tests.controllers.streams.stream_slot_rig import (
+    QUEUE_ID,
+    SESSION_ID,
+    SlotRig,
+    allow_starts,
+    given_up,
+    realtime_capture,
+)
 
 if TYPE_CHECKING:
     from music_assistant.controllers.players import PlayerController
@@ -47,11 +56,10 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
         await release_wait.wait()
         yield
 
-    player_state = SimpleNamespace(
+    player = SimpleNamespace(
         playback_state=PlaybackState.IDLE,
         active_source="q1",
     )
-    player = SimpleNamespace(state=player_state)
 
     mass = MagicMock()
     mass.players = MagicMock()
@@ -91,7 +99,7 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
     assert wait_entered.is_set()
     mass.players.enqueue_next_media.assert_not_awaited()
 
-    player_state.playback_state = PlaybackState.PLAYING
+    player.playback_state = PlaybackState.PLAYING
     release_wait.set()
     await enqueue_task
 
@@ -122,9 +130,7 @@ def _handover_controller() -> tuple[
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.logger = MagicMock()
     players = bare_player_controller()
-    player = SimpleNamespace(
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
-    )
+    player = SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
     mass = MagicMock()
     mass.players.wait_for_player_update = MagicMock(side_effect=_already_playing)
     mass.players.get_player = MagicMock(return_value=player)
@@ -195,9 +201,8 @@ async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A handover that cannot get the lock in time is dropped quietly."""
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.02)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.05)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 0.05)
     controller, mass, players, items = _handover_controller()
 
     async with players.get_player_lock("q1", PlayerLockPurpose.PLAYBACK):
@@ -205,6 +210,23 @@ async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
 
     mass.players.enqueue_next_media.assert_not_awaited()
     assert "busy" in cast("MagicMock", controller.logger).debug.call_args.args[0]
+
+
+async def test_a_repeat_handed_over_after_a_seek_starts_the_item_over() -> None:
+    """Repeat one turned on after a seek plays the next pass from the start of the item."""
+    controller, mass, _players, items = _handover_controller()
+    controller.signal_update = MagicMock()  # type: ignore[method-assign]
+    queue_data = controller._queue_data["q1"]
+    queue_data.queue.repeat_mode = RepeatMode.ONE
+    items[0].streamdetails = cast("Any", SimpleNamespace(seek_position=412))
+    load_item = AsyncMock()
+    controller._load_item = load_item  # type: ignore[method-assign]
+    controller.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
+
+    await _scheduled_handover(controller, mass, items[0])
+
+    load_item.assert_awaited_once_with(items[0])
+    mass.players.enqueue_next_media.assert_awaited_once()
 
 
 async def test_enqueue_next_item_follows_an_edit_made_during_the_handover() -> None:
@@ -235,6 +257,20 @@ async def test_enqueue_next_item_follows_an_edit_made_during_the_handover() -> N
     handed_over = mass.players.enqueue_next_media.await_args.kwargs["media"]
     assert handed_over.queue_item_id == items[1].queue_item_id
     assert queue_data.next_item_id_enqueued == items[1].queue_item_id
+
+
+async def test_a_stale_handover_hands_over_the_item_that_follows_now() -> None:
+    """A handover that lost its place to an edit still gets the new next item to the player."""
+    controller, mass, _players, items = _handover_controller()
+    controller.signal_update = MagicMock()  # type: ignore[method-assign]
+    # an edit moved the last item up while the handover of the old next item was scheduled
+    controller._queue_data["q1"].items = [items[0], items[2], items[1]]
+
+    await _scheduled_handover(controller, mass, items[1])
+    await _start_scheduled_handover(mass)
+
+    handed_over = mass.players.enqueue_next_media.await_args.kwargs["media"]
+    assert handed_over.queue_item_id == items[2].queue_item_id
 
 
 def _make_queue_item(queue_id: str, item_id: str) -> QueueItem:
@@ -283,6 +319,7 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
                 session_id="session-1",
                 next_item_id_preparing=None,
                 last_served_item_id=None,
+                sleep_timer_target=None,
             ),
         )
     }
@@ -334,7 +371,7 @@ async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
         reason="prepare_next",
         capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
         allow_provider_match=False,
-        stop_paused_queues=False,
+        take_over_slots=False,
     )
     assert mass.create_task.call_args.kwargs == {
         "task_id": "prepare_next_audio_buffer_queue-1",
@@ -343,37 +380,73 @@ async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
     }
 
 
+async def test_prepare_next_waits_for_capacity_as_long_as_the_caller_allows() -> None:
+    """A caller that knows when the next item is due can let the preparation wait longer."""
+    controller, next_item, mass = _controller_with_next_item()
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1", "current", capacity_wait_timeout=30.0)
+    await mass.create_task.call_args.args[0]
+
+    mass.streams.audio.get_audio_buffer.assert_awaited_once_with(
+        next_item,
+        reason="prepare_next",
+        capacity_wait_timeout=30.0,
+        allow_provider_match=False,
+        take_over_slots=False,
+    )
+
+
+async def _prepare_and_hold(
+    rig: SlotRig, playing: QueueItem
+) -> tuple[asyncio.Task[None], asyncio.Event]:
+    """
+    Start the preparation of "track 1" and hold the first audio of its source back.
+
+    :param rig: The rig whose queue plays.
+    :param playing: The track that plays before "track 1".
+    :return: The preparation, which waits for that audio with its source open, and the event
+        that lets the audio through.
+    """
+    opened = asyncio.Event()
+    first_audio = asyncio.Event()
+
+    async def _held_back() -> AsyncGenerator[bytes]:
+        opened.set()
+        await first_audio.wait()
+        async for chunk in realtime_capture():
+            yield chunk
+
+    rig.sources["track 1"] = _held_back
+    preparation = rig.queues.prepare_next_audio_buffer(QUEUE_ID, playing.queue_item_id)
+    assert preparation is not None
+    await asyncio.wait_for(opened.wait(), 1)
+    return preparation, first_audio
+
+
 @pytest.mark.parametrize(
-    ("is_buffering", "expect_cleared"),
-    [(True, True), (False, False)],
-    ids=["still_filling", "completed"],
+    ("still_next", "expect_released"),
+    [(False, True), (True, False)],
+    ids=["no_longer_next", "still_next"],
 )
 async def test_an_aborted_prepare_releases_its_half_filled_source(
-    is_buffering: bool, expect_cleared: bool
+    rig: SlotRig, still_next: bool, expect_released: bool
 ) -> None:
-    """Aborting a prewarm must free its slot instead of pinning it until the inactivity sweep."""
-    controller, next_item, mass = _controller_with_next_item()
-    buffer = MagicMock()
-    buffer.is_buffering = is_buffering
-    buffer.clear = AsyncMock()
-    started = asyncio.Event()
+    """An aborted prewarm frees its slot when its track no longer plays next, and only then."""
+    playing, prepared, later = rig.play("track 0", "track 1", "track 2")
+    preparation, _first_audio = await _prepare_and_hold(rig, playing)
+    half_filled = rig.buffer(prepared)
+    if not still_next:
+        # the track leaves the queue behind its back, so only the abort can release its audio
+        rig.queues._queue_data[QUEUE_ID].items = [playing, later]
 
-    async def _hang(*_args: object, **_kwargs: object) -> None:
-        # the producer is already running and owns a source slot at this point
-        next_item.streamdetails.buffer = buffer
-        started.set()
-        await asyncio.Event().wait()
-
-    mass.streams.audio.get_audio_buffer = _hang
-
-    controller.prepare_next_audio_buffer("queue-1", "current")
-    prepare_task = asyncio.create_task(mass.create_task.call_args.args[0])
-    await started.wait()
-    prepare_task.cancel()
+    rig.mass.cancel_task(f"prepare_next_audio_buffer_{QUEUE_ID}")
     with pytest.raises(asyncio.CancelledError):
-        await prepare_task
+        await preparation
 
-    assert buffer.clear.await_count == (1 if expect_cleared else 0)
+    assert await given_up(half_filled) is expect_released
+    assert rig.fills(half_filled) is not expect_released
+    assert rig.slot_free() is expect_released
 
 
 async def test_prepare_next_gives_up_softly_on_a_capacity_failure() -> None:
@@ -413,6 +486,32 @@ async def test_prepare_next_defers_while_the_streamed_item_holds_the_only_source
     controller.prepare_next_audio_buffer("queue-1", "current")
     await mass.create_task.call_args.args[0]
 
+    mass.streams.audio.get_audio_buffer.assert_not_awaited()
+
+
+async def test_a_deferred_preload_hints_the_slot_holder_at_its_next_item() -> None:
+    """The source holding the only slot hears which item follows, to line it up itself."""
+    controller, next_item, mass = _controller_with_next_item()
+    next_item.streamdetails = SimpleNamespace(buffer=None, provider="limited--1")
+    playing = MagicMock()
+    playing.eof = False
+    streamed = _streamed_item(controller)
+    streamed.streamdetails = SimpleNamespace(
+        provider="limited--1", buffer=playing, is_realtime=True
+    )
+    cast("Any", controller.get("queue-1")).current_item = SimpleNamespace(streamdetails=None)
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.has_available_stream_slot = False
+    mass.get_provider = MagicMock(return_value=provider)
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    await mass.create_task.call_args.args[0]
+
+    provider.hint_next_item.assert_awaited_once_with(
+        streamed.streamdetails, next_item.streamdetails
+    )
     mass.streams.audio.get_audio_buffer.assert_not_awaited()
 
 
@@ -482,49 +581,47 @@ async def test_prepare_next_skips_an_item_that_left_the_queue_while_it_was_fetch
     mass.streams.audio.get_audio_buffer.assert_not_awaited()
 
 
-async def test_prepare_next_releases_a_buffer_whose_item_left_the_queue_mid_fill() -> None:
+@pytest.mark.parametrize("edit", ["delete", "replace_next"])
+async def test_prepare_next_releases_a_buffer_whose_item_left_the_queue_mid_fill(
+    rig: SlotRig, edit: str
+) -> None:
     """
     A removal that lands while the buffer fills still releases the warmed audio.
 
-    Replace-next and delete do not cancel the prewarm, so without the check after the fill
-    the finished buffer stays attached to an item no cleanup reaches any more, holding its
-    audio until the inactivity sweep.
+    Replace-next and delete do not cancel the prewarm: the queue gives the audio up at the
+    change, and the prewarm ends without it.
     """
-    controller, next_item, mass = _controller_with_next_item()
-    buffer = MagicMock()
-    buffer.clear = AsyncMock()
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    preparation, first_audio = await _prepare_and_hold(rig, playing)
+    filling = rig.buffer(prepared)
 
-    async def _remove_item_meanwhile(*_args: object, **_kwargs: object) -> MagicMock:
-        controller._queue_data["queue-1"].items.clear()
-        next_item.streamdetails.buffer = buffer
-        return buffer
+    if edit == "delete":
+        rig.queues.delete_item(QUEUE_ID, prepared.queue_item_id)
+    else:
+        await rig.queues._enqueue_with_option(
+            QUEUE_ID, [rig.track("track 5")], QueueOption.REPLACE_NEXT
+        )
 
-    mass.streams.audio.get_audio_buffer = _remove_item_meanwhile
+    assert await given_up(filling)
+    await asyncio.wait_for(preparation, 1)
+    first_audio.set()
+    await rig.settle()
+    assert rig.slot_free()
+    assert rig.opened["track 1"] == 1
 
-    controller.prepare_next_audio_buffer("queue-1", "current")
-    await mass.create_task.call_args.args[0]
 
-    buffer.clear.assert_awaited_once()
-    assert next_item.streamdetails.buffer is None
-
-
-async def test_prepare_next_leaves_the_buffer_of_an_item_still_on_the_queue() -> None:
+async def test_prepare_next_leaves_the_buffer_of_an_item_still_on_the_queue(rig: SlotRig) -> None:
     """A fill that raced nothing keeps its buffer attached for the upcoming track."""
-    controller, next_item, mass = _controller_with_next_item()
-    buffer = MagicMock()
-    buffer.clear = AsyncMock()
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    preparation, first_audio = await _prepare_and_hold(rig, playing)
+    filling = rig.buffer(prepared)
 
-    async def _fill(*_args: object, **_kwargs: object) -> MagicMock:
-        next_item.streamdetails.buffer = buffer
-        return buffer
+    first_audio.set()
+    await asyncio.wait_for(preparation, 1)
 
-    mass.streams.audio.get_audio_buffer = _fill
-
-    controller.prepare_next_audio_buffer("queue-1", "current")
-    await mass.create_task.call_args.args[0]
-
-    buffer.clear.assert_not_awaited()
-    assert next_item.streamdetails.buffer is buffer
+    assert rig.buffer(prepared) is filling
+    assert not filling.cancelled
+    assert rig.fills(filling)
 
 
 async def test_prepare_next_creates_no_buffer_once_the_session_ended() -> None:
@@ -549,53 +646,83 @@ async def test_prepare_next_creates_no_buffer_once_the_session_ended() -> None:
     mass.streams.audio.get_audio_buffer.assert_not_awaited()
 
 
-async def test_prepare_next_releases_a_buffer_that_filled_after_the_session_ended() -> None:
+async def test_prepare_next_makes_no_buffer_once_the_session_ended_while_it_waited(
+    rig: SlotRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
-    A stop that lands while the buffer fills still releases the warmed audio.
+    Playback that ends while the prewarm waits to make its buffer gets no audio any more.
 
-    The stop's cleanup has already run by the time the fill finishes, so the buffer is
-    detached and released here instead of holding its source on a stopped queue.
+    Nothing cancels the prewarm here, as when a start fails on a player that plays along with
+    a group: the queue is asked again before the buffer is made.
     """
-    controller, next_item, mass = _controller_with_next_item()
-    buffer = MagicMock()
-    detached_on_clear: list[bool] = []
-    buffer.clear = AsyncMock(
-        side_effect=lambda: detached_on_clear.append(next_item.streamdetails.buffer is None)
-    )
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    probing = asyncio.Event()
+    probed = asyncio.Event()
 
-    async def _stop_meanwhile(*_args: object, **_kwargs: object) -> MagicMock:
-        controller._queue_data["queue-1"].session_id = None
-        next_item.streamdetails.buffer = buffer
-        return buffer
+    async def _probe(*_args: object) -> None:
+        probing.set()
+        await probed.wait()
 
-    mass.streams.audio.get_audio_buffer = _stop_meanwhile
+    monkeypatch.setattr(buffer_mod, "_needs_format_probe", lambda _details: True)
+    monkeypatch.setattr(buffer_mod, "_probe_source_format", _probe)
+    preparation = rig.queues.prepare_next_audio_buffer(QUEUE_ID, playing.queue_item_id)
+    assert preparation is not None
+    await asyncio.wait_for(probing.wait(), 1)
 
-    controller.prepare_next_audio_buffer("queue-1", "current")
-    await mass.create_task.call_args.args[0]
+    rig.queues._end_session(rig.queues._queue_data[QUEUE_ID], SESSION_ID)
+    probed.set()
+    await asyncio.wait_for(preparation, 1)
 
-    buffer.clear.assert_awaited_once()
-    assert next_item.streamdetails.buffer is None
-    assert detached_on_clear == [True]
+    assert prepared.streamdetails is not None
+    assert prepared.streamdetails.buffer is None
+    assert rig.opened["track 1"] == 0
 
 
-async def test_prepare_next_keeps_the_buffer_when_the_session_rotated_mid_fill() -> None:
+async def test_prepare_next_releases_a_buffer_that_fills_when_the_queue_is_stopped(
+    rig: SlotRig,
+) -> None:
+    """A stop that lands while the buffer fills releases the warmed audio and its slot."""
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    preparation, _first_audio = await _prepare_and_hold(rig, playing)
+    filling = rig.buffer(prepared)
+
+    # what a stop does around its command to the player
+    rig.queues._cancel_pending_playback(QUEUE_ID)
+    rig.queues._end_session(rig.queues._queue_data[QUEUE_ID], SESSION_ID)
+    await rig.settle()
+
+    assert preparation.cancelled()
+    assert filling.cancelled
+    assert filling.seconds_available == 0
+    assert not rig.fills(filling)
+    assert rig.slot_free()
+
+
+async def test_prepare_next_keeps_the_buffer_when_the_session_rotated_mid_fill(
+    rig: SlotRig,
+) -> None:
     """A skip that starts a new session while the buffer fills keeps the audio for that session."""
-    controller, next_item, mass = _controller_with_next_item()
-    buffer = MagicMock()
-    buffer.clear = AsyncMock()
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    preparation, first_audio = await _prepare_and_hold(rig, playing)
+    filling = rig.buffer(prepared)
+    allow_starts(rig)
 
-    async def _skip_meanwhile(*_args: object, **_kwargs: object) -> MagicMock:
-        controller._queue_data["queue-1"].session_id = "session-2"
-        next_item.streamdetails.buffer = buffer
-        return buffer
+    async def _load(queue_item: QueueItem, **_kwargs: object) -> None:
+        # what the start of a track does: stop the sources in its way, then get its audio
+        await rig.queues._abort_superseded_source_buffers(queue_item)
+        first_audio.set()
+        await rig.audio.get_audio_buffer(queue_item, reason="prepare", capacity_wait_timeout=0)
 
-    mass.streams.audio.get_audio_buffer = _skip_meanwhile
+    rig.queues._load_item = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
 
-    controller.prepare_next_audio_buffer("queue-1", "current")
-    await mass.create_task.call_args.args[0]
+    await rig.queues.play_index(QUEUE_ID, 1)
+    await asyncio.wait_for(preparation, 1)
 
-    buffer.clear.assert_not_awaited()
-    assert next_item.streamdetails.buffer is buffer
+    assert rig.queues._queue_data[QUEUE_ID].session_id != SESSION_ID
+    assert rig.buffer(prepared) is filling
+    assert not filling.cancelled
+    assert rig.fills(filling)
+    assert rig.opened["track 1"] == 1
 
 
 async def test_prepare_next_follows_the_streamed_item_not_the_audible_one() -> None:

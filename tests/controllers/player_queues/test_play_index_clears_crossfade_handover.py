@@ -46,13 +46,13 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     ctrl._queue_data = {QUEUE_ID: PlayerQueueData(queue=queue, items=items)}
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl._preload_next_item = Mock()  # type: ignore[method-assign]
-    ctrl._cleanup_stale_queue_buffers = Mock()  # type: ignore[method-assign]
     ctrl._load_item = AsyncMock()  # type: ignore[method-assign]
     ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mark_ended = Mock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass.streams.is_smart_fades_active.return_value = False
     ctrl.mass.players.play_media = AsyncMock()
     return ctrl

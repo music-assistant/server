@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID, ImageType, MediaType, PlaylistMatchPolicy
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderID,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -458,9 +460,16 @@ async def test_transient_stream_failure_retains_original_without_confirmation() 
     assert "| Retained | 1 |" in report_markdown
 
 
-async def test_transient_source_failure_is_not_reprobed_per_entry() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        ResourceTemporarilyUnavailable("Timed out"),
+        RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+    ],
+)
+async def test_transient_source_failure_is_not_reprobed_per_entry(error: Exception) -> None:
     """A transient source-provider error is remembered, not retried once per entry."""
-    get_provider_item = AsyncMock(side_effect=ResourceTemporarilyUnavailable("Timed out"))
+    get_provider_item = AsyncMock(side_effect=error)
     prov = _make_provider(
         loaded_provider_domains={"builtin"},
         provider_entries=[("spotify", "spotify_1", True)],
@@ -2018,6 +2027,36 @@ async def test_no_acceptable_match_is_reported_as_unmatched() -> None:
     report_markdown = set_report.call_args.args[0]
     assert "| Unmatched | 1 |" in report_markdown
     assert "No acceptable match" in report_markdown
+
+
+async def test_rate_limited_entry_is_reported_with_the_rate_limit() -> None:
+    """An entry a rate limited provider was not asked about is not reported as unmatchable."""
+    prov = _make_provider()
+    item = _make_playlist_item(
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")]
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    enrichment = TrackProviderEnrichment(
+        track=_make_track("Song", artists=["Artist"]),
+        matches=(),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+        rate_limited_providers=("Qobuz",),
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", 1, PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "qobuz--1")
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Unmatched | 1 |" in report_markdown
+    # the reason of the unmatched entry and its provider lookup issue
+    assert report_markdown.count("Rate limited on Qobuz") == 2
+    assert "No acceptable match" not in report_markdown
 
 
 async def test_provider_error_is_reported_as_unmatched_with_issue() -> None:

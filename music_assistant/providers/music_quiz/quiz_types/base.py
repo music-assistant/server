@@ -315,7 +315,7 @@ class QuizType(ABC):
                 async for track in self._iter_source_tracks(media_item):
                     if track.uri:
                         pool[track.uri] = track
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad source must not abort the round
                 LOGGER.warning("Could not load Music Quiz source %s: %s", source_uri, err)
         if not pool:
             raise InvalidDataError(
@@ -359,6 +359,13 @@ class QuizType(ABC):
                 provider_instance_id_or_domain=media_item.provider,
                 limit=None,
             )
+            if not tracks:
+                # most music providers have no artist tracks listing
+                tracks = await self.mass.music.artists.top_tracks(
+                    item_id=media_item.item_id,
+                    provider_instance_id_or_domain=media_item.provider,
+                    limit=None,
+                )
         else:
             tracks = []
             offset = 0
@@ -423,7 +430,7 @@ class QuizType(ABC):
                 target_size=target_size,
                 preferred_provider_instances=preferred_provider_instances or None,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, expansion is optional
             LOGGER.warning("Could not expand Music Quiz sources with similar music: %s", err)
             return
         if not similar_tracks:
@@ -491,7 +498,7 @@ class QuizType(ABC):
                     # search also stands in for an ISRC MusicBrainz has no recording for
                     if cross_check or isrc_year is None:
                         name_year = await self._name_release_year(provider, track)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - provider code, the library year stays
                     LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
         # the ISRC year is read before the search runs, so a search that stalls past the budget
         # or fails costs this track precision rather than the year the ISRC already supplied
@@ -544,6 +551,25 @@ class QuizType(ABC):
         if not artist_name or not track.name:
             return None
         return await musicbrainz.get_release_year_by_track_name(artist_name, track.name)
+
+
+def get_track_artist_answers(track: Track) -> list[str]:
+    """
+    Return deterministic accepted artist names available on the track.
+
+    :param track: Track whose artist names should be accepted.
+    """
+    answers: list[str] = []
+    seen_answers: set[str] = set()
+    for answer in (
+        track.artist_str,
+        *(artist.name for artist in track.artists),
+        *(artist.sort_name for artist in track.artists),
+    ):
+        if answer and (normalized_answer := answer.casefold()) not in seen_answers:
+            answers.append(answer)
+            seen_answers.add(normalized_answer)
+    return answers
 
 
 def get_track_release_year(track: Track) -> int | None:

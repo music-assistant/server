@@ -28,8 +28,10 @@ PLAYBACK_STATE_MAP: dict[WamPlaybackState, PlaybackState] = {
 PLAYER_SOURCE_MAP = {
     WamSource.WIFI: PlayerSource(id=WamSource.WIFI, name="Wi-Fi", passive=True),
     WamSource.BLUETOOTH: PlayerSource(id=WamSource.BLUETOOTH, name="Bluetooth", passive=False),
-    WamSource.AUX: PlayerSource(id=WamSource.AUX, name="AUX", passive=True),
-    WamSource.OPTICAL: PlayerSource(id=WamSource.OPTICAL, name="Optical", passive=True),
+    WamSource.AUX: PlayerSource(id=WamSource.AUX, name="AUX", passive=True, is_input=True),
+    WamSource.OPTICAL: PlayerSource(
+        id=WamSource.OPTICAL, name="Optical", passive=True, is_input=True
+    ),
     WamSource.TV_SOUNDCONNECT: PlayerSource(
         id=WamSource.TV_SOUNDCONNECT, name="TV SoundConnect", passive=False
     ),
@@ -95,7 +97,7 @@ class StateSyncMapper:
             player._attr_playback_state = PlaybackState.IDLE
 
         if stream_active:
-            player._attr_active_source = player.player_id
+            player._attr_active_source = player.protocol_id
         else:
             player._attr_active_source = speaker_attrs.source
 
@@ -115,6 +117,6 @@ class StateSyncMapper:
         else:
             player.synced_to_internal = None
             if group_children:
-                player._attr_group_members = [player.player_id, *sorted(group_children)]
+                player._attr_group_members = [player.protocol_id, *sorted(group_children)]
             else:
                 player._attr_group_members = []

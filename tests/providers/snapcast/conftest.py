@@ -9,6 +9,9 @@ import pytest
 
 from music_assistant.providers.snapcast.constants import DEFAULT_SNAPCAST_FORMAT
 
+# the real server with fake providers, for the tests of snapcast players on a running server
+from tests.scenarios.conftest import scenario  # noqa: F401
+
 
 class FakeSnapstream:
     """Minimal Snapstream stand-in for testing ma_stream._register_tcp_server_source."""
@@ -195,6 +198,7 @@ def fake_provider(fake_snapserver: FakeSnapserver) -> MagicMock:
     provider._snapserver = fake_snapserver
     provider._snapcast_stream_idle_threshold = 60000
     provider._use_builtin_server = False
+    provider._snapcast_server_buffer_size = 0
     provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT
     provider.logger = MagicMock()
     return provider

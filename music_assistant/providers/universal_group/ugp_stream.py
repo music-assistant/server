@@ -20,9 +20,10 @@ if TYPE_CHECKING:
     from music_assistant.helpers.dsp import ComplexFilter
 
 from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
+from music_assistant.controllers.streams.constants import output_pacing_args
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.providers.ugp_stream")
 
@@ -115,7 +116,7 @@ class UGPStream:
                 # the flow source carries no pacing of its own, so this is the single point
                 # that keeps the members from running far ahead, at the flow route's pace.
                 # See the usage policy note in the streams constants.
-                extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
+                extra_input_args=output_pacing_args(),
             ):
                 await asyncio.gather(
                     *[sub(chunk) for sub in self.subscribers],
@@ -124,6 +125,9 @@ class UGPStream:
         except asyncio.CancelledError:
             LOGGER.debug("UGP stream runner cancelled")
             raise
+        except AudioSourceRefusedError:
+            # the streams controller logs a source refusing this group itself
+            pass
         except Exception as err:
             LOGGER.error("UGP stream runner error: %s", err, exc_info=err)
         finally:

@@ -100,7 +100,7 @@ class MusicBrainzRecommendationManager:
         """Scan the library once and cache matched artists as serialized dicts."""
         try:
             artists = await self._scan_matches()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - background refresh, any failure is logged
             self.logger.warning("Failed to compute MusicBrainz recommendations: %s", err)
             return
         # Expire at the next UTC midnight so the fresh path recomputes daily; the entry
@@ -134,10 +134,6 @@ class MusicBrainzRecommendationManager:
             if not mbid:
                 continue
             scanned += 1
-            last_refresh = artist.metadata.last_refresh if artist.metadata else None
-            if last_refresh is None:
-                self.mass.metadata.schedule_update_metadata(artist)
-                continue
             life_span = artist.metadata.life_span if artist.metadata else None
             if not life_span:
                 continue

@@ -28,7 +28,6 @@ import music_assistant.controllers.music.media.playlists as playlists_module
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
-    ALBUM_RECONCILIATION_TASK_ID,
     MISSING_METADATA_SCAN_TASK_ID,
     MUSICBRAINZ_LINK_TASK_ID,
     PLAYLIST_METADATA_SCAN_TASK_ID,
@@ -957,7 +956,6 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     artist_scan_task = tasks_controller.get_task(MISSING_METADATA_SCAN_TASK_ID)
     playlist_scan_task = tasks_controller.get_task(PLAYLIST_METADATA_SCAN_TASK_ID)
     thumb_cleanup_task = tasks_controller.get_task(THUMB_CACHE_CLEANUP_TASK_ID)
-    album_reconciliation_task = tasks_controller.get_task(ALBUM_RECONCILIATION_TASK_ID)
 
     assert cache_task.translation_key == "background_task.cache_database_cleanup"
     assert cache_task.translation_owner == "core.cache"
@@ -994,19 +992,12 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert artist_scan_task.schedule == playlist_scan_task.schedule
     assert thumb_cleanup_task.schedule == artist_scan_task.schedule
 
-    # Album reconciliation is bounded to a handful of albums per run, so it runs hourly
-    # instead of spread across the day like the other (MusicBrainz-hitting) scans.
-    assert album_reconciliation_task.translation_key == "background_task.reconcile_duplicate_albums"
-    assert album_reconciliation_task.translation_owner == "core.metadata"
-    assert album_reconciliation_task.metadata == {"task_domain": "metadata_album_reconciliation"}
-    assert album_reconciliation_task.schedule == TaskSchedule.hourly()
-
 
 async def test_musicbrainz_link_task_registers_hourly(
     mass_minimal: MusicAssistant,
     tasks_controller: TasksController,
 ) -> None:
-    """The MusicBrainz link run is bounded and paced, so it runs hourly like album reconciliation."""
+    """The MusicBrainz link run is bounded and paced, so it runs hourly."""
     metadata = MetaDataController(mass_minimal)
     mass_minimal.metadata = metadata
     metadata._register_maintenance_tasks()

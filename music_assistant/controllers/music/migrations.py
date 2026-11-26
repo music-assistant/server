@@ -55,6 +55,7 @@ from music_assistant.controllers.music.constants import (
     DB_SCHEMA_VERSION,
 )
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
+from music_assistant.controllers.music.helpers import genre_lookup_cte
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.controllers.streams.audio_analysis_codec import encode
 from music_assistant.controllers.streams.audio_analysis_database import create_analysis_tables
@@ -259,7 +260,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                 f"CREATE UNIQUE INDEX {DB_TABLE_LEGACY_PLAYLOG}_unique_idx "
                 f"ON {DB_TABLE_LEGACY_PLAYLOG}(item_id,provider,media_type,userid)"
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
             # If we can't create the index due to duplicate entries, log and continue
             logger.warning("Could not create unique index on playlog: %s", err)
 
@@ -499,12 +500,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         # media type using json_each to map media items directly to genres.
         # One raw_name can map to multiple genre_ids (n:n).
         if raw_name_to_genres:
-            cte_values = ", ".join(
-                f"(LOWER('{name.replace(chr(39), chr(39) + chr(39))}'), {gid})"
-                for name, gids in raw_name_to_genres.items()
-                for gid in gids
-            )
-            cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
+            cte, cte_params = genre_lookup_cte(raw_name_to_genres)
 
             for table, media_type in media_tables:
                 full_query = (
@@ -519,7 +515,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                     f"AND json_extract({table}.metadata, '$.genres') != '[]'"
                 )
                 logger.debug("Genre migration - %s query:\n%s", media_type.value, full_query)
-                await db.execute(full_query)
+                await db.execute(full_query, cte_params)
                 await db.commit()
 
     if prev_version <= 29:
@@ -1337,7 +1333,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         await database.commit()
         try:
             await mass.music.genres.restore_default_genres(full_restore=False)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
             logger.warning("Could not seed default podcast/audiobook genres: %s", err)
 
     if prev_version <= 65:
@@ -1426,6 +1422,29 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                     f"ON {DB_TABLE_PLAY_HISTORY}(userid,timestamp,media_type,provider,item_id)"
                 )
 
+    if prev_version <= 71:
+        # opensubsonic stored artist/album info image urls of external sites as its own
+        # images; the provider no longer passes those through when resolving an image
+        await _drop_opensubsonic_external_images(database)
+
+    if prev_version <= 72:
+        # The old name referred to either name COLLATE NOCASE or search_name;
+        # startup now creates search_name_idx, so neither old definition is needed.
+        for table in MEDIA_ITEM_DB_TABLES:
+            await database.execute(f"DROP INDEX IF EXISTS {table}_name_nocase_idx")
+
+    if prev_version <= 73:
+        # the podcast of an episode, so the cleanup keeps the progress of library podcasts;
+        # existing rows get it from the next report of their provider
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_MEDIA_PROGRESS} ADD COLUMN podcast_item_id TEXT"
+            )
+        except Exception as err:
+            # create_tables makes a missing table with the column already in place
+            if "duplicate column" not in str(err) and "no such table" not in str(err):
+                raise
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active
@@ -1453,7 +1472,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
     # always clear the cache after a db migration; a failure here must not reset the library
     try:
         await mass.cache.clear()
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
         logger.warning("Could not clear the cache after the migration: %s", err)
 
 
@@ -1749,7 +1768,7 @@ async def _move_audio_analysis_out(
             f"ATTACH DATABASE :path AS {_AUDIO_ANALYSIS_SCHEMA}", {"path": db_path}
         )
     # a failed library migration resets library.db, so nothing here may raise
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
         logger.error(
             "Could not open %s (%s); audio analysis stays in library.db", AA_DB_FILENAME, err
         )
@@ -1763,7 +1782,7 @@ async def _move_audio_analysis_out(
             await _move_audio_analysis_table(
                 database, logger, DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS
             )
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
         logger.error(
             "Could not move audio analysis to %s (%s); the remaining rows stay in library.db",
             AA_DB_FILENAME,
@@ -2041,6 +2060,54 @@ async def _drop_audiobookshelf_image_tokens(database: DatabaseConnection) -> Non
                 await database.update(
                     table, {id_column: db_row[id_column]}, {column: serialize_to_json(value)}
                 )
+
+
+async def _drop_opensubsonic_external_images(database: DatabaseConnection) -> None:
+    """Drop the remotely accessible images of opensubsonic artists and albums."""
+
+    def _is_external(image: Any) -> bool:
+        return (
+            isinstance(image, dict)
+            and str(image.get("provider")).startswith("opensubsonic")
+            and image.get("remotely_accessible") is True
+        )
+
+    for table in (
+        DB_TABLE_ARTISTS,
+        DB_TABLE_ALBUMS,
+        DB_TABLE_MEDIA_PROGRESS,
+        DB_TABLE_PLAY_HISTORY,
+    ):
+        columns = await _table_columns(database, table)
+        # media items keep a list of images in their metadata, played items a single image
+        if "metadata" in columns:
+            id_column, column = "item_id", "metadata"
+        elif "image" in columns:
+            id_column, column = "id", "image"
+        else:
+            continue
+        for db_row in await database.get_rows_from_query(
+            f"SELECT {id_column}, {column} FROM {table} WHERE {column} LIKE '%opensubsonic%'",
+            limit=0,
+        ):
+            try:
+                value = json_loads(db_row[column])
+            except ValueError:
+                continue
+            if column == "image":
+                if _is_external(value):
+                    await database.update(table, {id_column: db_row[id_column]}, {column: None})
+                continue
+            images = value.get("images") if isinstance(value, dict) else None
+            if not isinstance(images, list):
+                continue
+            kept_images = [x for x in images if not _is_external(x)]
+            if len(kept_images) == len(images):
+                continue
+            value["images"] = kept_images
+            await database.update(
+                table, {id_column: db_row[id_column]}, {column: serialize_to_json(value)}
+            )
 
 
 async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> None:

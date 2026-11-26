@@ -22,8 +22,8 @@ class StreamFixtureData(BaseModel):
     Fixture data for stream conversion tests.
 
     This type is stored in fixtures and reconstructed into StreamConversionData
-    during test execution with stub values for unstable fields (hls_url, domand_bid,
-    hls_playlist_text).
+    during test execution with stub values for unstable fields (media_playlist_url,
+    domand_bid).
 
     Attributes:
         watch_data: Video watch page data from niconico

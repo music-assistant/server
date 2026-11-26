@@ -126,7 +126,7 @@ class ConverterTestRunner:
                 # fixture is BaseModel type from FixtureLoader.load_fixture
                 self._process_single_fixture(fixture_id, fixture)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - one failing fixture must not stop the rest
             self.failed_tests.append(f"{fixture_name}: {e}")
 
     def _process_single_fixture(self, fixture_id: str, fixture: BaseModel) -> None:
@@ -151,7 +151,7 @@ class ConverterTestRunner:
             # Process all converted items (handles both single and list results)
             self._process_all_converted_items(fixture_id, converted_result)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - one failing fixture must not stop the rest
             self.failed_tests.append(f"{fixture_id}: {e}")
 
     def _process_all_converted_items(

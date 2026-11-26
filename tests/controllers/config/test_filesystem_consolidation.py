@@ -87,8 +87,8 @@ from music_assistant.providers.filesystem_local.constants import (
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
 )
+from music_assistant.testing import full_mass_context
 from tests.common import capture_log_records
-from tests.conftest import full_mass_context
 from tests.controllers.storage.conftest import (
     SUPERVISOR_TOKEN,
     FakeSupervisor,
@@ -1073,13 +1073,14 @@ async def test_a_supervisor_that_can_not_be_asked_converts_nothing(
     await _store_mappings(mass, ("track", SMB_ID, "Artist/Album/01.flac"))
     before = copy.deepcopy(mass.config.get(CONF_PROVIDERS))
     supervisor_url = hassio.SUPERVISOR_URL
+    supervisor_timeout = consolidation_module.SUPERVISOR_TIMEOUT
     if problem == "no_manager_role":
         supervisor.refuse_access = True
     elif problem == "gone":
         monkeypatch.setattr(hassio, "SUPERVISOR_URL", "http://127.0.0.1:9")
     else:
         monkeypatch.setattr(consolidation_module, "SUPERVISOR_TIMEOUT", 0.2)
-        supervisor.list_delay = 2
+        supervisor.list_released.clear()
 
     await consolidate_filesystem_sources(mass)
 
@@ -1098,8 +1099,9 @@ async def test_a_supervisor_that_can_not_be_asked_converts_nothing(
 
     # the next start finds the Supervisor
     supervisor.refuse_access = False
-    supervisor.list_delay = 0
+    supervisor.list_released.set()
     monkeypatch.setattr(hassio, "SUPERVISOR_URL", supervisor_url)
+    monkeypatch.setattr(consolidation_module, "SUPERVISOR_TIMEOUT", supervisor_timeout)
     await consolidate_filesystem_sources(mass)
 
     assert _config(mass, SMB_ID)["domain"] == "filesystem_local"

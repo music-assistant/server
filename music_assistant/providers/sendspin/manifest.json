@@ -7,7 +7,8 @@
   "documentation": "https://music-assistant.io/player-support/sendspin/",
   "codeowners": ["@music-assistant"],
   "credits": ["[Sendspin](https://sendspin-audio.com)"],
-  "requirements": ["aiosendspin[server]==10.2.1", "av==18.1.0"],
+  "provides": ["audio_source"],
+  "requirements": ["aiosendspin[server]==11.0.0", "av==19.0.2", "soxr==1.1.0"],
   "builtin": true,
   "allow_disable": false
 }

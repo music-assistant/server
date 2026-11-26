@@ -23,18 +23,22 @@ from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata,
 from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
-from music_assistant.helpers.compare import compare_album_name, compare_strings
+from music_assistant.helpers.compare import (
+    compare_album_name,
+    compare_strings,
+    compare_track_title,
+)
 from music_assistant.helpers.external_ids import (
     external_id_lookup_values,
     is_valid_barcode,
     is_valid_isrc,
     normalize_external_id,
 )
-from music_assistant.helpers.uri import apple_storefront_from_url, canonical_provider_url
+from music_assistant.helpers.uri import canonical_mapping_url
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.metadata_provider import MetadataProvider
 
-from .api_client import MusicBrainzAPIClient
+from .api_client import MusicBrainzAPIClient, url_relation_ids
 from .constants import (
     DISCOGRAPHY_MAX_PAGES,
     DISCOGRAPHY_PRIMARY_TYPES,
@@ -379,18 +383,7 @@ class MusicbrainzProvider(MetadataProvider):
             details = await self.get_artist_details(artist.mbid)
         except InvalidDataError:
             return None
-        artist_entity_type: ArtistEntityType | None = None
-        if details.type:
-            entity_type = ArtistEntityType(details.type.lower())
-            if entity_type != ArtistEntityType.UNKNOWN:
-                artist_entity_type = entity_type
-        life_span: LifeSpan | None = None
-        if details.life_span:
-            life_span = LifeSpan(
-                begin=details.life_span.begin,
-                end=details.life_span.end,
-                ended=details.life_span.ended,
-            )
+        artist_entity_type, life_span = artist_type_and_life_span(details)
         links = self._links_from_relations(details.relations)
         genres = _genre_names(details.genres)
         if not artist_entity_type and not life_span and not links and not genres:
@@ -697,17 +690,22 @@ class MusicbrainzProvider(MetadataProvider):
         :return: The MusicBrainz id, or None when the URL is unknown or linked to several
             entities of that kind.
         """
-        entity = URL_RELATION_ENTITY[media_type]
-        result = await self._api_client.get_data("url", resource=resource_url, inc=f"{entity}-rels")
-        if not result:
-            return None
-        ids = {
-            target["id"]
-            for relation in result.get("relations", [])
-            if not relation.get("ended") and (target := relation.get(entity)) and target.get("id")
-        }
+        mbids = await self.get_mbids_by_url(resource_url, media_type)
         # a URL linked to several entities identifies none of them
-        return ids.pop() if len(ids) == 1 else None
+        return mbids[0] if len(mbids) == 1 else None
+
+    async def get_mbids_by_url(self, resource_url: str, media_type: MediaType) -> list[str]:
+        """
+        Get the MusicBrainz ids of all artists, releases or recordings a URL is linked to.
+
+        :param resource_url: Public URL of the item on a streaming service, in the exact
+            form MusicBrainz stores it (see :func:`canonical_provider_url`).
+        :param media_type: Kind of entity to look for: ARTIST, ALBUM or TRACK.
+        :return: The MusicBrainz ids, sorted; empty when MusicBrainz does not know the URL.
+        """
+        entity = URL_RELATION_ENTITY[media_type]
+        result = await self._api_client.get_url_data(resource=resource_url, inc=f"{entity}-rels")
+        return sorted(url_relation_ids(result, entity))
 
     async def get_release_group_by_track_name(
         self, artist_name: str, track_name: str
@@ -1125,13 +1123,16 @@ class MusicbrainzProvider(MetadataProvider):
 
     async def _recording_by_isrc(self, isrc: str, track: Track) -> MusicBrainzRecording | None:
         """Return the recording carrying an ISRC that is the given track, if any."""
+        recordings = await self.get_recordings_by_isrc(isrc)
         # an ISRC is occasionally reused, so the recording must also match the track's
-        # title and length
+        # length and title; the title may differ when the ISRC names a single recording,
+        # as the credited artist is still checked below
+        sole_recording = len(recordings) == 1 and bool(track.artists)
         candidates = [
             recording
-            for recording in await self.get_recordings_by_isrc(isrc)
-            if compare_strings(recording.title, track.name, strict=False)
-            and _length_matches(recording, track)
+            for recording in recordings
+            if _length_matches(recording, track)
+            and (sole_recording or compare_strings(recording.title, track.name, strict=False))
         ]
         if not candidates:
             return None
@@ -1176,10 +1177,7 @@ class MusicbrainzProvider(MetadataProvider):
             if domain == "qobuz" and not mapping.url:
                 # a performer without a Qobuz page has its name as id and no URL
                 continue
-            storefront = None
-            if domain == "apple_music" and mapping.url:
-                storefront = apple_storefront_from_url(mapping.url)
-            if url := canonical_provider_url(domain, item.media_type, mapping.item_id, storefront):
+            if url := canonical_mapping_url(mapping, item.media_type):
                 urls.append(url)
                 # the mapping's own URL is the same item in a form MusicBrainz may not store
                 mappings.remove(mapping)
@@ -1201,6 +1199,29 @@ def relation_urls(relations: Iterable[MusicBrainzRelation] | None) -> list[str]:
         if relation.url and not relation.ended and relation.url.resource not in urls:
             urls.append(relation.url.resource)
     return urls
+
+
+def artist_type_and_life_span(
+    details: MusicBrainzArtist,
+) -> tuple[ArtistEntityType | None, LifeSpan | None]:
+    """
+    Return the artist type and life span a MusicBrainz artist carries, None for what is unknown.
+
+    :param details: The artist as MusicBrainz returns it.
+    """
+    artist_entity_type: ArtistEntityType | None = None
+    if details.type:
+        entity_type = ArtistEntityType(details.type.lower())
+        if entity_type != ArtistEntityType.UNKNOWN:
+            artist_entity_type = entity_type
+    life_span: LifeSpan | None = None
+    if details.life_span:
+        life_span = LifeSpan(
+            begin=details.life_span.begin,
+            end=details.life_span.end,
+            ended=details.life_span.ended,
+        )
+    return artist_entity_type, life_span
 
 
 def is_digital_release(release: MusicBrainzBarcodeRelease) -> bool:
@@ -1241,6 +1262,24 @@ def release_matches_album(release: MusicBrainzRelease, album: Album) -> bool:
     primary_credit = release.artist_credit[0]
     return primary_credit.artist.id == VARIOUS_ARTISTS_MBID or bool(
         _matching_artist_credit([primary_credit], album.artists[0].name)
+    )
+
+
+def recording_matches_track(recording: MusicBrainzRecording, track: Track) -> bool:
+    """
+    Return whether a MusicBrainz recording is the given track, by title and credited artist.
+
+    :param recording: The recording, with its artist credits.
+    :param track: The track as a music provider or the library has it.
+    """
+    if not compare_track_title(recording.title, track.name) and not compare_strings(
+        recording.title, track.name, strict=False
+    ):
+        return False
+    if not track.artists or not recording.artist_credit:
+        return True
+    return any(
+        _matching_artist_credit(recording.artist_credit, artist.name) for artist in track.artists
     )
 
 

@@ -14,7 +14,7 @@ import logging
 import logging.handlers
 import queue
 import traceback
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Hashable
 from functools import partial, wraps
 from typing import Any, cast, overload
 
@@ -96,6 +96,24 @@ def activate_log_queue_handler() -> None:
     listener.start()
 
 
+def log_once(
+    logger: logging.Logger, logged: set[Hashable], key: Hashable, level: int, msg: str, *args: Any
+) -> None:
+    """
+    Log a message unless one was logged for the same key before.
+
+    :param logger: The logger to log to.
+    :param logged: The keys logged so far, kept by the caller for as long as a key logs once.
+    :param key: What the message is about, such as the id of the item it names.
+    :param level: The log level.
+    :param msg: The message, formatted with the args as the logger does.
+    """
+    if key in logged or not logger.isEnabledFor(level):
+        return
+    logged.add(key)
+    logger.log(level, msg, *args)
+
+
 def log_exception(format_err: Callable[..., Any], *args: Any) -> None:
     """Log an exception with additional context."""
     module = inspect.getmodule(inspect.stack(context=0)[1].frame)
@@ -149,7 +167,7 @@ def catch_log_exception(
             """Catch and log exception."""
             try:
                 await async_func(*args)
-            except Exception:
+            except Exception:  # noqa: BLE001 - this wrapper exists to log any error
                 log_exception(format_err, *args)
 
         wrapper_func = async_wrapper
@@ -161,7 +179,7 @@ def catch_log_exception(
             """Catch and log exception."""
             try:
                 func(*args)
-            except Exception:
+            except Exception:  # noqa: BLE001 - this wrapper exists to log any error
                 log_exception(format_err, *args)
 
         wrapper_func = wrapper

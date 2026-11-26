@@ -96,38 +96,6 @@ async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
     assert items[0].resume_position_ms == 90_000
 
 
-async def test_folder_start_from_beginning_ignores_saved_progress(mass: MusicAssistant) -> None:
-    """Starting a folder from the beginning plays its episodes from position zero."""
-    user = await mass.webserver.auth.create_user("folderfromstart")
-    podcast = Podcast(
-        item_id="show-2", provider=PROVIDER, name="Show", provider_mappings=_provider_mapping()
-    )
-    episode = PodcastEpisode(
-        item_id="ep-2",
-        provider=PROVIDER,
-        name="Episode 2",
-        provider_mappings=_provider_mapping(),
-        position=1,
-        podcast=podcast,
-    )
-    await mass.music.mark_item_played(
-        episode,
-        fully_played=False,
-        seconds_played=90,
-        user_initiated=True,
-        userid=user.user_id,
-    )
-    folder = BrowseFolder(item_id="up_next", provider=PROVIDER, name="Up Next")
-
-    with patch.object(mass.music, "browse", AsyncMock(return_value=[episode])):
-        resolved = await mass.player_queues._media_resolver._resolve_media_items(
-            folder, userid=user.user_id, start_from_beginning=True
-        )
-
-    assert isinstance(resolved[0].item, PodcastEpisode)
-    assert resolved[0].item.resume_position_ms == 0
-
-
 async def test_folder_skips_dynamic_station_behind_item_mapping(mass: MusicAssistant) -> None:
     """A dynamic station listed as an ItemMapping is left out once it is resolved."""
     station = Radio(

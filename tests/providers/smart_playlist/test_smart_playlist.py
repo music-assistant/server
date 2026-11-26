@@ -11,6 +11,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import ClientResponseError, RequestInfo
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
@@ -21,7 +22,12 @@ from music_assistant_models.enums import (
     ProviderSharing,
     ProviderType,
 )
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     BrowseFolder,
     Genre,
@@ -69,6 +75,7 @@ class TestSmartPlaylistRules:
         assert rules.artist_ids == []
         assert rules.album_ids == []
         assert rules.favorites_only is False
+        assert rules.exclude_favorites is False
         assert rules.seed_track_uris == []
         assert rules.seed_artist_uris == []
         assert rules.seed_album_uris == []
@@ -76,6 +83,27 @@ class TestSmartPlaylistRules:
         assert rules.min_popularity is None
         assert rules.logic == LOGIC_AND
         assert rules.limit == 100
+
+    def test_exclude_favorites_round_trip(self) -> None:
+        """The additive exclusion round-trips and defaults off for older rules."""
+        original = SmartPlaylistRules(exclude_favorites=True)
+        assert SmartPlaylistRules.from_dict(original.to_dict()) == original
+        assert SmartPlaylistRules.from_dict({"favorites_only": False}).exclude_favorites is False
+        assert "Exclude favorites" in original.human_readable()
+        validate_rules(original)
+
+    @pytest.mark.parametrize("value", [None, "false", "true", 0, 1, [], {}])
+    def test_exclude_favorites_requires_boolean(self, value: Any) -> None:
+        """Invalid exclusion values must not silently turn into active filters."""
+        with pytest.raises(InvalidDataError, match="exclude_favorites"):
+            SmartPlaylistRules.from_dict({"exclude_favorites": value})
+        with pytest.raises(InvalidDataError, match="exclude_favorites"):
+            validate_rules(SmartPlaylistRules(exclude_favorites=value))
+
+    def test_conflicting_favorites_rules_rejected(self) -> None:
+        """Favorites cannot be both included exclusively and excluded."""
+        with pytest.raises(InvalidDataError, match="cannot both be enabled"):
+            validate_rules(SmartPlaylistRules(favorites_only=True, exclude_favorites=True))
 
     def test_round_trip_serialization(self) -> None:
         """to_dict / from_dict round-trip preserves all fields."""
@@ -1083,7 +1111,15 @@ def _real_radio_provider(mass: MagicMock) -> RadioPlaylistProvider:
 
 
 @pytest.mark.asyncio
-async def test_tracks_from_seeds_pools_base_and_similar() -> None:
+@pytest.mark.parametrize(
+    "lookup_error",
+    [
+        None,
+        MediaNotFoundError("missing seed"),
+        ClientResponseError(MagicMock(spec=RequestInfo), (), status=503),
+    ],
+)
+async def test_tracks_from_seeds_pools_base_and_similar(lookup_error: Exception | None) -> None:
     """_tracks_from_seeds accumulates a seed's endless-mix batches, deduped, in call order."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -1098,15 +1134,16 @@ async def test_tracks_from_seeds_pools_base_and_similar() -> None:
     sim2 = _make_mock_track("sim2", "library://track/sim2")
 
     ctrl = MagicMock()
-    ctrl.get = AsyncMock(return_value=seed)
+    ctrl.get = AsyncMock(side_effect=[lookup_error, seed] if lookup_error else [seed])
     mass.music.get_controller = MagicMock(return_value=ctrl)
 
     radio_prov = MagicMock()
     radio_prov.get_dynamic_tracks = AsyncMock(return_value=[base, sim1, sim2])
     mass.get_provider = MagicMock(return_value=radio_prov)
 
+    bad_seeds = ["not-a-uri", "library://track/9"] if lookup_error else []
     result = await plugin._tracks_from_seeds(
-        ["library://track/10"], target_size=10, is_dynamic=True
+        [*bad_seeds, "library://track/10"], target_size=10, is_dynamic=True
     )
 
     first_call = radio_prov.get_dynamic_tracks.await_args_list[0]
@@ -2244,9 +2281,10 @@ async def test_enrich_tracks_with_db_genres_handles_empty_list() -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
-    """Seed mode should enrich genres when excluded_genre_ids or excluded_genre_names are set."""
+async def test_seed_mode_checks_genre_links_when_excluded_genres_present() -> None:
+    """Seed mode checks excluded genres by the library links, without enriching genres."""
     mass = MagicMock()
+    mass.music.genres.tracks_in_genres = AsyncMock(return_value=set())
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -2266,7 +2304,7 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     # Mock _tracks_from_seeds to return our test track
     cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=[track])
 
-    # Mock _enrich_tracks_with_db_genres to verify it gets called
+    # Mock _enrich_tracks_with_db_genres to verify it is not called
     enrich_mock = AsyncMock()
     cast("Any", plugin)._enrich_tracks_with_db_genres = enrich_mock
 
@@ -2284,8 +2322,8 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     )
     await plugin._evaluate_rules(rules)
 
-    # Verify enrichment was called in seed mode
-    enrich_mock.assert_called_once()
+    enrich_mock.assert_not_called()
+    mass.music.genres.tracks_in_genres.assert_awaited_once_with([1], [track])
 
 
 @pytest.mark.asyncio
@@ -2379,8 +2417,8 @@ def _make_ai_plugin(
     """
     Build a SmartPlaylistProvider wired for AI-description tests.
 
-    :param ai_engine: The stored engine selection; defaults to the given provider's engine,
-        as the load-time seeding would have stored it. Pass "" to start out unseeded.
+    :param ai_engine: The stored engine selection; defaults to the given provider's engine.
+        Pass "" to follow the default engine.
     """
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
@@ -2487,7 +2525,7 @@ async def test_generate_ai_description_no_provider_returns_none(tmp_path: Any) -
 async def test_generate_ai_description_provider_error_returns_none(tmp_path: Any) -> None:
     """A failing AI provider falls back to None instead of raising."""
     ai_provider = _make_ai_provider()
-    ai_provider.ai_query = AsyncMock(side_effect=Exception("boom"))
+    ai_provider.ai_query = AsyncMock(side_effect=ProviderUnavailableError("AI unavailable"))
     plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=ai_provider)
 
     result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
@@ -2537,7 +2575,7 @@ async def test_generate_ai_description_reports_a_provider_side_timeout_as_a_fail
 async def test_generate_ai_description_stays_on_the_configured_engine(tmp_path: Any) -> None:
     """A failing selection yields no description instead of asking another engine."""
     failing = _make_ai_provider(instance_id="ai--bad")
-    failing.ai_query = AsyncMock(side_effect=Exception("boom"))
+    failing.ai_query = AsyncMock(side_effect=ProviderUnavailableError("AI unavailable"))
     other = _make_ai_provider("Second provider result.", instance_id="ai--good")
     plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_engine="ai--bad/engine")
     cast("Any", plugin.mass).get_providers_supporting_feature = MagicMock(
@@ -2552,24 +2590,24 @@ async def test_generate_ai_description_stays_on_the_configured_engine(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_first_use_adopts_a_concrete_engine_selection(tmp_path: Any) -> None:
-    """An instance without a stored selection adopts one on first use, not at load."""
+async def test_without_a_selection_the_default_engine_is_used(tmp_path: Any) -> None:
+    """An instance without a selection of its own uses the default engine, stored nowhere else."""
     ai_provider = _make_ai_provider("Chill evening vibes.")
     plugin = _make_ai_plugin(tmp_path, ai_provider=ai_provider, ai_engine="")
     await plugin.handle_async_init()
     mass = cast("Any", plugin.mass)
-    mass.config.set_raw_provider_config_value.assert_not_called()
+    mass.config.get_raw_core_config_value.return_value = None
 
     assert (
         await plugin._generate_ai_description("Evening Chill", SmartPlaylistRules())
         == "Chill evening vibes."
     )
 
-    assert mass.config.set_raw_provider_config_value.call_args.args == (
-        plugin.instance_id,
-        CONF_AI_ENGINE,
-        "ai--1/engine",
+    # the engine is adopted as the default, the provider keeps following it
+    mass.config.set_raw_core_config_value.assert_called_once_with(
+        "ai", "text_engine", "ai--1/engine"
     )
+    mass.config.set_raw_provider_config_value.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2942,6 +2980,56 @@ async def test_refresh_ai_description_oversized_reply_uses_fallback(tmp_path: An
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("contents", ["{", "[]", '{"broken": {"rules": null}}'])
+async def test_load_malformed_rules_logs_failure(
+    tmp_path: Any, caplog: pytest.LogCaptureFixture, contents: str
+) -> None:
+    """Malformed persisted rules are logged without preventing initialization."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    (tmp_path / "smart_playlists" / RULES_FILENAME).write_text(contents, encoding="utf-8")
+
+    await plugin._load_rules_from_disk()
+
+    assert not plugin._rules_store
+    assert any("rules" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_rules",
+    [None, {"genre_ids": ["abc"]}],
+    ids=["not-an-object", "invalid-rule-value"],
+)
+async def test_load_rules_skips_invalid_entry(
+    tmp_path: Any, caplog: pytest.LogCaptureFixture, invalid_rules: Any
+) -> None:
+    """Keep valid playlists on either side of an invalid entry."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    rules = SmartPlaylistRules(favorites_only=True)
+    await write_json(
+        str(tmp_path / "smart_playlists" / RULES_FILENAME),
+        {
+            "first": {"rules": rules.to_dict()},
+            "broken": {"rules": invalid_rules, "name": "Broken", "ai_description": "Discard me"},
+            "last": {
+                "rules": rules.to_dict(),
+                "name": "Keep me",
+                "ai_description": "Keep this too",
+            },
+        },
+    )
+
+    await plugin._load_rules_from_disk()
+
+    assert plugin._rules_store == {"first": rules, "last": rules}
+    assert plugin._names_store == {"first": "first", "last": "Keep me"}
+    assert plugin._descriptions_store == {"last": "Keep this too"}
+    assert any("broken" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_load_rules_from_disk_drops_an_unusable_description(tmp_path: Any) -> None:
     """Only a short, textual persisted description is adopted on load."""
     plugin = _make_ai_plugin(tmp_path)
@@ -3239,3 +3327,236 @@ async def test_static_playlist_ignores_recency_filter() -> None:
         result = await plugin.get_playlist_tracks("42")
 
     assert [track.item_id for track in result] == ["keep", "drop"]
+
+
+@pytest.mark.parametrize("logic", [LOGIC_AND, LOGIC_OR])
+@pytest.mark.parametrize("source", ["library", "genre", "folder", "seed"])
+async def test_exclude_favorites_uses_personal_state_for_every_source(
+    logic: str, source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exclusion vetoes matched likes, keeping dislikes and unrated tracks from every source."""
+    mass = MagicMock()
+    manifest = MagicMock(domain="smart_playlist")
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    user = User(user_id="user-a", username="a", role=UserRole.USER)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: user)
+    tracks = [
+        Track(
+            item_id=str(i),
+            provider="library",
+            name=f"Track {i}",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(i),
+                    provider_domain="filesystem_local",
+                    provider_instance="filesystem_local--test",
+                )
+            },
+        )
+        for i in range(1, 4)
+    ]
+    tracks[0].favorite = None
+    tracks[1].favorite = True
+    tracks[2].favorite = True
+    mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[
+            {"media_type": "track", "item_id": 1, "favorite": 1, "provider_instance": None},
+            {"media_type": "track", "item_id": 2, "favorite": 0, "provider_instance": None},
+        ]
+    )
+    library_tracks = AsyncMock(return_value=tracks)
+    monkeypatch.setattr(plugin, "_get_library_tracks", library_tracks)
+    monkeypatch.setattr(plugin, "_folder_tracks", AsyncMock(return_value=tracks))
+    monkeypatch.setattr(plugin, "_tracks_from_seeds", AsyncMock(return_value=tracks))
+    rules = SmartPlaylistRules(
+        exclude_favorites=True,
+        logic=logic,
+        genre_ids=[5] if source == "genre" else [],
+        folder_paths=["filesystem_local--test://Music"] if source == "folder" else [],
+        seed_track_uris=["library://track/10"] if source == "seed" else [],
+        limit=10,
+    )
+
+    result = await plugin._evaluate_rules(rules)
+
+    assert {track.item_id for track in result} == {"2", "3"}
+    assert {track.favorite for track in result} == {False, None}
+    if source == "genre":
+        library_tracks.assert_awaited_once()
+        assert library_tracks.await_args is not None
+        assert library_tracks.await_args.kwargs["genre_ids"] == [5]
+    mass.music.database.get_rows_from_query.assert_awaited_once()
+    assert mass.music.database.get_rows_from_query.await_args.args[1]["user_id"] == "user-a"
+
+
+async def test_exclude_favorites_resolves_provider_mappings_before_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A liked library mapping vetoes a seed result before the final limit is applied."""
+    mass = MagicMock()
+    manifest = MagicMock(domain="smart_playlist")
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    user = User(user_id="user-a", username="a", role=UserRole.USER)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: user)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.random.shuffle", lambda _: None)
+    tracks = [
+        Track(
+            item_id=str(i),
+            provider="spotify--test",
+            name=f"Track {i}",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(i), provider_domain="spotify", provider_instance="spotify--test"
+                )
+            },
+        )
+        for i in range(1, 3)
+    ]
+    mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[
+            {
+                "media_type": "track",
+                "item_id": 100,
+                "favorite": 1,
+                "provider_instance": "spotify--test",
+                "provider_item_id": "1",
+            }
+        ]
+    )
+    monkeypatch.setattr(plugin, "_tracks_from_seeds", AsyncMock(return_value=tracks))
+    rules = SmartPlaylistRules(
+        seed_track_uris=["spotify--test://track/seed"], exclude_favorites=True, limit=1
+    )
+
+    assert [track.item_id for track in await plugin._evaluate_rules(rules)] == ["2"]
+
+
+async def test_exclude_favorites_dynamic_cache_rechecks_likes_and_keys_on_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cached tracks use personal keys and newly liked tracks cannot survive the return boundary."""
+    mass = MagicMock()
+    manifest = MagicMock(domain="smart_playlist")
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    rules = SmartPlaylistRules(exclude_favorites=True)
+    monkeypatch.setattr(
+        plugin, "_resolve_rules_for_playlist_id", AsyncMock(return_value=("42", rules))
+    )
+    track = Track(item_id="1", provider="library", name="Cached", provider_mappings=set())
+    sample_mock = AsyncMock(return_value=[track])
+    monkeypatch.setattr(plugin, "_cached_dynamic_sample", sample_mock)
+    current_user = User(user_id="user-a", username="a", role=UserRole.USER)
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.get_current_user", lambda: current_user
+    )
+    set_music_source_access(mass, {})
+    rows_mock = AsyncMock(return_value=[])
+    mass.music.database.get_rows_from_query = rows_mock
+
+    assert await plugin.get_playlist_tracks("42") == [track]
+    rows_mock.return_value = [
+        {"media_type": "track", "item_id": 1, "favorite": 1, "provider_instance": None}
+    ]
+    with track_filter(lambda _: False):
+        assert await plugin.get_playlist_tracks("42") == []
+    current_user = User(user_id="user-b", username="b", role=UserRole.USER)
+    rows_mock.return_value = []
+    assert await plugin.get_playlist_tracks("42") == [track]
+    assert [call.kwargs["favorites_user_id"] for call in sample_mock.await_args_list] == [
+        "user-a",
+        "user-a",
+        "user-b",
+    ]
+
+
+async def test_exclude_favorites_count_and_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Count and preview apply the same favorite exclusion as playback."""
+    mass = MagicMock()
+    manifest = MagicMock(domain="smart_playlist")
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    user = User(user_id="user-a", username="a", role=UserRole.USER)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: user)
+    tracks = [
+        Track(
+            item_id=str(i),
+            provider="library",
+            name=f"Track {i}",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(i),
+                    provider_domain="filesystem_local",
+                    provider_instance="filesystem_local--test",
+                )
+            },
+            duration=60,
+        )
+        for i in range(1, 3)
+    ]
+    monkeypatch.setattr(plugin, "_get_library_tracks", AsyncMock(return_value=tracks))
+    mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[
+            {"media_type": "track", "item_id": 1, "favorite": 1, "provider_instance": None}
+        ]
+    )
+
+    assert await plugin.count_tracks({"exclude_favorites": True}) == {
+        "count": 1,
+        "duration_seconds": 60,
+    }
+    assert [
+        track["item_id"] for track in await plugin.preview_tracks({"exclude_favorites": True})
+    ] == ["2"]
+
+
+async def test_exclude_favorites_cache_evaluation_restores_user(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sessionless cache refresh evaluates exclusion using the user from its cache key."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    mass.cache.set = AsyncMock()
+    use_real_create_task(mass)
+    manifest = MagicMock(domain="smart_playlist")
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+    plugin._rules_store["42"] = SmartPlaylistRules(exclude_favorites=True)
+    user = User(user_id="user-a", username="a", role=UserRole.USER)
+    mass.webserver.auth.get_user = AsyncMock(return_value=user)
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Liked",
+        provider_mappings={
+            ProviderMapping(
+                item_id="1",
+                provider_domain="filesystem_local",
+                provider_instance="filesystem_local--test",
+            )
+        },
+    )
+    monkeypatch.setattr(plugin, "_get_library_tracks", AsyncMock(return_value=[track]))
+    mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[
+            {"media_type": "track", "item_id": 1, "favorite": 1, "provider_instance": None}
+        ]
+    )
+
+    result = await asyncio.create_task(
+        plugin._cached_dynamic_sample("42", ("filesystem_local--test",), favorites_user_id="user-a")
+    )
+
+    assert result == []
+    mass.webserver.auth.get_user.assert_awaited_once_with("user-a")
+    assert mass.music.database.get_rows_from_query.await_args.args[1]["user_id"] == "user-a"

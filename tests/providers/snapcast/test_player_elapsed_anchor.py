@@ -13,6 +13,7 @@ from music_assistant.providers.snapcast.player import SnapCastPlayer
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player import Player
     from music_assistant.providers.snapcast.provider import SnapCastProvider
     from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto
 
@@ -22,7 +23,8 @@ def _make_player(ma_stream: MagicMock) -> SnapCastPlayer:
     player._last_tracked_state = None
     player._snap_ma_stream = None
     player._announcement_clip_playing = False
-    player._extra_data = {}
+    player._protocol_id = "ma_kitchen"
+    player._player = None
     player._is_alive = lambda: True  # type: ignore[method-assign]
     group = SimpleNamespace(stream="ma-stream", clients=[], name="group")
     player.snap_client = cast(
@@ -79,7 +81,10 @@ async def test_music_restarted_after_clip_publishes_its_anchor() -> None:
     player = _make_player(music_stream)
     await player._process_snapcast_client_state()
 
-    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+    # the announcement flag of the player stays set a moment after the clip ended
+    player._player = cast(
+        "Player", SimpleNamespace(extra_data={ATTR_ANNOUNCEMENT_IN_PROGRESS: True})
+    )
     music_stream.playback_started_at = 2000.0
 
     assert await player._process_snapcast_client_state() is True

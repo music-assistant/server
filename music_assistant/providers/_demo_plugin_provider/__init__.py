@@ -24,6 +24,12 @@ In that folder you should create (at least) a __init__.py file and a manifest.js
 Optional is an icon.svg file that will be used as the icon for the provider in the UI,
 but we also support that you specify a material design icon in the manifest.json file.
 
+Optional is a strings.json file with the texts of the provider in English, which are
+translated into the other languages. This demo keeps the label of its menu action there
+(menu_actions.<id>.label), the message its menu action answers with (config_actions.<key>)
+and the label of its page (page.label). The descriptions of its tools for AI assistants
+(mcp_tools) are English only and stay in manifest.json.
+
 IMPORTANT NOTE:
 We strongly recommend developing on either macOS or Linux and start your development
 environment by running the setup.sh scripts in the scripts folder of the repository.
@@ -34,9 +40,12 @@ See also our general DEVELOPMENT.md guide in the repository for more information
 
 from __future__ import annotations
 
+import html
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from aiohttp import web
+from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import (
     ContentType,
     MediaType,
@@ -54,7 +63,9 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -75,7 +86,7 @@ if TYPE_CHECKING:
 
 # stable id for the single AudioSource this demo provider exposes;
 # combined with the provider instance_id this forms the persistent browse/play uri
-# (e.g. `<instance_id>://audio_source/main`) listed under "Live Inputs". AudioSource
+# (e.g. `<instance_id>://audio_source/main`) listed when browsing this provider. AudioSource
 # items are not favoritable / library-backed in MA core today.
 AUDIO_SOURCE_ID = "main"
 
@@ -87,6 +98,8 @@ SUPPORTED_FEATURES = {
     # this demo declares two of the plugin-specific features to demonstrate the concept:
     # 'AUDIO_SOURCE' means the provider exposes a (live) audio source to Music Assistant
     # and 'SCROBBLE' means it receives a report of every media item that is played.
+    # the 'provides' of manifest.json lists them as 'audio_source' and 'scrobble', for
+    # discovery only, before the provider is loaded; these features decide what it does.
     ProviderFeature.AUDIO_SOURCE,
     ProviderFeature.SCROBBLE,
 }
@@ -162,14 +175,97 @@ class MyDemoPluginprovider(PluginProvider):
         # it will be called when the provider is unloaded from Music Assistant.
         # this means also when the provider is getting reloaded
 
+    async def handle_menu_action(
+        self, action_id: str, uri: str, player_id: str | None
+    ) -> ConfigActionResult | None:
+        """Run a menu action this provider declares in its manifest, for a media item."""
+        # OPTIONAL
+        # Implement when manifest.json declares "menu_actions". The app shows those entries
+        # in the menu of a media item and the server calls this method of the instance the
+        # user chose, so a provider with several instances answers for each of them, and
+        # registers nothing itself. The server already checked that the user may use this
+        # instance and holds the "scope" of the action, that the uri is of one of its
+        # "media_types", and, for an action with "requires_player": true, that player_id is
+        # a player the user may use (it is None for any other action). It only checked the
+        # kind of item in the uri, not that the item exists or belongs to this provider, so
+        # look the item up yourself, as below.
+        # Answer nothing, or a ConfigActionResult with a message the app shows and/or a url
+        # it opens once; its translation_key is looked up in config_actions of strings.json.
+        # Raise a MusicAssistantError to tell the user the action failed: get_item_by_uri
+        # below raises MediaNotFoundError for an unknown item.
+        if action_id != "show_item":
+            return await super().handle_menu_action(action_id, uri, player_id)
+        item = await self.mass.music.get_item_by_uri(uri)
+        return ConfigActionResult(
+            message=f"The demo plugin was asked about {item.name}",
+            translation_key="show_item",
+            translation_args=[item.name],
+        )
+
+    async def handle_mcp_tool(
+        self, tool_id: str, arguments: dict[str, Any], player_id: str | None
+    ) -> dict[str, Any]:
+        """Run a tool for AI assistants this provider declares in its manifest."""
+        # OPTIONAL
+        # Implement when manifest.json declares "mcp_tools": tools that AI assistants, such as
+        # Home Assistant Assist, use through the MCP server of Music Assistant. A tool declares
+        # an "id", a "description", the "scope" a user needs, optionally an "input_schema" of
+        # its arguments, and "requires_player": true when it acts on a player. The server
+        # offers it as "<domain>__<id>", as read-only when its scope ends in ".read", and calls
+        # this method of the instance the user picked (the assistant gets an "instance"
+        # argument when the user may use several), so the provider registers nothing itself.
+        # The server already checked that the user may use this instance and holds the scope
+        # of the tool, that the arguments match the input schema (every declared one is in
+        # arguments: the passed value, else its default, else None), and, for a tool with
+        # "requires_player": true, that player_id is a player the user may use (it is None for
+        # any other tool).
+        # Return a dict of JSON values for the assistant to read: keep it short and refer to
+        # media items by their uri. Raise a MusicAssistantError to tell the assistant the tool
+        # failed, with a message it can read.
+        # Descriptions are English and are read by a language model: like the results, they
+        # only describe the tool and its outcome, never instruct the assistant otherwise.
+        if tool_id != "list_sources":
+            return await super().handle_mcp_tool(tool_id, arguments, player_id)
+        sources: list[dict[str, Any]] = []
+        for source in await self.get_audio_sources():
+            entry: dict[str, Any] = {
+                "uri": source.uri,
+                "name": source.name,
+                "in_use": self._in_use_by_player is not None,
+            }
+            if arguments["include_format"]:
+                audio_format = next(iter(source.provider_mappings)).audio_format
+                entry["audio_format"] = (
+                    f"{audio_format.content_type.value}, {audio_format.sample_rate} Hz, "
+                    f"{audio_format.bit_depth} bit, {audio_format.channels} channels"
+                )
+            sources.append(entry)
+        return {"sources": sources}
+
+    async def handle_page_request(self, request: web.Request, path: str) -> web.StreamResponse:
+        """Serve a request to the page of this provider instance."""
+        # OPTIONAL
+        # Implement when manifest.json declares a "page", such as a small web interface. The
+        # app lists it in its main menu, and opens it in a new tab behind a short-lived address
+        # for the user who chose it. The server calls this as that user (get_current_user())
+        # for every request to it, with the path after the page's root. The page runs
+        # sandboxed: it gets no token and can not reach the app, so it talks to the provider
+        # through relative urls to its own sub-paths.
+        user = get_current_user()
+        name = user.display_name or user.username if user else ""
+        return web.Response(
+            text=f"<!doctype html><p>Hello {html.escape(name)}, from the demo plugin.</p>",
+            content_type="text/html",
+        )
+
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return the AudioSources this plugin currently exposes."""
         # OPTIONAL
         # Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
         #
         # Return one or more AudioSource MediaItems describing the live
-        # inputs this plugin offers. AudioSources show up under the global
-        # "Live Inputs" browse node and can be played on any player via
+        # inputs this plugin offers. AudioSources are listed when browsing this
+        # provider and can be played on any player via
         # the standard play_media flow. Capability flags (can_play_pause,
         # can_seek, can_next_previous) drive which control buttons the UI
         # surfaces and which commands the server proxies through to
@@ -222,7 +318,8 @@ class MyDemoPluginprovider(PluginProvider):
         # an async generator (get_audio_stream below), or stream_type=NAMED_PIPE
         # plus a path when audio comes from a named pipe / file. stream_metadata
         # carries the initial track info; update it at runtime via
-        # mass.players.update_source_metadata(player_id, ...).
+        # mass.players.update_source_metadata(owner_player_id, ...), with the
+        # owner_player_id that on_source_selected received.
         #
         # Silence-during-pause contract:
         # - stream_type=CUSTOM: the server wraps your audio generator with a
@@ -333,19 +430,26 @@ class MyDemoPluginprovider(PluginProvider):
         #
         # Plugins MUST store stream_session_id so the matching
         # on_source_unselected callback can reject stale teardowns from
-        # superseded same-queue requests. Typical pattern for exclusive
-        # sources:
+        # superseded same-queue requests. Store owner_player_id for anything you
+        # act on later: it is the user-facing player, while player_id is the id
+        # the stream is fetched under (that of the output protocol that renders
+        # the audio), no player or queue id; mass.players.get_player_by_protocol
+        # returns its player. To read the owner, look it up with
+        # mass.players.get_player(owner_player_id) and read its published state
+        # (player.state). Typical pattern for exclusive sources:
         #
-        #     if self._active_player_id and self._active_player_id != player_id:
-        #         await self.mass.players.cmd_stop(self._active_player_id)
+        #     if self._in_use_by_player and self._in_use_by_player != owner_player_id:
+        #         await self.mass.players.cmd_stop(self._in_use_by_player)
         #     self._in_use_by_player = owner_player_id  # claim (overwrites prior queue's)
         #     self._active_session_id = stream_session_id
-        #     self._active_player_id = player_id
         #
         # If allow_player_switch is False and the requesting player is not the
         # configured target, redirect via mass.player_queues.play_media(target,
         # uri) and then RAISE so the original (disallowed) request does not
         # continue into get_stream_details and stream to the wrong player.
+        # A player id stored in the config can be a legacy id of a player that was
+        # merged into another one: resolve it with mass.players.resolve_player_id()
+        # where you read it (see DEVELOPMENT.md, "Building your own Plugin Provider").
 
     async def on_source_unselected(
         self, source_id: str, owner_player_id: str, stream_session_id: str

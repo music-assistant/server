@@ -102,21 +102,25 @@ class _Harness:
 
         player = MagicMock()
         player.stop_called = False
-        player.get_config_value.return_value = "default"
+        player.get_config_value.return_value = False
 
         self.ctrl = MagicMock()
         self.ctrl.logger = Mock()
         self.ctrl._log_request = Mock()
-        self.ctrl._raise_if_stale_item_request = Mock()
         self.ctrl._open_item_streams = {}
         self.ctrl._ended_item_streams = {}
         self.ctrl._active_output_streams = 0
         # bind the real helpers: the mocked self would silently swallow them otherwise
-        for helper in ("_requested_item_ids", "_ended_item_ids", "_release_abandoned_item_sources"):
+        for helper in (
+            "_requested_item_ids",
+            "_ended_item_ids",
+            "_release_abandoned_item_sources",
+            "_select_item_crossfade_mode",
+        ):
             setattr(self.ctrl, helper, MethodType(getattr(StreamsController, helper), self.ctrl))
         self.ctrl.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
         self.ctrl.mass.player_queues = player_queues
-        self.ctrl.mass.players.get_player.return_value = player
+        self.ctrl.mass.players.get_output_protocol.return_value = player
         self.ctrl.mass.config.get_raw_core_config_value.return_value = 8
         self.ctrl.mass.create_task.side_effect = self._create_task
         pcm_format = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100)
@@ -127,6 +131,7 @@ class _Harness:
         self.ctrl.audio.get_stream_details = AsyncMock(side_effect=self._stream_details)
         self.ctrl.audio.get_queue_item_stream.side_effect = _source
         self.ctrl.audio.fade_into_pending.return_value = False
+        self.ctrl.serves_as_file.return_value = False
 
     def start(
         self, item_id: str, method: str = "GET", session_id: str = SESSION_ID

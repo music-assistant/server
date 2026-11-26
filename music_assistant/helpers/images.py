@@ -21,10 +21,15 @@ import aiofiles
 import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
+from music_assistant.helpers.diagnostics import redact_url_credentials
 from music_assistant.helpers.security import has_control_chars, is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.helpers.util import join_task
@@ -82,6 +87,23 @@ _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8\xff"
 
+# User-uploaded custom media item images. Uploads travel base64-encoded (about 4/3
+# the size) inside one websocket API message, which must fit aiohttp's default
+# 4 MiB message limit.
+MAX_CUSTOM_IMAGE_BYTES = 2 * 1024 * 1024
+# Pillow only rejects decompression bombs far above this, and a small highly
+# compressed file can still decode to hundreds of MB when thumbnailed.
+MAX_CUSTOM_IMAGE_PIXELS = 25_000_000
+# Only these Pillow decoders are tried for an upload, which keeps formats that need
+# an external decoder (EPS runs Ghostscript) away from untrusted data.
+_CUSTOM_IMAGE_FORMATS: tuple[str, ...] = ("PNG", "JPEG", "WEBP", "GIF", "BMP")
+_UNSUPPORTED_IMAGE_MESSAGE = (
+    f"Uploaded data is not a supported image ({', '.join(_CUSTOM_IMAGE_FORMATS)})"
+)
+# Overrides for Pillow format names whose canonical file extension differs from
+# format.lower() (MPO is the multi-picture jpeg variant many phone cameras produce).
+_CUSTOM_IMAGE_FORMAT_EXTENSIONS: dict[str, str] = {"JPEG": "jpg", "MPO": "jpg"}
+
 
 def is_svg_data(data: bytes) -> bool:
     """Return True when the given bytes appear to be an SVG image."""
@@ -109,6 +131,35 @@ def detect_image_content_format(data: bytes) -> str | None:
     if is_svg_data(data):
         return "svg"
     return None
+
+
+def validate_custom_image(data: bytes) -> str:
+    """
+    Validate user-uploaded image bytes and return the canonical file extension.
+
+    Only PNG, JPEG, WebP, GIF and BMP are accepted, and the image is fully
+    decoded (which guarantees the imageproxy can thumbnail it later). The format
+    is detected from the actual content, never from a client-supplied hint. This
+    is blocking CPU work, so call it from an executor thread.
+
+    :param data: Raw image bytes to validate.
+    """
+    if len(data) > MAX_CUSTOM_IMAGE_BYTES:
+        raise InvalidDataError("Image exceeds the size limit")
+    if is_svg_data(data):
+        raise InvalidDataError("SVG images are not supported for custom images")
+    try:
+        with Image.open(BytesIO(data), formats=_CUSTOM_IMAGE_FORMATS) as img:
+            image_format = img.format
+            if img.width * img.height > MAX_CUSTOM_IMAGE_PIXELS:
+                raise InvalidDataError("Image dimensions exceed the limit")
+            # a full decode proves the image can be thumbnailed later
+            img.load()
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as err:
+        raise InvalidDataError(_UNSUPPORTED_IMAGE_MESSAGE) from err
+    if not image_format:
+        raise InvalidDataError(_UNSUPPORTED_IMAGE_MESSAGE)
+    return _CUSTOM_IMAGE_FORMAT_EXTENSIONS.get(image_format, image_format.lower())
 
 
 def create_thumb_hash(provider: str, path_or_url: str) -> str:
@@ -452,6 +503,17 @@ async def _fetch_source_image(
             # the provider looked and has nothing at this path: a miss, not a failed fetch
             msg = f"{provider} has no image at {path_or_url}"
             raise _NoImageError(msg)
+        # an accepted stored path must resolve to image data or a remote URL, never fall
+        # through to the local file and ffmpeg routes below
+        if prov.accepts_stored_image_path(path_or_url) and not (
+            (isinstance(resolved_image, bytes) and resolved_image)
+            or (
+                isinstance(resolved_image, str)
+                and resolved_image.startswith(("http://", "https://", "data:image"))
+            )
+        ):
+            msg = f"{provider} resolved image {path_or_url} to neither image data nor a URL"
+            raise FileNotFoundError(msg)
         if resolved_image:
             if isinstance(resolved_image, bytes):
                 return resolved_image, True
@@ -491,7 +553,8 @@ async def _fetch_source_image(
         try:
             return await _fetch_remote_image(mass, path_or_url), True
         except ClientError as err:
-            msg = f"Failed to fetch image from {path_or_url}: {err}"
+            # the URL and the aiohttp error text may carry a provider token (Plex, Jellyfin)
+            msg = redact_url_credentials(f"Failed to fetch image from {path_or_url}: {err}")
             raise FileNotFoundError(msg) from err
     # handle base64 embedded images
     if path_or_url.startswith("data:image"):
@@ -520,7 +583,7 @@ async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
     # Bot-protected CDNs (e.g. Akamai) reject our normal self-identifying User-Agent,
     # and even regular browser User-Agents, while still serving well-known fetch tools.
     # We keep identifying as Music Assistant but carry a Wget compatibility token, which
-    # such CDNs allowlist, so artwork is served on the first (and only) request.
+    # such CDNs allowlist, so artwork is served on the first (and only) request (#4243).
     user_agent = f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
     async with mass.http_session_no_ssl.get(
         url, raise_for_status=True, headers={"User-Agent": user_agent}

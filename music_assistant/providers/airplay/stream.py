@@ -21,10 +21,12 @@ from uuid import uuid4
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import CONF_PASSWORD, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.util import strip_control_characters
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_RENDER_TIMEOUT,
     AIRPLAY_ARTWORK_SIZE,
@@ -33,6 +35,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_START_ACK_TIMEOUT_MS,
+    AIRPLAY_STOP_ACK_TIMEOUT,
     CLI_PROBLEM_MARKERS,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
@@ -47,7 +50,8 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
-    CLI_CLOCK_OFFSET_NS,
+    cli_clock_args,
+    cli_clock_time,
     default_buffer_depth,
     generate_active_remote_id,
     get_cli_binary,
@@ -61,6 +65,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player import PlayerMedia
 
+    from music_assistant.models.player import Player
     from music_assistant.providers.airplay.player import AirPlayPlayer
     from music_assistant.providers.airplay.provider import AirPlayProvider
     from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
@@ -131,13 +136,13 @@ class AirPlayStream:
         self.mass = player.provider.mass
         self.player = player
         self.pcm_format = pcm_format or AIRPLAY_PCM_FORMAT
-        mac_address = self.player.device_info.mac_address or self.player.player_id
+        mac_address = self.player.device_info.mac_address or self.player.protocol_id
         self.active_remote_id: str = generate_active_remote_id(mac_address)
         self._stream_id = uuid4().hex
         self.prevent_playback: bool = False
         self._cli_proc: AsyncProcess | None = None
         self.commands_pipe = AsyncNamedPipeWriter(
-            f"/tmp/{self.player.protocol.value}-{self.player.player_id}-"  # noqa: S108
+            f"{self.mass.runtime_path}/{self.player.protocol.value}-{self.player.protocol_id}-"
             f"{self.active_remote_id}-{self._stream_id}-cmd",
         )
         self._stopped = False
@@ -163,6 +168,14 @@ class AirPlayStream:
         # Whether that end was [STATUS] eof: unlike its idle timeout, the binary
         # stays alive after it, holding the receiver session until it is stopped.
         self._input_ended: bool = False
+        # Set when the binary confirms a STOP ([STATUS] stopped), which it does
+        # once it has released the receiver.
+        self._stop_acked = asyncio.Event()
+        # Whether the receiver ended the session itself ([STATUS]
+        # receiver_closed), for example because another sender took it over.
+        self._receiver_closed: bool = False
+        # Whether the stream runs on the AirPlay 2 compatibility flow ([STATUS] route).
+        self._compat_route: bool = False
         # Structured fatal failure the binary reported before exiting; stays
         # None when it exited without reporting one.
         self._connect_error: CliError | None = None
@@ -179,6 +192,7 @@ class AirPlayStream:
         # answer clears the other.
         self._started = asyncio.Event()
         self._start_ack: tuple[int, int] | None = None
+        self._progress_anchor_generation = 0
         self._start_error: CliError | None = None
         # The binary's answers to an ANNOUNCE arm: announce_started carries the
         # actual audible instant plus clip duration, a reported announce failure
@@ -194,6 +208,12 @@ class AirPlayStream:
         # post-commit correction log level (a corrected join is the routine
         # landing path, a corrected origin start is a loud signal).
         self._start_was_join = False
+        # Whether the stream awaits its first state report since connecting or the last
+        # START. A receiver can echo a play command for that start before it arrives.
+        self.start_pending: bool = False
+        # The native level the session starts at, read when connecting (None when the
+        # device keeps its own level, see AirPlayPlayer.native_start_volume).
+        self._native_start_volume: int | None = None
         # Receiver storm guard state: last-honored monotonic time per remote
         # transport command, plus a counter of suppressed repeats.
         self._remote_command_last: dict[str, float] = {}
@@ -226,6 +246,8 @@ class AirPlayStream:
         # tied to it would re-render and re-send the same art on every update
         # until the churn stops.
         self._metadata_artwork_checksum = ""
+        # The binary's now-playing item for the last delivered metadata.
+        self._metadata_item_identity = ""
         self._pending_metadata_checksum = ""
         self._metadata_generation = 0
         self._metadata_lock = asyncio.Lock()
@@ -264,6 +286,9 @@ class AirPlayStream:
         # timeline. Reset per process (and on every re-anchoring START/resume);
         # a new cliairplay re-anchors from scratch.
         self.cumulative_shift_seconds: float = 0.0
+        # True on the buffered (type 103) route: requested on the [STATUS] route
+        # line, cleared when the session falls back to NTP timing.
+        self.buffered_route: bool = False
         # Set once a stalled receiver clock has been reported, so the warning
         # stays a single support signal instead of repeating with every
         # clock_ready update of this stream session.
@@ -301,6 +326,11 @@ class AirPlayStream:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
 
+    @property
+    def receiver_closed(self) -> bool:
+        """Whether the receiver ended the session itself, e.g. when another sender took over."""
+        return self._receiver_closed
+
     async def connect(
         self,
         use_shared_ptp: bool | None = None,
@@ -321,8 +351,14 @@ class AirPlayStream:
         # A fresh cliairplay process re-anchors from scratch, so drop any shift
         # carried on this stream object.
         self.reset_reanchor_shift()
+        # Covers the echo a receiver sends before START, e.g. while the group awaits
+        # its members' clock readiness.
+        self.start_pending = True
+        # Read before the receiver is reached: a device that sets a level of its own when
+        # a session starts may have reported it by the time the session is connected.
+        self._native_start_volume = self.player.native_start_volume
         args = await self._build_cli_args(use_shared_ptp)
-        self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
+        self.player.logger.debug("Starting cliairplay for player %s", self.player.protocol_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
         try:
             await self.commands_pipe.create()
@@ -332,7 +368,7 @@ class AirPlayStream:
         except BaseException:
             try:
                 await self._cleanup_failed_start()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - cleanup must not hide the start error
                 self.player.logger.warning("Failed to clean up cliairplay startup: %s", err)
             raise
 
@@ -369,6 +405,7 @@ class AirPlayStream:
         async with self._metadata_lock:
             self._metadata_text_checksum = ""
             self._metadata_artwork_checksum = ""
+            self._metadata_item_identity = ""
             self._pending_metadata_checksum = ""
             self._metadata_generation += 1
         # Push track metadata before START. Some receivers (notably Sonos) hold
@@ -381,15 +418,24 @@ class AirPlayStream:
         # connect, so its delivery continues on a background task.
         await self._send_current_metadata(defer_artwork_followup=True)
         # An AirPlay volume command writes the receiver's own volume and persists there
-        # after the session ends, so it is only sent when nothing else owns this output's
-        # volume: otherwise the device keeps playing at the level its own app or remote is
-        # set to. A latched mute would start the stream silent, so it does travel along.
-        if self.player.owns_volume or self.player.volume_muted:
+        # after the session ends, so the level of this output is only sent when nothing
+        # else owns its volume: otherwise the device keeps playing at the level its own app
+        # or remote is set to. A latched mute would start the stream silent, so it does
+        # travel along. A device whose audio is not heard (the Apple TV of a set) gets
+        # neither.
+        if self.player.renders_audio and (self.player.owns_volume or self.player.volume_muted):
             # Repeat after 2 seconds because some players ignore the first volume command
             # (https://github.com/music-assistant/support/issues/3330). The repeat reads
             # the level when it fires, so it never replays a value that changed since.
             await self._send_current_volume()
             self.mass.call_later(2, self._send_current_volume)
+        elif self.player.renders_audio and (level := self._native_start_volume) is not None:
+            # A device that sets a level of its own when a session starts without one is
+            # handed the native level it had before connecting. The repeat also corrects a
+            # level the device only sets after this first command, but never undoes a
+            # volume command given through Music Assistant meanwhile.
+            await self.send_cli_command(f"VOLUME={level}")
+            self.mass.call_later(2, self._resend_native_start_volume, level, time.monotonic())
         # settle the position and any artwork that missed the bundle budget
         # on top of the identity push above
         self.player.on_player_media_updated()
@@ -398,8 +444,10 @@ class AirPlayStream:
         """
         Stop playback and cleanup.
 
-        :param force: If True, immediately kill the process without graceful shutdown.
+        :param force: If True, kill the process once it confirmed the STOP (bounded)
+            instead of waiting for it to exit.
         """
+        self._progress_anchor_generation += 1
         async with self._stop_lock:
             if self._cleanup_complete:
                 return
@@ -408,7 +456,8 @@ class AirPlayStream:
             async with self._metadata_lock:
                 self._metadata_generation += 1
                 try:
-                    await self._write_cli_command("ACTION=STOP")
+                    if await self._write_cli_command("ACTION=STOP") and force:
+                        await self._await_stop_ack()
                 finally:
                     self._stopped = True
                     try:
@@ -490,6 +539,7 @@ class AirPlayStream:
             return False
         if (cli_proc := self._cli_proc) is None:
             return False
+        self._progress_anchor_generation += 1
         # The FLUSH travels on the command pipe while audio travels on stdin, so
         # the binary can run its drain while bytes we already handed to stdin are
         # still in flight, and can read a write issued after it. Either would land
@@ -666,11 +716,14 @@ class AirPlayStream:
         """
         if not self.running or not self.connected:
             raise RuntimeError("Cannot start playback without a connected cliairplay process")
+        self._progress_anchor_generation += 1
+        progress_generation = self._progress_anchor_generation
         # A START re-anchors playout from scratch — the binary zeroes its own
         # re-anchor total on start/resume — so drop any shift accumulated against
         # the previous anchor (this also covers the warm-seek FLUSH->refill->START
         # path) to keep the server and binary baselines aligned.
         self.reset_reanchor_shift()
+        self.start_pending = True
         # Whatever was pending belongs to the anchor being replaced here; a later
         # report describes what this start cycle was handed.
         self.audio_pending_ms = 0
@@ -697,7 +750,7 @@ class AirPlayStream:
                 # Surfacing the dropped delivery lets the session fall back to a
                 # cold restart instead of waiting on an anchor that never happens.
                 raise PlayerCommandFailed(
-                    f"Could not deliver START to AirPlay player {self.player.player_id}"
+                    f"Could not deliver START to AirPlay player {self.player.protocol_id}"
                 )
             # Supersede an in-flight pre-transition artwork render; the task
             # below then sends only what actually changed (a track change's
@@ -746,7 +799,14 @@ class AirPlayStream:
             )
         # A malformed ack still answered the START, so the commanded instant is
         # what the binary applied (see the parse fallback in _handle_status_line).
-        return self._start_ack[1] if self._start_ack else start_unix_ms
+        audible_unix_ms = self._start_ack[1] if self._start_ack else start_unix_ms
+        if self.active_route == "RAOP":
+            self.mass.create_task(
+                self._send_start_progress_anchor(audible_unix_ms, progress_generation),
+                task_id=f"airplay_progress_after_start_{self._stream_id}",
+                abort_existing=True,
+            )
+        return audible_unix_ms
 
     def rebase_position(self, position_ms: int) -> None:
         """
@@ -791,17 +851,22 @@ class AirPlayStream:
         artist = ""
         album = ""
         item_id = ""
+        item_identity = ""
         if metadata:
             duration = self._full_media_duration(metadata)
-            title = metadata.title or ""
-            artist = metadata.artist or ""
-            album = metadata.album or ""
+            # each field is a single line of the newline-delimited command
+            title = strip_control_characters(metadata.title or "")
+            artist = strip_control_characters(metadata.artist or "")
+            album = strip_control_characters(metadata.album or "")
             item_id = metadata.queue_item_id or ""
             # The identity deliberately excludes duration and image url: a
             # value that shifts per seek or per media-update would re-send the
             # full metadata each time — which makes an Apple TV re-render its
             # Now Playing popup.
             text_checksum = f"{item_id}|{title}|{artist}|{album}"
+            # how the binary tells now-playing items apart: the queue item
+            # id, or the text for media without one (an audio source)
+            item_identity = item_id or f"{title}|{artist}|{album}"
             # the artwork identity must survive URL-form changes: the session
             # media and the player state carry the same image behind different
             # base URLs, and re-sending on such a flip would re-render and
@@ -820,6 +885,11 @@ class AirPlayStream:
                     self._pending_metadata_checksum = metadata_checksum
                     self._metadata_generation += 1
                 metadata_generation = self._metadata_generation
+            if metadata and item_identity != self._metadata_item_identity:
+                # the binary drops the artwork when the now-playing item
+                # changes, so a new item needs it again, also when the image
+                # is the same (the next track of an album)
+                self._metadata_artwork_checksum = ""
             needs_artwork = artwork_checksum != self._metadata_artwork_checksum
             if (
                 metadata
@@ -864,6 +934,7 @@ class AirPlayStream:
                             self._artwork_render_generations.discard(metadata_generation)
                         return
                     self._metadata_text_checksum = text_checksum
+                    self._metadata_item_identity = item_identity
                     # every identity push is followed by one explicit progress
                     # anchor, even at position zero: some receivers (WiiM Amp)
                     # mute a flushed-and-restarted session mid-track when no
@@ -912,6 +983,77 @@ class AirPlayStream:
                 await self._render_and_send_artwork(
                     artwork_url, metadata_generation, artwork_render
                 )
+
+    def handle_stream_loss(self, *, rejoin: bool = True) -> bool:
+        """
+        Take the player of a stream that was lost out of its group, and line up its return.
+
+        A speaker of a set takes its set along. A set that plays on its own stops: it plays on
+        all of its speakers or not at all.
+
+        :param rejoin: Whether to line up its return, which a join that failed does not get.
+        :return: Whether the player led its group, whose state the player controller settles.
+        """
+        player = self.player
+        # a speaker of a set leaves and re-joins a group with its set
+        owner = player.owner or player
+        # Candidates for the automatic re-join: the leader this member
+        # was synced to (plus its other members, in case leadership
+        # transfers while the backoff runs), or - when this was the
+        # leader itself - the members that survive it. Captured before
+        # the ungroup below mutates the group state (create_task
+        # starts eagerly).
+        was_leader = bool(owner.group_members)
+        group_id = owner.player.active_group if owner.player else None
+        if owner.synced_to:
+            rejoin_candidates = [owner.synced_to]
+            if leader := owner.provider.get_protocol(owner.synced_to):
+                rejoin_candidates += [
+                    member_id
+                    for member_id in leader.group_members
+                    if member_id not in (owner.protocol_id, owner.synced_to)
+                ]
+        else:
+            rejoin_candidates = [m for m in owner.group_members if m != owner.protocol_id]
+        # Hand off to the player controller so it drops just this member, or
+        # transfers leadership to a healthy member, instead of dissolving the
+        # whole group over a single dead transport. A sync leader is left in
+        # its current state here on purpose: the controller only transfers
+        # leadership while the queue still looks active, and transfer_queue or
+        # dissolve sets the final state.
+        # The player leaves the group of its AirPlay sync leader only:
+        # cmd_ungroup acts on the player at the visible/group level, which can
+        # remove the member from its (sync)group - or, for a static member,
+        # release the whole group (HA unjoin semantics) - over one dead
+        # transport. The device fell out; its membership is intent that must
+        # survive, so only the leader's live session loses it.
+        if owner.synced_to:
+            sync_leader = owner.provider.get_protocol(owner.synced_to)
+            leader_player = sync_leader.player if sync_leader else None
+        else:
+            leader_player = owner.player if was_leader else None
+        leaving: asyncio.Task[None] | None = None
+        if leader_player is not None and owner.player is not None:
+            leaving = self.mass.create_task(
+                self._leave_group(leader_player, owner.player.player_id)
+            )
+        if rejoin and rejoin_candidates and not self._receiver_closed:
+            # the group (or its successor) may still be playing:
+            # schedule attempts to re-join it
+            if was_leader:
+                # it leads the group until it has left it, which waits for other commands
+                owner.schedule_group_rejoin(rejoin_candidates, group_id, after=leaving)
+            else:
+                owner.schedule_group_rejoin(rejoin_candidates, group_id)
+        if (
+            (owner is not player or player.speakers)
+            and not was_leader
+            and not owner.synced_to
+            and (session := self.session)
+        ):
+            # a set plays on all of its speakers or not at all
+            self.mass.create_task(session.stop())
+        return was_leader
 
     def _full_media_duration(self, metadata: PlayerMedia) -> int:
         """
@@ -1066,8 +1208,6 @@ class AirPlayStream:
             str(self.pcm_format.sample_rate),
             "--bitdepth",
             str(self.pcm_format.bit_depth),
-            "--clock-offset-ns",
-            str(CLI_CLOCK_OFFSET_NS),
         ]
         if timing_arg:
             args += ["--timing", timing_arg]
@@ -1099,7 +1239,7 @@ class AirPlayStream:
             metadata_caps = raop_info.decoded_properties.get("md")
             if metadata_caps or target_protocol == StreamingProtocol.RAOP:
                 args += ["--md", metadata_caps or ""]
-        if target_protocol == StreamingProtocol.RAOP and self.player.config.get_value(
+        if target_protocol == StreamingProtocol.RAOP and self.player.settings.get_value(
             CONF_ENCRYPTION, True
         ):
             args += ["--encrypt"]
@@ -1138,8 +1278,8 @@ class AirPlayStream:
             args += ["--secret", auth_secret]
 
         # Device password
-        if password := self.player.config.get_value(CONF_PASSWORD):
-            args += ["--password", str(password)]
+        if password := self.player.device_password:
+            args += ["--password", password]
 
         # Shared PTP daemon clock (multi-room sync for native AP2 streams). The
         # decision is made once per session and passed in, so every native AP2
@@ -1153,7 +1293,7 @@ class AirPlayStream:
             # stock depth. The stored value wins; Automatic (0) resolves
             # through the same device-family table that seeds the config
             # entry default, so selecting it never downgrades a device.
-            depth_ms = cast("int", self.player.config.get_value(CONF_BUFFER_DEPTH) or 0)
+            depth_ms = cast("int", self.player.settings.get_value(CONF_BUFFER_DEPTH) or 0)
             if not depth_ms:
                 depth_ms = default_buffer_depth(
                     self.player.device_info.manufacturer or "",
@@ -1187,7 +1327,7 @@ class AirPlayStream:
         # both flags are dropped silently when no value applies here.
         self.player.logger.debug(
             "cliairplay network binding for player %s: if=%s publish_ip=%s",
-            self.player.player_id,
+            self.player.protocol_id,
             if_arg or "<all interfaces>",
             publish_arg or "<not configured>",
         )
@@ -1197,6 +1337,10 @@ class AirPlayStream:
             args += ["--debug", "10"]
         elif self.prov.logger.isEnabledFor(logging.DEBUG):
             args += ["--debug", "5"]
+
+        # Read after the last await: the process exists before anything else can run,
+        # and from then on it pins the rate of the timeline it was given.
+        args += cli_clock_args(self.mass.timeline_clock)
 
         # Audio is fed continuously on the process stdin; the binary reads it into
         # a single ring buffer for the whole session lifetime (flushed and
@@ -1371,6 +1515,8 @@ class AirPlayStream:
         """Parse the [STATUS] route line and log which route this stream took."""
         fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
         protocol = fields.get("protocol", "")
+        self.buffered_route = protocol == "airplay2" and fields.get("buffered") == "1"
+        self._compat_route = protocol == "airplay2" and fields.get("flow") == "raop-compat"
         if protocol == "airplay2":
             flow = fields.get("flow", "")
             timing = fields.get("timing", "")
@@ -1412,6 +1558,8 @@ class AirPlayStream:
           [STATUS] playing elapsed_ms=<ms>
           [STATUS] paused
           [STATUS] eof
+          [STATUS] stopped (STOP done, the receiver is released)
+          [STATUS] receiver_closed (the receiver ended the session itself)
           [STATUS] announce_started at_unix_ms=<ms> duration_ms=<ms>
           [STATUS] announce_done [cancelled=1]
           [STATUS] error code=<slug> http=<int> detail="<short text>"
@@ -1461,54 +1609,26 @@ class AirPlayStream:
                             "superseded cliairplay process stopped for %s", player.display_name
                         )
                         return
-                    logger.warning(
-                        "cliairplay process stopped unexpectedly for %s", player.display_name
-                    )
-                    # Candidates for the automatic re-join: the leader this member
-                    # was synced to (plus its other members, in case leadership
-                    # transfers while the backoff runs), or - when this was the
-                    # leader itself - the members that survive it. Captured before
-                    # the ungroup below mutates the group state (create_task
-                    # starts eagerly).
-                    was_leader = bool(player.group_members)
-                    if player.synced_to:
-                        rejoin_candidates = [player.synced_to]
-                        if leader := self.mass.players.get_player(player.synced_to):
-                            rejoin_candidates += [
-                                member_id
-                                for member_id in leader.group_members
-                                if member_id not in (player.player_id, player.synced_to)
-                            ]
-                    else:
-                        rejoin_candidates = [
-                            m for m in player.group_members if m != player.player_id
-                        ]
-                    # Hand off to the player controller so it drops just this member, or
-                    # transfers leadership to a healthy member, instead of dissolving the
-                    # whole group over a single dead transport. A sync leader is left in
-                    # its current state here on purpose: the controller only transfers
-                    # leadership while the queue still looks active, and transfer_queue or
-                    # dissolve sets the final state.
-                    # A synced member is dropped from its NATIVE sync leader directly:
-                    # cmd_ungroup resolves a linked protocol player to its visible parent
-                    # (handle_player_command) and from there acts at the visible/group
-                    # level, which can remove the member from its (sync)group - or, for a
-                    # static member, release the whole group (HA unjoin semantics) - over
-                    # one dead transport. The device fell out; its membership is intent
-                    # that must survive, so only the leader's live session loses it.
-                    if player.synced_to:
-                        self.mass.create_task(
-                            self.mass.players.cmd_set_members(
-                                player.synced_to, player_ids_to_remove=[player.player_id]
-                            )
+                    if self._receiver_closed:
+                        # Another sender took the receiver over: it leaves the group
+                        # session like a failed member, but is not re-joined, which
+                        # would take the receiver back.
+                        logger.info(
+                            "%s ended the AirPlay session (another sender took over)",
+                            player.display_name,
                         )
                     else:
-                        self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
-                    if rejoin_candidates:
-                        # the group (or its successor) may still be playing:
-                        # schedule bounded attempts to re-join it
-                        player.schedule_group_rejoin(rejoin_candidates)
-                    if was_leader:
+                        logger.warning(
+                            "cliairplay process stopped unexpectedly for %s", player.display_name
+                        )
+                    if not player.renders_audio:
+                        # the device of a set only shows what its speakers play: they play on
+                        if (session := self.session) is not None:
+                            self.mass.create_task(
+                                session.end_silent_member(player, taken_over=self._receiver_closed)
+                            )
+                        return
+                    if self.handle_stream_loss():
                         return
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
@@ -1535,6 +1655,7 @@ class AirPlayStream:
             else:
                 self._update_elapsed(millis / 1000)
         elif "[STATUS] paused" in line:
+            self.start_pending = False
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
         elif "[STATUS] started " in line:
             try:
@@ -1630,6 +1751,10 @@ class AirPlayStream:
             player.logger.debug("End of stream reached")
             self._input_ended = True
             return True
+        elif "[STATUS] stopped" in line:
+            self._stop_acked.set()
+        elif "[STATUS] receiver_closed" in line:
+            self._receiver_closed = True
         elif "[STATUS] REANCHOR" in line:
             self._parse_reanchor_status(line)
         elif "[STATUS] error " in line:
@@ -1647,6 +1772,7 @@ class AirPlayStream:
         elapsed_time += self._start_position
         # The binary only emits this status while actually playing, so it is
         # also the signal that drives the player into the PLAYING state.
+        self.start_pending = False
         self.player.set_state_from_stream(
             state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
         )
@@ -1657,7 +1783,7 @@ class AirPlayStream:
 
         The binary reports the shift cumulative since the last start/resume
         directly, so this SETS the tracked shift, using the sample rate carried
-        on the line when present.
+        on the line when present, and reports it to the stream session.
 
         :param line: The status line, e.g. ``[STATUS] REANCHOR shifted_frames=67870
             total_shifted_frames=135740 sample_rate=44100``.
@@ -1675,6 +1801,8 @@ class AirPlayStream:
             self.player.display_name,
             self.cumulative_shift_seconds,
         )
+        if self.session is not None:
+            self.session.on_member_reanchored()
 
     def _reanchor_sample_rate(self, reported: str | None) -> int:
         """Return the frame->seconds rate, preferring a valid rate reported on the line."""
@@ -1707,7 +1835,7 @@ class AirPlayStream:
                 image_format="JPEG",
                 flatten_transparency=True,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - artwork is optional, playback goes on without it
             self.player.logger.debug("Could not prepare artwork: %s", err)
             return None
 
@@ -1722,7 +1850,8 @@ class AirPlayStream:
         # identity checksum back and forth — and every flip is a full
         # now-playing replace that makes an Apple TV degrade its Now Playing
         # screen on the next track change.
-        state_media = self.player.state.current_media
+        owner = self.player.owner
+        state_media = owner.player.current_media if owner and owner.player else None
         if (
             metadata is not None
             and state_media is not None
@@ -1731,6 +1860,34 @@ class AirPlayStream:
         ):
             return state_media
         return metadata
+
+    async def _send_start_progress_anchor(self, audible_unix_ms: int, generation: int) -> None:
+        """
+        Send a RAOP progress anchor once an acknowledged start becomes audible.
+
+        :param audible_unix_ms: Acknowledged audible start instant on the cliairplay
+            timeline, in unix milliseconds.
+        :param generation: Start generation that owns this progress update.
+        """
+        # Live inputs do not necessarily have media metadata, so the normal
+        # media-updated push can omit PROGRESS. Some RAOP receivers then remain
+        # silent after a restart despite accepting audio. The binary drops a
+        # PROGRESS that arrives before the session streams, so wait until the
+        # audible instant, and discard updates belonging to a stopped/flushed/old
+        # start. An ASAP start without a usable ack reports 0: treat it as now.
+        clock = self.mass.timeline_clock
+        audible = audible_unix_ms / 1000 if audible_unix_ms > 0 else cli_clock_time(clock)
+        await asyncio.sleep(max(0, audible - cli_clock_time(clock)) + 0.1)
+        async with self._metadata_lock:
+            if (
+                generation != self._progress_anchor_generation
+                or not self.running
+                or not self.connected
+            ):
+                return
+            progress = int(self._start_position + max(0, cli_clock_time(clock) - audible))
+            if await self.send_cli_command(f"PROGRESS={progress}"):
+                self._last_progress_sent = progress
 
     async def _send_current_metadata(
         self, send_artwork: bool = True, defer_artwork_followup: bool = False
@@ -1771,6 +1928,19 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
 
+    async def _resend_native_start_volume(self, level: int, sent_at: float) -> None:
+        """
+        Send the native start volume again, unless it no longer applies or was overruled.
+
+        It is overruled by a volume command given through Music Assistant since it was sent.
+
+        :param level: The native level the session started at.
+        :param sent_at: When that level was first sent, as a time.monotonic() timestamp.
+        """
+        if self.player.native_start_volume is None or self.player.volume_commanded_since(sent_at):
+            return
+        await self.send_cli_command(f"VOLUME={level}")
+
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
         self._stopping = True
@@ -1782,7 +1952,7 @@ class AirPlayStream:
                 await stdout_reader_task
             except asyncio.CancelledError:
                 pass
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - cleanup must not abort, the kill below still runs
                 self.player.logger.debug("cliairplay stdout reader cleanup failed: %s", err)
         try:
             if self._cli_proc and not self._cli_proc.closed:
@@ -1845,7 +2015,7 @@ class AirPlayStream:
         target_protocol = self.player.protocol_override or self.player.protocol
         if target_protocol != StreamingProtocol.AIRPLAY2 or not self.player.password_required:
             return
-        if self.player.config.get_value(CONF_PASSWORD):
+        if self.player.device_password:
             return
         # stored credentials keep the binary's pair-verify leg viable, and its own
         # failure report guides the user when that leg is rejected after all
@@ -1854,6 +2024,20 @@ class AirPlayStream:
         ):
             return
         raise self._password_required_error()
+
+    async def _await_stop_ack(self) -> None:
+        """Wait until the binary confirmed a STOP or exited, bounded by the stop ack timeout."""
+        waiters = [
+            asyncio.ensure_future(self._stop_acked.wait()),
+            asyncio.ensure_future(self._process_ended.wait()),
+        ]
+        try:
+            await asyncio.wait(
+                waiters, timeout=AIRPLAY_STOP_ACK_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
 
     async def _await_connected(self, timeout: float = 10) -> None:
         """
@@ -1985,7 +2169,8 @@ class AirPlayStream:
 
     def _handle_native_control_failure(self) -> None:
         """Warn once that the receiver dropped the native AirPlay 2 control channel."""
-        if self._native_control_failure_warned:
+        # the compatibility flow reports its lost connection with the same line
+        if self._native_control_failure_warned or self._compat_route:
             return
         if not self._describes_the_device():
             # The binary keeps reporting while the failure lasts, so leaving the
@@ -2138,7 +2323,8 @@ class AirPlayStream:
         Parse a [STATUS] clock_ready line into the receiver's readiness projection.
 
         A ``stalled`` state means the receiver never answered our clock and will
-        render silence, which is warned about once per stream session.
+        render silence, which is warned about once per stream session. On a late
+        join it also takes the joiner out of its session.
 
         :param line: The status line, e.g. ``[STATUS] clock_ready mode=ptp
             state=probing streak_ms=0 exchanges=1 ready_in_ms=2300
@@ -2177,6 +2363,10 @@ class AirPlayStream:
                 fields.get("exchanges", "?"),
                 fields.get("streak_ms", "?"),
             )
+        if stalled and self._start_was_join and self.session and self._describes_the_device():
+            # The binary reaches its stall verdict seconds after the join is in
+            # place, so the session is told here rather than at the join.
+            self.mass.create_task(self.session.remove_stalled_joiner(self.player))
         # NTP timing has no receiver clock to wait for, and a state without a
         # projection resolves the wait with nothing so a caller falls back
         # instead of blocking on evidence that will not arrive. A stalled clock
@@ -2185,6 +2375,8 @@ class AirPlayStream:
         # readiness rather than a bare missing instant.
         if mode == "ntp":
             self._clock_readiness = ClockReadiness.NOT_APPLICABLE
+            # Buffered needs PTP timing, so the binary streams realtime instead.
+            self.buffered_route = False
         elif stalled:
             self._clock_readiness = ClockReadiness.STALLED
         else:
@@ -2213,6 +2405,41 @@ class AirPlayStream:
             self.player.display_name,
             margin_ms,
         )
+
+    async def _leave_group(self, leader: Player, player_id: str) -> None:
+        """
+        Take a player out of the group it plays in, on the server's own behalf.
+
+        :param leader: The player that leads the group.
+        :param player_id: Id of the player that leaves, which can be the leader itself.
+        """
+        players = self.mass.players
+        player = players.get_player(player_id)
+        if self._receiver_closed and player and player.active_group:
+            # the other sender takes it out of its group player, as a user does
+            async with players.get_group_and_player_lock(player_id):
+                # unless a command that came first restarted the stream
+                if self.player.stream is self:
+                    await players.cmd_ungroup(player_id)
+            return
+        if leader.player_id != player_id:
+            async with players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):
+                await players._handle_set_members(leader, player_ids_to_remove=[player_id])
+            return
+        async with players.get_group_and_player_lock(player_id):
+            owner = self.player.owner or self.player
+            if self.player.stream is not self or not owner.group_members:
+                # a command that came first restarted the stream or took the leadership away
+                return
+            group = players.get_player(leader.active_group) if leader.active_group else None
+            if (
+                not self._receiver_closed
+                and group
+                and group.own_protocol
+                and await group.own_protocol.on_session_leader_lost(owner)
+            ):
+                return
+            await players._handle_set_members(leader, player_ids_to_remove=[player_id])
 
 
 def _artwork_identity(image_url: str) -> str:

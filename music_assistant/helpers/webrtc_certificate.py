@@ -132,7 +132,7 @@ def _load_certificate(
             key_path.chmod(mode)
 
         return private_key, cert
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - any unusable certificate is regenerated
         LOGGER.warning("Failed to load WebRTC certificate: %s", err)
         return None
 

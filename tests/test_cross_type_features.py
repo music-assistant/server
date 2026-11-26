@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import ClientConnectionError
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
-from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     Artist,
     AudioSource,
@@ -23,11 +28,15 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.controllers.music.media.tracks import TracksController
+from music_assistant.controllers.players import PlayerController
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
-from tests.common import set_music_source_access
+from music_assistant.models.provider import Provider
+from tests.common import as_user, set_music_source_access
 
 
 def _make_prov(
@@ -54,6 +63,8 @@ def _similar_track(item_id: str) -> Track:
 def _mass_with_empty_cache() -> Mock:
     """Return a mocked server whose cache holds nothing, as a listing reads it first."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
+    mass.music.resolve_visible_provider = mass.get_provider
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
     return mass
@@ -308,6 +319,7 @@ async def test_similar_tracks_preserves_typed_provider_error() -> None:
 async def test_similar_tracks_lookup_failure_after_empty_response_returns_empty() -> None:
     """A failed cross-provider lookup does not override an earlier valid empty response."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -354,6 +366,7 @@ async def test_similar_tracks_lookup_failure_after_empty_response_returns_empty(
 async def test_similar_tracks_normalizes_provider_matching_failure() -> None:
     """A transport failure while matching a lookup provider is normalized."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     lookup_provider = Mock(spec=MusicProvider)
     lookup_provider.name = "Lookup"
     lookup_provider.instance_id = "lookup"
@@ -382,6 +395,7 @@ async def test_similar_tracks_normalizes_provider_matching_failure() -> None:
 async def test_similar_tracks_preserves_failure_when_lookup_is_not_implemented() -> None:
     """An unsupported matched lookup does not discard an earlier provider failure."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -429,6 +443,7 @@ async def test_similar_tracks_preserves_failure_when_lookup_is_not_implemented()
 async def test_similar_tracks_lookup_skips_mapped_provider() -> None:
     """Cross-provider lookup does not retry an instance already mapped to the track."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.instance_id = "mapped"
@@ -462,6 +477,7 @@ async def test_similar_tracks_lookup_skips_mapped_provider() -> None:
 async def test_similar_tracks_empty_response_wins_without_lookup_provider() -> None:
     """A valid empty response is preserved when no lookup provider is available."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -492,6 +508,7 @@ async def test_similar_tracks_empty_response_wins_without_lookup_provider() -> N
 async def test_similar_tracks_failure_wins_without_lookup_provider() -> None:
     """A provider failure is preserved when no lookup provider is available."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -600,7 +617,7 @@ def _artist_listing_setup(
     mass.get_provider.return_value = music_prov
     mass.get_providers_supporting_feature.return_value = [metadata_prov]
     # keep provider tracks (not resolved to a library equivalent)
-    mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.music.tracks.get_visible_library_item_by_prov_id = AsyncMock(return_value=None)
 
     ref_item = Mock()
     ref_item.name = "Ref Artist"
@@ -611,9 +628,10 @@ def _artist_listing_setup(
     controller = ArtistsController.__new__(ArtistsController)
     controller.mass = mass
     controller.logger = Mock()
-    controller.get_library_item = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
-    # keep provider artists (not resolved to a library equivalent)
-    controller.get_library_item_by_prov_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    # the library artist itself resolves, provider artists stay unresolved
+    controller.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _item_id, provider: ref_item if provider == "library" else None
+    )
     return controller, music_prov, metadata_prov, ref_item
 
 
@@ -746,6 +764,7 @@ async def test_similar_artists_provider_queries_named_provider() -> None:
 async def test_browse_root_includes_non_music_providers() -> None:
     """Root browse should list every provider declaring BROWSE, regardless of type."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     music_prov = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.BROWSE})
     music_prov.domain = "music_a"
     music_prov.name = "Music A"
@@ -753,14 +772,15 @@ async def test_browse_root_includes_non_music_providers() -> None:
     plugin_prov.domain = "plugin_a"
     plugin_prov.name = "Plugin A"
 
-    # browse queries get_providers_supporting_feature twice: once for BROWSE, once
-    # for AUDIO_SOURCE (to decide whether to inject the Live Inputs root entry).
+    # browse queries get_providers_supporting_feature for BROWSE; the audio source
+    # providers come from the players controller
     def _supports(feature: ProviderFeature) -> list[Mock]:
         if feature == ProviderFeature.BROWSE:
             return [music_prov, plugin_prov]
         return []
 
     mass.get_providers_supporting_feature.side_effect = _supports
+    mass.players.get_audio_source_providers.return_value = []
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
@@ -775,8 +795,10 @@ async def test_browse_root_includes_non_music_providers() -> None:
     assert ProviderFeature.BROWSE in calls
 
 
-def _audio_source_item(provider: str, item_id: str, *, can_initiate: bool = True) -> AudioSource:
-    """Return an AudioSource as a plugin would declare it."""
+def _audio_source_item(
+    provider: str, item_id: str, *, can_initiate: bool = True, owner: str | None = None
+) -> AudioSource:
+    """Return an AudioSource as a plugin would declare it, belonging to the given player."""
     return AudioSource(
         item_id=item_id,
         provider=provider,
@@ -789,6 +811,7 @@ def _audio_source_item(provider: str, item_id: str, *, can_initiate: bool = True
             )
         },
         can_initiate=can_initiate,
+        owner_player_id=owner,
     )
 
 
@@ -800,6 +823,7 @@ class _AudioSourcePlugin(PluginProvider):
         instance_id: str,
         sources: list[AudioSource],
         bound_players: dict[str, list[AudioSource]] | None = None,
+        player_inputs: dict[str, list[AudioSource]] | None = None,
     ) -> None:
         self.manifest = Mock(type=ProviderType.PLUGIN)
         self.manifest.domain = instance_id
@@ -808,6 +832,7 @@ class _AudioSourcePlugin(PluginProvider):
         self._supported_features = {ProviderFeature.AUDIO_SOURCE}
         self._sources = sources
         self._bound_players = bound_players
+        self._player_inputs = player_inputs or {}
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return all sources this plugin exposes."""
@@ -819,27 +844,54 @@ class _AudioSourcePlugin(PluginProvider):
             return None
         return self._bound_players.get(player_id, [])
 
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the sources that are inputs of the given player's own device."""
+        return self._player_inputs.get(player_id, [])
+
+
+def _player(player_id: str, *protocol_ids: str, private: bool = False) -> Mock:
+    """Return a player stub with the given protocols attached, private client ones if asked."""
+    player = Mock(
+        player_id=player_id,
+        protocol_ids=set(protocol_ids),
+        attached_protocols={protocol_id: Mock(private=private) for protocol_id in protocol_ids},
+    )
+    player.name = player_id.title()
+    return player
+
+
+def _set_players(mass: Mock, *players: Mock) -> None:
+    """Make the given players the ones the players controller knows, also by their protocols."""
+    by_id = {player.player_id: player for player in players}
+    by_protocol = {protocol_id: x for x in players for protocol_id in x.protocol_ids}
+    mass.players.iter_players.return_value = list(players)
+    mass.players.get_player.side_effect = by_id.get
+    mass.players.get_audio_source_owner.side_effect = lambda source: by_id.get(
+        source.owner_player_id, by_protocol.get(source.owner_player_id)
+    )
+    mass.players.get_audio_source_name.side_effect = partial(
+        PlayerController.get_audio_source_name, mass.players
+    )
+    mass.players.may_use_audio_source.side_effect = partial(
+        PlayerController.may_use_audio_source, mass.players
+    )
+
 
 def _audio_source_browse_controller() -> tuple[MusicController, PluginProvider, PluginProvider]:
     """Build a browse controller with one player-bound and one unbound audio source plugin."""
+    kitchen_source = _audio_source_item("connect", "kitchen", owner="kitchen")
+    office_source = _audio_source_item("connect", "office", owner="office")
     bound_plugin = _AudioSourcePlugin(
         "connect",
-        [_audio_source_item("connect", "kitchen"), _audio_source_item("connect", "office")],
-        bound_players={
-            "kitchen": [_audio_source_item("connect", "kitchen")],
-            "office": [_audio_source_item("connect", "office")],
-        },
+        [kitchen_source, office_source],
+        bound_players={"kitchen": [kitchen_source], "office": [office_source]},
     )
     unbound_plugin = _AudioSourcePlugin("vban", [_audio_source_item("vban", "input1")])
 
     mass = Mock()
-
-    def _supports(feature: ProviderFeature) -> list[PluginProvider]:
-        if feature == ProviderFeature.AUDIO_SOURCE:
-            return [bound_plugin, unbound_plugin]
-        return []
-
-    mass.get_providers_supporting_feature.side_effect = _supports
+    mass.get_providers_supporting_feature.return_value = []
+    mass.players.get_audio_source_providers.return_value = [bound_plugin, unbound_plugin]
+    _set_players(mass, _player("kitchen"), _player("office"))
     mass.get_provider.side_effect = lambda instance_id: {
         "connect": bound_plugin,
         "vban": unbound_plugin,
@@ -852,40 +904,70 @@ def _audio_source_browse_controller() -> tuple[MusicController, PluginProvider, 
     return controller, bound_plugin, unbound_plugin
 
 
-async def test_browse_root_scopes_audio_sources_to_player() -> None:
-    """With a player scope, only that player's bound sources plus unbound plugins list."""
+async def test_browse_root_lists_one_live_sources_folder() -> None:
+    """The root lists one folder that holds the live sources of every provider."""
     controller, _bound, _unbound = _audio_source_browse_controller()
 
-    result = await controller.browse(path=None, player_id="kitchen")
+    result = await controller.browse(path=None)
 
-    # the bound plugin narrows to the player's single source (promoted to the
-    # source itself); the other player's source is not offered here
+    assert len(result) == 1
+    folder = result[0]
+    assert isinstance(folder, BrowseFolder)
+    assert (folder.path, folder.name, folder.translation_key) == (
+        "live_sources://",
+        "Live sources",
+        "live_sources",
+    )
+
+
+async def test_browse_root_lists_no_live_sources_folder_without_a_source_to_start() -> None:
+    """Without a live source the user can start, the root has no folder for them."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+    passive = _audio_source_item("airplay", "kitchen", can_initiate=False, owner="kitchen")
+    cast("Mock", controller.mass).players.get_audio_source_providers.return_value = [
+        _AudioSourcePlugin("airplay", [passive], bound_players={"kitchen": [passive]})
+    ]
+
+    assert await controller.browse(path=None) == []
+    assert await controller.browse(path=None, player_id="kitchen") == []
+
+
+async def test_browse_live_sources_folder_scopes_audio_sources_to_player() -> None:
+    """With a player scope, the folder holds that player's bound sources and the unbound ones."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path="live_sources://", player_id="kitchen")
+
     assert _audio_source_item("connect", "kitchen") in result
     assert _audio_source_item("connect", "office") not in result
     assert _audio_source_item("vban", "input1") in result
 
 
-async def test_browse_root_hides_bound_plugin_for_unbound_player() -> None:
-    """A player-bound plugin disappears entirely for a player it has no source for."""
+async def test_browse_live_sources_folder_hides_bound_sources_of_other_players() -> None:
+    """A player-bound plugin has nothing in the folder for a player it has no source for."""
     controller, _bound, _unbound = _audio_source_browse_controller()
 
-    result = await controller.browse(path=None, player_id="livingroom")
+    result = await controller.browse(path="live_sources://", player_id="livingroom")
 
     assert _audio_source_item("connect", "kitchen") not in result
     assert _audio_source_item("connect", "office") not in result
     assert _audio_source_item("vban", "input1") in result
 
 
-async def test_browse_root_without_player_scope_lists_all_sources() -> None:
-    """Without a player scope every plugin keeps its full source listing."""
+async def test_browse_live_sources_folder_names_each_source_with_its_player() -> None:
+    """Without a player scope the folder holds every source, named with its player, after a way back."""
     controller, _bound, _unbound = _audio_source_browse_controller()
 
-    result = await controller.browse(path=None)
+    result = await controller.browse(path="live_sources://")
 
-    # two initiable sources: the bound plugin lists as a folder holding both
-    folder_paths = [item.path for item in result if isinstance(item, BrowseFolder)]
-    assert "connect://" in folder_paths
-    assert _audio_source_item("vban", "input1") in result
+    back = result[0]
+    assert isinstance(back, BrowseFolder)
+    assert (back.path, back.name) == ("root", "..")
+    assert [item.name for item in result[1:]] == [
+        "Source kitchen (Kitchen)",
+        "Source office (Office)",
+        "Source input1",
+    ]
 
 
 async def test_browse_provider_level_scopes_audio_sources_to_player() -> None:
@@ -911,14 +993,10 @@ async def test_browse_provider_level_without_player_scope_lists_all_sources() ->
 async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
     """A restricted user only sees bound sources of players their filter allows."""
     controller, _bound, _unbound = _audio_source_browse_controller()
-    restricted_user = Mock(player_filter=["office"])
 
-    with patch(
-        "music_assistant.controllers.music.controller.get_current_user",
-        return_value=restricted_user,
-    ):
-        unscoped = await controller.browse(path=None)
-        hidden_scope = await controller.browse(path=None, player_id="kitchen")
+    with as_user(["office"]):
+        unscoped = await controller.browse(path="live_sources://")
+        hidden_scope = await controller.browse(path="live_sources://", player_id="kitchen")
 
     assert _audio_source_item("connect", "office") in unscoped
     assert _audio_source_item("connect", "kitchen") not in unscoped
@@ -928,6 +1006,199 @@ async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
     assert _audio_source_item("vban", "input1") in hidden_scope
 
 
+def _line_in_controller() -> tuple[MusicController, PluginProvider]:
+    """Build a browse controller that also lists line-ins of two players and of no player."""
+    controller, bound_plugin, unbound_plugin = _audio_source_browse_controller()
+    kitchen_input = _audio_source_item("sendspin", "kitchen-device", owner="kitchen-sendspin")
+    office_input = _audio_source_item("sendspin", "office-device", owner="office")
+    # the den player is disabled, so the players controller no longer holds it
+    den_input = _audio_source_item("sendspin", "den-device", owner="den")
+    # the patio device is held by another server: without a connection it reports no input
+    patio_input = _audio_source_item("sendspin", "patio-device", owner="patio-sendspin")
+    line_in = _AudioSourcePlugin(
+        "sendspin",
+        [
+            kitchen_input,
+            office_input,
+            den_input,
+            patio_input,
+            _audio_source_item("sendspin", "mixer"),
+        ],
+        # the kitchen device is known by the id of its protocol, the office one by the player
+        player_inputs={
+            "kitchen-sendspin": [kitchen_input],
+            "office": [office_input],
+            "den": [den_input],
+        },
+    )
+    mass = cast("Mock", controller.mass)
+    mass.players.get_audio_source_providers.return_value = [bound_plugin, unbound_plugin, line_in]
+    mass.get_provider.side_effect = {
+        "connect": bound_plugin,
+        "vban": unbound_plugin,
+        "sendspin": line_in,
+    }.get
+    _set_players(
+        mass,
+        _player("kitchen", "kitchen-sendspin"),
+        _player("office"),
+        _player("patio", "patio-sendspin"),
+    )
+    return controller, line_in
+
+
+async def test_browse_line_in_sources_follow_the_user_player_filter() -> None:
+    """A restricted user only sees the line-ins of player devices their filter allows."""
+    controller, _line_in = _line_in_controller()
+
+    with as_user(["office"]):
+        unscoped = await controller.browse(path="sendspin://")
+        scoped = await controller.browse(path="sendspin://", player_id="office")
+
+    for result in (unscoped, scoped):
+        assert _audio_source_item("sendspin", "office-device") in result
+        assert _audio_source_item("sendspin", "kitchen-device") not in result
+        # a source of no player stays available to everyone
+        assert _audio_source_item("sendspin", "mixer") in result
+
+
+async def test_browse_line_in_sources_unrestricted_user_sees_all() -> None:
+    """A user without a player filter sees every line-in."""
+    controller, _line_in = _line_in_controller()
+
+    result = await controller.browse(path="sendspin://")
+
+    assert _audio_source_item("sendspin", "office-device") in result
+    assert _audio_source_item("sendspin", "kitchen-device") in result
+    assert _audio_source_item("sendspin", "mixer") in result
+
+
+@pytest.mark.parametrize(
+    "item_id", ["den-device", "patio-device"], ids=["disabled_player", "held_by_another_server"]
+)
+async def test_line_in_of_a_player_hidden_from_the_user_stays_hidden(item_id: str) -> None:
+    """
+    The line-in of a player the user may not use stays hidden, also when no input names it.
+
+    A disabled player is gone from the players, and a device held by another server reports
+    no input of its player while it is not connected here.
+    """
+    controller, _line_in = _line_in_controller()
+
+    with as_user(["office"]):
+        listed = await controller.browse(path="sendspin://")
+        with pytest.raises(MediaNotFoundError):
+            await controller.get_item(MediaType.AUDIO_SOURCE, item_id, "sendspin")
+
+    assert _audio_source_item("sendspin", item_id) not in listed
+    assert _audio_source_item("sendspin", "office-device") in listed
+
+
+async def test_audio_source_lookup_follows_the_user_player_filter() -> None:
+    """A restricted user can only look up the sources of players their filter allows."""
+    controller, _line_in = _line_in_controller()
+
+    with as_user(["office"]):
+        office = await controller.get_item(MediaType.AUDIO_SOURCE, "office-device", "sendspin")
+        mixer = await controller.get_item(MediaType.AUDIO_SOURCE, "mixer", "sendspin")
+        for provider, item_id in (("sendspin", "kitchen-device"), ("connect", "kitchen")):
+            with pytest.raises(MediaNotFoundError):
+                await controller.get_item(MediaType.AUDIO_SOURCE, item_id, provider)
+
+    assert office == _audio_source_item("sendspin", "office-device")
+    assert mixer == _audio_source_item("sendspin", "mixer")
+    assert await controller.get_item(
+        MediaType.AUDIO_SOURCE, "kitchen-device", "sendspin"
+    ) == _audio_source_item("sendspin", "kitchen-device")
+
+
+async def test_audio_source_uri_resolves_only_for_the_user_player_filter() -> None:
+    """Selecting or playing a source by its uri only finds sources the user may use."""
+    music, line_in = _line_in_controller()
+    music.mass.music = music
+    players = PlayerController.__new__(PlayerController)
+    players.mass = music.mass
+    players.logger = Mock()
+
+    with as_user(["office"]):
+        allowed = await players._resolve_audio_source_uri("sendspin://audio_source/office-device")
+        hidden = await players._resolve_audio_source_uri("sendspin://audio_source/kitchen-device")
+
+    assert allowed == (_audio_source_item("sendspin", "office-device"), line_in)
+    assert hidden is None
+
+
+async def test_bound_sources_of_the_own_client_player_stay_available() -> None:
+    """A restricted user keeps the sources bound to the private client player they connected on."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+    phone_source = _audio_source_item("connect", "phone", owner="phone")
+    connect = _AudioSourcePlugin("connect", [phone_source], bound_players={"phone": [phone_source]})
+    mass = cast("Mock", controller.mass)
+    mass.players.get_audio_source_providers.return_value = [connect]
+    mass.get_provider.side_effect = {"connect": connect}.get
+    _set_players(mass, _player("office"), _player("phone", "phone-sendspin", private=True))
+
+    with as_user(["office"], client_player_id="phone-sendspin"):
+        looked_up = await controller.get_item(MediaType.AUDIO_SOURCE, "phone", "connect")
+        scoped = await controller.browse(path="connect://", player_id="phone")
+    # connected on another client, the same user may not use that player
+    with as_user(["office"]), pytest.raises(MediaNotFoundError):
+        await controller.get_item(MediaType.AUDIO_SOURCE, "phone", "connect")
+
+    assert looked_up == phone_source
+    assert phone_source in scoped
+
+
+class _LineInPlayerProvider(AudioSourceMixin, PlayerProvider):
+    """Player provider stub that delivers AudioSources of its own."""
+
+
+def _audio_source_provider[ProviderT: Provider](
+    provider_cls: type[ProviderT],
+    instance_id: str,
+    provider_type: ProviderType,
+    features: set[ProviderFeature],
+    available: bool = True,
+) -> ProviderT:
+    """Construct a provider of the given class with the given features."""
+    manifest = Mock(type=provider_type, domain=instance_id)
+    config = Mock(instance_id=instance_id)
+    config.name = instance_id
+    config.get_value.return_value = "GLOBAL"
+    provider = provider_cls(Mock(), manifest, config, features)
+    provider.available = available
+    return provider
+
+
+def test_audio_source_providers_span_provider_types() -> None:
+    """Every available provider delivering AudioSources is returned, whatever its type."""
+    plugin = _audio_source_provider(
+        PluginProvider, "connect", ProviderType.PLUGIN, {ProviderFeature.AUDIO_SOURCE}
+    )
+    player_provider = _audio_source_provider(
+        _LineInPlayerProvider, "sendspin", ProviderType.PLAYER, {ProviderFeature.AUDIO_SOURCE}
+    )
+    without_feature = _audio_source_provider(
+        _LineInPlayerProvider, "other", ProviderType.PLAYER, set()
+    )
+    unavailable = _audio_source_provider(
+        PluginProvider,
+        "vban",
+        ProviderType.PLUGIN,
+        {ProviderFeature.AUDIO_SOURCE},
+        available=False,
+    )
+    mass = Mock(spec=MusicAssistant)
+    mass.providers = [player_provider, without_feature, unavailable, plugin]
+    mass.get_providers_supporting_feature = partial(
+        MusicAssistant.get_providers_supporting_feature, mass
+    )
+    controller = PlayerController.__new__(PlayerController)
+    controller.mass = mass
+
+    assert controller.get_audio_source_providers() == [plugin, player_provider]
+
+
 async def test_global_search_includes_plugin_providers_with_search() -> None:
     """Plugins declaring SEARCH should be queried alongside music providers."""
     mass = Mock()
@@ -935,11 +1206,14 @@ async def test_global_search_includes_plugin_providers_with_search() -> None:
     mass.cache.set = AsyncMock(return_value=None)
     plugin_prov = _make_prov("plug_a", ProviderType.PLUGIN, {ProviderFeature.SEARCH})
     mass.get_providers_supporting_feature.return_value = [plugin_prov]
+    music_prov = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.SEARCH})
+    music_prov.domain = "music_service"
+    music_prov.is_streaming_provider = True
+    mass.providers = [music_prov, plugin_prov]
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
     controller.domain = "music"
-    controller.get_unique_providers = Mock(return_value=["m_a"])  # type: ignore[method-assign]
     controller.search_library = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
     controller._search_provider = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
 

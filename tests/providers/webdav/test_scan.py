@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.errors import ProviderUnavailableError
 
+from music_assistant.helpers.tags import AudioTags
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 from music_assistant.providers.webdav.helpers import WebDAVItem
 from music_assistant.providers.webdav.provider import WebDAVFileSystemProvider
@@ -215,3 +217,70 @@ async def test_is_reachable_asks_the_server(monkeypatch: pytest.MonkeyPatch) -> 
     test_connection.side_effect = ProviderUnavailableError("server down")
     with pytest.raises(ProviderUnavailableError):
         await provider._is_reachable()
+
+
+async def test_parse_tags_uses_webdav_path_as_filename(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Filename-based tag fallbacks see the decoded WebDAV path, not the encoded URL."""
+    provider = _make_provider()
+    provider.verify_ssl = True
+    relative_path = "My Show/01 - Episode One.mp3"
+    file_item = FileSystemItem(
+        filename="01 - Episode One.mp3",
+        relative_path=relative_path,
+        absolute_path=provider._build_authenticated_url(relative_path),
+        is_dir=False,
+        checksum="1",
+        file_size=1000,
+    )
+    raw: dict[str, Any] = {
+        "format": {"filename": "", "format_name": "mp3", "duration": "10.0", "tags": {}},
+        "streams": [{"codec_type": "audio", "channels": 2, "sample_rate": "44100"}],
+    }
+
+    async def _fake_parse(input_file: str, *_args: Any, **_kwargs: Any) -> AudioTags:
+        raw["format"]["filename"] = input_file
+        return AudioTags.parse(raw)
+
+    monkeypatch.setattr("music_assistant.providers.webdav.provider.async_parse_tags", _fake_parse)
+
+    tags = await provider._parse_tags(file_item)
+
+    assert tags.filename == relative_path
+    assert tags.title == "Episode One"
+    assert tags.track == 1
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "Artist/cover.jpg",
+        "@evil.com/cover.jpg",
+        "a//evil.com/song.flac",
+        "http:/evil.com/song.flac",
+        "Die drei ???/cover.jpg?cs=Wed, 21 Oct 2015 07:28:00 GMT",
+    ],
+)
+def test_accepted_stored_image_path_stays_inside_the_base_url(path: str) -> None:
+    """An image path the provider accepts always resolves below its own WebDAV folder."""
+    provider = _make_provider()
+    provider.username = "user"
+    provider.password = "secret"
+
+    assert provider.accepts_stored_image_path(path)
+    assert provider._build_authenticated_url(path).startswith(
+        "https://user:secret@host.example/dav/"
+    )
+
+
+async def test_resolve_image_drops_the_version_suffix() -> None:
+    """An embedded cover is read from the audio file itself, without its version suffix."""
+    provider = _make_provider()
+
+    with patch(
+        "music_assistant.providers.webdav.provider.get_embedded_image",
+        AsyncMock(return_value=b"cover"),
+    ) as get_embedded_image:
+        image = await provider.resolve_image("Book/01 Chapter.mp3?cs=Wed, 21 Oct 2015 07:28:00 GMT")
+
+    assert image == b"cover"
+    get_embedded_image.assert_awaited_once_with(f"{BASE_URL}/Book/01%20Chapter.mp3")

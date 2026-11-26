@@ -83,6 +83,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
     """Audio analysis provider that identifies tracks via AcoustID/Chromaprint."""
 
     analysis_version: int = 1
+    # tracks only: podcasts and audiobooks must not reach the fingerprinter
+    media_types = frozenset({MediaType.TRACK})
     throttler = ThrottlerManager(rate_limit=3, period=1)
 
     def __init__(
@@ -305,9 +307,6 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         :param streamdetails: Stream details for the track being analysed.
         :param audio_format: PCM format of the incoming audio stream.
         """
-        # Tracks only — podcasts and audiobooks must not reach the fingerprinter.
-        if streamdetails.media_type != MediaType.TRACK:
-            return False
         # Streaming-provider tracks are opt-in — local files always analyse.
         if streamdetails.stream_type != StreamType.LOCAL_FILE and not self.config.get_value(
             CONF_ANALYSE_STREAMING
@@ -1028,7 +1027,7 @@ def _downconvert_to_s16(pcm_chunk: bytes, sample_width: int) -> bytes:
     if sample_width == 3:
         raw = np.frombuffer(pcm_chunk, dtype="<u1")
         trimmed = raw[: (raw.size // 3) * 3].reshape(-1, 3).astype("<i4")
-        samples = trimmed[:, 0] | (trimmed[:, 1] << 8) | (trimmed[:, 2] << 16)
+        samples: np.ndarray = trimmed[:, 0] | (trimmed[:, 1] << 8) | (trimmed[:, 2] << 16)
         samples = np.where(samples & 0x800000, samples - 0x1000000, samples)
         return (samples >> 8).astype("<i2").tobytes()
     if sample_width == 1:

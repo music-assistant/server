@@ -42,8 +42,6 @@ if TYPE_CHECKING:
     from .provider import MilkdropVisualizerProvider
 
 WAVE_SAMPLES = 1024
-CONF_COLOR_TINT = "color_tint"
-DEFAULT_COLOR_TINT = True
 # Derived from the model, so a field added upstream is forwarded automatically.
 COLOR_FIELDS = tuple(field.name for field in dataclasses.fields(MediaItemPalette))
 # How far ahead of audible a frame is released; viewers schedule by timestamp.
@@ -111,7 +109,7 @@ def pcm_to_mono(data: bytes, pcm_format: AudioFormat) -> np.ndarray:
     bit_depth = pcm_format.bit_depth
     if bit_depth == 24:
         # No numpy dtype covers packed 24-bit, so assemble the samples by byte.
-        packed = np.frombuffer(data, dtype=np.uint8)
+        packed: np.ndarray = np.frombuffer(data, dtype=np.uint8)
         packed = packed[: packed.size - packed.size % 3].reshape(-1, 3).astype(np.int32)
         raw = packed[:, 0] | packed[:, 1] << 8 | packed[:, 2] << 16
         raw[raw >= 1 << 23] -= 1 << 24
@@ -292,7 +290,7 @@ class TapManager:
             tap = Tap(player.player_id)
             self._taps[player.player_id] = tap
             tap.task = self.mass.create_task(self._run(tap))
-            self.logger.info("Waveform tap following %s", player.display_name)
+            self.logger.info("Waveform tap following %s", player.name)
             return tap
 
     def schedule_release(self, player_id: str) -> None:
@@ -351,7 +349,7 @@ class TapManager:
         while True:
             try:
                 cursor = await self._read_once(tap, cursor)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # a source that failed mid-track is a playback problem, not a
                 # reason for this tap to stop following the player
                 self.logger.debug("Tap for %s could not read: %s", tap.player_id, err)
@@ -511,10 +509,8 @@ class TapManager:
 
     def _sync_color(self, tap: Tap) -> None:
         """Fan out the track palette whenever it changes (once per track, in practice)."""
-        if not self.provider.config.get_value(CONF_COLOR_TINT):
-            return
         player = self.mass.players.get_player(tap.player_id)
-        media = player.state.current_media if player is not None else None
+        media = player.current_media if player is not None else None
         payload = palette_payload(media.palette if media is not None else None)
         if payload != tap.last_color:
             tap.apply_color(payload)

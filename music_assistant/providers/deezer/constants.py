@@ -1,5 +1,8 @@
 """Constants for the Deezer provider."""
 
+from deezer_python_gql.generated.enums import RepeatModeInput
+from music_assistant_models.enums import MediaType, RepeatMode
+
 # -- Virtual playlist IDs --
 
 FLOW_PLAYLIST_ID = "flow"
@@ -22,11 +25,29 @@ PERSONAL_ALBUM_PREFIX = "personal_album_"
 # Bump when personal-item parsing changes to invalidate cached parsed items.
 PERSONAL_METADATA_VERSION = "2"
 
+# -- Audiobook authors --
+
+# keeps the author apart from the music artist with the same Deezer id
+AUTHOR_ARTIST_PREFIX = "author_"
+# Deezer's placeholder artist "Unknown"
+UNKNOWN_ARTIST_ID = "8592"
+# Bump when audiobook or release parsing changes to invalidate cached items.
+AUDIOBOOK_METADATA_VERSION = "2"
+# an artist is an author if one of its newest releases is an audiobook; each one more
+# costs a request per 50 favorite artists in the library sync
+AUTHOR_NEWEST_RELEASES = 3
+
 # -- Pagination page sizes --
 
 FAVORITES_PAGE_SIZE = 50
 AUDIOBOOK_CHAPTERS_PAGE_SIZE = 200
 FLOW_BATCH_COUNT = 2
+
+# -- API rate limit, shared by the GraphQL and gw-light requests of a provider instance --
+
+# Deezer documents 50 requests per 5 seconds, enforced per second so they never come in one burst
+API_RATE_LIMIT = 10
+API_RATE_PERIOD = 1
 
 # -- Browse folder names (used as path segments for routing) --
 
@@ -47,6 +68,10 @@ BROWSE_TOP_ARTISTS = "Top Artists"
 BROWSE_TOP_PLAYLISTS = "Top Playlists"
 BROWSE_ALL_FLOWS = "All Flows"
 
+# -- Stream quality --
+
+CONF_QUALITY = "quality"
+
 # -- Track decryption --
 
 DECRYPT_KEY_LENGTH = 16
@@ -54,3 +79,28 @@ DECRYPT_KEY_ERROR = (
     "The Deezer decryption key is missing or invalid. "
     "Use an official Music Assistant build to play encrypted audio."
 )
+
+# -- Listen logging --
+
+# Deezer lists an album, artist or playlist under recently played from the context of a listen
+LISTEN_CONTEXT_TYPES = {
+    MediaType.ALBUM: "album_page",
+    MediaType.ARTIST: "artist_top",
+    MediaType.PLAYLIST: "playlist_page",
+}
+
+# -- Queue sync --
+
+CONF_SYNC_QUEUE = "sync_queue"
+# tracks of the Music Assistant queue saved as the Deezer queue, from the current one on
+QUEUE_SYNC_SIZE = 50
+# the configuration the Deezer apps save with a plain queue
+QUEUE_SYNC_CONFIGURATION = (
+    '{"allowEdit":true,"allowShuffle":true,"allowedRepeatModes":["ONE","ALL"],'
+    '"version":2,"queueType":"basic"}'
+)
+QUEUE_SYNC_REPEAT_MODES = {
+    RepeatMode.OFF: RepeatModeInput.NONE,
+    RepeatMode.ONE: RepeatModeInput.ONE,
+    RepeatMode.ALL: RepeatModeInput.ALL,
+}
