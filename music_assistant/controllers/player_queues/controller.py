@@ -1614,6 +1614,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._queue_data[target_queue_id].credited_albums = set(
                 self._queue_data[source_queue_id].credited_albums
             )
+            self._queue_data[target_queue_id].userid = self._queue_data[source_queue_id].userid
             target_queue.resume_pos = source_resume_pos
             target_queue.elapsed_time = source_resume_pos
             target_queue.elapsed_time_last_updated = time.time()

@@ -313,6 +313,7 @@ async def test_an_added_source_must_be_playable_for_the_queue_owner(
     ctrl.mass.webserver.auth.get_user = AsyncMock(
         side_effect={USER_ID: listener, OTHER_USER_ID: housemate}.get
     )
+    ctrl.mass.music.get_item = AsyncMock()
     rebuilt_as: list[User | None] = []
     ctrl._enter_dynamic_mode = AsyncMock(
         side_effect=lambda *_args: rebuilt_as.append(get_current_user())
@@ -341,6 +342,36 @@ async def test_an_added_source_must_be_playable_for_the_queue_owner(
     assert queue_data.userid == USER_ID
     # the pool is rebuilt for the owner, not for the one adding
     assert rebuilt_as == ([] if refused else [listener])
+
+
+@patch(GET_CURRENT_USER)
+async def test_a_radio_the_queue_owner_can_not_fetch_is_refused(mock_get_user: Mock) -> None:
+    """A radio on a plugin passes the source check, but rests on a seed the owner can not see."""
+    listener = User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
+    housemate = User(user_id=OTHER_USER_ID, username=OTHER_USER_ID, role=UserRole.USER)
+    ctrl = _controller()
+    _set_sources(ctrl)
+    plugin = MagicMock()
+    plugin.instance_id = PLUGIN_INSTANCE
+    plugin.type = ProviderType.PLUGIN
+    ctrl.mass.providers = [plugin]
+    ctrl.mass.webserver.auth.get_user = AsyncMock(return_value=listener)
+
+    async def fetch(*_args: Any, **_kwargs: Any) -> None:
+        if get_current_user() == listener:
+            raise MediaNotFoundError("Radio playlist seed not found")
+
+    ctrl.mass.music.get_item = AsyncMock(side_effect=fetch)
+    mock_get_user.return_value = listener
+    await ctrl.play_media("q1", _track("t1", OWN_INSTANCE, OWN_INSTANCE), QueueOption.REPLACE)
+
+    mock_get_user.return_value = housemate
+    radio = _dynamic_playlist("seeded_on_theirs", PLUGIN_INSTANCE)
+    with pytest.raises(MediaNotFoundError) as err:
+        await ctrl.play_media("q1", radio, QueueOption.ADD)
+
+    assert err.value.translation_key == "media_not_available_for_user"
+    assert radio not in ctrl._queue_data["q1"].source_items
 
 
 @patch(GET_CURRENT_USER)

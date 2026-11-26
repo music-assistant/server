@@ -1055,9 +1055,24 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         and queue_data.userid != playback_userid
                         and not self._starts_afresh(queue_data, option)
                     ):
-                        self.mass.music.check_item_playable_for_user(
-                            media_item, await resolve_playback_user(self.mass, queue_id)
-                        )
+                        owner = await resolve_playback_user(self.mass, queue_id)
+                        self.mass.music.check_item_playable_for_user(media_item, owner)
+                        if is_dynamic_source(media_item):
+                            # a dynamic source can rest on more than its own provider (a radio
+                            # on its seed), so the owner must be able to fetch it as well
+                            try:
+                                with user_auth_context(owner):
+                                    await self.mass.music.get_item(
+                                        media_item.media_type,
+                                        media_item.item_id,
+                                        media_item.provider,
+                                        allow_update_metadata=False,
+                                    )
+                            except (MediaNotFoundError, ProviderUnavailableError) as err:
+                                msg = f"{media_item.uri} is not available for the queue owner"
+                                raise MediaNotFoundError(
+                                    msg, translation_key="media_not_available_for_user"
+                                ) from err
 
                     # like the shuffle state below, the first item that resolves decides for the batch
                     if not first_item_resolved:
