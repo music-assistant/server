@@ -1157,7 +1157,7 @@
   "provider.acoustid_lookup.config_entries.user_key_note.label": "AcoustID will later require Music Assistant to be connected to your AcoustID account for lookups. Use Reconfigure to connect.",
   "provider.acoustid_lookup.config_entries.write_tags_back.description": "When the audio-analysis scan identifies a track via AcoustID, also write the Acoustid Id, MusicBrainz Recording Id, ISRC, and (where resolvable) MusicBrainz Artist Id tags back into the source audio file. Useful if other apps on your network rely on these tags for their own metadata. Requires a Filesystem music source with write access to the file; read-only files are silently skipped.",
   "provider.acoustid_lookup.config_entries.write_tags_back.label": "Write AcoustID/MusicBrainz tags back to files",
-  "provider.acoustid_lookup.errors.acoustid_rate_limited": "AcoustID received too many requests.",
+  "provider.acoustid_lookup.errors.acoustid_rate_limited": "AcoustID received too many requests. Wait a moment and try again.",
   "provider.acoustid_lookup.errors.acoustid_unreachable": "AcoustID could not complete the request.",
   "provider.acoustid_lookup.errors.app_key_refused": "AcoustID no longer accepts the key Music Assistant uses for lookups. Lookups are off until Music Assistant is updated.",
   "provider.acoustid_lookup.errors.link_declined": "The connection was declined on AcoustID.",

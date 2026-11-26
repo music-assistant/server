@@ -30,11 +30,11 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.tags import write_identifier_tags
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import throttle_with_retries
 from music_assistant.helpers.util import import_module_in_thread, parse_title_and_version
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
-from music_assistant.providers.acoustid_lookup.link import LinkState, link_status
+from music_assistant.providers.acoustid_lookup.link import THROTTLER, LinkState, link_status
 from music_assistant.providers.musicbrainz import MusicbrainzProvider
 
 if TYPE_CHECKING:
@@ -98,7 +98,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
     analysis_version: int = 1
     # tracks only: podcasts and audiobooks must not reach the fingerprinter
     media_types = frozenset({MediaType.TRACK})
-    throttler = ThrottlerManager(rate_limit=3, period=1)
+    # shared with the account requests, so a wait AcoustID asks for holds both back
+    throttler = THROTTLER
 
     def __init__(
         self,

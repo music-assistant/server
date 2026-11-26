@@ -9,6 +9,7 @@ any time.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -22,7 +23,11 @@ from music_assistant_models.errors import (
 
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import from_iso_string, utc
-from music_assistant.helpers.throttle_retry import parse_retry_after
+from music_assistant.helpers.throttle_retry import (
+    MAX_RETRY_AFTER,
+    ThrottlerManager,
+    parse_retry_after,
+)
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -33,6 +38,8 @@ ACOUSTID_ERROR_TOO_MANY_REQUESTS = 14
 # AcoustID accepts a device name of at most this many characters
 MAX_DEVICE_LENGTH = 100
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
+# every request to AcoustID shares this limit, and the wait AcoustID asks for when it is exceeded
+THROTTLER = ThrottlerManager(rate_limit=3, period=1)
 
 
 class LinkState(StrEnum):
@@ -131,15 +138,18 @@ async def _request(
     headers = {"Acoustid-App-Key": str(app_var("acoustid_api_key"))}
     if user_key:
         headers["Acoustid-User-Key"] = user_key
+    if remaining := THROTTLER.cooldown_remaining:
+        # AcoustID asked for a wait, so nothing is sent until it is over
+        raise RateLimited("AcoustID rate limit", backoff_time=math.ceil(remaining))
     try:
-        async with http_session.request(
-            method, url, headers=headers, data=data, timeout=REQUEST_TIMEOUT
-        ) as response:
+        async with (
+            THROTTLER.acquire(),
+            http_session.request(
+                method, url, headers=headers, data=data, timeout=REQUEST_TIMEOUT
+            ) as response,
+        ):
             if response.status == 429:
-                raise RateLimited(
-                    "AcoustID rate limit",
-                    backoff_time=parse_retry_after(response.headers.get("Retry-After")),
-                )
+                raise _rate_limited(parse_retry_after(response.headers.get("Retry-After")))
             if response.status >= 500:
                 raise ResourceTemporarilyUnavailable("AcoustID server error")
             payload = await response.json(content_type=None)
@@ -154,5 +164,13 @@ async def _request(
     if not isinstance(error, dict):
         raise InvalidDataError("AcoustID refused the request")
     if error.get("code") == ACOUSTID_ERROR_TOO_MANY_REQUESTS:
-        raise RateLimited("AcoustID rate limit")
+        raise _rate_limited(0)
     raise InvalidDataError(f"AcoustID refused the request: {error.get('message', '')}")
+
+
+def _rate_limited(wait: int) -> RateLimited:
+    """Return the error for a rate limit reply, holding every request back for the wait."""
+    # AcoustID does not always say how long to wait, and a wait it names is capped
+    wait = min(wait or THROTTLER.initial_backoff, MAX_RETRY_AFTER)
+    THROTTLER.set_cooldown(wait)
+    return RateLimited("AcoustID rate limit", backoff_time=wait)

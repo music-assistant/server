@@ -15,6 +15,7 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 
+from music_assistant.helpers.throttle_retry import MAX_RETRY_AFTER
 from music_assistant.providers.acoustid_lookup import link as acoustid_link
 from music_assistant.providers.acoustid_lookup.link import (
     ACOUSTID_LINK_STATUS_URL,
@@ -23,6 +24,7 @@ from music_assistant.providers.acoustid_lookup.link import (
     link_status,
     request_link,
 )
+from music_assistant.providers.acoustid_lookup.provider import AcoustidLookupProvider
 
 NOW = datetime.datetime(2026, 12, 1, 12, 0, tzinfo=datetime.UTC)
 LINK_REPLY = {
@@ -190,7 +192,8 @@ async def test_link_status_rejects_an_unexpected_state(reply: dict[str, Any]) ->
                 "payload": {"status": "error", "error": {"code": 14, "message": "slow down"}},
             },
             RateLimited,
-            0,
+            # AcoustID named no wait, so the default one applies
+            5,
             id="too_many_requests_error",
         ),
         pytest.param({"status": 503}, ResourceTemporarilyUnavailable, 0, id="server_error"),
@@ -225,6 +228,52 @@ async def test_failed_calls_raise_typed_errors(
     assert type(raised.value) is expected
     if backoff_time is not None:
         assert getattr(raised.value, "backoff_time", None) == backoff_time
+
+
+@pytest.mark.parametrize(
+    ("session_kwargs", "wait"),
+    [
+        pytest.param({"status": 429, "headers": {"Retry-After": "30"}}, 30, id="wait_named"),
+        pytest.param({"status": 429}, 5, id="no_wait_named"),
+        pytest.param(
+            {"status": 429, "headers": {"Retry-After": "999999999"}},
+            MAX_RETRY_AFTER,
+            id="absurd_wait_capped",
+        ),
+    ],
+)
+async def test_nothing_is_sent_while_acoustid_asked_to_wait(
+    session_kwargs: dict[str, Any], wait: int
+) -> None:
+    """After a rate limit reply every request is refused unsent until the wait is over."""
+    with pytest.raises(RateLimited):
+        await request_link(_http_session(**session_kwargs), "Living room")
+    http_session = _http_session({"status": "ok", "key": {"state": "approved", "expires": "x"}})
+
+    with pytest.raises(RateLimited) as raised:
+        await link_status(http_session, "USERKEY")
+
+    http_session.request.assert_not_called()
+    assert 0 < raised.value.backoff_time <= wait
+    # once the wait is over the request goes out again
+    acoustid_link.THROTTLER._cooldown_until = 0.0
+    assert await link_status(http_session, "USERKEY") is LinkState.APPROVED
+    http_session.request.assert_called_once()
+
+
+def test_lookups_share_the_wait_with_the_account_requests() -> None:
+    """A wait AcoustID asks for on a lookup holds the account requests back too."""
+    assert AcoustidLookupProvider.throttler is acoustid_link.THROTTLER
+
+
+async def test_request_link_leaves_out_what_acoustid_rejects_in_a_device_name() -> None:
+    """Characters AcoustID refuses, such as the joiner inside an emoji, are not sent."""
+    http_session = _http_session(LINK_REPLY)
+
+    await request_link(http_session, "Living\u200d room\x07" + "x" * 200)
+
+    device = http_session.request.call_args.kwargs["data"]["device"]
+    assert device == ("Living room" + "x" * 200)[:100]
 
 
 async def test_a_reply_that_is_not_json_is_invalid_data() -> None:

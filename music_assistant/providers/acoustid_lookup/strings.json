@@ -49,6 +49,6 @@
     "link_revoked": "The connection was removed on AcoustID.",
     "link_unknown": "This connection no longer exists on AcoustID.",
     "acoustid_unreachable": "AcoustID could not complete the request.",
-    "acoustid_rate_limited": "AcoustID received too many requests."
+    "acoustid_rate_limited": "AcoustID received too many requests. Wait a moment and try again."
   }
 }

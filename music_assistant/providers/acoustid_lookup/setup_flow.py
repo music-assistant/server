@@ -175,7 +175,8 @@ def _request_error(err: Exception) -> dict[str, str | SetupFlowError]:
     if isinstance(err, RateLimited):
         return {
             "base": SetupFlowError(
-                "AcoustID received too many requests.", translation_key="acoustid_rate_limited"
+                "AcoustID received too many requests. Wait a moment and try again.",
+                translation_key="acoustid_rate_limited",
             )
         }
     return {
