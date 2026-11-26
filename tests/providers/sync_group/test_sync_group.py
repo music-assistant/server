@@ -4685,7 +4685,7 @@ class TestReformResumeGate:
         ):
             await sgp.set_members(player_ids_to_remove=["leader"])
 
-        dyn_switch.assert_awaited_once_with("leader")
+        dyn_switch.assert_awaited_once_with("leader", [])
         reform.assert_not_awaited()
 
 
