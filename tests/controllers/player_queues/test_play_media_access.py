@@ -21,7 +21,7 @@ from music_assistant_models.enums import (
     QueueOption,
 )
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
+from music_assistant_models.media_items import ItemMapping, Playlist, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.unique_list import UniqueList
 
@@ -264,6 +264,55 @@ async def test_each_item_plays_for_whom_enqueued_it(
         item.media_item.item_id: item.userid for item in queue_data.items if item.media_item
     } == expected_userids
     assert queue_data.userid == expected_owner
+
+
+@pytest.mark.parametrize(
+    ("instance", "refused"),
+    [(BLOCKED_INSTANCE, True), (EVERYONE_INSTANCE, False)],
+    ids=["only on the adding user's source", "on a source of both"],
+)
+@patch(GET_CURRENT_USER)
+async def test_an_add_to_a_dynamic_queue_must_be_playable_for_its_owner(
+    mock_get_user: Mock, instance: str, refused: bool
+) -> None:
+    """The pool builds an added source's tracks for the queue's owner, who must be able to play it."""
+    listener = User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
+    housemate = User(user_id=OTHER_USER_ID, username=OTHER_USER_ID, role=UserRole.USER)
+    ctrl = _controller()
+    set_music_source_access(
+        ctrl.mass,
+        {
+            OWN_INSTANCE: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.PRIVATE),
+            BLOCKED_INSTANCE: ProviderAccess(owner=OTHER_USER_ID, sharing=ProviderSharing.PRIVATE),
+            EVERYONE_INSTANCE: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+    ctrl.mass.player_queues = ctrl
+    ctrl.mass.webserver.auth.get_user = AsyncMock(
+        side_effect={USER_ID: listener, OTHER_USER_ID: housemate}.get
+    )
+    ctrl._enter_dynamic_mode = AsyncMock()
+    mock_get_user.return_value = listener
+    await ctrl.play_media("q1", _track("t1", OWN_INSTANCE, OWN_INSTANCE), QueueOption.REPLACE)
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    radio = Playlist(
+        item_id="radio", provider="radio_playlist", name="Radio", provider_mappings=set()
+    )
+    radio.is_dynamic = True
+    queue_data.source_items = [radio]
+    queue_data.queue.is_dynamic = True
+
+    mock_get_user.return_value = housemate
+    added = _track("t3", instance, instance)
+    if refused:
+        with pytest.raises(MediaNotFoundError) as err:
+            await ctrl.play_media("q1", added, QueueOption.ADD)
+        assert err.value.translation_key == "media_not_available_for_user"
+    else:
+        await ctrl.play_media("q1", added, QueueOption.ADD)
+
+    assert (added in queue_data.source_items) is not refused
+    assert queue_data.userid == USER_ID
 
 
 @patch(GET_CURRENT_USER)

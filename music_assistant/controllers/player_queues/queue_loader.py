@@ -1130,6 +1130,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     elif already_dynamic and not plays_next_track:
                         # feed the already-active pool: keep the finite item as a (materialized) source
                         if not isinstance(media_item, BrowseFolder):
+                            if queue_data.userid != playback_userid and not self._starts_afresh(
+                                queue_data, option
+                            ):
+                                # the pool builds the tracks of a source for the queue's owner
+                                self.mass.music.check_item_playable_for_user(
+                                    media_item, await resolve_playback_user(self.mass, queue_id)
+                                )
                             source_items.append(media_item)
                     else:
                         # a play-next track never becomes a source: the pool would re-dispatch it
@@ -1220,8 +1227,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # something the caller asked for made it through: replacing what the queue plays (or
         # starting it afresh, as anything but ADD does on an ended queue) makes it theirs,
         # adding to someone else's queue does not
-        starts_fresh = not queue_data.items or (queue.ended and option != QueueOption.ADD)
-        if replace_sources or starts_fresh:
+        if replace_sources or self._starts_afresh(queue_data, option):
             queue_data.userid = playback_userid
 
         if queue.is_dynamic:
@@ -1363,6 +1369,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         else:
             config_key = f"default_enqueue_option_{media_type.value}"
         return QueueOption(self.get_config_value(config_key, return_type=str))
+
+    @staticmethod
+    def _starts_afresh(queue_data: PlayerQueueData, option: QueueOption | None) -> bool:
+        """Return whether an enqueue starts the queue afresh, as anything but ADD does once it ended."""
+        return not queue_data.items or (queue_data.queue.ended and option != QueueOption.ADD)
 
     async def _enter_dynamic_mode(self, queue_id: str, option: QueueOption | None) -> None:
         """
