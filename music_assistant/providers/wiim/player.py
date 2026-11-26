@@ -57,6 +57,8 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
 
 # seconds a position read may run ahead of the time since MA handed the device its stream
 POSITION_SLACK = 2
+# seconds after the handover the time check ends, so an early app seek can't keep it armed
+POSITION_CHECK_TIMEOUT = 10
 
 # seconds to wait after a first follower join for the firmware to restart the leader's stream
 JOIN_RESTART_TIMEOUT = 2
@@ -401,6 +403,7 @@ class WiimPlayer(PlayerProtocol):
 
     async def seek(self, position: int) -> None:
         """Seek to position in seconds."""
+        # a seek on the device runs ahead of the time since the handover
         self._ma_stream_sent = None
         try:
             await self.device.async_seek(position)
@@ -794,15 +797,13 @@ class WiimPlayer(PlayerProtocol):
         ):
             # While loading our stream the device can report it at the position it last played,
             # further than the stream can have played since we handed it over.
-            if media.position > time.monotonic() - self._ma_stream_sent[1] + POSITION_SLACK:
+            since_sent = time.monotonic() - self._ma_stream_sent[1]
+            if since_sent < POSITION_CHECK_TIMEOUT and media.position > since_sent + POSITION_SLACK:
                 self._update_ma_state_from_sdk_cache()
                 return
-            # Once it plays our stream, its own clock and seeks (e.g. from the app) may run ahead.
-            # A report at the stream's end (below) is not yet playing it, nor is one at its start
-            # while it still loads.
-            if media.position != media.duration and (
-                media.position or self.device.playing_status == PlayingStatus.PLAYING
-            ):
+            # A read that fits shows the device plays our stream, so later app seeks may run ahead.
+            # One at 0 s or at the stream's end doesn't show that yet.
+            if media.position and media.position != media.duration:
                 self._ma_stream_sent = None
         # Right after taking our stream the device briefly reports it as being at its end.
         if (
