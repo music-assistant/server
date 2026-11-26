@@ -1,5 +1,5 @@
 """
-Web Radio Broadcast player provider for Music Assistant.
+Web Broadcast player provider for Music Assistant.
 
 Each configured station is exposed as a virtual MA player whose queue is
 served on a stable HTTP URL using the Shoutcast/ICY protocol. Dumb internet-
@@ -16,19 +16,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ProviderFeature
-
 from .provider import WebRadioProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 
-SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.REMOVE_PLAYER}
+SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 
 async def setup(

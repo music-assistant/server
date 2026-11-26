@@ -1,7 +1,7 @@
 """Tests for the Web Broadcast provider's broadcast state and listener responses."""
 
 import asyncio
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH
 from music_assistant.providers.webradio.provider import (
     WebRadioPlayer,
     WebRadioProvider,
@@ -17,33 +18,50 @@ from music_assistant.providers.webradio.provider import (
     _Subscriber,
 )
 
+if TYPE_CHECKING:
+    from music_assistant.models.player import Player
+
 CHUNK_SIZE = 64
 CHUNKS = [bytes([65 + index]) * CHUNK_SIZE for index in range(3)]
 METADATA = b"\x01StreamTitle='T';"
+PLAYER_ID = "pl000000000001"
 
 
-def _make_player() -> WebRadioPlayer:
-    """Return a station player that records its state updates."""
-    player = WebRadioPlayer.__new__(WebRadioPlayer)
+def _make_player(
+    provider: WebRadioProvider | None = None, *, fixed_content_length: bool = False
+) -> WebRadioPlayer:
+    """Return a playing station, attached to a player, that records its state updates."""
+    player = WebRadioPlayer(
+        provider=provider or MagicMock(),
+        protocol_id="webradio_kitchen",
+        station_slug="kitchen",
+        display_name="Kitchen",
+    )
+    attached_to = MagicMock(player_id=PLAYER_ID)
+    attached_to.name = "Kitchen"
+    player._player = attached_to
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 30
     player._attr_elapsed_time_last_updated = 1.0
     player._attr_current_media = MagicMock()
-    player._attr_name = "Kitchen"
     player.__dict__["update_state"] = MagicMock()
+    # every other setting keeps the default the provider asks for
+    player.__dict__["get_config_value"] = lambda key, default=None, **_: (
+        fixed_content_length if key == CONF_REQUIRES_FIXED_CONTENT_LENGTH else default
+    )
     return player
 
 
-def _make_provider(http_profile: str = "no_content_length") -> WebRadioProvider:
+def _make_provider(*, fixed_content_length: bool = False) -> WebRadioProvider:
     """Return a provider with one station and a mocked Music Assistant instance."""
     provider = WebRadioProvider.__new__(WebRadioProvider)
     provider.mass = MagicMock()
-    provider.mass.config.get_raw_player_config_value.return_value = http_profile
+    provider.config = MagicMock()
     provider.logger = MagicMock()
     station = _Station(
         slug="kitchen",
-        player_id="webradio_kitchen",
-        player=_make_player(),
+        protocol_id="webradio_kitchen",
+        protocol=_make_player(provider, fixed_content_length=fixed_content_length),
         url_path="/webradio/kitchen.mp3",
         unregister_route=lambda: None,
     )
@@ -70,29 +88,128 @@ def _queue_with_items(provider: WebRadioProvider, current_item_id: str | None) -
     return queue
 
 
+def _store_station_names(provider: WebRadioProvider, names: list[str]) -> None:
+    """Make the provider read its station names from, and write them to, the given list."""
+    cast("MagicMock", provider.config).get_value.side_effect = lambda _key: names
+    provider.__dict__["_update_config_value"] = lambda _key, value: names.__setitem__(
+        slice(None), value
+    )
+
+
 async def test_a_station_with_the_url_of_another_is_renamed() -> None:
     """A station whose name gives the URL of an earlier one is stored under a numbered name."""
     provider = _make_provider()
     provider._stations = {}
     names = ["Rock", "rock!", "Rock 2", "Rock", "Jazz"]
-    provider.config = MagicMock()
-    provider.config.get_value.side_effect = lambda _key: names
-    provider.__dict__["_update_config_value"] = lambda _key, value: names.__setitem__(
-        slice(None), value
-    )
-    register_station = AsyncMock()
-    provider.__dict__["_register_station"] = register_station
+    _store_station_names(provider, names)
+    mass = cast("MagicMock", provider.mass)
+    mass.config.get_protocol_ids_of_provider.return_value = []
+    mass.players.get_protocol.return_value = None
+    mass.players.register = AsyncMock()
 
-    await provider._sync_stations()
+    await provider.loaded_in_mass()
+    await provider.discover_players()
 
     assert names == ["Rock", "rock! (2)", "Rock 2 (2)", "Rock (3)", "Jazz"]
-    assert [call.args for call in register_station.await_args_list] == [
+    assert [(slug, station.protocol.name) for slug, station in provider._stations.items()] == [
         ("rock", "Rock"),
         ("rock-2", "rock! (2)"),
         ("rock-2-2", "Rock 2 (2)"),
         ("rock-3", "Rock (3)"),
         ("jazz", "Jazz"),
     ]
+    assert [call.args[0].protocol_id for call in mass.players.register.await_args_list] == [
+        "webradio_rock",
+        "webradio_rock-2",
+        "webradio_rock-2-2",
+        "webradio_rock-3",
+        "webradio_jazz",
+    ]
+
+
+async def test_discovering_again_skips_attached_stations_and_keeps_the_others() -> None:
+    """A second discovery leaves an attached station alone and offers the same object again."""
+    provider = _make_provider()
+    provider._stations = {}
+    _store_station_names(provider, ["Rock", "Jazz"])
+    mass = cast("MagicMock", provider.mass)
+    mass.players.get_protocol.return_value = None
+    mass.players.register = AsyncMock()
+
+    await provider.discover_players()
+    first = [call.args[0] for call in mass.players.register.await_args_list]
+    assert [protocol.protocol_id for protocol in first] == ["webradio_rock", "webradio_jazz"]
+
+    # the rock station is attached by now, the jazz station is still waiting (e.g. disabled)
+    mass.players.get_protocol.side_effect = lambda protocol_id: (
+        first[0] if protocol_id == "webradio_rock" else None
+    )
+    mass.players.register.reset_mock()
+    await provider.discover_players()
+
+    assert [call.args[0] for call in mass.players.register.await_args_list] == [first[1]]
+
+
+async def test_only_a_station_that_left_the_config_is_removed_on_load() -> None:
+    """A stored station that is no longer configured is removed, a configured one is kept."""
+    provider = _make_provider()
+    _store_station_names(provider, ["Kitchen"])
+    mass = cast("MagicMock", provider.mass)
+    mass.config.get_protocol_ids_of_provider.return_value = ["webradio_kitchen", "webradio_gone"]
+    mass.players.remove_protocol = AsyncMock()
+
+    await provider.loaded_in_mass()
+
+    mass.players.remove_protocol.assert_awaited_once_with("webradio_gone")
+
+
+async def test_a_removed_station_leaves_the_config() -> None:
+    """Removing a station's player takes its name out of the stations config."""
+    provider = _make_provider()
+    names = ["Kitchen", "Jazz"]
+    _store_station_names(provider, names)
+
+    await provider.on_protocol_removed("webradio_kitchen")
+
+    assert names == ["Jazz"]
+    assert "kitchen" not in provider._stations
+
+
+async def test_a_station_has_a_url_only_while_it_is_attached() -> None:
+    """Attaching a station serves its URL, detaching ends the broadcast and the URL."""
+    provider = _make_provider()
+    station = provider._stations["kitchen"]
+    station.url_path = ""
+    station.unregister_route = None
+    unregister_route = MagicMock()
+    streams = cast("MagicMock", provider.mass).streams
+    streams.register_dynamic_route.return_value = unregister_route
+
+    # a config update of a station that is not attached leaves it without a URL
+    await station.protocol.on_config_updated()
+    streams.register_dynamic_route.assert_not_called()
+
+    await station.protocol.on_attach(cast("Player", station.protocol.player))
+
+    streams.register_dynamic_route.assert_called_once_with(
+        "/webradio/kitchen.mp3", provider._handle_stream_request, "*"
+    )
+    assert station.url_path == "/webradio/kitchen.mp3"
+
+    async def producer() -> None:
+        await station.stop_event.wait()
+
+    station.producer_task = asyncio.create_task(producer())
+    provider.set_pending_media("kitchen", MagicMock(queue_item_id="first"))
+
+    await station.protocol.on_detach()
+
+    unregister_route.assert_called_once()
+    assert station.producer_task.done()
+    assert station.unregister_route is None
+    assert station.url_path == ""
+    assert station.pending_media is None
+    assert station.protocol.playback_state == PlaybackState.IDLE
 
 
 def test_broadcast_starts_from_the_item_handed_to_play_media() -> None:
@@ -140,7 +257,6 @@ def test_play_is_offered_only_while_the_station_is_not_playing() -> None:
     """A stopped station with a queue can be started, a playing one can only be stopped."""
     player = _make_player()
     player.mass = MagicMock()
-    player._player_id = "webradio_kitchen"
     player.mass.player_queues.get.return_value = MagicMock(items=3)
     while_playing = player.source_list[0].can_play_pause
     player.mark_idle()
@@ -149,6 +265,15 @@ def test_play_is_offered_only_while_the_station_is_not_playing() -> None:
     with_empty_queue = player.source_list[0].can_play_pause
 
     assert (while_playing, while_idle, with_empty_queue) == (False, True, False)
+
+
+def test_the_queue_source_carries_the_id_of_the_player() -> None:
+    """The station's queue source replaces the one of its player, so it has the player's id."""
+    player = _make_player()
+    player.mass = MagicMock()
+
+    assert player.source_list[0].id == PLAYER_ID
+    player.mass.player_queues.get.assert_called_once_with(PLAYER_ID)
 
 
 def test_mark_idle_clears_the_playback_state() -> None:
@@ -191,7 +316,8 @@ async def _run_producer(
     provider.__dict__["_run_one_flow_session"] = AsyncMock(return_value=exit_reason)
     player = MagicMock(playback_state=PlaybackState.PLAYING)
     player.mark_idle.side_effect = lambda: setattr(player, "playback_state", PlaybackState.IDLE)
-    station.player = player
+    player.get_config_value.return_value = "basic"
+    station.protocol = player
     await asyncio.wait_for(provider._run_producer(station), timeout=5)
     return station
 
@@ -202,14 +328,14 @@ async def test_producer_resumes_from_the_queue_after_the_last_listener_left() ->
 
     assert station.resume_from_queue
     assert station.pending_media is not None
-    cast("MagicMock", station.player).mark_idle.assert_not_called()
+    cast("MagicMock", station.protocol).mark_idle.assert_not_called()
 
 
 async def test_producer_goes_idle_when_the_queue_ran_out() -> None:
     """At the end of the queue the station goes idle and has nothing left to start from."""
     station = await _run_producer(_make_provider(), "ended", exhausted=True)
 
-    cast("MagicMock", station.player).mark_idle.assert_called_once()
+    cast("MagicMock", station.protocol).mark_idle.assert_called_once()
     assert station.pending_media is None
 
 
@@ -218,7 +344,7 @@ async def test_producer_stops_when_no_item_follows_a_flow_that_ended_early() -> 
     with patch("music_assistant.providers.webradio.provider._NEXT_SESSION_TIMEOUT", 0.01):
         station = await _run_producer(_make_provider(), "ended", exhausted=False)
 
-    cast("MagicMock", station.player).mark_idle.assert_called_once()
+    cast("MagicMock", station.protocol).mark_idle.assert_called_once()
     assert station.pending_media is None
 
 
@@ -245,7 +371,6 @@ async def _listen(
     :param broadcast_ends: Whether the broadcast ends after its three chunks.
     """
     station = provider._stations["kitchen"]
-    station.player = MagicMock(display_name="Kitchen")
     subscriber = _Subscriber(queue=asyncio.Queue(), want_icy=True)
     for chunk in (*CHUNKS, None) if broadcast_ends else CHUNKS:
         subscriber.queue.put_nowait(chunk)
@@ -301,6 +426,16 @@ async def test_http_10_listener_gets_a_plain_stream() -> None:
     assert body == _expected_body()
 
 
+async def test_listener_is_told_the_name_of_the_player() -> None:
+    """The station announces itself under the name its player has in Music Assistant."""
+    provider = _make_provider()
+    cast("MagicMock", provider._stations["kitchen"].protocol.player).name = "Garden radio"
+
+    headers, _ = await _listen(provider, "GET /webradio/kitchen.mp3 HTTP/1.0")
+
+    assert headers["icy-name"] == "Garden radio"
+
+
 async def test_http_11_listener_gets_chunked_by_default() -> None:
     """Without a forced length an HTTP/1.1 listener gets chunked transfer encoding."""
     headers, body = await _listen(_make_provider(), "GET /webradio/kitchen.mp3 HTTP/1.1")
@@ -309,19 +444,9 @@ async def test_http_11_listener_gets_chunked_by_default() -> None:
     assert _dechunk(body) == _expected_body()
 
 
-async def test_chunked_profile_is_not_used_for_an_http_10_listener() -> None:
-    """The chunked profile still gives an HTTP/1.0 radio a plain stream."""
-    provider = _make_provider("chunked")
-
-    headers, body = await _listen(provider, "GET /webradio/kitchen.mp3 HTTP/1.0")
-
-    assert "transfer-encoding" not in headers
-    assert body == _expected_body()
-
-
 async def test_forced_content_length_ends_the_response_when_it_runs_out() -> None:
     """Once the forced length is used up the response ends instead of stalling."""
-    provider = _make_provider("forced_content_length")
+    provider = _make_provider(fixed_content_length=True)
 
     with patch(
         "music_assistant.providers.webradio.provider.calculate_content_length",
@@ -335,8 +460,8 @@ async def test_forced_content_length_ends_the_response_when_it_runs_out() -> Non
 
 
 async def test_forced_content_length_keeps_the_stream_plain_for_http_11() -> None:
-    """The forced content length profile gives an HTTP/1.1 radio a stream without chunks."""
-    provider = _make_provider("forced_content_length")
+    """A fixed content length gives an HTTP/1.1 radio a stream without chunks."""
+    provider = _make_provider(fixed_content_length=True)
 
     headers, body = await _listen(provider, "GET /webradio/kitchen.mp3 HTTP/1.1")
 

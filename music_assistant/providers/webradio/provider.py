@@ -1,4 +1,4 @@
-"""Web Radio Broadcast player provider implementation."""
+"""Web Broadcast player provider implementation."""
 
 from __future__ import annotations
 
@@ -6,22 +6,21 @@ import asyncio
 import time
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from aiohttp import HttpVersion11, web
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     PlaybackState,
     PlayerFeature,
-    ProviderFeature,
 )
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_HTTP_PROFILE,
+    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_OUTPUT_CODEC,
+    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
     ICY_HEADERS,
@@ -33,7 +32,7 @@ from music_assistant.helpers.audio import (
     get_mime_type,
 )
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
@@ -50,12 +49,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player import Player
 
 
 _ICY_FULL_INTERVAL: int = 256_000
@@ -81,13 +82,14 @@ class _Subscriber:
 
 @dataclass
 class _Station:
-    """Runtime registration data for a single web radio station."""
+    """Runtime registration data for a single web broadcast station."""
 
     slug: str
-    player_id: str
-    player: WebRadioPlayer
-    url_path: str
-    unregister_route: Callable[[], None]
+    protocol_id: str
+    protocol: WebRadioPlayer
+    # Only set while the station is attached to its player: its URL exists only then.
+    url_path: str = ""
+    unregister_route: Callable[[], None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     subscribers: set[_Subscriber] = field(default_factory=set)
     producer_task: asyncio.Task[None] | None = None
@@ -110,6 +112,11 @@ class _Station:
     icy_preference: str = "disabled"
     icy_chunk_size: int = 0
     current_metadata: bytes = b""
+
+    @property
+    def queue_id(self) -> str | None:
+        """Return the id of the station's queue, None while it has no player."""
+        return player.player_id if (player := self.protocol.player) else None
 
 
 class WebRadioProvider(PlayerProvider):
@@ -147,45 +154,82 @@ class WebRadioProvider(PlayerProvider):
         )
 
     async def loaded_in_mass(self) -> None:
-        """Register players and HTTP routes for all configured stations."""
-        await self._sync_stations()
+        """Forget the stations that are no longer in the stations config."""
+        self._rename_stations_sharing_a_url()
+        for name in self._raw_station_names():
+            if not slugify_station_name(name):
+                self.logger.warning(
+                    "Ignoring station %r: name has no alphanumeric characters", name
+                )
+        configured = {f"{PLAYER_ID_PREFIX}{slug}" for slug in self._configured_stations()}
+        for protocol_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
+            if protocol_id not in configured:
+                await self.mass.players.remove_protocol(protocol_id)
+
+    async def discover_players(self) -> None:
+        """Register one player per configured station that is not attached."""
+        for slug, name in self._configured_stations().items():
+            protocol_id = f"{PLAYER_ID_PREFIX}{slug}"
+            if self.get_protocol(protocol_id):
+                continue
+            if (station := self._stations.get(slug)) is None:
+                station = _Station(
+                    slug=slug,
+                    protocol_id=protocol_id,
+                    protocol=WebRadioPlayer(
+                        provider=self,
+                        protocol_id=protocol_id,
+                        station_slug=slug,
+                        display_name=name,
+                    ),
+                )
+                self._stations[slug] = station
+            await self.mass.players.register(station.protocol)
+
+    async def on_protocol_removed(self, protocol_id: str) -> None:
+        """
+        Take the station of a removed player out of the stations config.
+
+        :param protocol_id: ID of the removed station's protocol.
+        """
+        slug = protocol_id.removeprefix(PLAYER_ID_PREFIX)
+        self._stations.pop(slug, None)
+        raw_names = self._raw_station_names()
+        new_names = [name for name in raw_names if slugify_station_name(name) != slug]
+        if new_names != raw_names:
+            self._update_config_value(CONF_STATIONS, new_names)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
-        Unregister all stations and stop their producers on provider unload.
+        Stop all stations on provider unload.
 
         :param is_removed: True when the provider instance is being removed.
         """
         del is_removed
-        for station in list(self._stations.values()):
-            await self._cancel_producer(station)
-            station.unregister_route()
-            await self.mass.players.unregister(station.player_id)
+        for slug in list(self._stations):
+            await self.close_station(slug)
         self._stations.clear()
 
-    async def remove_player(self, player_id: str) -> None:
-        """
-        Remove a station and persist its removal in the provider config.
-
-        :param player_id: MA player_id of the station to remove.
-        """
-        station = next(
-            (s for s in self._stations.values() if s.player_id == player_id),
-            None,
-        )
-        if station is None:
-            await self.mass.players.unregister(player_id, True)
+    def open_station(self, slug: str) -> None:
+        """Start serving a station on its URL."""
+        station = self._stations.get(slug)
+        if station is None or station.unregister_route is not None:
             return
+        self._register_route(station)
 
-        raw_names = self._raw_station_names()
-        new_names = [name for name in raw_names if slugify_station_name(name) != station.slug]
-        if new_names != raw_names:
-            self._update_config_value(CONF_STATIONS, new_names)
-
+    async def close_station(self, slug: str) -> None:
+        """End a station's broadcast and stop serving its URL."""
+        station = self._stations.get(slug)
+        if station is None:
+            return
         await self._cancel_producer(station)
+        self.clear_pending_media(slug)
+        if station.unregister_route is None:
+            return
         station.unregister_route()
-        del self._stations[station.slug]
-        await self.mass.players.unregister(player_id, True)
+        station.unregister_route = None
+        station.url_path = ""
+        station.protocol.set_stream_url(None)
 
     def stop_producer(self, slug: str) -> None:
         """Terminate a station's broadcast."""
@@ -214,18 +258,12 @@ class WebRadioProvider(PlayerProvider):
     def refresh_station_route(self, slug: str) -> None:
         """Re-register a station's HTTP route after its codec config changed."""
         station = self._stations.get(slug)
-        if station is None:
+        if station is None or station.unregister_route is None:
             return
-        codec = self._station_codec(station.player_id)
-        new_path = f"{URL_PATH_PREFIX}{slug}.{codec}"
-        if new_path == station.url_path:
+        if self._station_url_path(station) == station.url_path:
             return
         station.unregister_route()
-        station.url_path = new_path
-        station.unregister_route = self.mass.streams.register_dynamic_route(
-            new_path, self._handle_stream_request, "*"
-        )
-        station.player.set_stream_url(self._public_url(new_path))
+        self._register_route(station)
 
     # ---------------------------------------------------------------
     # Station / route lifecycle
@@ -255,65 +293,23 @@ class WebRadioProvider(PlayerProvider):
             # Stored, so the name in the settings, the player and the URL all agree.
             self._update_config_value(CONF_STATIONS, names)
 
-    async def _sync_stations(self) -> None:
-        """
-        Reconcile registered stations with the provider config.
+    def _configured_stations(self) -> dict[str, str]:
+        """Return the name of each configured station by its slug."""
+        return {
+            slug: name for name in self._raw_station_names() if (slug := slugify_station_name(name))
+        }
 
-        Stations whose slug disappears from config are unregistered; new
-        stations are created. Existing stations are left untouched.
-        """
-        self._rename_stations_sharing_a_url()
-        configured: dict[str, str] = {}
-        for name in self._raw_station_names():
-            slug = slugify_station_name(name)
-            if not slug:
-                self.logger.warning(
-                    "Ignoring station %r: name has no alphanumeric characters", name
-                )
-                continue
-            configured[slug] = name
+    def _station_url_path(self, station: _Station) -> str:
+        """Return the URL path a station is served on with its configured codec."""
+        return f"{URL_PATH_PREFIX}{station.slug}.{self._station_codec(station)}"
 
-        for slug in list(self._stations):
-            if slug not in configured:
-                station = self._stations.pop(slug)
-                await self._cancel_producer(station)
-                station.unregister_route()
-                await self.mass.players.unregister(station.player_id)
-
-        for slug, name in configured.items():
-            if slug in self._stations:
-                continue
-            await self._register_station(slug, name)
-
-    async def _register_station(self, slug: str, display_name: str) -> None:
-        """
-        Register a virtual player and HTTP route for a single station.
-
-        :param slug: URL-safe slug derived from the display name.
-        :param display_name: Human-readable station name shown in the UI.
-        """
-        player_id = f"{PLAYER_ID_PREFIX}{slug}"
-        player = WebRadioPlayer(
-            provider=self,
-            player_id=player_id,
-            station_slug=slug,
-            display_name=display_name,
+    def _register_route(self, station: _Station) -> None:
+        """Register the HTTP route of a station and publish its URL."""
+        station.url_path = self._station_url_path(station)
+        station.unregister_route = self.mass.streams.register_dynamic_route(
+            station.url_path, self._handle_stream_request, "*"
         )
-        await self.mass.players.register(player)
-
-        codec = self._station_codec(player_id)
-        url_path = f"{URL_PATH_PREFIX}{slug}.{codec}"
-        unregister = self.mass.streams.register_dynamic_route(
-            url_path, self._handle_stream_request, "*"
-        )
-        self._stations[slug] = _Station(
-            slug=slug,
-            player_id=player_id,
-            player=player,
-            url_path=url_path,
-            unregister_route=unregister,
-        )
-        player.set_stream_url(self._public_url(url_path))
+        station.protocol.set_stream_url(self._public_url(station.url_path))
 
     async def _cancel_producer(self, station: _Station) -> None:
         """Stop a station's producer task and wait for it to finish."""
@@ -331,12 +327,9 @@ class WebRadioProvider(PlayerProvider):
         except asyncio.CancelledError:
             pass
 
-    def _station_codec(self, player_id: str) -> str:
-        """Return the configured output codec extension for a player, e.g. ``"mp3"``."""
-        codec = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_OUTPUT_CODEC, CONF_ENTRY_OUTPUT_CODEC_WEBRADIO.default_value
-        )
-        return str(codec or "mp3")
+    def _station_codec(self, station: _Station) -> str:
+        """Return the configured output codec extension for a station, e.g. ``"mp3"``."""
+        return station.protocol.get_config_value(CONF_OUTPUT_CODEC, "mp3", return_type=str)
 
     def _public_url(self, url_path: str) -> str:
         """Build the externally reachable HTTP URL for a station path."""
@@ -353,7 +346,7 @@ class WebRadioProvider(PlayerProvider):
         for station in self._stations.values():
             if station.url_path == request.path:
                 return station
-        raise web.HTTPNotFound(reason=f"Unknown web radio station: {request.path}")
+        raise web.HTTPNotFound(reason=f"Unknown web broadcast station: {request.path}")
 
     # ---------------------------------------------------------------
     # HTTP stream handler and per-station producer
@@ -368,7 +361,7 @@ class WebRadioProvider(PlayerProvider):
         station = self._station_for_request(request)
 
         if request.method == "HEAD":
-            return _head_response(self._station_codec(station.player_id))
+            return _head_response(self._station_codec(station))
 
         if station.pending_media is None:
             # Answered right away, so a listener that keeps retrying does not start a
@@ -420,21 +413,17 @@ class WebRadioProvider(PlayerProvider):
                 station.producer_ready.set()
                 return
 
-            flow_pcm_format = await self.mass.streams.audio.select_flow_pcm_format(station.player)
+            flow_pcm_format = await self.mass.streams.audio.select_flow_pcm_format(station.protocol)
             output_format = await self.mass.streams.audio.get_output_format(
                 output_format_str=station.url_path.rsplit(".", 1)[-1],
-                player=station.player,
+                player=station.protocol,
                 content_sample_rate=flow_pcm_format.sample_rate,
                 content_bit_depth=flow_pcm_format.bit_depth,
                 media_type=start_item.media_type,
             )
 
-            icy_preference = str(
-                self.mass.config.get_raw_player_config_value(
-                    station.player_id,
-                    CONF_ENTRY_ENABLE_ICY_METADATA_BASIC.key,
-                    CONF_ENTRY_ENABLE_ICY_METADATA_BASIC.default_value,
-                )
+            icy_preference = station.protocol.get_config_value(
+                CONF_ENTRY_ENABLE_ICY_METADATA_BASIC.key, "basic", return_type=str
             )
             chunk_size = _producer_chunk_size(icy_preference, output_format)
 
@@ -494,7 +483,7 @@ class WebRadioProvider(PlayerProvider):
 
                 # exit_reason == "ended". If the queue's session_id moved on we
                 # were skipped past.
-                queue_data = self.mass.player_queues.queue_data_or_none(station.player_id)
+                queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
                 if queue_data is None:
                     break
                 if queue_data.session_id == session_id_at_start:
@@ -508,7 +497,7 @@ class WebRadioProvider(PlayerProvider):
                     if exhausted:
                         # A listener that reconnects on its own must not start the queue over.
                         self.clear_pending_media(station.slug)
-                    station.player.mark_idle()
+                    station.protocol.mark_idle()
                     if exhausted:
                         break
                 # Wait for the new play_media that owns the new session.
@@ -516,7 +505,7 @@ class WebRadioProvider(PlayerProvider):
                     await asyncio.wait_for(
                         station.pending_media_event.wait(), timeout=_NEXT_SESSION_TIMEOUT
                     )
-                if station.player.playback_state != PlaybackState.PLAYING:
+                if station.protocol.playback_state != PlaybackState.PLAYING:
                     # No next item arrived, so there is nothing to carry on with.
                     self.clear_pending_media(station.slug)
                     break
@@ -563,6 +552,7 @@ class WebRadioProvider(PlayerProvider):
                 queue=queue,
                 start_queue_item=start_item,
                 pcm_format=flow_pcm_format,
+                protocol_player=station.protocol,
             ),
             input_format=flow_pcm_format,
             output_format=output_format,
@@ -578,7 +568,7 @@ class WebRadioProvider(PlayerProvider):
             async for chunk in stream:
                 if not session_started:
                     # The queue measures its position against the audio of this session.
-                    station.player.restart_elapsed_time()
+                    station.protocol.restart_elapsed_time()
                     session_started = True
                 # iter_chunked yields a short chunk only at ffmpeg EOF. Emitting
                 # one would desync the client's icy-metaint counter for the rest
@@ -625,7 +615,8 @@ class WebRadioProvider(PlayerProvider):
         media = station.pending_media
         if media is None:
             return None, None
-        queue = self.mass.player_queues.get(station.player_id)
+        queue_id = station.queue_id
+        queue = self.mass.player_queues.get(queue_id) if queue_id else None
         if queue is None:
             return None, None
         if station.resume_from_queue and queue.current_item is not None:
@@ -687,7 +678,7 @@ class WebRadioProvider(PlayerProvider):
 
         enable_icy = subscriber.want_icy and station.icy_preference != "disabled"
 
-        station_name = _sanitize_header(station.player.display_name)
+        station_name = _sanitize_header(station.protocol.display_name)
         headers = {
             **DEFAULT_STREAM_HEADERS,
             **ICY_HEADERS,
@@ -702,17 +693,13 @@ class WebRadioProvider(PlayerProvider):
             headers["icy-metaint"] = str(station.icy_chunk_size)
 
         # Without a Content-Length an HTTP/1.1 listener gets chunked transfer encoding
-        # and an HTTP/1.0 one a plain stream until the connection closes. The HTTP
-        # profile can force a (very high) Content-Length for clients that need one.
+        # and an HTTP/1.0 one a plain stream until the connection closes. A listener
+        # that requires a fixed content length gets a (very high) one.
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = self.mass.config.get_raw_player_config_value(
-            station.player_id, CONF_HTTP_PROFILE, CONF_ENTRY_HTTP_PROFILE.default_value
-        )
-        if http_profile == "forced_content_length":
+        if station.protocol.get_config_value(
+            CONF_REQUIRES_FIXED_CONTENT_LENGTH, False, return_type=bool
+        ):
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
-        elif http_profile == "chunked" and request.version >= HttpVersion11:
-            # Chunked transfer encoding does not exist in HTTP/1.0.
-            resp.enable_chunked_encoding()
         # Closing the connection is what tells every kind of listener the broadcast ended.
         resp.force_close()
         await resp.prepare(request)
@@ -841,13 +828,13 @@ def _icy_metadata_for_queue(queue: PlayerQueue, icy_preference: object) -> tuple
     return title, image_url
 
 
-class WebRadioPlayer(Player):
-    """A single web radio "station" exposed as a Music Assistant player."""
+class WebRadioPlayer(PlayerProtocol):
+    """A single web broadcast "station" exposed as a Music Assistant player."""
 
     def __init__(
         self,
         provider: WebRadioProvider,
-        player_id: str,
+        protocol_id: str,
         station_slug: str,
         display_name: str,
     ) -> None:
@@ -855,17 +842,17 @@ class WebRadioPlayer(Player):
         Initialize the station player.
 
         :param provider: Owning ``WebRadioProvider`` instance.
-        :param player_id: Unique MA player_id (``webradio_<slug>``).
+        :param protocol_id: Unique protocol id (``webradio_<slug>``).
         :param station_slug: URL-safe slug for this station.
         :param display_name: Human-readable station name.
         """
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self._station_slug = station_slug
         self._stream_url: str | None = None
         self._attr_name = display_name
         self._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
         self._attr_device_info = DeviceInfo(
-            model="Web Radio Station",
+            model="Web Broadcast Station",
             manufacturer="Music Assistant",
         )
 
@@ -877,10 +864,12 @@ class WebRadioPlayer(Player):
         # observed to confuse some clients), and pause has no real meaning
         # on a broadcast either - the UI shows stop instead. A station that
         # is not playing can be started. Next/previous remain available.
-        queue = self.mass.player_queues.get(self.player_id)
+        if (player := self.player) is None:
+            return []
+        queue = self.mass.player_queues.get(player.player_id)
         return [
             PlayerSource(
-                id=self.player_id,
+                id=player.player_id,
                 name="Music Assistant Queue",
                 passive=False,
                 can_play_pause=(
@@ -893,16 +882,11 @@ class WebRadioPlayer(Player):
         ]
 
     @property
-    def requires_flow_mode(self) -> bool:
-        """A station is always consumed via a flow stream, listener or not."""
-        return True
-
-    @property
     def station_slug(self) -> str:
         """Return the URL-safe slug of this station."""
         return self._station_slug
 
-    def set_stream_url(self, url: str) -> None:
+    def set_stream_url(self, url: str | None) -> None:
         """Cache the public URL so it can be shown in the player's settings."""
         self._stream_url = url
 
@@ -911,7 +895,7 @@ class WebRadioPlayer(Player):
         return [
             CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
             CONF_ENTRY_ENABLE_ICY_METADATA_BASIC,
-            CONF_ENTRY_HTTP_PROFILE,
+            CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
             ConfigEntry(
                 key=CONF_STREAM_URL_LABEL,
                 type=ConfigEntryType.LABEL,
@@ -921,9 +905,21 @@ class WebRadioPlayer(Player):
 
     async def on_config_updated(self) -> None:
         """Refresh the published URL when the codec config changes."""
-        provider = self.provider
-        if isinstance(provider, WebRadioProvider):
-            provider.refresh_station_route(self._station_slug)
+        provider = cast("WebRadioProvider", self.provider)
+        provider.refresh_station_route(self._station_slug)
+
+    async def on_attach(self, player: Player) -> None:
+        """Start serving the station on its URL."""
+        del player
+        provider = cast("WebRadioProvider", self.provider)
+        provider.open_station(self._station_slug)
+
+    async def on_detach(self) -> None:
+        """End the broadcast and stop serving the station on its URL."""
+        await super().on_detach()
+        self.mark_idle()
+        provider = cast("WebRadioProvider", self.provider)
+        await provider.close_station(self._station_slug)
 
     def restart_elapsed_time(self) -> None:
         """Restart the elapsed time, called when a broadcast session starts sending audio."""
@@ -955,13 +951,12 @@ class WebRadioPlayer(Player):
         # (PlayerFeature.ENQUEUE is intentionally not advertised by this
         # player). get_queue_flow_stream sets the same flag once a listener
         # attaches and the producer runs for real.
-        queue = self.mass.player_queues.get(self.player_id)
+        queue = self.mass.player_queues.get(self.player.player_id) if self.player else None
         if queue is not None:
             queue.flow_mode = True
         self.update_state()
-        provider = self.provider
-        if isinstance(provider, WebRadioProvider):
-            provider.set_pending_media(self._station_slug, media)
+        provider = cast("WebRadioProvider", self.provider)
+        provider.set_pending_media(self._station_slug, media)
 
     async def play(self) -> None:
         """Resume playback and re-anchor the wallclock elapsed time."""
@@ -974,7 +969,6 @@ class WebRadioPlayer(Player):
     async def stop(self) -> None:
         """Stop playback and terminate the active broadcast, if any."""
         self.mark_idle()
-        provider = self.provider
-        if isinstance(provider, WebRadioProvider):
-            provider.clear_pending_media(self._station_slug)
-            provider.stop_producer(self._station_slug)
+        provider = cast("WebRadioProvider", self.provider)
+        provider.clear_pending_media(self._station_slug)
+        provider.stop_producer(self._station_slug)

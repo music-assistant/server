@@ -1,1 +1,1 @@
-"""Tests for the Web Radio Broadcast player provider."""
+"""Tests for the Web Broadcast player provider."""

@@ -1,4 +1,4 @@
-"""Tests for the Web Radio Broadcast helper functions."""
+"""Tests for the Web Broadcast helper functions."""
 
 from __future__ import annotations
 

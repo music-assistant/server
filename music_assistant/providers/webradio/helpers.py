@@ -1,4 +1,4 @@
-"""Helper functions for the Web Radio Broadcast player provider."""
+"""Helper functions for the Web Broadcast player provider."""
 
 from __future__ import annotations
 

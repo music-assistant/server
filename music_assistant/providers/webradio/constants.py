@@ -1,4 +1,4 @@
-"""Constants for the Web Radio Broadcast player provider."""
+"""Constants for the Web Broadcast player provider."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from music_assistant.constants import CONF_ENTRY_ENABLE_ICY_METADATA, CONF_ENTRY
 # Provider config key holding the list of station display names.
 CONF_STATIONS: Final[str] = "stations"
 
-# Prefix used when deriving an MA player_id from a station slug.
+# Prefix used when deriving a protocol id from a station slug.
 PLAYER_ID_PREFIX: Final[str] = "webradio_"
 
 # Public URL path prefix under which each station is served.
