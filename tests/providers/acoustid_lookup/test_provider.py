@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 from types import ModuleType
 from typing import Any, cast
@@ -10,19 +11,28 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 from music_assistant_models.enums import MediaType, StreamType
-from music_assistant_models.errors import UnsupportedSystemError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    UnsupportedSystemError,
+)
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AnalysisSessionData
+from music_assistant.providers.acoustid_lookup.link import LinkState
 from music_assistant.providers.acoustid_lookup.provider import (
     CONF_ANALYSE_STREAMING,
-    CONF_API_KEY,
     CONF_MIN_SCORE,
+    CONF_USER_KEY,
+    CONF_USER_KEY_NOTE,
     CONF_WRITE_TAGS_BACK,
     NO_MATCH_ANALYSIS_VERSION,
     NO_MATCH_RETRY_DAYS,
+    USER_KEY_CHECK_INTERVAL,
     AcoustidLookupProvider,
     _AcoustidSessionData,
     _parse_response,
@@ -35,7 +45,7 @@ from music_assistant.providers.acoustid_lookup.provider import (
 
 def _make_provider(
     *,
-    api_key: str | None = "TESTKEY",
+    user_key: str | None = "TESTKEY",
     min_score: float = 0.85,
     write_tags_back: bool = False,
     analyse_streaming: bool = True,
@@ -63,6 +73,9 @@ def _make_provider(
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
     mass.http_session = MagicMock()
+    # the user key is setup data, which the provider reads back through the config controller
+    mass.config.get = MagicMock(return_value={CONF_USER_KEY: user_key} if user_key else {})
+    mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
 
     manifest = MagicMock()
     manifest.domain = "acoustid_lookup"
@@ -72,12 +85,14 @@ def _make_provider(
     config.values = {}
     config_lookup: dict[str, Any] = {
         CONF_LOG_LEVEL: "GLOBAL",
-        CONF_API_KEY: api_key,
         CONF_MIN_SCORE: min_score,
         CONF_WRITE_TAGS_BACK: write_tags_back,
         CONF_ANALYSE_STREAMING: analyse_streaming,
     }
-    config.get_value = MagicMock(side_effect=lambda key: config_lookup.get(key, "GLOBAL"))
+    # a key that is no config entry, as the setup data falls back to, has no value
+    config.get_value = MagicMock(
+        side_effect=lambda key, default="GLOBAL": config_lookup.get(key, default)
+    )
 
     return AcoustidLookupProvider(mass, manifest, config, set())
 
@@ -310,8 +325,8 @@ def test_offered_tracks_only() -> None:
             id="streaming_toggle_on",
         ),
         pytest.param({}, {}, None, None, True, True, id="local_file_mbid_missing"),
-        # No user-supplied key still proceeds — the shared AcoustID key is used.
-        pytest.param({"api_key": None}, {}, None, None, True, True, id="no_user_api_key"),
+        # No user key still proceeds: the provider only unloads once AcoustID refuses it.
+        pytest.param({"user_key": None}, {}, None, None, True, True, id="no_user_key"),
     ],
 )
 async def test_start_analysis_gates(
@@ -1524,3 +1539,285 @@ def test_parse_response_track_name_behaviour(
     )
     assert mbid == expected_mbid
     assert acoustid == expected_acoustid
+
+
+# ---------------------------------------------------------------------------
+# AcoustID keys
+# ---------------------------------------------------------------------------
+
+
+def _install_http_response(
+    provider: AcoustidLookupProvider, status: int, payload: dict[str, Any]
+) -> MagicMock:
+    """Make the provider's HTTP session answer every GET with the given status and JSON."""
+    response = MagicMock()
+    response.status = status
+    response.headers = {}
+    response.json = AsyncMock(return_value=payload)
+    request = MagicMock()
+    request.__aenter__ = AsyncMock(return_value=response)
+    request.__aexit__ = AsyncMock(return_value=False)
+    get = MagicMock(return_value=request)
+    cast("MagicMock", provider.mass.http_session).get = get
+    return get
+
+
+async def _unwrapped_lookup(provider: AcoustidLookupProvider) -> dict[str, Any] | None:
+    """Call _lookup without its cache and throttling wrappers."""
+    lookup = inspect.unwrap(AcoustidLookupProvider._lookup)
+    return cast("dict[str, Any] | None", await lookup(provider, "FINGERPRINT", 180))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_key", "expected_user"),
+    [
+        pytest.param("USERKEY", "USERKEY", id="user_key_set"),
+        pytest.param(None, None, id="no_user_key"),
+    ],
+)
+async def test_lookup_sends_app_key_as_client_and_user_key_as_user(
+    monkeypatch: pytest.MonkeyPatch, *, user_key: str | None, expected_user: str | None
+) -> None:
+    """The shared application key is always the client, the user's key goes in user."""
+    monkeypatch.setattr(
+        "music_assistant.providers.acoustid_lookup.provider.app_var", lambda _key: "APPKEY"
+    )
+    provider = _make_provider(user_key=user_key)
+    get = _install_http_response(provider, 200, {"status": "ok", "results": []})
+
+    await _unwrapped_lookup(provider)
+
+    params = get.call_args.kwargs["params"]
+    assert params["client"] == "APPKEY"
+    assert params.get("user") == expected_user
+
+
+@pytest.mark.asyncio
+async def test_failed_lookup_keeps_the_keys_out_of_the_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A lookup error that quotes the request URL is logged without either key."""
+    monkeypatch.setattr(
+        "music_assistant.providers.acoustid_lookup.provider.app_var", lambda _key: "APPKEY"
+    )
+    provider = _make_provider(user_key="USERKEY")
+    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    session_id = "session-failed-lookup"
+    await provider._start_analysis(session_id, _make_streamdetails(), _make_audio_format())
+    provider._data[session_id].pcm_seconds_fed = 10.0
+    monkeypatch.setattr(
+        provider,
+        "_lookup",
+        AsyncMock(side_effect=aiohttp.ClientError("failed for ?client=APPKEY&user=USERKEY")),
+    )
+
+    with caplog.at_level("WARNING"):
+        assert await provider._finalize(session_id) is None
+
+    assert "AcoustID lookup failed" in caplog.text
+    assert "APPKEY" not in caplog.text
+    assert "USERKEY" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("user_key", "error", "expected_key"),
+    [
+        pytest.param(
+            None,
+            {"code": 2, "message": 'missing required parameter "user"'},
+            "user_key_missing",
+            id="user_key_missing",
+        ),
+        pytest.param(
+            None,
+            {"code": 6, "message": "invalid user API key"},
+            "user_key_missing",
+            id="invalid_user_key_without_one",
+        ),
+        pytest.param(
+            "USERKEY", {"code": 4, "message": "invalid API key"}, "app_key_refused", id="app_key"
+        ),
+        pytest.param(
+            None,
+            {"code": 2, "message": 'missing required parameter "fingerprint"'},
+            None,
+            id="other_missing_parameter",
+        ),
+        pytest.param("USERKEY", {"code": 3, "message": "invalid fingerprint"}, None, id="other"),
+    ],
+)
+async def test_refused_keys_unload_the_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    user_key: str | None,
+    error: dict[str, Any],
+    expected_key: str | None,
+) -> None:
+    """A refused key unloads the provider with the reason, any other error does not."""
+    monkeypatch.setattr(
+        "music_assistant.providers.acoustid_lookup.provider.app_var", lambda _key: "APPKEY"
+    )
+    provider = _make_provider(user_key=user_key)
+    _install_http_response(provider, 400, {"status": "error", "error": error})
+    unload = MagicMock()
+    monkeypatch.setattr(provider, "unload_with_error", unload)
+
+    # a second refusal, of a lookup that was already under way, does not unload again
+    assert await _unwrapped_lookup(provider) is None
+    assert await _unwrapped_lookup(provider) is None
+
+    if expected_key is None:
+        unload.assert_not_called()
+        return
+    unload.assert_called_once()
+    reason = unload.call_args.args[0]
+    assert reason.translation_key == expected_key
+    assert reason.translation_owner == "provider.acoustid_lookup"
+    # only a user key problem is one the user can fix through Reconfigure
+    assert isinstance(reason, LoginFailed) is expected_key.startswith("user_key")
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+    assert accepted is False
+
+
+def _refuse_user_key(
+    monkeypatch: pytest.MonkeyPatch, status: Any
+) -> tuple[AcoustidLookupProvider, AsyncMock, MagicMock, MagicMock]:
+    """Return a provider whose user key AcoustID refuses, with its status, drop and unload mocks."""
+    monkeypatch.setattr(
+        "music_assistant.providers.acoustid_lookup.provider.app_var", lambda _key: "APPKEY"
+    )
+    provider = _make_provider(user_key="USERKEY")
+    _install_http_response(
+        provider, 400, {"status": "error", "error": {"code": 6, "message": "invalid user API key"}}
+    )
+    link_status = AsyncMock(side_effect=status if isinstance(status, list) else [status])
+    monkeypatch.setattr(
+        "music_assistant.providers.acoustid_lookup.provider.link_status", link_status
+    )
+    drop = MagicMock()
+    monkeypatch.setattr(provider, "_update_setup_data", drop)
+    unload = MagicMock()
+    monkeypatch.setattr(provider, "unload_with_error", unload)
+    return provider, link_status, drop, unload
+
+
+@pytest.mark.parametrize(
+    ("status", "expect_dropped"),
+    [
+        pytest.param(LinkState.APPROVED, False, id="approved"),
+        pytest.param(LinkState.PENDING, False, id="pending"),
+        pytest.param(LinkState.DECLINED, True, id="declined"),
+        pytest.param(LinkState.EXPIRED, True, id="expired"),
+        pytest.param(LinkState.REVOKED, True, id="revoked"),
+        pytest.param(LinkState.UNKNOWN, True, id="unknown"),
+        pytest.param(ResourceTemporarilyUnavailable("down"), False, id="unreachable"),
+        pytest.param(RateLimited("slow down"), False, id="rate_limited"),
+        pytest.param(InvalidDataError("odd reply"), False, id="odd_reply"),
+    ],
+)
+async def test_refused_user_key_is_checked_with_acoustid(
+    monkeypatch: pytest.MonkeyPatch, *, status: Any, expect_dropped: bool
+) -> None:
+    """A refused user key is only dropped when AcoustID says it is no longer linked."""
+    provider, link_status, drop, unload = _refuse_user_key(monkeypatch, status)
+
+    assert await _unwrapped_lookup(provider) is None
+
+    link_status.assert_awaited_once_with(provider.mass.http_session, "USERKEY")
+    if expect_dropped:
+        drop.assert_called_once_with(CONF_USER_KEY, None)
+    else:
+        drop.assert_not_called()
+    # lookups carry on, with or without the key
+    unload.assert_not_called()
+    assert provider._keys_refused is False
+
+
+async def test_refused_user_key_is_checked_once_per_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated refusals ask AcoustID about the key once, and again after the interval."""
+    provider, link_status, drop, _ = _refuse_user_key(
+        monkeypatch, [LinkState.APPROVED, LinkState.REVOKED]
+    )
+    clock = MagicMock(return_value=1000.0)
+    monkeypatch.setattr("music_assistant.providers.acoustid_lookup.provider.time.monotonic", clock)
+
+    await _unwrapped_lookup(provider)
+    await _unwrapped_lookup(provider)
+    assert link_status.await_count == 1
+
+    clock.return_value += USER_KEY_CHECK_INTERVAL
+    await _unwrapped_lookup(provider)
+
+    assert link_status.await_count == 2
+    drop.assert_called_once_with(CONF_USER_KEY, None)
+
+
+async def test_dropped_user_key_is_not_sent_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once a key is dropped, later lookups go out without it and it is not checked again."""
+    provider, link_status, _, unload = _refuse_user_key(monkeypatch, LinkState.REVOKED)
+    stored: dict[str, Any] = {CONF_USER_KEY: "USERKEY"}
+    cast("MagicMock", provider.mass.config).get = MagicMock(return_value=stored)
+    monkeypatch.setattr(provider, "_update_setup_data", stored.__setitem__)
+
+    await _unwrapped_lookup(provider)
+    get = _install_http_response(provider, 200, {"status": "ok", "results": []})
+    assert await _unwrapped_lookup(provider) == {"status": "ok", "results": []}
+
+    assert "user" not in get.call_args.kwargs["params"]
+    assert link_status.await_count == 1
+    unload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lookup_without_a_user_key_keeps_the_provider_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While AcoustID answers lookups without a user key, nothing unloads."""
+    monkeypatch.setattr(
+        "music_assistant.providers.acoustid_lookup.provider.app_var", lambda _key: "APPKEY"
+    )
+    provider = _make_provider(user_key=None)
+    _install_http_response(provider, 200, {"status": "ok", "results": []})
+    unload = MagicMock()
+    monkeypatch.setattr(provider, "unload_with_error", unload)
+
+    assert await _unwrapped_lookup(provider) == {"status": "ok", "results": []}
+
+    unload.assert_not_called()
+    assert provider._keys_refused is False
+
+
+@pytest.mark.asyncio
+async def test_lookup_keeps_the_user_key_out_of_the_cache_key() -> None:
+    """The cached lookup is stored under the fingerprint only, not under the user key."""
+    provider = _make_provider(user_key="USERKEY")
+    get_with_freshness = AsyncMock(return_value=({"status": "ok"}, True, True))
+    cast("MagicMock", provider.mass.cache).get_with_freshness = get_with_freshness
+
+    assert await provider._lookup("FINGERPRINT", 180) == {"status": "ok"}
+
+    assert "USERKEY" not in str(get_with_freshness.call_args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_key", "expected_hidden"),
+    [pytest.param("USERKEY", True, id="key_set"), pytest.param(None, False, id="no_key")],
+)
+async def test_user_key_note_shows_only_without_a_user_key(
+    *, user_key: str | None, expected_hidden: bool
+) -> None:
+    """The settings page asks to connect to AcoustID only while no user key is set."""
+    provider = _make_provider(user_key=user_key)
+
+    entries = {entry.key: entry for entry in await provider.get_config_entries()}
+
+    assert entries[CONF_USER_KEY_NOTE].hidden is expected_hidden

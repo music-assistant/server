@@ -659,6 +659,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0915
     if _migrate_milkdrop_drop_color_tint(data):
         changed = True
 
+    # Drop the stored value of the removed AcoustID API key setting; lookups use the Music
+    # Assistant application key, and the user key is collected by the setup flow.
+    # TODO: remove after 2.13 release
+    if _migrate_acoustid_drop_api_key(data):
+        changed = True
+
     # Move Raumfeld players still on the former "full" ICY default to "basic".
     # TODO: remove after 2.13 release
     if _migrate_raumfeld_icy_basic(data):
@@ -1648,6 +1654,25 @@ def _migrate_milkdrop_drop_color_tint(data: dict[str, Any]) -> bool:
     if not dropped:
         return False
     LOGGER.info("Removed %d unused milkdrop color tint value(s)", dropped)
+    return True
+
+
+def _migrate_acoustid_drop_api_key(data: dict[str, Any]) -> bool:
+    """Remove the stored API key value from every acoustid_lookup provider instance."""
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    dropped = 0
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "acoustid_lookup":
+            continue
+        stored = provider_cfg.get("values")
+        if isinstance(stored, dict) and "api_key" in stored:
+            del stored["api_key"]
+            dropped += 1
+    if not dropped:
+        return False
+    LOGGER.info("Removed %d unused AcoustID API key value(s)", dropped)
     return True
 
 
