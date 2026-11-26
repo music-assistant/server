@@ -19,6 +19,13 @@ from tests.common import bare_player_controller
 
 QUEUE_ID = "q1"
 DURATION = 3600
+NOW = 1_000_000.0
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Freeze the wall clock, so a playing queue is exactly as far along as its anchor says."""
+    monkeypatch.setattr(time, "time", lambda: NOW)
 
 
 def _controller(
@@ -94,7 +101,7 @@ async def test_skip_uses_live_position_while_playing() -> None:
     await ctrl.skip(QUEUE_ID, 10)
 
     # reading the stored anchor directly would give 110 and lose the two elapsed seconds
-    assert _seeked_position(seek) == pytest.approx(112, abs=1)
+    assert _seeked_position(seek) == 112
 
 
 async def test_skip_accounts_for_playback_speed() -> None:
@@ -103,7 +110,7 @@ async def test_skip_accounts_for_playback_speed() -> None:
 
     await ctrl.skip(QUEUE_ID, 10)
 
-    assert _seeked_position(seek) == pytest.approx(113, abs=1)
+    assert _seeked_position(seek) == 113
 
 
 async def test_skip_while_paused_uses_the_stored_position() -> None:
