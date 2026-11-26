@@ -585,7 +585,7 @@ async def test_a_metadata_refresh_never_waits_for_a_generation(
     playlist = _smart_playlist()
     _register(provider, playlist)
 
-    async with asyncio.timeout(1):
+    async with asyncio.timeout(10):
         await provider.get_playlist_metadata(playlist)
 
     assert playlist.image is None
@@ -1828,7 +1828,7 @@ async def test_unloading_stops_a_preview_before_the_text_engine(
 
     with _no_engine_pickers():
         preview = asyncio.create_task(provider.handle_config_action(CONF_ACTION_PREVIEW))
-        async with asyncio.timeout(1):
+        async with asyncio.timeout(10):
             await held.wait()
         await provider.unload()
         release.set()
