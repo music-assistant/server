@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 
-from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.helpers.player import served_duration
+from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import CONF_ROKU_APP_ID
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
     from rokuecp import Device, Roku
 
     from .provider import MediaAssistantprovider
@@ -31,19 +31,19 @@ def parse_app_ids(value: object) -> list[str]:
     return [app_id.strip() for app_id in value.split(",") if app_id.strip()]
 
 
-class MediaAssistantPlayer(Player):
+class MediaAssistantPlayer(PlayerProtocol):
     """MediaAssistantPlayer in Music Assistant."""
 
     def __init__(
         self,
         provider: MediaAssistantprovider,
-        player_id: str,
+        protocol_id: str,
         roku_name: str,
         roku: Roku,
         queued: PlayerMedia | None = None,
     ) -> None:
         """Initialize the Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         # init some static variables
         self.roku = roku
         self.queued = queued
@@ -65,7 +65,7 @@ class MediaAssistantPlayer(Player):
         """Set up player in MA."""
         self._attr_available = False
         self._attr_powered = False
-        await self.mass.players.register_or_update(self)
+        await self.mass.players.register(self)
 
     @property
     def needs_poll(self) -> bool:
@@ -82,24 +82,16 @@ class MediaAssistantPlayer(Player):
         """Return the IDs of the Roku apps to play in, in order of preference."""
         return parse_app_ids(self.provider.config.get_value(CONF_ROKU_APP_ID))
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        default_entries = await super().get_config_entries()
-        return [
-            *default_entries,
-            CONF_ENTRY_HTTP_PROFILE,
-        ]
-
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received POWER command on player %s", self.display_name)
 
         app_running = False
         try:
             device_info = await self.roku.update()
             app_running = self._app_in_front(device_info)
-        except Exception:
+        except Exception:  # noqa: BLE001 - device call, any failure is only logged
             self.logger.error("Failed to get app state on: %s", self.name)
 
         try:
@@ -109,7 +101,7 @@ class MediaAssistantPlayer(Player):
                 if app_running:
                     await self.roku.remote("home")
                     await self.roku.remote("power")
-        except Exception:
+        except Exception:  # noqa: BLE001 - device call, any failure is only logged
             self.logger.error("Failed to change Power state on: %s", self.name)
 
         # update the player state in the player manager
@@ -119,7 +111,7 @@ class MediaAssistantPlayer(Player):
         """Handle VOLUME MUTE command on the player."""
         await self.roku.remote("volume_mute")
 
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info(
             "Received VOLUME_MUTE command on player %s with muted %s", self.display_name, muted
         )
@@ -130,7 +122,7 @@ class MediaAssistantPlayer(Player):
         """Play command."""
         await self.roku.remote("play")
 
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received PLAY command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -155,7 +147,7 @@ class MediaAssistantPlayer(Player):
                     },
                 )
 
-            logger = self.provider.logger.getChild(self.player_id)
+            logger = self.provider.logger.getChild(self.protocol_id)
             logger.info("Received STOP command on player %s", self.display_name)
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
@@ -165,20 +157,20 @@ class MediaAssistantPlayer(Player):
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
             self.update_state()
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failed command is only logged
             self.logger.error("Failed to send stop signal to: %s", self.name)
 
     async def pause(self) -> None:
         """Pause command."""
         await self.roku.remote("play")
 
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received PAUSE command on player %s", self.display_name)
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         try:
             device_info = await self.roku.update()
 
@@ -199,7 +191,7 @@ class MediaAssistantPlayer(Player):
                 ),
                 "albumArt": ("" if self.flow_mode else media.image_url or ""),
                 "songFormat": "flac",
-                "duration": media.stream_duration or media.duration or "",
+                "duration": served_duration(media, stream_url) or "",
                 "isLive": (
                     "true"
                     if media.media_type == MediaType.RADIO
@@ -227,7 +219,7 @@ class MediaAssistantPlayer(Player):
                     return
                 await self.roku.launch(app_id, f_media)
 
-            logger = self.provider.logger.getChild(self.player_id)
+            logger = self.provider.logger.getChild(self.protocol_id)
             logger.info(
                 "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
             )
@@ -243,13 +235,13 @@ class MediaAssistantPlayer(Player):
             self._position_last_moved = time.time()
             self._stream_end_logged = False
             self.update_state()
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failed command is only logged
             self.logger.error("Failed to Play Media on: %s", self.name)
             return
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next (queue) item on the player."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         # Music Assistant hands the next item over exactly once and never
         # retries (player_queues/stream_feeder._enqueue_next_item), so one failed POST used
         # to mean the app ran out of audio at the end of the track. Retry here, and say
@@ -278,14 +270,14 @@ class MediaAssistantPlayer(Player):
                         "artistName": media.artist,
                         "albumArt": media.image_url,
                         "songFormat": "flac",
-                        "duration": media.stream_duration or media.duration,
+                        "duration": served_duration(media, stream_url),
                         "enqueue": "true",
                     },
                 )
                 self.queued = media
                 self.logger.info("Enqueued %s on %s", media.title, self.name)
                 return
-            except Exception:
+            except Exception:  # noqa: BLE001 - any failure is retried
                 self.logger.error(
                     "Failed to Enqueue Media on: %s (attempt %d/%d)", self.name, attempt, attempts
                 )
@@ -302,7 +294,7 @@ class MediaAssistantPlayer(Player):
         try:
             device_info = await self.roku.update()
             self._attr_available = True
-        except Exception:
+        except Exception:  # noqa: BLE001 - any failure marks the player unavailable
             self._attr_available = False
             self.logger.error("Failed to retrieve Update from: %s", self.name)
             self.update_state()
@@ -384,7 +376,7 @@ class MediaAssistantPlayer(Player):
                                 )
                         self._attr_elapsed_time = position
                         self._attr_elapsed_time_last_updated = now
-                    except Exception:
+                    except ValueError, AttributeError:
                         self.logger.info(
                             "Playback Position received from %s Was Invalid", self.name
                         )
@@ -392,16 +384,17 @@ class MediaAssistantPlayer(Player):
                 self.update_state()
 
                 if (
-                    not self.state.current_media
+                    self.player is None
+                    or not (current_media := self.player.current_media)
                     or self._attr_playback_state != PlaybackState.PLAYING
                 ):
                     return
 
-                image_url = self.state.current_media.image_url or ""
+                image_url = current_media.image_url or ""
 
-                album_name = self.state.current_media.album or ""
-                song_name = self.state.current_media.title or ""
-                artist_name = self.state.current_media.artist or ""
+                album_name = current_media.album or ""
+                song_name = current_media.title or ""
+                artist_name = current_media.artist or ""
                 if app_running and self.flow_mode:
                     await self.roku_input(
                         {
@@ -414,7 +407,7 @@ class MediaAssistantPlayer(Player):
                             "isLive": "true",
                         },
                     )
-            except Exception:
+            except Exception:  # noqa: BLE001 - a failed media state read must not fail the poll
                 self.logger.warning("Failed to update media state for: %s", self.name)
 
         self.update_state()
@@ -427,9 +420,14 @@ class MediaAssistantPlayer(Player):
         encoded = urlencode(params)
         await self.roku._request(f"input?{encoded}", method="POST", encoded=True)
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
         self.logger.info("Player %s unloaded", self.name)
+        await super().on_detach()
+
+    async def on_remove(self) -> None:
+        """Disconnect from the Roku, so that a discovery registers it as a new player."""
+        await cast("MediaAssistantprovider", self.provider).forget_player(self)
 
     def _app_in_front(self, device: Device, screensaver_counts: bool = True) -> bool:
         """

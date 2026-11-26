@@ -13,7 +13,7 @@ from aiosendspin.server import VolumeChangedEvent
 from music_assistant_models.enums import PlayerFeature
 
 import music_assistant.providers.sendspin.player as player_module
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sendspin.player import SendspinBasePlayer, SendspinPlayer
 
 if TYPE_CHECKING:
@@ -29,12 +29,13 @@ CONTROL_FEATURES = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
 def player_role(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """Return the player role every test player resolves, with no commands declared yet."""
 
-    def _init_player(self: Player, provider: PlayerProvider, player_id: str) -> None:
+    def _init_player(self: PlayerProtocol, provider: PlayerProvider, protocol_id: str) -> None:
         self._provider = provider
-        self._player_id = player_id
+        self._protocol_id = protocol_id
+        self._player = None
 
     role = SimpleNamespace(state_supported_commands=[])
-    monkeypatch.setattr(Player, "__init__", _init_player)
+    monkeypatch.setattr(PlayerProtocol, "__init__", _init_player)
     monkeypatch.setattr(SendspinBasePlayer, "_refresh_client_info", Mock())
     monkeypatch.setattr(SendspinBasePlayer, "_subscribe_client_callbacks", Mock())
     monkeypatch.setattr(SendspinPlayer, "_refresh_client_info", Mock())
@@ -44,8 +45,15 @@ def player_role(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     return role
 
 
-def _player(commands: list[PlayerCommand] | None) -> SendspinPlayer:
-    """Create a player whose hello lists ``commands``, or none for a current client."""
+def _player(
+    commands: list[PlayerCommand] | None, *, allows_legacy_clients: bool = True
+) -> SendspinPlayer:
+    """
+    Create a player whose hello lists ``commands``, or none for a current client.
+
+    :param commands: The commands the hello lists.
+    :param allows_legacy_clients: The server accepts clients that are not spec-compliant.
+    """
     support = ClientHelloPlayerSupport(
         supported_formats=[
             SupportedAudioFormat(codec=AudioCodec.PCM, channels=2, sample_rate=48000, bit_depth=16)
@@ -59,7 +67,10 @@ def _player(commands: list[PlayerCommand] | None) -> SendspinPlayer:
         SimpleNamespace(
             instance_id="sendspin--test",
             logger=Mock(),
-            server_api=SimpleNamespace(get_client=Mock(return_value=client)),
+            server_api=SimpleNamespace(
+                get_client=Mock(return_value=client),
+                allow_noncompliant_clients=allows_legacy_clients,
+            ),
         ),
     )
     player = SendspinPlayer(provider, "p1")
@@ -85,6 +96,21 @@ def test_current_client_features_follow_client_state(player_role: SimpleNamespac
     player_role.state_supported_commands = [PlayerCommand.MUTE]
     _volume_event(player)
     assert player.supported_features & CONTROL_FEATURES == {PlayerFeature.VOLUME_MUTE}
+
+
+@pytest.mark.usefixtures("player_role")
+@pytest.mark.parametrize("allows_legacy_clients", [True, False])
+def test_a_server_that_allows_legacy_clients_keeps_the_flow_stream(
+    allows_legacy_clients: bool,
+) -> None:
+    """Players take a queue item by item only on a server for spec-compliant clients."""
+    player = _player(None, allows_legacy_clients=allows_legacy_clients)
+
+    assert player.requires_flow_mode is allows_legacy_clients
+    takes_items = {PlayerFeature.ENQUEUE, PlayerFeature.GAPLESS_PLAYBACK}
+    assert player.supported_features & takes_items == (
+        set() if allows_legacy_clients else takes_items
+    )
 
 
 def test_client_state_known_before_registration_seeds_the_features(

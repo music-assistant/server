@@ -228,7 +228,7 @@ async def test_msx_party_page_active(http_client: TestClient[Any, Any], mass_moc
 async def test_msx_party_page_refreshes_player_activity(
     http_client: TestClient[Any, Any], mass_mock: Mock
 ) -> None:
-    """Viewing the party page must register/refresh the player like other MSX pages."""
+    """Viewing the party page must attach/refresh the player like other MSX pages."""
     resp = await http_client.get("/msx/party.json?device_id=partytv")
     assert resp.status == 200
     mass_mock.players.register.assert_awaited()
@@ -260,7 +260,7 @@ def test_stamp_qr_on_cover_does_not_change_pillow_limit_when_concurrent() -> Non
     def _stamp() -> None:
         try:
             stamp_qr_on_cover(cover, qr)
-        except BaseException as err:
+        except BaseException as err:  # noqa: BLE001 - any worker error must fail the test
             errors.append(err)
 
     workers = [threading.Thread(target=_stamp) for _ in range(8)]

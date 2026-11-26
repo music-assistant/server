@@ -117,5 +117,5 @@ def _type_schema(annotation: Any) -> dict[str, Any]:
         return {}
     try:
         return TypeAdapter(annotation).json_schema()
-    except Exception:
+    except Exception:  # noqa: BLE001 - any type pydantic can not describe
         return {"x-python-type": str(annotation)}

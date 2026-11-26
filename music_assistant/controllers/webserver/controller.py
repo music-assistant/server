@@ -12,6 +12,7 @@ import hashlib
 import html
 import inspect
 import json
+import math
 import os
 import secrets
 import socket
@@ -27,7 +28,7 @@ import aiofiles
 from aiohttp import web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
-from music_assistant_models.api import CommandMessage
+from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import (
     ConfigActionResult,
@@ -37,11 +38,20 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
+    AudioError,
+    AuthenticationFailed,
+    AuthenticationRequired,
     InsufficientPermissions,
+    InvalidCommand,
     InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
     PlayerUnavailableError,
+    ProviderUnavailableError,
     RateLimited,
-    UserNotFoundError,
+    ResourceBusyError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
@@ -56,7 +66,6 @@ from music_assistant.constants import (
     DEFAULT_HOST,
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
-    SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
     WILDCARD_BIND_IPS,
 )
@@ -65,7 +74,12 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     format_certificate_info,
     verify_ssl_certificate,
 )
-from music_assistant.helpers.api import parse_arguments, redact_json_secrets
+from music_assistant.helpers.api import (
+    api_error_message,
+    parse_arguments,
+    redact_json_secrets,
+    run_api_command,
+)
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
@@ -96,6 +110,7 @@ from .helpers.auth_middleware import (
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .helpers.login_flow import AuthTransport, RedirectTarget
+from .provider_pages import PROVIDER_PAGE_ROUTE, ProviderPageManager
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
@@ -108,6 +123,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.api import APICommandHandler
+    from music_assistant.providers.sendspin.provider import SendspinProvider
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
@@ -126,6 +142,13 @@ PREVIEW_TOKEN_TTL = 60
 # Ceiling on live preview tokens. LIBRARY_READ is a guest scope, so minting is reachable by
 # every signed-in client; the cap keeps a chatty or hostile one from growing the store.
 MAX_PREVIEW_TOKENS = 500
+# The public setup endpoint creates the first admin for whoever reaches it first, so it only
+# stays open for a short while after the server starts.
+SETUP_WINDOW_MINUTES = 15
+SETUP_TIMED_OUT_MESSAGE = (
+    f"Setup was not completed within {SETUP_WINDOW_MINUTES} minutes of Music Assistant "
+    "starting. Restart Music Assistant to try again."
+)
 
 
 def _get_publish_addresses(
@@ -214,8 +237,10 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        self.provider_pages = ProviderPageManager(self)
         # the first-time setup makes exactly one admin, however many attempts arrive at once
         self._setup_lock = asyncio.Lock()
+        self._setup_deadline = time.monotonic() + SETUP_WINDOW_MINUTES * 60
         # Preview tokens keyed on the token in the URL, value is
         # (provider instance id or domain, item id, monotonic expiry).
         self._preview_tokens: dict[str, tuple[str, str, float]] = {}
@@ -291,14 +316,17 @@ class WebserverController(CoreController):
         return self.base_url
 
     @property
-    def internal_sendspin_url(self) -> str:
-        """Return the URL to reach the in-process Sendspin server from this host."""
+    def internal_sendspin_url(self) -> str | None:
+        """Return the URL to reach the in-process Sendspin server from this host, while it is loaded."""
+        sendspin = cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
+        if sendspin is None:
+            return None
         # the advertised address is not necessarily dialable here (e.g. a container or
         # NAT setup), so derive the address from what the Sendspin server actually binds to
         connect_ip = _get_internal_connect_ip(
             self.mass.streams.bind_ip, str(self.mass.streams.publish_ip)
         )
-        return f"ws://{format_ip_for_url(connect_ip)}:{SENDSPIN_SERVER_PORT}/sendspin"
+        return f"ws://{format_ip_for_url(connect_ip)}:{sendspin.server_port}/sendspin"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
@@ -311,10 +339,15 @@ class WebserverController(CoreController):
         if action == CONF_ACTION_VERIFY_SSL:
             # the certificate/key are read from the stored config, so they must be saved
             # before verifying - the action no longer receives the (unsaved) form values
-            cert_info = await verify_ssl_certificate(
-                str(self.get_config_value(CONF_SSL_CERTIFICATE, "")),
-                str(self.get_config_value(CONF_SSL_PRIVATE_KEY, "")),
-            )
+            certificate = str(self.get_config_value(CONF_SSL_CERTIFICATE) or "")
+            private_key = str(self.get_config_value(CONF_SSL_PRIVATE_KEY) or "")
+            if not certificate or not private_key:
+                raise InvalidDataError(
+                    "Save the certificate and private key first, then press Verify",
+                    translation_key="ssl_not_saved",
+                    translation_owner=self.translation_owner,
+                )
+            cert_info = await verify_ssl_certificate(certificate, private_key)
             if not cert_info.is_valid:
                 # a result only ever reports success, so an unusable certificate must raise
                 raise InvalidDataError(
@@ -399,6 +432,14 @@ class WebserverController(CoreController):
         routes.append(("POST", "/setup", self._handle_setup))
         # add sendspin proxy route (authenticated WebSocket proxy to internal sendspin server)
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
+        # pages providers serve, behind a short-lived address (see provider_pages.py)
+        routes.append(
+            (
+                "*",
+                f"/{PROVIDER_PAGE_ROUTE}/{{session}}/{{tail:.*}}",
+                self.provider_pages.handle_request,
+            )
+        )
         await self.auth.setup()
         # start the webserver
         if self.mass.running_as_hass_addon:
@@ -442,6 +483,7 @@ class WebserverController(CoreController):
             # Add mass object to app for use by the auth helpers
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
+            response_prepare_hooks=[self.provider_pages.on_response_prepare],
         )
         # adopt what the server actually bound to: a configured port of 0 is only resolved
         # by the OS at bind time and an unavailable bind IP falls back to all interfaces
@@ -461,8 +503,12 @@ class WebserverController(CoreController):
                 "\n"
                 "    %s/setup\n"
                 "\n"
+                "The setup page stays open for %s minutes. If it times out,\n"
+                "restart Music Assistant to try again.\n"
+                "\n"
                 "################################################################################\n",
                 base_url,
+                SETUP_WINDOW_MINUTES,
             )
         else:
             self.logger.info(
@@ -472,7 +518,7 @@ class WebserverController(CoreController):
                 "Webserver available on: %s\n"
                 "\n"
                 "If this address is incorrect, see the documentation on how to configure\n"
-                "the Webserver in Settings --> System --> Webserver\n"
+                "the Webserver in Settings --> System --> Network\n"
                 "\n"
                 "################################################################################\n",
                 base_url,
@@ -485,8 +531,7 @@ class WebserverController(CoreController):
             # config parsing already dropped the invalid stored value; clear the stored
             # value too, so the setting reads back as empty and this warns only once
             self.logger.warning(
-                "External URL %r in the webserver settings is not a public http(s) URL, "
-                "clearing it",
+                "External URL %r in the network settings is not a public http(s) URL, clearing it",
                 raw_external_url,
             )
             self.mass.config.set_raw_core_config_value(self.domain, CONF_EXTERNAL_URL, None)
@@ -502,6 +547,7 @@ class WebserverController(CoreController):
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()
+        self.provider_pages.close()
         await self.auth.close()
 
     def register_websocket_client(self, client: WebsocketClientHandler) -> None:
@@ -522,7 +568,10 @@ class WebserverController(CoreController):
 
     def disconnect_websockets_for_user(self, user_id: str) -> None:
         """
-        Disconnect all WebSocket clients of the given user.
+        Disconnect all WebSocket clients of the given user, and drop its provider page addresses.
+
+        Call this whenever the access of the user changes, so that nothing it opened before goes
+        on with the access it had.
 
         :param user_id: Id of the user whose sessions must be closed.
         """
@@ -533,29 +582,29 @@ class WebserverController(CoreController):
             ),
             "user action",
         )
+        self.provider_pages.drop_user(user_id)
 
-    def update_active_user_filters(
-        self,
-        user_id: str,
-        player_filter: list[str] | None = None,
-    ) -> None:
+    def update_active_user(self, user: User) -> None:
         """
-        Apply updated access filters to the live sessions of a user.
+        Apply the stored profile, preferences and player filter of a user to its live sessions.
 
-        Call this after the filters of a user were changed in the database, so the
-        change takes effect right away instead of only on the next connection.
+        Call this after the user was changed in the database, so the change takes effect
+        right away instead of only on the next connection. A changed role, or a disabled
+        user, instead needs `disconnect_websockets_for_user`.
 
-        :param user_id: ID of the user whose sessions must be updated.
-        :param player_filter: The new player filter, or None to leave it untouched.
+        :param user: The user as just read back from the database.
         """
         for client in list(self.clients):
-            user = client.authenticated_user
-            if user is None or user.user_id != user_id:
+            live_user = client.authenticated_user
+            if live_user is None or live_user.user_id != user.user_id:
                 continue
             # updated in place: the connection's context holds this very object
-            if player_filter is not None:
-                user.player_filter[:] = player_filter
-            self.logger.debug("Updated the access filters of a live session of %s", user.username)
+            live_user.username = user.username
+            live_user.display_name = user.display_name
+            live_user.avatar_url = user.avatar_url
+            live_user.preferences = dict(user.preferences)
+            live_user.player_filter[:] = user.player_filter
+            self.logger.debug("Updated a live session of %s", live_user.username)
 
     def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
         """
@@ -718,6 +767,7 @@ class WebserverController(CoreController):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+                category="account_access",
                 requires_reload=False,
             ),
             ConfigEntry(
@@ -872,10 +922,14 @@ class WebserverController(CoreController):
         if handler is None:
             error = f"Invalid Command: {command_msg.command}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
-            return web.Response(status=400, text=error)
+            return await self._error_response(
+                request, 400, api_error_message(command_msg.message_id, InvalidCommand(error))
+            )
 
         # Check authentication if required
-        if error_response := await self._authenticate_api_command(request, handler):
+        if error_response := await self._authenticate_api_command(
+            request, handler, command_msg.message_id
+        ):
             return error_response
         set_request_priority(RequestPriority.NORMAL)
 
@@ -886,8 +940,11 @@ class WebserverController(CoreController):
                     self.mass, command_msg.args, handler.required_scope
                 ):
                     set_impersonated_user(impersonation_user)
-            args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
-            result: Any = handler.target(**args)
+            try:
+                args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
+            except (LookupError, TypeError, ValueError) as err:
+                return await self._invalid_arguments_response(request, command_msg, err)
+            result: Any = run_api_command(self.mass, handler, args)
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 result = [item async for item in result]
@@ -898,22 +955,23 @@ class WebserverController(CoreController):
             locale = _locale_from_request(request)
             await self.mass.translations.ensure_locale_loaded(locale)
             return self._localized_json_response(result, locale)
-        except InsufficientPermissions as e:
-            return web.Response(status=403, text=str(e))
-        except (InvalidDataError, UserNotFoundError) as e:
-            return web.Response(status=400, text=str(e))
-        except PlayerUnavailableError as e:
-            return web.Response(status=404, text=str(e))
+        except MusicAssistantError as e:
+            self.logger.warning("%s: %s", command_msg.command, e)
+            return await self._command_error_response(request, command_msg.message_id, e)
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
             error_msg = str(e)
             error = f"{error_type}: {error_msg}"
             self.logger.exception("Error executing command %s: %s", command_msg.command, error)
-            return web.Response(status=500, text="Internal server error")
+            return await self._error_response(
+                request,
+                500,
+                ErrorResultMessage(command_msg.message_id, 999, "Internal server error"),
+            )
 
     async def _authenticate_api_command(
-        self, request: web.Request, handler: APICommandHandler
+        self, request: web.Request, handler: APICommandHandler, message_id: str
     ) -> web.Response | None:
         """
         Authenticate the request and check the handler's required scope.
@@ -923,21 +981,24 @@ class WebserverController(CoreController):
         """
         if not (handler.authenticated or handler.required_scope):
             return None
+        auth_headers = {"WWW-Authenticate": 'Bearer realm="Music Assistant"'}
         try:
             user = await get_authenticated_user(request)
         except Exception:
             self.logger.exception("Authentication error")
-            return web.Response(
-                status=401,
-                text="Authentication failed",
-                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            return await self._error_response(
+                request,
+                401,
+                api_error_message(message_id, AuthenticationFailed("Authentication failed")),
+                auth_headers,
             )
 
         if not user:
-            return web.Response(
-                status=401,
-                text="Authentication required",
-                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            return await self._error_response(
+                request,
+                401,
+                api_error_message(message_id, AuthenticationRequired("Authentication required")),
+                auth_headers,
             )
 
         # Set user and token in context and check the required scope
@@ -946,13 +1007,75 @@ class WebserverController(CoreController):
         if auth_header.lower().startswith("bearer "):
             set_current_token(auth_header[7:])
         if handler.required_scope and not has_scope(user, handler.required_scope):
-            return web.Response(
-                status=403,
-                text=f"This command requires the {handler.required_scope_label} scope",
+            error = InsufficientPermissions(
+                f"This command requires the {handler.required_scope_label} scope"
             )
+            return await self._error_response(request, 403, api_error_message(message_id, error))
         return None
 
-    def _localized_json_response(self, result: Any, locale: str | None) -> web.Response:
+    async def _command_error_response(
+        self, request: web.Request, message_id: str, error: MusicAssistantError
+    ) -> web.Response:
+        """
+        Answer an API command that raised the given error.
+
+        :param request: The request of the command.
+        :param message_id: The id of the command.
+        :param error: The error the command raised.
+        """
+        headers = None
+        if isinstance(error, ResourceTemporarilyUnavailable) and error.backoff_time:
+            headers = {"Retry-After": str(math.ceil(error.backoff_time))}
+        return await self._error_response(
+            request, _error_status(error), api_error_message(message_id, error), headers
+        )
+
+    async def _invalid_arguments_response(
+        self, request: web.Request, command_msg: CommandMessage, error: Exception
+    ) -> web.Response:
+        """
+        Answer an API command whose arguments could not be parsed.
+
+        :param request: The request of the command.
+        :param command_msg: The command.
+        :param error: The error the argument parser raised.
+        """
+        # like the websocket, answer with the parser's own text and no translation
+        self.logger.warning("%s: %s", command_msg.command, error)
+        # str() of a KeyError quotes its message
+        details = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
+        return await self._error_response(
+            request,
+            400,
+            ErrorResultMessage(command_msg.message_id, InvalidDataError.error_code, details),
+        )
+
+    async def _error_response(
+        self,
+        request: web.Request,
+        status: int,
+        error: ErrorResultMessage,
+        headers: dict[str, str] | None = None,
+    ) -> web.Response:
+        """
+        Answer an API command with an error, localized like the websocket API does.
+
+        :param request: The request of the command.
+        :param status: The HTTP status of the response.
+        :param error: The error to send in the body.
+        :param headers: Extra headers of the response.
+        """
+        locale = _locale_from_request(request)
+        await self.mass.translations.ensure_locale_loaded(locale)
+        return self._localized_json_response(error, locale, status, headers)
+
+    def _localized_json_response(
+        self,
+        result: Any,
+        locale: str | None,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> web.Response:
         """
         Serialize a command result to a JSON response with the per-request resolvers bound.
 
@@ -965,7 +1088,7 @@ class WebserverController(CoreController):
             partial(self.mass.translations.get_translation, locale=locale)
         )
         try:
-            return web.json_response(result, dumps=json_dumps)
+            return web.json_response(result, status=status, headers=headers, dumps=json_dumps)
         finally:
             IMAGE_PROXY_ID_RESOLVER.reset(token)
             TRANSLATION_RESOLVER.reset(token_loc)
@@ -1261,6 +1384,21 @@ class WebserverController(CoreController):
             state = request.query.get("state")
             provider_id = request.query.get("provider_id")
 
+            if error := request.query.get("error"):
+                if state:
+                    self.auth.pending_logins.pop(state)
+                self.logger.warning("Sign-in not completed, provider returned: %r", error[:100])
+                error_html = """
+                <html>
+                <body>
+                    <h1>Authentication Failed</h1>
+                    <p>The sign-in was cancelled or refused</p>
+                    <a href="/login">Back to Login</a>
+                </body>
+                </html>
+                """
+                return web.Response(text=error_html, content_type="text/html", status=400)
+
             if not code or not state or not provider_id:
                 return web.Response(status=400, text="code, state, and provider_id required")
 
@@ -1343,6 +1481,9 @@ class WebserverController(CoreController):
             # this should not happen, but guard anyways
             return await self._render_error_page("Setup has already been completed.")
 
+        if not self._setup_window_open():
+            return await self._render_error_page(SETUP_TIMED_OUT_MESSAGE)
+
         # the frontend recognizes the setup page by its path and opens the setup
         # wizard on the account step, so serve the app itself here
         return await self._server.serve_static(self._index_path, request)
@@ -1354,6 +1495,11 @@ class WebserverController(CoreController):
             # instead of another attempt
             return web.json_response(
                 {"success": False, "error": "Setup already completed"}, status=409
+            )
+
+        if not self._setup_window_open():
+            return web.json_response(
+                {"success": False, "error": SETUP_TIMED_OUT_MESSAGE}, status=403
             )
 
         if not request.can_read_body:
@@ -1472,6 +1618,10 @@ class WebserverController(CoreController):
                 username, password, role=UserRole.ADMIN, display_name=display_name
             )
 
+    def _setup_window_open(self) -> bool:
+        """Return whether the first-time setup still accepts the first admin."""
+        return time.monotonic() < self._setup_deadline
+
     def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
         """Return the provider and item a preview token grants, or None when it is not valid."""
         if not token or not (entry := self._preview_tokens.get(token)):
@@ -1501,6 +1651,34 @@ class WebserverController(CoreController):
                 user.username if user else "unknown",
             )
             client.cancel()
+
+
+def _error_status(error: MusicAssistantError) -> int:
+    """
+    Return the HTTP status that answers a command that raised the given error.
+
+    :param error: The error the command raised.
+    """
+    # music_provider imports this module through the tasks controller
+    from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
+
+    if isinstance(error, InsufficientPermissions):
+        return 403
+    if isinstance(error, (MediaNotFoundError, PlayerUnavailableError)):
+        return 404
+    # another stream or consumer holds what the command needs
+    if isinstance(error, (ResourceBusyError, ProviderStreamLimitError)):
+        return 409
+    if isinstance(error, RateLimited):
+        return 429
+    # a failure upstream or in our own audio processing, not in the request
+    if isinstance(error, (RetriesExhausted, AudioError)):
+        return 502
+    if isinstance(error, (ResourceTemporarilyUnavailable, ProviderUnavailableError)):
+        return 503
+    # the caller's own sign-in was checked before the command ran, so an authentication
+    # error raised by a command concerns another account (a provider's) and is no 401
+    return 400
 
 
 def _serialize_script_value(value: str) -> str:

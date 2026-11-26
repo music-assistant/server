@@ -14,18 +14,27 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, NoReturn
 
-from deezer_python_gql import DeezerGQLClient, GraphQLClientAuthError, GraphQLClientError
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
+from deezer_python_gql import GraphQLClientAuthError, GraphQLClientError
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ArtistType, ConfigEntryType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
-from .constants import CONF_SYNC_QUEUE, DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
+from .constants import (
+    API_RATE_LIMIT,
+    API_RATE_PERIOD,
+    CONF_QUALITY,
+    CONF_SYNC_QUEUE,
+    DECRYPT_KEY_ERROR,
+    DECRYPT_KEY_LENGTH,
+)
+from .gql_client import ThrottledGQLClient
 from .gw_client import (
     DeezerGWAuthError,
     DeezerGWError,
@@ -88,6 +97,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
     ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+    ProviderFeature.AUTHOR_AUDIOBOOKS,
 }
 
 CONF_ARL_TOKEN = "arl_token"  # noqa: S105 - config key
@@ -101,7 +111,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     Delegates to specialized manager classes for clean separation of concerns.
     """
 
-    gql_client: DeezerGQLClient
+    gql_client: ThrottledGQLClient
     gw_client: GWClient
     rest_client: DeezerRESTClient
     media_manager: DeezerMediaManager
@@ -111,8 +121,13 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
 
     @property
     def stream_format_supersedes_catalog(self) -> bool:
-        """Return True: Deezer serves CD and hi-res FLAC under one format name."""
+        """Return True: Deezer's format names do not give the full format."""
         return True
+
+    @property
+    def supported_artist_types(self) -> set[ArtistType]:
+        """Return the artist types: audiobook authors are artists of their own."""
+        return {ArtistType.SINGER, ArtistType.AUTHOR}
 
     @property
     def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
@@ -124,6 +139,16 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         """Return Config entries to configure this provider."""
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value="FLAC_24",
+                options=[
+                    ConfigValueOption("FLAC_24"),
+                    ConfigValueOption("FLAC"),
+                    ConfigValueOption("MP3_320"),
+                ],
+            ),
             ConfigEntry(
                 key=CONF_SYNC_QUEUE,
                 type=ConfigEntryType.BOOLEAN,
@@ -137,10 +162,15 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         arl_token = str(self.get_setup_value(CONF_ARL_TOKEN))
         # a Family profile has no ARL of its own, it is reached through the admin's ARL
         family_profile = str(self.get_setup_value(CONF_FAMILY_PROFILE) or "")
+        quality = str(self.config.get_value(CONF_QUALITY))
+        throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
 
         try:
-            self.gql_client = DeezerGQLClient(
-                arl=arl_token, session=self.mass.http_session, account_id=family_profile
+            self.gql_client = ThrottledGQLClient(
+                arl=arl_token,
+                session=self.mass.http_session,
+                throttler=throttler,
+                account_id=family_profile,
             )
             logging.getLogger("deezer_python_gql").setLevel(self.logger.level + 10)
             me = await self.gql_client.get_me()
@@ -148,7 +178,13 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
                 msg = "Authentication returned no user data"
                 raise GraphQLClientError(msg)  # noqa: TRY301 - converted to LoginFailed below
             self.user_id = me.id
-            self.gw_client = GWClient(self.mass.http_session, arl_token, family_profile)
+            self.gw_client = GWClient(
+                self.mass.http_session,
+                arl_token,
+                family_profile,
+                max_format=quality,
+                throttler=throttler,
+            )
             await self.gw_client.setup()
         except DeezerGWNoSubscriptionError as err:
             self.logger.error("Deezer account has no streamable subscription: %s", err)
@@ -306,6 +342,10 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         """Get top tracks of an artist."""
         return await self.media_manager.get_artist_toptracks(prov_artist_id)
 
+    async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """Get audiobooks by an author."""
+        return await self.media_manager.get_author_audiobooks(prov_artist_id)
+
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes for a given podcast."""
         async for ep in self.media_manager.get_podcast_episodes(prov_podcast_id):
@@ -346,6 +386,10 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         await self.media_manager.remove_playlist_tracks(prov_playlist_id, positions_to_remove)
+
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """Drop what is kept of a playlist's tracks, so the next read fetches them anew."""
+        await self.browse_manager.forget_playlist_tracks(prov_playlist_id)
 
     async def move_playlist_track(
         self, prov_playlist_id: str, from_position: int, to_position: int

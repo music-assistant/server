@@ -43,6 +43,7 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
     PLAYBACK_REPLACEMENT_RESERVE,
     RELEASE_YEAR_LOOKUP_BUDGET_SECONDS,
     QuizType,
+    get_track_artist_answers,
     get_track_release_year,
 )
 from music_assistant.providers.music_quiz.suggestions import (
@@ -231,7 +232,7 @@ class MusicTimelineQuizType(QuizType):
         async def _resolve_track(track: Track) -> Track | None:
             try:
                 enriched = await self.mass.music.tracks.get(track.item_id, track.provider)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 LOGGER.debug("Could not enrich Music Quiz track %s: %s", track.uri, err)
                 # a failed lookup is no reason to drop a track that already carries a year
                 return track if self._track_is_eligible(track) else None
@@ -343,7 +344,7 @@ class MusicTimelineQuizType(QuizType):
         entry = await self._create_entry(track, existing_ids=existing_ids)
         return TimelineCandidate(
             entry=entry,
-            artist_answers=self._artist_answers(track),
+            artist_answers=get_track_artist_answers(track),
             title_answers=[track.name],
         )
 
@@ -455,7 +456,7 @@ class MusicTimelineQuizType(QuizType):
                 provider_instance_id_or_domain=primary_artist.provider,
                 limit=BONUS_CANDIDATE_LIMIT,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, candidates are optional
             LOGGER.debug("Could not fetch artists similar to %s: %s", primary_artist.name, err)
         else:
             candidates.extend(self._artist_candidates(similar_artists))
@@ -467,7 +468,7 @@ class MusicTimelineQuizType(QuizType):
                 provider_instance_id_or_domain=track.provider,
                 limit=BONUS_CANDIDATE_LIMIT,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, candidates are optional
             LOGGER.debug("Could not fetch tracks similar to %s: %s", track.uri, err)
         else:
             for similar_track in similar_tracks:
@@ -532,7 +533,7 @@ class MusicTimelineQuizType(QuizType):
                 provider_instance_id_or_domain=artist.provider,
                 limit=None,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, candidates are optional
             LOGGER.debug("Could not fetch top tracks for %s: %s", artist.name, err)
             return []
         candidates = self._title_candidates_for_artist(top_tracks, artist)
@@ -554,7 +555,7 @@ class MusicTimelineQuizType(QuizType):
                 limit=BONUS_CANDIDATE_LIMIT,
                 library_only=False,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, candidates are optional
             LOGGER.debug("Could not search for tracks by %s: %s", artist.name, err)
             return []
         candidates = self._title_candidates_for_artist(search_results.tracks, artist)
@@ -631,7 +632,9 @@ class MusicTimelineQuizType(QuizType):
     ) -> str:
         """Build a strict grounded prompt for one multiple-choice bonus."""
         correct_answers = (
-            self._artist_answers(track) if bonus_type == TimelineBonusType.ARTIST else [track.name]
+            get_track_artist_answers(track)
+            if bonus_type == TimelineBonusType.ARTIST
+            else [track.name]
         )
         grounded_data = json_dumps(
             {
@@ -725,7 +728,9 @@ class MusicTimelineQuizType(QuizType):
     ) -> list[SuggestionCandidate]:
         """Return unique candidates distinct from every accepted correct answer."""
         correct_answers = (
-            self._artist_answers(track) if bonus_type == TimelineBonusType.ARTIST else [track.name]
+            get_track_artist_answers(track)
+            if bonus_type == TimelineBonusType.ARTIST
+            else [track.name]
         )
         seen_labels = {normalize_answer_label(answer) for answer in correct_answers}
         seen_uris = {track.uri} if track.uri else set()
@@ -870,21 +875,6 @@ class MusicTimelineQuizType(QuizType):
         return secrets.choice(
             self._recency_candidates(available_tracks, prefer_recent=prefer_recent)
         )
-
-    @staticmethod
-    def _artist_answers(track: Track) -> list[str]:
-        """Return deterministic accepted artist names available on the track."""
-        answers: list[str] = []
-        seen_answers: set[str] = set()
-        for answer in (
-            track.artist_str,
-            *(artist.name for artist in track.artists),
-            *(artist.sort_name for artist in track.artists),
-        ):
-            if answer and (normalized_answer := answer.casefold()) not in seen_answers:
-                answers.append(answer)
-                seen_answers.add(normalized_answer)
-        return answers
 
     @staticmethod
     def _bonus_candidate(track: Track, bonus_type: TimelineBonusType) -> SuggestionCandidate:

@@ -142,7 +142,9 @@ async def test_two_sources_at_once_are_refused() -> None:
     """A player plays one source at a time, so two in a request is not a choice to make."""
     ctrl = _controller()
 
-    with pytest.raises(InvalidCommand, match="plays on its own"):
+    with pytest.raises(InvalidCommand, match="plays on its own") as error:
         await ctrl.play_media(QUEUE_ID, [_audio_source(), _audio_source()], QueueOption.PLAY)
 
+    assert error.value.translation_key == "live_input_plays_alone"
+    assert error.value.translation_owner == "core.player_queues"
     ctrl.mass.players.select_source.assert_not_awaited()

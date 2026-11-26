@@ -6,7 +6,7 @@
   "type": "music",
   "requirements": [],
   "codeowners": ["@OzGav"],
-  "tier": "community",
+  "provides": ["artist", "album", "track", "playlist"],
   "multi_instance": false,
   "stage": "stable"
 }

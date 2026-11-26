@@ -16,20 +16,47 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
 
+def _queue_data(
+    queue_id: str, state: PlaybackState = PlaybackState.PLAYING, session_id: str | None = "ours"
+) -> PlayerQueueData:
+    """Build the data of a queue in the given state, playing a stream session of ours by default."""
+    queue = cast("PlayerQueue", MagicMock(queue_id=queue_id, state=state))
+    return PlayerQueueData(queue=queue, session_id=session_id)
+
+
 def _controller() -> tuple[PlayerQueuesController, AsyncMock]:
-    """Build a bare controller holding two playing queues, and its cache save mock."""
+    """Build a bare controller holding two queues we play, and its cache save mock."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.mass = MagicMock()
     ctrl.logger = MagicMock()
     ctrl._queue_data = {
-        queue_id: PlayerQueueData(
-            queue=cast("PlayerQueue", MagicMock(queue_id=queue_id, state=PlaybackState.PLAYING))
-        )
-        for queue_id in ("unreachable", "reachable")
+        queue_id: _queue_data(queue_id) for queue_id in ("unreachable", "reachable")
     }
     save = AsyncMock()
     ctrl._save_queue_to_cache = save  # type: ignore[method-assign]
     return ctrl, save
+
+
+async def test_close_stops_only_the_playback_we_started() -> None:
+    """A queue that reads as playing without a stream session of ours is left alone."""
+    ctrl, save = _controller()
+    ctrl._queue_data = {
+        queue_id: _queue_data(queue_id, state, session_id)
+        for queue_id, state, session_id in (
+            ("playing", PlaybackState.PLAYING, "ours"),
+            ("paused", PlaybackState.PAUSED, "ours"),
+            ("idle", PlaybackState.IDLE, "ours"),
+            # its player plays what another server started
+            ("not_ours", PlaybackState.PLAYING, None),
+        )
+    }
+    stop = AsyncMock()
+    ctrl.stop = stop  # type: ignore[method-assign]
+
+    await ctrl.close()
+
+    assert [call.args[0] for call in stop.await_args_list] == ["playing", "paused"]
+    assert save.await_count == 4
 
 
 async def test_close_continues_after_a_queue_fails_to_stop() -> None:

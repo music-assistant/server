@@ -76,7 +76,7 @@ def _controller(
     queue.elapsed_time_last_updated = time.time()
     queue_data = PlayerQueueData(queue=queue)
     queue_data.items = [_book_item("item_1"), _book_item("item_2", chapters=None)]
-    queue_data.served_item_ids = {"item_1", "item_2"}
+    queue_data.served_item_ids = {"item_1": None, "item_2": None}
     queue.current_item = queue_data.items[0]
     ctrl._queue_data = {"q1": queue_data}
     return ctrl, queue, mass
@@ -110,16 +110,15 @@ def _player(state: PlaybackState, queue_item_id: str, elapsed: float) -> Any:
     return SimpleNamespace(
         player_id="q1",
         type=PlayerType.PLAYER,
-        active_output_protocol=None,
-        current_media=SimpleNamespace(source_id="q1", queue_item_id=queue_item_id, uri=None),
-        state=SimpleNamespace(
-            name="Q1",
-            available=True,
-            playback_state=state,
-            active_source="q1",
-            corrected_elapsed_time=elapsed,
-            group_members=[],
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(source_id="q1", queue_item_id=queue_item_id, uri=None)
         ),
+        name="Q1",
+        available=True,
+        playback_state=state,
+        active_source="q1",
+        corrected_elapsed_time=elapsed,
+        group_members=[],
     )
 
 
@@ -460,6 +459,28 @@ async def test_an_announcement_keeps_the_sleep_timer() -> None:
     assert ctrl._queue_data["q1"].sleep_timer_target == SleepTimerTarget(
         SleepTimerMode.END_OF_CHAPTER, "item_1", 100
     )
+
+
+async def test_a_pause_made_with_a_stop_keeps_the_sleep_timer() -> None:
+    """A player that cannot pause stops instead, the timer still waits for its target."""
+    ctrl, queue, mass = _controller()
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
+    mass.players.get_group_and_player_lock = Mock(return_value=nullcontext())
+    mass.players._handle_cmd_stop = AsyncMock()
+    # set by the pause command before the player turns it into a stop
+    ctrl._queue_data["q1"].halted_by_command = True
+
+    await ctrl._handle_stop("q1", keep_sleep_timer=True)
+    queue.state = PlaybackState.IDLE
+    ctrl._handle_sleep_timer(queue, *_states(PlaybackState.IDLE, "item_1", prev_elapsed=50))
+
+    _scheduled(mass)
+    assert ctrl._queue_data["q1"].sleep_timer_target == SleepTimerTarget(
+        SleepTimerMode.END_OF_CHAPTER, "item_1", 100
+    )
+    mass.players.reset_sleep_timer.assert_not_called()
+    # the countdown of the playing queue gives way to the end it waits for
+    mass.players.update_sleep_timer.assert_called_with("q1", SleepTimerMode.END_OF_CHAPTER, None)
 
 
 @pytest.mark.parametrize(

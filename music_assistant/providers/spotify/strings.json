@@ -36,7 +36,7 @@
       }
     },
     "soloist_download_consent": {
-      "label": "I understand the above, and I allow Music Assistant to download, run, keep and automatically update Spotify Soloist from Spotify's servers"
+      "label": "Allow Music Assistant to download Spotify Soloist from Spotify, keep it on this server and update it automatically"
     },
     "soloist_api_key": {
       "label": "Soloist API key"
@@ -97,7 +97,7 @@
     },
     "developer_optin": {
       "title": "You're all set",
-      "description": "Spotify has been added to Music Assistant. Press Finish to start.\n\nOptionally, you can connect your own Spotify developer key. It makes browsing and searching faster, but it takes a few extra steps to set up. Most people can skip this, and you can always add it later."
+      "description": "Spotify has been added to Music Assistant. Press Finish to start.\n\nOptionally, you can connect your own Spotify developer key. Your requests then count against your own Spotify app instead of the one all Music Assistant users share. Such an app needs Spotify Premium and allows 5 users, and Spotify can hold it back for hours when its quota is used up; Music Assistant then uses the shared app for browsing and playback. It takes a few extra steps to set up. Most people can skip this, and you can always add it later."
     },
     "playback_backend": {
       "title": "Choose how Spotify audio is played",
@@ -105,7 +105,7 @@
     },
     "soloist_terms": {
       "title": "About Spotify Soloist",
-      "description": "Spotify Soloist is Spotify's official playback engine for devices without a screen. Music Assistant may not distribute it as part of its own installation — so if you continue, it is downloaded from Spotify's servers on your behalf and run for you.\n\nPlease read this before you continue:\n\n- You need a Spotify **Premium** account to create the required API key. This is a short manual step on the Spotify developer website, explained on the next screen.\n- Music Assistant will download the Soloist app from Spotify's servers, run it, keep it on disk, and automatically replace it whenever Spotify publishes an update.\n\nMore information: [Soloist documentation](https://developer.spotify.com/documentation/soloist) · [API key page](https://developer.spotify.com/dashboard/soloist) · [Spotify developer policy](https://developer.spotify.com/policy)"
+      "description": "Spotify Soloist is Spotify's official playback engine for devices without a screen. Spotify does not allow Music Assistant to include it, so your permission is needed below.\n\n[Soloist documentation](https://developer.spotify.com/documentation/soloist) · [Spotify's terms of use](https://www.spotify.com/legal/end-user-agreement/)"
     },
     "soloist_api_key": {
       "title": "Create your Soloist API key",
@@ -127,6 +127,14 @@
       },
       "genres_and_moods": {
         "name": "Genres & Moods"
+      },
+      "recently_played": {
+        "name": "Recently Played"
+      }
+    },
+    "recommendations": {
+      "recently_played": {
+        "name": "Recently played on Spotify"
       }
     },
     "playlist": {

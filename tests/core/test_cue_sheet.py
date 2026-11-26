@@ -111,6 +111,22 @@ FILE music.flac WAVE
     assert result.file_path == "music.flac"
 
 
+def test_parse_multiple_file_entries() -> None:
+    """Every FILE entry is recorded and file_path keeps the first one."""
+    cue = """\
+FILE "01 First.wav" WAVE
+  TRACK 01 AUDIO
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 00 03:10:00
+FILE "02 Second.wav" WAVE
+    INDEX 01 00:00:00
+"""
+    result = parse_cue_sheet(cue)
+    assert result.file_paths == ["01 First.wav", "02 Second.wav"]
+    assert result.file_path == "01 First.wav"
+
+
 def test_parse_no_performer() -> None:
     """Test parsing CUE sheet without PERFORMER tags."""
     cue = """\

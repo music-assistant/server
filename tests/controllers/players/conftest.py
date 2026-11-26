@@ -8,6 +8,9 @@ import pytest
 
 from tests.common import MockProvider
 
+# the real server with fake providers, for the tests of what attach and detach do
+from tests.scenarios.conftest import scenario  # noqa: F401
+
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
 

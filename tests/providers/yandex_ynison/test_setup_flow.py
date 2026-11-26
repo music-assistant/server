@@ -31,8 +31,9 @@ def _player(player_id: str = "living-room", name: str = "Living room") -> MagicM
     """Return a real-player-shaped setup option."""
     player = MagicMock()
     player.player_id = player_id
-    player.display_name = name
+    player.name = name
     player.type = PlayerType.PLAYER
+    player.session_only = False
     return player
 
 
@@ -90,7 +91,11 @@ class _SetupSession(SetupSession):
         self.shown_errors.append(errors)
         return self._submitted
 
-    async def finish(self, values: dict[str, ConfigValueType]) -> dict[str, str]:
+    async def finish(
+        self,
+        values: dict[str, ConfigValueType],
+        options: dict[str, ConfigValueType] | None = None,
+    ) -> dict[str, str]:
         """Capture setup data as Music Assistant would persist it."""
         self.finished_values = values
         return {"instance_id": "ynison-test"}
@@ -240,11 +245,15 @@ async def test_finish_retry_preserves_translated_error_metadata() -> None:
     class RetrySession(_SetupSession):
         attempts = 0
 
-        async def finish(self, values: dict[str, ConfigValueType]) -> dict[str, str]:
+        async def finish(
+            self,
+            values: dict[str, ConfigValueType],
+            options: dict[str, ConfigValueType] | None = None,
+        ) -> dict[str, str]:
             self.attempts += 1
             if self.attempts == 1:
                 raise error
-            return await super().finish(values)
+            return await super().finish(values, options)
 
     session = RetrySession(
         {"ym-main": {"domain": "yandex_music", "name": "Primary"}},
@@ -308,11 +317,15 @@ async def test_finish_error_reopens_form_with_preserved_values() -> None:
     class RetrySession(_SetupSession):
         attempts = 0
 
-        async def finish(self, values: dict[str, ConfigValueType]) -> dict[str, str]:
+        async def finish(
+            self,
+            values: dict[str, ConfigValueType],
+            options: dict[str, ConfigValueType] | None = None,
+        ) -> dict[str, str]:
             self.attempts += 1
             if self.attempts == 1:
                 raise SetupFlowError("provider rejected setup", translation_key="invalid_auth")
-            return await super().finish(values)
+            return await super().finish(values, options)
 
     session = RetrySession(
         {"ym-main": {"domain": "yandex_music", "name": "Primary"}},

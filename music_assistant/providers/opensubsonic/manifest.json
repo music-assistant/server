@@ -3,11 +3,11 @@
   "domain": "opensubsonic",
   "stage": "stable",
   "name": "OpenSubsonic Media Server Library",
-  "description": "Stream music from your OpenSubsonic compatible server — your own cloud jukebox.",
+  "description": "Stream music from your OpenSubsonic compatible server, such as Navidrome or Gonic.",
   "codeowners": ["@khers"],
-  "tier": "community",
+  "provides": ["artist", "album", "track", "playlist", "radio", "podcast"],
   "credits": ["[py-opensonic](https://github.com/khers/py-opensonic)"],
-  "requirements": ["py-opensonic==10.4.1"],
+  "requirements": ["py-opensonic==11.0.0"],
   "documentation": "https://music-assistant.io/music-providers/subsonic/",
   "multi_instance": true
 }

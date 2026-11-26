@@ -11,13 +11,25 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiohttp import ClientConnectorCertificateError, ClientConnectorSSLError
-from libopensonic.errors import DataNotFoundError
+from libopensonic.errors import DataNotFoundError, SonicError
 from libopensonic.media import PodcastChannel
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, MusicAssistantError
 
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import CONF_BASE_URL, OpenSonicProvider
+
+
+async def test_resolve_image_translates_subsonic_error(provider: OpenSonicProvider) -> None:
+    """Artwork callers can handle a server error without depending on libopensonic."""
+    provider.conn = Mock()
+    error = SonicError("cover endpoint failed")
+    provider.conn.get_cover_art = AsyncMock(side_effect=error)
+
+    with pytest.raises(MusicAssistantError, match="could not retrieve cover art") as exc:
+        await provider.resolve_image("cover-id")
+
+    assert exc.value.__cause__ is error
 
 
 def _make_task_capturer() -> tuple[list[asyncio.Future[Any]], Mock]:
@@ -647,3 +659,14 @@ async def test_port_defaults_to_the_url_scheme(
         await provider.handle_async_init()
 
     assert connection.call_args.kwargs["port"] == expected_port
+
+
+@pytest.mark.parametrize("path", ["al-0a1b2c_5f3e", "mf-abc123", "12345", "a/b", ".hidden"])
+def test_accepts_stored_image_path_cover_ids(provider: OpenSonicProvider, path: str) -> None:
+    """Any cover art id is accepted as a stored image path, whatever its shape."""
+    assert provider.accepts_stored_image_path(path)
+
+
+def test_accepts_stored_image_path_refuses_empty(provider: OpenSonicProvider) -> None:
+    """An empty stored image path is not a cover art id."""
+    assert not provider.accepts_stored_image_path("")

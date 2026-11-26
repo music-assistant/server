@@ -6,12 +6,15 @@ from enum import StrEnum
 
 from music_assistant_models.enums import AlbumType, MediaType
 
-from music_assistant.controllers.streams.constants import BUFFER_INACTIVITY_TIMEOUT
+from music_assistant.controllers.streams.constants import (
+    BUFFER_INACTIVITY_TIMEOUT,
+    FLOW_STREAM_MAX_LEAD_OUT_SECONDS,
+)
 
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
-ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
+ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "prefer_library"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
 
 CONF_DEFAULT_ENQUEUE_ORDER_ARTIST = "default_enqueue_order_artist"
@@ -32,9 +35,8 @@ class ArtistOrder(StrEnum):
 
 ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE = ArtistOrder.SHUFFLED_TRACKS.value
 # the album types an album order leaves out, as their songs are mostly on the artist's albums.
-# A local collection may hold only an artist's compilation, so a library one still plays
+# A local collection may hold only an artist's compilation, so a compilation still plays
 LIBRARY_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE})
-PROVIDER_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE, AlbumType.COMPILATION})
 
 CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
 CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
@@ -153,6 +155,9 @@ CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
 # The play action - and with it the UI's in-progress indication - is held until the player
 # reports PLAYING, capped by this timeout so a player that never reports state can't block.
 PLAYBACK_START_TIMEOUT = 5.0
+# Seconds a play request may spend resolving what to play (e.g. a big artist or playlist fetched
+# through a throttled provider) while it holds the playback lock; it fails when that runs out.
+PLAY_REQUEST_RESOLVE_TIMEOUT = 60
 
 # The queue's cached state/items are written through a debounced timer, so a burst of updates (or
 # the per-track updates during playback) collapses into a single write instead of hitting the cache
@@ -181,3 +186,25 @@ SKIP_END_MARGIN = 1
 # are rounded and position reports lag, so an item that changed within this many seconds of the
 # point a sleep timer stops at ended there. One that changed earlier was skipped on the device.
 SLEEP_TIMER_NATURAL_END_MARGIN = 5
+
+# An item no command cut off counts as played to its end once its last reported position is
+# this close to its duration: the last report lags the end and is truncated to whole seconds.
+PLAYED_TO_END_MARGIN = 2
+
+# A player counts as having played a fully streamed flow stream session once its position is
+# this close to the end of it: position reports are not exact down to the last audio frame.
+FLOW_PLAYED_OUT_MARGIN = 0.5
+
+# Longest wait, in seconds, for a player to go idle once its flow stream ran out of items. It
+# keeps playing the audio it buffered, which a held-open stream lets it do for up to the maximum
+# lead-out; the extra minute covers its idle report after the connection closes.
+FLOW_PLAYOUT_IDLE_TIMEOUT = FLOW_STREAM_MAX_LEAD_OUT_SECONDS + 60
+
+# A queue restarts a flow stream its player lost at most this many times within the window (in
+# seconds), so a player that keeps losing its stream does not restart playback over and over.
+LOST_FLOW_RESTART_LIMIT = 3
+LOST_FLOW_RESTART_WINDOW = 600
+
+# A queue stops once this many of its items in a row got no audio from their source, so it does
+# not run on through its items while a music service or the network is down.
+SOURCE_FAILURE_LIMIT = 3

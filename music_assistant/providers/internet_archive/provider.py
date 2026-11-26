@@ -26,7 +26,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT, MusicProvider
 
 from .helpers import InternetArchiveClient, clean_text, extract_year, parse_duration
 from .parsers import (
@@ -262,7 +262,7 @@ class InternetArchiveProvider(MusicProvider):
                 ):
                     break
 
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failing strategy must not stop the others
                 self.logger.warning("Search strategy %d failed: %s", strategy_idx + 1, err)
                 continue
 
@@ -554,9 +554,9 @@ class InternetArchiveProvider(MusicProvider):
             if len(chapters) > 1:
                 audiobook.metadata.chapters = chapters
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - duration and chapters are optional
             self.logger.warning(
-                f"Could not process audio files for audiobook {prov_audiobook_id}: {err}"
+                "Could not process audio files for audiobook %s: %s", prov_audiobook_id, err
             )
             audiobook.duration = 0
             audiobook.metadata.chapters = []
@@ -672,7 +672,7 @@ class InternetArchiveProvider(MusicProvider):
         page = 0
         page_size = 200  # IA's maximum
 
-        while len(albums) < 1000:  # Reasonable upper limit
+        while len(albums) < ARTIST_ALBUMS_LIMIT:
             search_response = await self._search(
                 query=f'creator:"{prov_artist_id}" AND (format:"VBR MP3" OR format:"FLAC" \
         OR format:"Ogg Vorbis")',
@@ -711,7 +711,7 @@ class InternetArchiveProvider(MusicProvider):
                     )
                     continue
             page += 1
-        return albums
+        return albums[:ARTIST_ALBUMS_LIMIT]
 
     @use_cache(expiration=86400 * 7, allow_expired_cache=True)  # Cache for 1 week
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -849,8 +849,8 @@ class InternetArchiveProvider(MusicProvider):
                         async for chunk in response.content.iter_chunked(8192):
                             chapters_yielded = True
                             yield chunk
-                except Exception as e:
-                    self.logger.error(f"Chapter {i + 1} streaming failed: {e}")
+                except Exception as e:  # noqa: BLE001 - a failing chapter must not stop the rest
+                    self.logger.error("Chapter %s streaming failed: %s", i + 1, e)
                     continue
 
             # If no chapters succeeded, raise an error instead of silent failure
@@ -910,8 +910,10 @@ class InternetArchiveProvider(MusicProvider):
         try:
             audio_files = await self._get_audio_files(prov_podcast_id)
             podcast.total_episodes = len(audio_files)
-        except Exception as err:
-            self.logger.warning(f"Could not get episode count for podcast {prov_podcast_id}: {err}")
+        except Exception as err:  # noqa: BLE001 - the episode count is optional
+            self.logger.warning(
+                "Could not get episode count for podcast %s: %s", prov_podcast_id, err
+            )
             podcast.total_episodes = None
 
         return podcast

@@ -58,18 +58,35 @@ class _Harness:
         multi_device_dsp: bool = False,
         dsp: bool = False,
         player_type: PlayerType = PlayerType.PLAYER,
+        resolved: bool = True,
     ) -> None:
-        """Register a player, optionally with DSP enabled in its config."""
-        self.players[player_id] = SimpleNamespace(
-            player_id=player_id,
-            protocol_parent_id=None,
+        """
+        Register a player and the protocol that renders it, optionally with DSP enabled.
+
+        :param resolved: Whether the player has selected the protocol that renders it yet.
+        """
+        features = {PlayerFeature.MULTI_DEVICE_DSP} if multi_device_dsp else set()
+        protocol = SimpleNamespace(
+            protocol_id=f"proto_{player_id}",
             provider=SimpleNamespace(domain="test"),
-            state=SimpleNamespace(
-                group_members=list(group_members),
-                supported_features={PlayerFeature.MULTI_DEVICE_DSP} if multi_device_dsp else set(),
-                type=player_type,
+            supported_features=features,
+            # a group names its members by player id, any other protocol by protocol id
+            group_members=(
+                list(group_members)
+                if player_type == PlayerType.GROUP
+                else [f"proto_{member_id}" for member_id in group_members]
             ),
+            type=player_type,
         )
+        player = SimpleNamespace(
+            player_id=player_id,
+            group_members=list(group_members),
+            supported_features=features,
+            type=player_type,
+            resolve_output_protocol=lambda: protocol if resolved else None,
+        )
+        protocol.player = player
+        self.players[player_id] = player
         if dsp:
             self.dsp_player_ids.add(player_id)
 
@@ -221,6 +238,24 @@ async def test_fixed_gain_limiter(
             ],
             True,
             id="group player, member without dsp",
+        ),
+        pytest.param(
+            [
+                (QUEUE_ID, ("player_b", "player_c"), True, False, PlayerType.GROUP),
+                ("player_b", (), False, True),
+                ("player_c", (), False, False, PlayerType.PLAYER, False),
+            ],
+            True,
+            id="group player, member without dsp and output not selected yet",
+        ),
+        pytest.param(
+            [
+                (QUEUE_ID, ("player_b", "player_c"), True, False, PlayerType.GROUP),
+                ("player_b", (), False, True),
+                ("player_c", (), False, True, PlayerType.PLAYER, False),
+            ],
+            True,
+            id="group player, member with dsp and output not selected yet",
         ),
     ],
 )

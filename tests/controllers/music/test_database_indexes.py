@@ -6,8 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from music_assistant.constants import MEDIA_ITEM_DB_TABLES
-from music_assistant.controllers.metadata.controller import _duplicate_album_sibling_guard
+from music_assistant.constants import DB_TABLE_EXTERNAL_ID_LOOKUP, MEDIA_ITEM_DB_TABLES
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.migrations import migrate_database
 from music_assistant.helpers.database import DatabaseConnection
@@ -25,6 +24,17 @@ async def controller(tmp_path: Path) -> AsyncGenerator[MusicController]:
         yield controller
     finally:
         await database.close()
+
+
+async def test_item_id_index_of_the_id_lookup_exists_with_its_table(
+    controller: MusicController,
+) -> None:
+    """The index that library queries name exists before an upgrade step can read the library."""
+    indexes = await controller.database.get_rows_from_query(
+        f"PRAGMA index_list({DB_TABLE_EXTERNAL_ID_LOOKUP})", limit=0
+    )
+
+    assert f"{DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx" in {index["name"] for index in indexes}
 
 
 @pytest.mark.parametrize("legacy_column", [None, "name COLLATE NOCASE", "search_name"])
@@ -61,39 +71,3 @@ async def test_migration_replaces_legacy_name_index(
                 )
                 indexed_columns.append([column["name"] for column in columns])
             assert indexed_columns.count(["search_name"]) == 1
-
-
-async def test_reconciliation_after_upgrade_avoids_quadratic_album_scan(
-    controller: MusicController,
-) -> None:
-    """Bound SQLite work for duplicate detection in an upgraded library of distinct albums."""
-    database = controller.database
-    await database.execute("CREATE INDEX albums_name_nocase_idx ON albums(name COLLATE NOCASE)")
-    await database._db.executemany(
-        "INSERT INTO albums(name,sort_name,album_type,metadata,search_name,search_sort_name) "
-        "VALUES (?,?,'album','{}',?,?)",
-        [
-            (f"Album {index}", f"album{index}", f"album{index}", f"album{index}")
-            for index in range(2000)
-        ],
-    )
-    await controller._MusicDatabaseSetupMixin__create_database_indexes()  # type: ignore[attr-defined]
-
-    progress_calls = 0
-
-    def progress() -> int:
-        nonlocal progress_calls
-        progress_calls += 1
-        return int(progress_calls > 500)
-
-    # An instruction budget avoids timing assertions and interrupts the old quadratic plan.
-    await database._db.set_progress_handler(progress, 1000)
-    try:
-        rows = await database.get_rows_from_query(
-            f"SELECT albums.item_id FROM albums WHERE {_duplicate_album_sibling_guard()} "
-            "ORDER BY RANDOM()",
-            limit=25,
-        )
-    finally:
-        await database._db.set_progress_handler(progress, 0)
-    assert rows == []

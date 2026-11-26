@@ -132,9 +132,9 @@ async def test_the_sender_stopping_gives_the_source_back_to_its_owner() -> None:
     """
     The owner is released, not the player the audio was consumed over.
 
-    _active_player_id can be an ephemeral protocol player; the source session hangs
-    off the owner, so deselecting the bridge would leave that session alive and the
-    owner's own queue stuck inactive.
+    _active_player_id can be the player that consumed the audio (a group member); the
+    source session hangs off the owner, so deselecting that player would leave the
+    session alive and the owner's own queue stuck inactive.
     """
     receiver = _playback_receiver(active_player_id="spb_bridge_1", owner="owner-player")
 

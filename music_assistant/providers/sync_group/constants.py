@@ -28,6 +28,11 @@ PLAYBACK_START_TIMEOUT: Final[float] = 5.0
 # instead of restarting for every removal.
 REFORM_DEBOUNCE_SECONDS: Final[float] = 2.0
 
+# How long a member may keep reporting the leader it was released from, also when that
+# leader did not answer the release. A Sonos leader that gets a group command right after
+# its AirPlay output stopped answers none for some 40 seconds, and lets its members go then.
+STUCK_MEMBER_TIMEOUT: Final[float] = 30.0
+
 CONF_ENTRY_SGP_NOTE = ConfigEntry(
     key="sgp_note",
     type=ConfigEntryType.ALERT,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, TypeVar, overload
+from typing import TYPE_CHECKING, ClassVar, TypeVar, overload
 
 from music_assistant_models.config_entries import ConfigValueType
 from music_assistant_models.enums import ProviderStage, ProviderType
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry, CoreConfig
 
     from music_assistant.helpers.json import SerializableType
+    from music_assistant.helpers.plugin_engines import EngineSetting
     from music_assistant.mass import MusicAssistant
 
 # TypeVar for config value type inference
@@ -34,6 +35,8 @@ class CoreController:
     # up to date by the config controller, so internal code can read config values
     # (including entry defaults) without rebuilding the config entries
     config: CoreConfig
+    # the AI engine settings of this module, listed on the AI settings page
+    engine_settings: ClassVar[tuple[EngineSetting, ...]] = ()
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""

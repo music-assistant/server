@@ -30,7 +30,8 @@ async def test_play_media_on_the_attached_stream_detaches_until_the_new_run_star
     provider.get_snapcast_media_stream = AsyncMock(return_value=ma_stream)
     provider.ensure_player_owned_group = AsyncMock(return_value=group)
     player = SnapCastPlayer.__new__(SnapCastPlayer)
-    player._player_id = "player_1"
+    player._protocol_id = "player_1"
+    player._player = None
     player._provider = provider
     player._announcement_clip_playing = False
     player.snap_client = SimpleNamespace(group=group)

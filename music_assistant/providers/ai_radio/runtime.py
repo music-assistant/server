@@ -11,10 +11,10 @@ import time
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.enums import (
     ImageType,
     MediaType,
@@ -31,7 +31,11 @@ from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.datetime import now, utc
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.plugin_engines import resolve_ai_engine, resolve_tts_engine
+from music_assistant.helpers.plugin_engines import (
+    resolve_ai_engine_setting,
+    resolve_tts_engine,
+    resolve_tts_engine_setting,
+)
 from music_assistant.helpers.uri import create_uri
 
 from .constants import (
@@ -577,7 +581,8 @@ class AIRadioRuntimeMixin:
                 country=country,
                 timeout_seconds=timeout_seconds,
             )
-        except Exception as err:
+        except (MusicAssistantError, ClientError, TimeoutError, ValueError) as err:
+            # a failed request, a timeout or an unreadable answer: weather is optional
             self.logger.warning(
                 "Weather lookup failed for '%s, %s': %s",
                 city,
@@ -833,7 +838,7 @@ class AIRadioRuntimeMixin:
         try:
             # the host reads these out loud, where a decimal place only clutters the line
             numeric = round(float(value))
-        except Exception:
+        except TypeError, ValueError, OverflowError:
             return str(value)
         return str(numeric)
 
@@ -961,8 +966,9 @@ class AIRadioRuntimeMixin:
 
     async def _get_ai_engine(self) -> AIEngine:
         """Return the engine used for AI_QUERY tasks, honouring the configured selection."""
-        selected = cast("str | None", self.get_setup_value(CONF_AI_ENGINE))
-        if engine := await resolve_ai_engine(self.mass, selected):
+        if engine := await resolve_ai_engine_setting(
+            self.mass, self.get_setup_value(CONF_AI_ENGINE)
+        ):
             return engine
         raise MusicAssistantError(
             "No AI engine available. Set up a plugin that provides AI (for example Home "
@@ -978,8 +984,9 @@ class AIRadioRuntimeMixin:
                 "Host TTS engine %s is unavailable, falling back to the provider default",
                 engine_uid,
             )
-        selected = cast("str | None", self.get_setup_value(CONF_TTS_ENGINE))
-        if engine := await resolve_tts_engine(self.mass, selected):
+        if engine := await resolve_tts_engine_setting(
+            self.mass, self.get_setup_value(CONF_TTS_ENGINE)
+        ):
             return engine
         raise MusicAssistantError(
             "No text-to-speech engine available. Set up a plugin that provides text-to-speech "

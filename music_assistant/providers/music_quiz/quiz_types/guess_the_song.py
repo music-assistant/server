@@ -178,7 +178,7 @@ class GuessTheSongQuizType(QuizType):
                 track.item_id,
                 track.provider,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, enrichment is optional
             LOGGER.debug("Could not enrich Guess the Song track %s: %s", track.uri, err)
             return candidate
         artist_names = self._track_artist_names(full_track)
@@ -254,7 +254,7 @@ class GuessTheSongQuizType(QuizType):
                 limit=limit,
             )
             candidates.extend(_track_to_candidate(item) for item in similar)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, distractors are optional
             LOGGER.debug("Could not fetch similar tracks for %s: %s", track.uri, err)
         qualified = filter_suggestion_candidates(
             _track_to_candidate(track),
@@ -276,7 +276,7 @@ class GuessTheSongQuizType(QuizType):
                 provider_instance_id_or_domain=artist.provider,
                 limit=self.config.suggestion_count,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, distractors are optional
             LOGGER.debug("Could not fetch similar artists for %s: %s", artist.name, err)
             return candidates
         for similar_artist in similar_artists:
@@ -288,7 +288,7 @@ class GuessTheSongQuizType(QuizType):
                     provider_instance_id_or_domain=similar_artist.provider,
                     limit=None,
                 )
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one failing artist must not stop the rest
                 LOGGER.debug("Could not fetch top tracks for %s: %s", similar_artist.name, err)
                 continue
             if top_tracks:

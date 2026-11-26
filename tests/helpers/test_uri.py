@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
+from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.helpers.uri import (
     apple_storefront_from_url,
+    canonical_mapping_url,
     canonical_provider_url,
     discogs_id_from_url,
     parse_uri,
@@ -93,6 +95,18 @@ SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
             "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
             (MediaType.TRACK, "ytmusic", "dQw4w9WgXcQ"),
         ),
+        (
+            "https://music.youtube.com/browse/MPREb_example",
+            (MediaType.ALBUM, "ytmusic", "MPREb_example"),
+        ),
+        (
+            "https://music.youtube.com/playlist?list=OLAK5uy_abc",
+            (MediaType.ALBUM, "ytmusic", "OLAK5uy_abc"),
+        ),
+        (
+            "https://music.youtube.com/playlist?list=PLexample",
+            (MediaType.PLAYLIST, "ytmusic", "PLexample"),
+        ),
         # anything else is a plain stream URL for the builtin provider
         (
             "https://www.discogs.com/artist/3840",
@@ -121,7 +135,9 @@ async def test_parse_uri_share_urls(url: str, expected: tuple[MediaType, str, st
         "https://tidal.com/browse/track/",
         "https://www.qobuz.com/us-en/label/xl-recordings/1234",
         "https://www.qobuz.com/gb-en/interpreter/whitesnake/download-streaming-albums",
-        "https://music.youtube.com/playlist?list=OLAK5uy_abc",
+        "https://music.youtube.com/playlist?list=",
+        "https://music.youtube.com/browse/",
+        "https://music.youtube.com/browse/not-an-album",
         "https://music.apple.com/gb",
         "https://www.deezer.com/artist/not-a-number",
     ],
@@ -144,6 +160,9 @@ async def test_parse_uri_rejects_truncated_or_unsupported_share_urls(url: str) -
         ("https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432", "qobuz"),
         ("https://www.qobuz.com/gb-en/interpreter/whitesnake/download-streaming-albums", None),
         ("https://music.youtube.com/channel/UCr_iyUANcn9OX_yy9piYoLw", "ytmusic"),
+        ("https://music.youtube.com/browse/MPREb_example", "ytmusic"),
+        ("https://music.youtube.com/playlist?list=OLAK5uy_abc", "ytmusic"),
+        ("https://music.youtube.com/playlist?list=PLexample", "ytmusic"),
         ("https://www.discogs.com/release/1157205", None),
         ("https://www.wikidata.org/wiki/Q862203", None),
         ("https://radiohead.bandcamp.com/album/in-rainbows", None),
@@ -164,6 +183,8 @@ def test_share_url_provider(url: str, expected: str | None) -> None:
         ("https://open.spotify.com/album/not-a-spotify-id", None),
         ("https://tidal.com/album/79280548", "tidal"),
         ("https://tidal.com/album/in-rainbows", None),
+        ("https://music.youtube.com/browse/MPREb_example", "ytmusic"),
+        ("https://music.youtube.com/playlist?list=OLAK5uy_abc", None),
     ],
 )
 def test_share_url_provider_of_a_media_type(url: str, expected: str | None) -> None:
@@ -203,6 +224,7 @@ def test_canonical_provider_url(
         f"https://open.spotify.com/artist/{SPOTIFY_ID[:10]}",
         "https://tidal.com/artist/not-a-number",
         "https://music.apple.com/us/artist/radiohead",
+        "https://music.youtube.com/playlist?list=OLAK5uy_abc",
     ],
 )
 async def test_parse_uri_rejects_a_malformed_id_when_validating(url: str) -> None:
@@ -225,6 +247,18 @@ async def test_parse_uri_validation_leaves_non_numeric_playlist_ids_alone() -> N
     ) == (MediaType.PLAYLIST, "apple_music", apple_playlist)
 
 
+async def test_parse_uri_validates_ytmusic_browse_album_id() -> None:
+    """Only a browse album ID is usable for loading a YouTube Music album."""
+    assert await parse_uri("https://music.youtube.com/browse/MPREb_example", validate_id=True) == (
+        MediaType.ALBUM,
+        "ytmusic",
+        "MPREb_example",
+    )
+    assert await parse_uri(
+        "https://music.youtube.com/playlist?list=PLexample", validate_id=True
+    ) == (MediaType.PLAYLIST, "ytmusic", "PLexample")
+
+
 async def test_canonical_provider_url_round_trips_through_parse_uri() -> None:
     """Every canonical URL parses back to the item it was built from."""
     for domain, media_type in (
@@ -237,6 +271,32 @@ async def test_canonical_provider_url_round_trips_through_parse_uri() -> None:
         url = canonical_provider_url(domain, media_type, "1234")
         assert url is not None
         assert await parse_uri(url) == (media_type, domain, "1234")
+
+
+@pytest.mark.parametrize(
+    ("domain", "item_id", "url", "expected"),
+    [
+        ("deezer", "805", None, "https://www.deezer.com/artist/805"),
+        (
+            "apple_music",
+            "657515",
+            "https://music.apple.com/gb/artist/radiohead/657515",
+            "https://music.apple.com/gb/artist/657515",
+        ),
+        # without a storefront there is no URL MusicBrainz stores an Apple Music item under
+        ("apple_music", "657515", None, None),
+        # a performer without a Qobuz page has its name as id
+        ("qobuz", "John Williams", None, None),
+    ],
+)
+def test_canonical_mapping_url(
+    domain: str, item_id: str, url: str | None, expected: str | None
+) -> None:
+    """Build a mapping's MusicBrainz URL, taking any storefront from the mapping's own URL."""
+    mapping = ProviderMapping(
+        item_id=item_id, provider_domain=domain, provider_instance=f"{domain}_1", url=url
+    )
+    assert canonical_mapping_url(mapping, MediaType.ARTIST) == expected
 
 
 def test_apple_storefront_from_url() -> None:

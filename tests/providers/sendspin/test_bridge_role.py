@@ -9,6 +9,7 @@ player it was just read from.
 """
 
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 from aiosendspin.server import VolumeChangedEvent
 
@@ -105,3 +106,42 @@ def test_unchanged_state_is_not_announced_again() -> None:
     role.update_player_state(volume=40, muted=False)
 
     assert _emitted_volume_events(client) == []
+
+
+def test_audio_requirements_follow_the_group_channel_resolver() -> None:
+    """A bridge role receives the per-member channel selected by Sendspin."""
+    role, client, _, _ = _make_role()
+    client.client_id = "airplay-bridge"
+    client.group.get_channel_for_player.return_value = uuid4()
+
+    role.setup_audio_requirements()
+    first_requirements = role.get_audio_requirements()
+
+    assert first_requirements is not None
+    assert first_requirements.channel_id == client.group.get_channel_for_player.return_value
+
+    client.group.get_channel_for_player.return_value = uuid4()
+    second_requirements = role.get_audio_requirements()
+
+    assert second_requirements is not None
+    assert second_requirements.channel_id == client.group.get_channel_for_player.return_value
+    assert second_requirements.channel_id != first_requirements.channel_id
+
+
+def test_a_stream_clear_reaches_the_bridge_that_takes_it() -> None:
+    """A clear of the stream is handed to the bridge, and one wired without a callback ignores it."""
+    role, _, _, _ = _make_role()
+    role.on_stream_clear()
+
+    on_stream_clear = MagicMock()
+    role.set_callbacks(
+        on_audio_chunk=MagicMock(),
+        on_volume_change=MagicMock(),
+        on_mute_change=MagicMock(),
+        on_stream_start=MagicMock(),
+        on_stream_end=MagicMock(),
+        on_stream_clear=on_stream_clear,
+    )
+    role.on_stream_clear()
+
+    on_stream_clear.assert_called_once_with()

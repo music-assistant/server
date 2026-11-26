@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 from unittest import mock
 
 import pytest
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import RateLimited, ResourceTemporarilyUnavailable
 from yandex_music import ClientAsync
 from yandex_music.exceptions import BadRequestError, NetworkError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
@@ -39,16 +40,81 @@ async def test_connect_sets_base_url(client: KionMusicClient) -> None:
 
 async def test_reconnect_retry_takes_its_own_throttler_slot(client: KionMusicClient) -> None:
     """A request retried after a connection error takes a second throttler slot."""
-    client._throttler = mock.AsyncMock()
     client._reconnect = mock.AsyncMock()  # type: ignore[method-assign]
     client._client = mock.MagicMock()
     client._ensure_connected = mock.AsyncMock(return_value=client._client)  # type: ignore[method-assign]
     func = mock.AsyncMock(side_effect=[NetworkError("connection reset"), "ok"])
 
-    assert await client._call_with_retry(func) == "ok"
+    with mock.patch.object(
+        client._throttler, "acquire", wraps=client._throttler.acquire
+    ) as acquire:
+        assert await client._call_with_retry(func) == "ok"
 
     assert func.await_count == 2
-    assert client._throttler.acquire.await_count == 2
+    assert acquire.call_count == 2
+
+
+async def test_rate_limit_arms_throttler_cooldown(client: KionMusicClient) -> None:
+    """A 429 raises RateLimited and holds back the client's further requests."""
+    mock_client = mock.AsyncMock()
+    mock_client.tracks = mock.AsyncMock(side_effect=NetworkError("Unknown error (429): b''"))
+    client._client = mock_client
+
+    with pytest.raises(RateLimited):
+        await client.get_track("42")
+
+    assert client._throttler.cooldown_remaining > 0
+
+
+async def test_call_during_rate_limit_cooldown_does_not_reach_api(
+    client: KionMusicClient,
+) -> None:
+    """A call made while the rate limit cooldown runs is not sent to KION."""
+    mock_client = mock.AsyncMock()
+    mock_client.tracks = mock.AsyncMock(side_effect=NetworkError("Unknown error (429): b''"))
+    mock_client.users_likes_tracks = mock.AsyncMock(return_value=None)
+    client._client = mock_client
+    with pytest.raises(RateLimited):
+        await client.get_track("42")
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(client.get_liked_tracks(), timeout=0.1)
+
+    mock_client.users_likes_tracks.assert_not_awaited()
+
+
+async def test_rate_limit_on_reconnect_retry_arms_throttler_cooldown(
+    client: KionMusicClient,
+) -> None:
+    """A 429 on the retry after a reconnect raises RateLimited and holds back requests."""
+    client._reconnect = mock.AsyncMock()  # type: ignore[method-assign]
+    client._client = mock.MagicMock()
+    client._ensure_connected = mock.AsyncMock(return_value=client._client)  # type: ignore[method-assign]
+    func = mock.AsyncMock(
+        side_effect=[NetworkError("connection reset"), NetworkError("Unknown error (429): b''")]
+    )
+
+    with pytest.raises(RateLimited):
+        await client._call_with_retry(func)
+
+    client._reconnect.assert_awaited_once()
+    assert client._throttler.cooldown_remaining > 0
+
+
+async def test_rate_limited_rotor_feedback_arms_throttler_cooldown(
+    client: KionMusicClient,
+) -> None:
+    """A 429 on rotor feedback holds back requests, the feedback itself is dropped."""
+    mock_client = mock.AsyncMock()
+    mock_client.rotor_station_feedback_radio_started = mock.AsyncMock(
+        side_effect=NetworkError("Unknown error (429): b''")
+    )
+    client._client = mock_client
+
+    ok = await client.send_rotor_station_feedback("user:onyourwave", "radioStarted")
+
+    assert ok is False
+    assert client._throttler.cooldown_remaining > 0
 
 
 async def test_get_liked_albums_batching(client: KionMusicClient) -> None:
@@ -330,6 +396,7 @@ async def test_get_track_lyrics_from_track_synced_detects_lrc(
     client: KionMusicClient,
 ) -> None:
     """LRC timestamps anywhere in the payload flag lyrics as synced."""
+    client._client = mock.MagicMock()
     track = _make_track_with_lyrics(
         lyrics_text="[ar:Artist]\n[00:12.34]First line\n[01:03.5]Second line",
     )
@@ -344,6 +411,7 @@ async def test_get_track_lyrics_from_track_plain_detects_unsynced(
     client: KionMusicClient,
 ) -> None:
     """Text without LRC timestamps is reported as non-synced."""
+    client._client = mock.MagicMock()
     track = _make_track_with_lyrics(lyrics_text="Line one\nLine two\nLine three")
 
     text, synced = await client.get_track_lyrics_from_track(track)
@@ -368,6 +436,7 @@ async def test_get_track_lyrics_from_track_empty_metadata_returns_none(
     client: KionMusicClient,
 ) -> None:
     """When get_lyrics_async() yields None, return (None, False)."""
+    client._client = mock.MagicMock()
     track = _make_track_with_lyrics(lyrics_text=None)
 
     assert await client.get_track_lyrics_from_track(track) == (None, False)
@@ -377,6 +446,7 @@ async def test_get_track_lyrics_from_track_empty_text_returns_none(
     client: KionMusicClient,
 ) -> None:
     """Empty lyrics text is treated as unavailable."""
+    client._client = mock.MagicMock()
     track = _make_track_with_lyrics(lyrics_text="")
 
     assert await client.get_track_lyrics_from_track(track) == (None, False)
@@ -386,12 +456,27 @@ async def test_get_track_lyrics_from_track_swallows_network_error(
     client: KionMusicClient,
 ) -> None:
     """Network errors during lyric fetch don't bubble — return (None, False)."""
+    client._client = mock.MagicMock()
     track = mock.AsyncMock()
     track.id = "42"
     track.lyrics_available = True
     track.get_lyrics_async = mock.AsyncMock(side_effect=NetworkError("boom"))
 
     assert await client.get_track_lyrics_from_track(track) == (None, False)
+
+
+async def test_get_track_lyrics_from_track_rate_limit_arms_throttler_cooldown(
+    client: KionMusicClient,
+) -> None:
+    """A 429 during lyric fetch returns (None, False) and holds back further requests."""
+    client._client = mock.MagicMock()
+    track = mock.AsyncMock()
+    track.id = "42"
+    track.lyrics_available = True
+    track.get_lyrics_async = mock.AsyncMock(side_effect=NetworkError("Unknown error (429): b''"))
+
+    assert await client.get_track_lyrics_from_track(track) == (None, False)
+    assert client._throttler.cooldown_remaining > 0
 
 
 async def test_get_track_lyrics_delegates_to_from_track(
@@ -419,6 +504,22 @@ async def test_get_track_lyrics_missing_track_returns_none(
     client._client = mock_client
 
     assert await client.get_track_lyrics("42") == (None, False)
+
+
+async def test_fetch_playlist_tracks_rate_limit_arms_throttler_cooldown(
+    client: KionMusicClient,
+) -> None:
+    """A 429 while fetching playlist tracks raises RateLimited and holds back requests."""
+    client._client = mock.MagicMock()
+    playlist = mock.MagicMock()
+    playlist.fetch_tracks_async = mock.AsyncMock(
+        side_effect=NetworkError("Unknown error (429): b''")
+    )
+
+    with pytest.raises(RateLimited):
+        await client.fetch_playlist_tracks(playlist)
+
+    assert client._throttler.cooldown_remaining > 0
 
 
 async def test_get_tracks_rejected_request_raises(client: KionMusicClient) -> None:

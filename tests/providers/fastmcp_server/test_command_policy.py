@@ -78,6 +78,19 @@ def test_direct_queue_deletes_require_only_the_delete_capability(command: str) -
     }
 
 
+@pytest.mark.parametrize("command", ["players/merge", "players/unlink_protocol"])
+def test_player_merge_and_unlink_need_what_a_player_removal_needs(command: str) -> None:
+    """Merging and unlinking change stored players, and a merge deletes one: as players/remove."""
+    removal = resolve_command_policy("players/remove", Scope.CONFIG_PLAYERS_WRITE, None)
+    decision = resolve_command_policy(command, Scope.CONFIG_PLAYERS_WRITE, None)
+
+    assert decision.required_capabilities == frozenset({str(Capability.CONFIG_WRITE_PLAYER)})
+    assert decision.required_capabilities == removal.required_capabilities
+    assert decision.annotations == removal.annotations
+    assert decision.annotations["destructiveHint"] is True
+    assert not decision.hard_denied
+
+
 def test_system_health_keeps_annotations_separate_from_capability() -> None:
     """Read-only behavior hints do not weaken a debug capability requirement."""
     decision = resolve_command_policy("fastmcp/debug/health", "system.read", profile=None)

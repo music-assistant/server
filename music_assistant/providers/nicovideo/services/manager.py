@@ -78,8 +78,6 @@ class NicovideoServiceManager:
                 caller_line = caller_frame.f_lineno
                 filename = caller_filename.rsplit("/", 1)[-1]
                 caller_info = f"{filename}:{caller_function}:{caller_line}"
-        except Exception:
-            caller_info = "stack_inspection_failed"
         finally:
             del frame  # Prevent reference cycles
         return caller_info
@@ -111,7 +109,7 @@ class NicovideoServiceManager:
                     err,
                     detailed_errors,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - logging an error must not raise
                 self.logger.warning("Error %s called from %s: %s", operation, caller_info, err)
         else:
             self.logger.warning("Error %s called from %s: %s", operation, caller_info, err)
@@ -126,7 +124,7 @@ class NicovideoServiceManager:
         try:
             async with self.niconico_api_throttler.acquire():
                 return await asyncio.to_thread(func, *args, **kwargs)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - niconico.py raises many error types
             operation = func.__name__ if hasattr(func, "__name__") else "unknown_function"
             self._log_call_exception(operation, err)
             return None

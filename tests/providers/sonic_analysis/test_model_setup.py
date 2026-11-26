@@ -323,20 +323,6 @@ async def test_start_analysis_declines_without_duration(duration: float | None) 
     assert provider._sessions == {}
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "media_type", [MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE, MediaType.RADIO]
-)
-async def test_start_analysis_declines_non_music(media_type: MediaType) -> None:
-    """``_start_analysis`` must decline anything that is not a music track."""
-    provider = _make_provider()
-    provider._clap_model = MagicMock(name="clap_model")
-    streamdetails = _make_streamdetails("not-music")
-    streamdetails.media_type = media_type
-
-    result = await provider._start_analysis(
-        "session-not-music", streamdetails, _make_audio_format()
-    )
-
-    assert result is False
-    assert provider._sessions == {}
+def test_offered_music_tracks_only() -> None:
+    """The provider is offered music tracks only, never audiobooks, podcasts or radio."""
+    assert SonicAnalysisProvider.media_types == frozenset({MediaType.TRACK})

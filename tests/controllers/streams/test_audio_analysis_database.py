@@ -6,7 +6,7 @@ import logging
 import os
 import pathlib
 import sqlite3
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,6 +22,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
 )
 from music_assistant.controllers.streams.audio_analysis import (
+    LOUDNESS_ANALYSIS_DOMAIN,
     PROVIDER_LOUDNESS_DOMAIN,
     SMART_FADES_ANALYSIS_DOMAIN,
     SONIC_ANALYSIS_DOMAIN,
@@ -384,6 +385,35 @@ async def test_candidate_queries_read_library_keys_through_temp_table(
     assert leftover == []
 
 
+async def test_coverage_reads_analysis_rows_through_covering_indexes(
+    ctrl: AudioAnalysisController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Coverage counts never read the analysis records, which hold the large payloads."""
+    await ctrl.setup_database()
+    ctrl.mass.providers = [MagicMock(domain="filesystem_local", available=True)]  # type: ignore[misc]
+    ctrl.mass.get_provider = MagicMock(return_value=MagicMock(analysis_version=2))  # type: ignore[method-assign]
+    database = ctrl.database
+    count_from_query = database.get_count_from_query
+    plan_steps: list[str] = []
+
+    async def explain_and_count(query: str, params: dict[str, Any] | None = None) -> int:
+        rows = await database.get_rows_from_query(f"EXPLAIN QUERY PLAN {query}", params, limit=0)
+        plan_steps.extend(row["detail"] for row in rows)
+        return await count_from_query(query, params)
+
+    monkeypatch.setattr(database, "get_count_from_query", explain_and_count)
+    await ctrl.get_coverage(SONIC_ANALYSIS_DOMAIN)
+
+    # the pending count aliases the analysis table as "an"
+    analysis_reads = [
+        step
+        for step in plan_steps
+        if step.split()[0] in ("SCAN", "SEARCH") and step.split()[1] in (AA_TABLE_ANALYSIS, "an")
+    ]
+    assert len(analysis_reads) == 3
+    assert all("COVERING INDEX" in step for step in analysis_reads), analysis_reads
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "error_code",
@@ -621,7 +651,7 @@ async def test_tracks_audio_metadata_matches_single_track_lookup(
         (128.0, "D"),
         (None, "F# minor"),
         None,
-        None,
+        (90.0, None),
         None,
         None,
         (140.0, None),
@@ -629,6 +659,35 @@ async def test_tracks_audio_metadata_matches_single_track_lookup(
         (110.0, "A"),
         (128.0, "D"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_tracks_audio_metadata_energy_level_matches_single_track_lookup(
+    ctrl: AudioAnalysisController,
+) -> None:
+    """Both lookups take the loudness for the energy level from the first-listed provider."""
+    await _setup_metadata_fixture(ctrl)
+    domains = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
+    ctrl.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[_aa_provider(domain) for domain in domains]
+    )
+    stored = [
+        (
+            SONIC_ANALYSIS_DOMAIN,
+            AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-30.0),
+        ),
+        (LOUDNESS_ANALYSIS_DOMAIN, AudioAnalysisData(loudness_integrated=-20.0)),
+        (PROVIDER_LOUDNESS_DOMAIN, AudioAnalysisData(loudness_integrated=-8.0)),
+    ]
+    for aa_domain, analysis in stored:
+        await ctrl.set_audio_analysis("e1", "fs--a", aa_domain, analysis)
+    tracks = [_track(("e1", "fs--a", ContentType.MP3))]
+
+    batched_result = await ctrl.get_tracks_audio_metadata(tracks)
+
+    assert batched_result == [await ctrl.get_track_audio_metadata(tracks[0])]
+    assert batched_result[0] is not None
+    assert batched_result[0].energy_level == 9
 
 
 @pytest.mark.asyncio

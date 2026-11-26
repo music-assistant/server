@@ -70,7 +70,7 @@ async def handle_devices_query(
     for device_id in device_ids:
         try:
             player = mass.players.get_player(device_id)
-        except Exception:
+        except TypeError:  # a list or dict id can not be looked up
             player = None
 
         if player is None:
@@ -100,7 +100,7 @@ async def handle_devices_action(
     for device_action in payload.devices:
         try:
             player = mass.players.get_player(device_action.id)
-        except Exception:
+        except TypeError:  # a list or dict id can not be looked up
             player = None
 
         if player is None:
@@ -114,8 +114,8 @@ async def handle_devices_action(
             )
             continue
 
-        player_state = player.state if hasattr(player, "state") else player
-        if not is_player_exposable(player_state, exposed_ids=exposed_ids):  # type: ignore[arg-type]
+        player_state = player.state
+        if not is_player_exposable(player_state, exposed_ids=exposed_ids):
             results.append(
                 DeviceActionResult(
                     id=device_action.id,

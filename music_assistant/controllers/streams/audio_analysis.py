@@ -17,9 +17,11 @@ import time
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from itertools import batched
 from math import isfinite
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.auth import Scope
@@ -66,8 +68,13 @@ PROVIDER_LOUDNESS_DOMAIN = "provider_loudness"
 LOUDNESS_PROVIDER_PRIORITY = (PROVIDER_LOUDNESS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
 SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
 SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
-# AA domains trusted for frontend-facing track data (bpm/key/waveform), authoritative first.
-TRACK_EXPORT_AA_PRIORITY = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN)
+# AA domains trusted for frontend-facing track data (bpm/key/energy/waveform), authoritative
+# first. The loudness providers precede Sonic Analysis, whose loudness is an RMS approximation.
+TRACK_EXPORT_AA_PRIORITY = (
+    SMART_FADES_ANALYSIS_DOMAIN,
+    *LOUDNESS_PROVIDER_PRIORITY,
+    SONIC_ANALYSIS_DOMAIN,
+)
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
@@ -96,6 +103,11 @@ ANALYSIS_MIN_COMPLETENESS_RATIO = 0.9
 # on the next track. Long enough that gaps between tracks/sessions don't thrash the reload.
 MODEL_IDLE_UNLOAD_SECONDS = 300
 MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
+# Seconds of a live source's audio held for its analysis while the providers work on earlier
+# audio; beyond it new audio is dropped, so a slow provider never holds up the source.
+LIVE_SOURCE_BACKLOG_SECONDS = 10
+# Seconds a provider gets to release its part of a live source's analysis when it ends.
+LIVE_SOURCE_CANCEL_TIMEOUT_SECONDS = 5.0
 
 # TEMP table on the analysis connection holding the library's filesystem track keys while a
 # candidate query runs; filled in batches of this size.
@@ -112,11 +124,13 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import (
         AudioFormat,
         AudioMetadata,
+        AudioSource,
         ProviderMapping,
         Track,
     )
-    from music_assistant_models.streamdetails import StreamDetails
+    from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+    from music_assistant.controllers.players.audio_sources import AudioSourceSession
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.controllers.streams.controller import StreamsController
     from music_assistant.helpers.database import DatabaseConnection
@@ -244,6 +258,45 @@ def _nice_analysis_worker() -> None:
         os.setpriority(os.PRIO_PROCESS, 0, ANALYSIS_THREAD_NICE)
 
 
+@dataclasses.dataclass
+class _LiveSourceAnalysis:
+    """The audio of a live source on its way to the analysis providers."""
+
+    source_session: AudioSourceSession
+    # the stream this analysis follows: what it recognises is shown for that stream only
+    playback_session_id: str
+    stream_session_id: str | None
+    # one second of audio per block, as the providers get it from a buffer
+    block_size: int
+    blocks: asyncio.Queue[bytes] = dataclasses.field(
+        default_factory=lambda: asyncio.Queue(maxsize=LIVE_SOURCE_BACKLOG_SECONDS)
+    )
+    pending: bytearray = dataclasses.field(default_factory=bytearray)
+    dropped_seconds: int = 0
+    # the metadata a provider reported that the source shows, and that provider
+    reported: StreamMetadata | None = None
+    reported_by: AudioAnalysisProvider | None = None
+
+
+@dataclasses.dataclass
+class _RadioAnalysis:
+    """The analysis of a radio station, shared by every buffer that plays it."""
+
+    session_key: str
+    # the playback buffers that play the station with their stream details, in joining order
+    buffers: dict[AudioBuffer, StreamDetails] = dataclasses.field(default_factory=dict)
+    # the buffer the reader reads, and the chunk it reads next
+    reading: AudioBuffer | None = None
+    cursor: int = 0
+    # set for good once the station sends metadata of its own
+    own_metadata: bool = False
+    # the recognised metadata shown and its provider, and the report shown next with the
+    # monotonic time at which the listener reaches the audio it came from
+    shown: StreamMetadata | None = None
+    shown_by: AudioAnalysisProvider | None = None
+    pending: tuple[StreamMetadata, AudioAnalysisProvider, float] | None = None
+
+
 class AudioAnalysisController(AudioAnalysisDatabaseMixin):
     """Controller that distributes PCM chunks to all registered AudioAnalysisProviders."""
 
@@ -277,6 +330,10 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         self._idle_unload_task: asyncio.Task[None] | None = None
         # In-flight provider finalizes: their session is already gone, but the models are not.
         self._finalize_tasks: set[asyncio.Task[None]] = set()
+        # Live source sessions by session key, from their start until their worker ends.
+        self._live_sources: dict[str, _LiveSourceAnalysis] = {}
+        # Radio sessions by station uri, from their start until their last buffer ends.
+        self._radio_analyses: dict[str, _RadioAnalysis] = {}
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -299,12 +356,14 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 tasks.append(self._idle_unload_task)
                 self._idle_unload_task = None
             for task in tasks:
-                if not task.done():
+                # a stopped live source worker is already releasing its session
+                if not task.done() and not task.cancelling():
                     task.cancel()
-            for session_key in list(self._active_sessions):
-                self._cancel_providers(session_key)
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            # the workers released their own sessions: what is left has no worker
+            for session_key in list(self._active_sessions):
+                self._cancel_providers(session_key)
             if self.analysis_executor is not None:
                 # A running CPU-bound thread can't be cancelled, so shut down without waiting on it.
                 self.analysis_executor.shutdown(wait=False, cancel_futures=True)
@@ -396,12 +455,18 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         """
         Start analysis session for a track across all providers.
 
+        A radio station has one session, which every buffer that plays the station joins.
+
         :param audio_buffer: The shared playback AudioBuffer the analysis reads PCM from.
         :param streamdetails: The stream details for the item being analyzed.
         """
         providers = self.providers
         if not providers:
             self.logger.debug("No audio analysis providers available")
+            return
+
+        if streamdetails.media_type == MediaType.RADIO:
+            await self._start_radio_analysis(audio_buffer, streamdetails, providers)
             return
 
         session_key = streamdetails.uri
@@ -441,6 +506,182 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             self._evict_realtime_session(session_key)
 
         audio_buffer.register_cancel_callback(_on_cancel)
+
+    def start_source_analysis(
+        self,
+        source_session: AudioSourceSession,
+        stream_session_id: str,
+        streamdetails: StreamDetails,
+        pcm_format: AudioFormat,
+    ) -> str | None:
+        """
+        Start offering the audio of a live source to the providers that may analyse it.
+
+        Returns the session key to pass to feed_source_analysis and stop_source_analysis, or
+        None when no provider analyses this source or the stream no longer serves it.
+        Nothing of the session is stored.
+
+        :param source_session: The live source session the stream plays.
+        :param stream_session_id: Token of the stream request the stream was opened with.
+        :param streamdetails: The stream details of the source.
+        :param pcm_format: PCM format of the audio that will be fed.
+        """
+        if (
+            self.mass.players.get_audio_source_session(source_session.player_id)
+            is not source_session
+            or source_session.stream_session_id != stream_session_id
+        ):
+            return None
+        providers = [
+            provider
+            for provider in self.providers
+            if self._is_offered(provider, streamdetails, source_session.source)
+        ]
+        if not providers:
+            return None
+        # one session per stream: the key of a buffer session (the uri) is not unique here,
+        # as a reconnect can open the next stream of a source before the last one ends
+        session_key = f"{streamdetails.uri}#{uuid4().hex[:8]}"
+        live = _LiveSourceAnalysis(
+            source_session=source_session,
+            playback_session_id=source_session.playback_session_id,
+            stream_session_id=stream_session_id,
+            block_size=pcm_format.pcm_sample_size,
+        )
+        self._live_sources[session_key] = live
+        worker = self.mass.create_task(
+            self._source_analysis_worker(session_key, live, streamdetails, pcm_format, providers)
+        )
+        if worker.done():
+            # every provider declined before the worker had to wait for anything
+            return None
+        self._workers[session_key] = worker
+        return session_key
+
+    def feed_source_analysis(self, session_key: str, pcm_chunk: bytes) -> None:
+        """
+        Hand audio of a live source to its analysis, without ever waiting for it.
+
+        Audio is dropped while the providers are too far behind.
+
+        :param session_key: The key start_source_analysis returned.
+        :param pcm_chunk: The next PCM audio of the source.
+        """
+        if (live := self._live_sources.get(session_key)) is None:
+            return
+        live.pending += pcm_chunk
+        while len(live.pending) >= live.block_size:
+            block = bytes(live.pending[: live.block_size])
+            del live.pending[: live.block_size]
+            try:
+                live.blocks.put_nowait(block)
+            except asyncio.QueueFull:
+                live.dropped_seconds += 1
+                if live.dropped_seconds == 1:
+                    self.logger.debug(
+                        "Analysis of %s falls behind the live source, dropping audio",
+                        session_key,
+                    )
+
+    def stop_source_analysis(self, session_key: str) -> None:
+        """
+        End the analysis of a live source when its stream ends.
+
+        :param session_key: The key start_source_analysis returned.
+        """
+        if self._live_sources.pop(session_key, None) is None:
+            # the worker already ended, or is releasing the session
+            return
+        if (worker := self._workers.get(session_key)) is not None:
+            worker.cancel()
+
+    def show_stream_metadata(
+        self,
+        provider: AudioAnalysisProvider,
+        session_key: str,
+        stream_metadata: StreamMetadata,
+    ) -> bool:
+        """
+        Show the metadata an analysis provider reported for the stream of a session.
+
+        Called by AudioAnalysisProvider.report_stream_metadata. A live source shows it right
+        away, a radio station once the listener reaches the audio it was recognised in. It is
+        withdrawn when the session ends or the provider leaves it.
+
+        Returns whether the report is accepted: not when the stream has metadata of its own,
+        for any other session, or from a provider no longer part of it.
+
+        :param provider: The reporting provider.
+        :param session_key: The analysis session the metadata is about.
+        :param stream_metadata: What plays right now.
+        """
+        if not self._takes_part(session_key, provider):
+            return False
+        if (live := self._live_sources.get(session_key)) is not None:
+            if not self.mass.players.show_analysis_metadata(
+                live.source_session,
+                live.playback_session_id,
+                live.stream_session_id,
+                stream_metadata,
+            ):
+                return False
+            live.reported = stream_metadata
+            live.reported_by = provider
+            return True
+        radio = next(
+            (radio for radio in self._radio_analyses.values() if radio.session_key == session_key),
+            None,
+        )
+        if radio is None or radio.reading is None or self._has_own_metadata(radio):
+            return False
+        lead = self._radio_lead(radio.reading, radio.cursor)
+        if stream_metadata.elapsed_time is not None:
+            stream_metadata = dataclasses.replace(
+                stream_metadata,
+                elapsed_time_last_updated=(stream_metadata.elapsed_time_last_updated or time.time())
+                + lead,
+            )
+        radio.pending = (stream_metadata, provider, time.monotonic() + lead)
+        return True
+
+    def shown_stream_metadata(self, streamdetails: StreamDetails) -> StreamMetadata | None:
+        """
+        Return the metadata to show for what a stream plays right now.
+
+        That is the stream's own metadata, or else, for a radio station, what an analysis
+        provider recognised in it while this stream plays the station.
+
+        :param streamdetails: The stream details of the playing item.
+        """
+        if streamdetails.stream_metadata is not None or streamdetails.media_type != MediaType.RADIO:
+            return streamdetails.stream_metadata
+        radio = self._radio_analyses.get(streamdetails.uri)
+        audio_buffer = streamdetails.buffer
+        if (
+            radio is None
+            or radio.shown is None
+            or audio_buffer not in radio.buffers
+            # an ended buffer stays joined until the reader gets to it
+            or audio_buffer.cancelled
+            or audio_buffer.eof
+            or self._has_own_metadata(radio)
+        ):
+            return None
+        return radio.shown
+
+    def release_provider(self, instance_id: str) -> None:
+        """
+        Remove an unloading provider from every running analysis session.
+
+        The running sessions send no further audio to this instance id, and do not finalize it.
+
+        :param instance_id: Instance id of the unloading audio analysis provider.
+        """
+        for session_key, provider_ids in list(self._active_sessions.items()):
+            provider_ids.discard(instance_id)
+            if not provider_ids:
+                # with no provider left, the session's reader stops at its next chunk
+                self._active_sessions.pop(session_key, None)
 
     async def set_audio_analysis(
         self,
@@ -678,7 +919,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
     async def get_track_audio_metadata(self, track: Track) -> AudioMetadata | None:
         """
-        Return AudioMetadata (bpm, musical key) for a track, or None when no analysis exists.
+        Return AudioMetadata (bpm, musical key, energy level) for a track, or None without analysis.
 
         Provider mappings are tried in the order playback would pick them; per field the
         Smart Fades AA provider is preferred over other AA providers.
@@ -698,7 +939,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         self, tracks: Sequence[Track]
     ) -> list[AudioMetadata | None]:
         """
-        Return AudioMetadata (bpm, musical key) for many tracks at once.
+        Return AudioMetadata (bpm, musical key, energy level) for many tracks at once.
 
         Each entry matches what get_track_audio_metadata returns for that track. Only the
         scalars are read from the stored headers, in a few queries instead of one per track.
@@ -741,7 +982,10 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 id_placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
                 rows = await self.database.get_rows_from_query(
                     "SELECT item_id, json_extract(header, '$.bpm') AS bpm, "
-                    "json_extract(header, '$.key') AS key, json_extract(header, '$.mode') AS mode "
+                    "json_extract(header, '$.key') AS key, json_extract(header, '$.mode') AS mode, "
+                    "json_extract(header, '$.brightness') AS brightness, "
+                    "json_extract(header, '$.arousal') AS arousal, "
+                    "json_extract(header, '$.loudness_integrated') AS loudness_integrated "
                     f"FROM {AA_TABLE_ANALYSIS} "
                     "WHERE provider = :provider AND media_type = :media_type "
                     f"AND aa_provider_domain IN ({domain_placeholders}) "
@@ -758,9 +1002,12 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 for row in rows:
                     analysis_by_key[(prov_key, row["item_id"])].update(
                         AudioAnalysisData(
-                            bpm=None if row["bpm"] is None else float(row["bpm"]),
+                            bpm=_float_or_none(row["bpm"]),
                             key=row["key"],
                             mode=row["mode"],
+                            brightness=_float_or_none(row["brightness"]),
+                            arousal=_float_or_none(row["arousal"]),
+                            loudness_integrated=_float_or_none(row["loudness_integrated"]),
                         )
                     )
 
@@ -1224,7 +1471,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
             try:
                 streamdetails = await music_prov.get_stream_details(item_id, MediaType.TRACK)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # Provider method with an open-ended failure surface; any failure
                 # just skips this scan candidate.
                 self.logger.debug("Skipping %s: stream details failed: %s", item_id, err)
@@ -1323,7 +1570,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 BACKGROUND_SCAN_TASK_ID,
                 f"Timed out after {timeout_seconds}s: {session_key}",
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the background scan must go on with the next item
             self.logger.warning("Background analysis failed for %s: %s", session_key, err)
             self._cancel_providers(session_key)
             self.mass.tasks.add_task_failure(
@@ -1561,11 +1808,14 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
         providers: list[AudioAnalysisProvider],
+        source: AudioSource | None = None,
     ) -> set[str]:
         """Call start_analysis on each provider, returning IDs of those that accepted."""
         self._mark_analysis_activity()
         provider_ids: set[str] = set()
         for provider in providers:
+            if not self._is_offered(provider, streamdetails, source):
+                continue
             try:
                 if await provider.start_analysis(
                     session_id=session_key,
@@ -1573,13 +1823,32 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     audio_format=audio_format,
                 ):
                     provider_ids.add(provider.instance_id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # provider.start_analysis is provider-implemented; skip the one that
                 # fails to start and keep the rest of the session going.
                 self.logger.warning(
                     "Failed to start analysis on provider %s: %s", provider.name, err
                 )
         return provider_ids
+
+    @staticmethod
+    def _is_offered(
+        provider: AudioAnalysisProvider,
+        streamdetails: StreamDetails,
+        source: AudioSource | None = None,
+    ) -> bool:
+        """
+        Return whether a provider may analyze the given stream.
+
+        :param provider: The audio analysis provider.
+        :param streamdetails: Stream details of the item being analyzed.
+        :param source: The live source the stream plays, for an audio source.
+        """
+        if streamdetails.media_type not in provider.media_types:
+            return False
+        if streamdetails.media_type == MediaType.AUDIO_SOURCE:
+            return source is not None and source.allow_audio_analysis
+        return True
 
     def _finalize_providers(self, session_key: str) -> None:
         """Finalize each provider in the session."""
@@ -1615,6 +1884,58 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         self._cancel_providers(session_key)
         self.logger.debug("Stopped realtime analysis session %s", session_key)
 
+    async def _start_radio_analysis(
+        self,
+        audio_buffer: AudioBuffer,
+        streamdetails: StreamDetails,
+        providers: list[AudioAnalysisProvider],
+    ) -> None:
+        """
+        Add a buffer of a radio station to its analysis, starting one when none runs.
+
+        :param audio_buffer: The playback buffer of the station.
+        :param streamdetails: The stream details of the station.
+        :param providers: The available analysis providers.
+        """
+        uri = streamdetails.uri
+        starting = uri not in self._radio_analyses
+        if starting:
+            # a key of its own, so the cancel of a stopped session never reaches a new one
+            self._radio_analyses[uri] = _RadioAnalysis(f"{uri}#{uuid4().hex[:8]}")
+        radio = self._radio_analyses[uri]
+        radio.buffers[audio_buffer] = streamdetails
+        audio_buffer.register_cancel_callback(
+            partial(self._leave_radio_analysis, uri, radio, audio_buffer)
+        )
+        if not starting:
+            return
+        session_key = radio.session_key
+        provider_ids = await self._start_analysis_on_providers(
+            session_key, streamdetails, audio_buffer.pcm_format, providers
+        )
+        if not provider_ids:
+            self.logger.debug("No providers accepted analysis for %s", session_key)
+            if self._radio_analyses.get(uri) is radio:
+                del self._radio_analyses[uri]
+            return
+        # radio sessions are not capped per queue: they last as long as their buffers
+        self._active_sessions[session_key] = provider_ids
+        worker = self.mass.create_task(self._radio_reader_worker(uri, radio))
+        if not worker.done():
+            # a station stopped while its providers started has nothing left to read
+            self._workers[session_key] = worker
+
+    def _leave_radio_analysis(
+        self, uri: str, radio: _RadioAnalysis, audio_buffer: AudioBuffer
+    ) -> None:
+        """Remove a torn-down buffer from the analysis of its station, ending it with the last."""
+        radio.buffers.pop(audio_buffer, None)
+        if radio.buffers:
+            return
+        if self._radio_analyses.get(uri) is radio:
+            del self._radio_analyses[uri]
+        self._evict_realtime_session(radio.session_key)
+
     def _mark_analysis_activity(self) -> None:
         """Record analysis activity and ensure the idle-model monitor is running."""
         self._last_analysis_activity = time.monotonic()
@@ -1641,7 +1962,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 continue
             try:
                 await provider.unload_idle_models()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - provider code, the other providers go on
                 self.logger.warning("Failed to unload models for %s: %s", provider.name, err)
 
     async def _distribute_chunk(
@@ -1665,7 +1986,9 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             try:
                 provider = self.mass.get_provider(prov_id)
                 if not (
-                    provider and isinstance(provider, AudioAnalysisProvider) and provider.available
+                    isinstance(provider, AudioAnalysisProvider)
+                    and provider.available
+                    and self._takes_part(session_key, provider)
                 ):
                     return None
                 await asyncio.wait_for(
@@ -1698,7 +2021,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     "Provider %s failed analysis for %s: %s", prov_id, session_key, err.reason
                 )
                 return prov_id, (err.reason, err.retry_at)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # process_pcm_chunk is implemented by the provider (torch/numpy/ffmpeg), so evict
                 # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
@@ -1711,6 +2034,9 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         results = await asyncio.gather(*[_process(prov_id) for prov_id in provider_ids])
         evicted = dict(result for result in results if result is not None)
         if evicted:
+            provider_ids.difference_update(evicted)
+            if not provider_ids:
+                self._active_sessions.pop(session_key, None)
             for prov_id, failure in evicted.items():
                 provider = self.mass.get_provider(prov_id)
                 if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
@@ -1719,9 +2045,6 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     else:
                         reason, retry_at = failure
                         await provider.abort(session_key, reason, retry_at)
-            provider_ids.difference_update(evicted)
-            if not provider_ids:
-                self._active_sessions.pop(session_key, None)
 
     async def _buffer_reader_worker(
         self,
@@ -1739,8 +2062,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
         :param session_key: Active-session key for this worker.
         :param audio_buffer: The shared playback buffer to read PCM from.
-        :param expected_duration: Expected track duration in seconds (None when unknown,
-            e.g. radio), used to discard sessions of streams that ended prematurely.
+        :param expected_duration: Expected track duration in seconds (None when unknown),
+            used to discard sessions of streams that ended prematurely.
         """
         start_chunk = audio_buffer.first_buffered_chunk
         cursor = start_chunk
@@ -1760,7 +2083,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                         cursor,
                     )
                     break
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - the source's own error ends only the analysis
                     self.logger.debug("Analysis read failed for %s: %s", session_key, err)
                     break
                 await self._distribute_chunk(
@@ -1789,6 +2112,196 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 self._finalize_providers(session_key)
             else:
                 self._cancel_providers(session_key)
+
+    async def _radio_reader_worker(self, uri: str, radio: _RadioAnalysis) -> None:
+        """
+        Read the PCM of a radio station from its buffers and distribute it to providers.
+
+        Reads one buffer at a time and goes on with another buffer of the station when it
+        ends or fails. Audio the reader fell behind on is skipped. What a provider recognised is
+        shown once the listener reaches it. Once no buffer is left, the providers are finalized
+        when the last buffer ended cleanly, and cancelled otherwise.
+
+        :param uri: The uri of the station.
+        :param radio: The analysis of the station.
+        """
+        session_key = radio.session_key
+        completed = False
+        skipped_seconds = 0
+        try:
+            while session_key in self._active_sessions:
+                if (audio_buffer := radio.reading) is None:
+                    audio_buffer = next((b for b in radio.buffers if not b.cancelled), None)
+                    if audio_buffer is None:
+                        break
+                    radio.reading = audio_buffer
+                    radio.cursor = audio_buffer.first_buffered_chunk
+                    completed = False
+                try:
+                    chunk = await audio_buffer.read_chunk_for_analysis(radio.cursor)
+                except AudioBufferEOF:
+                    completed = True
+                except AudioBufferDiscarded:
+                    if not audio_buffer.cancelled:
+                        # one chunk equals one second of audio
+                        skipped_seconds += audio_buffer.first_buffered_chunk - radio.cursor
+                        radio.cursor = audio_buffer.first_buffered_chunk
+                        continue
+                except Exception as err:  # noqa: BLE001 - the source's own error ends only the analysis
+                    self.logger.debug("Analysis read failed for %s: %s", session_key, err)
+                else:
+                    await self._distribute_chunk(session_key, chunk)
+                    radio.cursor += 1
+                    self._update_radio_metadata(radio)
+                    continue
+                # this buffer ended: the next pass goes on with another buffer of the station
+                radio.buffers.pop(audio_buffer, None)
+                radio.reading = None
+        finally:
+            self._workers.pop(session_key, None)
+            if self._radio_analyses.get(uri) is radio:
+                del self._radio_analyses[uri]
+            radio.pending = None
+            self._withdraw_radio_metadata(radio)
+            if completed:
+                self._finalize_providers(session_key)
+            else:
+                self._cancel_providers(session_key)
+            if skipped_seconds:
+                self.logger.debug(
+                    "Analysis of %s skipped %ds of the station it fell behind on",
+                    session_key,
+                    skipped_seconds,
+                )
+
+    async def _source_analysis_worker(
+        self,
+        session_key: str,
+        live: _LiveSourceAnalysis,
+        streamdetails: StreamDetails,
+        pcm_format: AudioFormat,
+        providers: list[AudioAnalysisProvider],
+    ) -> None:
+        """
+        Run the analysis of a live source until it may no longer be analysed.
+
+        That is when its stream ends, no provider is left or the source stops allowing it.
+
+        Owns everything of the session: on its way out it releases it at whatever stage
+        it was in.
+
+        :param session_key: Key of the live source session.
+        :param live: The live source session.
+        :param streamdetails: The stream details of the source.
+        :param pcm_format: PCM format of the fed audio.
+        :param providers: The providers offered this source.
+        """
+        try:
+            # every offered provider takes part until it declines, so one released while it
+            # starts (an unload or a reload) is not part of the analysis afterwards
+            self._active_sessions[session_key] = provider_ids = {p.instance_id for p in providers}
+            accepted = await self._start_analysis_on_providers(
+                session_key, streamdetails, pcm_format, providers, live.source_session.source
+            )
+            provider_ids.intersection_update(accepted)
+            while provider_ids and session_key in self._active_sessions:
+                block = await live.blocks.get()
+                if not live.source_session.source.allow_audio_analysis:
+                    # the plugin handed the session a source that no longer allows it
+                    break
+                await self._distribute_chunk(session_key, block)
+                if live.reported_by is not None and not self._takes_part(
+                    session_key, live.reported_by
+                ):
+                    self._withdraw_source_metadata(live)
+        finally:
+            self._live_sources.pop(session_key, None)
+            self._active_sessions.pop(session_key, None)
+            try:
+                self._withdraw_source_metadata(live)
+                # every offered provider, as one whose start was interrupted holds part of a session
+                for provider in providers:
+                    try:
+                        await asyncio.wait_for(
+                            provider.cancel(session_key), LIVE_SOURCE_CANCEL_TIMEOUT_SECONDS
+                        )
+                    except Exception as err:  # noqa: BLE001 - provider code, cleanup must reach every provider
+                        self.logger.warning(
+                            "Failed to cancel analysis on provider %s: %s",
+                            provider.name,
+                            str(err) or type(err).__name__,
+                        )
+            finally:
+                self._workers.pop(session_key, None)
+                if live.dropped_seconds:
+                    self.logger.debug(
+                        "Analysis of %s dropped %ds of the live source",
+                        session_key,
+                        live.dropped_seconds,
+                    )
+
+    def _takes_part(self, session_key: str, provider: AudioAnalysisProvider) -> bool:
+        """Return whether a provider instance is part of an analysis session right now."""
+        return not provider.unloading and provider.instance_id in self._active_sessions.get(
+            session_key, ()
+        )
+
+    def _has_own_metadata(self, radio: _RadioAnalysis) -> bool:
+        """Return whether a radio station sent metadata of its own during its analysis."""
+        if not radio.own_metadata:
+            radio.own_metadata = any(
+                streamdetails.stream_metadata is not None
+                for streamdetails in radio.buffers.values()
+            )
+        return radio.own_metadata
+
+    def _radio_lead(self, audio_buffer: AudioBuffer, cursor: int) -> float:
+        """Return the seconds until the listener of a buffer reaches a media second of it."""
+        position = (
+            audio_buffer.playback_position(audio_buffer) if audio_buffer.playback_position else None
+        )
+        if position is None:
+            # a lower bound: what the buffer holds is not played yet
+            return audio_buffer.seconds_available
+        return max(0.0, cursor - position)
+
+    def _update_radio_metadata(self, radio: _RadioAnalysis) -> None:
+        """Show the pending report of a radio station once due, and withdraw what no longer holds."""
+        session_key = radio.session_key
+        own_metadata = self._has_own_metadata(radio)
+        if radio.shown_by is not None and (
+            own_metadata or not self._takes_part(session_key, radio.shown_by)
+        ):
+            self._withdraw_radio_metadata(radio)
+        if radio.pending is None:
+            return
+        stream_metadata, provider, due = radio.pending
+        if own_metadata or not self._takes_part(session_key, provider):
+            radio.pending = None
+        elif time.monotonic() >= due:
+            radio.pending = None
+            radio.shown, radio.shown_by = stream_metadata, provider
+            self._update_radio_players(radio)
+
+    def _withdraw_radio_metadata(self, radio: _RadioAnalysis) -> None:
+        """Withdraw the recognised metadata a radio station shows."""
+        if radio.shown is None:
+            return
+        radio.shown = radio.shown_by = None
+        self._update_radio_players(radio)
+
+    def _update_radio_players(self, radio: _RadioAnalysis) -> None:
+        """Signal the players of every queue that plays a radio station to update."""
+        for streamdetails in radio.buffers.values():
+            if streamdetails.queue_id:
+                self.mass.players.trigger_player_update(streamdetails.queue_id)
+
+    def _withdraw_source_metadata(self, live: _LiveSourceAnalysis) -> None:
+        """Withdraw what the analysis of a live source reported, if the source still shows it."""
+        if live.reported is None:
+            return
+        self.mass.players.withdraw_analysis_metadata(live.source_session, live.reported)
+        live.reported = live.reported_by = None
 
     def _cpu_count(self) -> int:
         """Return the CPU core count available to this process (fallback 4 when unknown)."""
@@ -1826,3 +2339,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         return {
             p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
         } | {PROVIDER_LOUDNESS_DOMAIN}
+
+
+def _float_or_none(value: Any) -> float | None:
+    """Return a stored JSON number as float, keeping None."""
+    return None if value is None else float(value)

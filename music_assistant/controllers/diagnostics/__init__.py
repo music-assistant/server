@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 # maximum time one section contributor may take before it is dropped from the report
 SECTION_TIMEOUT = 2.0
 
@@ -152,7 +152,7 @@ class DiagnosticsController(CoreController):
         ):
             try:
                 report[key] = await builder()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failing part must not fail the whole report
                 report[key] = {"error": sanitize_text(f"{type(err).__name__}: {err}")}
         if include_log_tail:
             report["log_tail"] = self._build_log_tail()
@@ -201,7 +201,7 @@ class DiagnosticsController(CoreController):
             try:
                 result = builder()
                 census[key] = await result if inspect.isawaitable(result) else result
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failing part must not fail the whole report
                 census[key] = {"error": sanitize_text(f"{type(err).__name__}: {err}")}
         return census
 
@@ -229,12 +229,10 @@ class DiagnosticsController(CoreController):
         by_provider: Counter[str] = Counter()
         by_type: Counter[str] = Counter()
         total = available = 0
-        for player in self.mass.players.all_players(
-            return_unavailable=True, return_disabled=True, return_protocol_players=True
-        ):
+        for player in self.mass.players.iter_players(return_unavailable=True):
             total += 1
             available += int(player.available)
-            by_provider[player.provider.domain] += 1
+            by_provider[player.provider_id.split("--", maxsplit=1)[0]] += 1
             by_type[player.type.value] += 1
         return {
             "total": total,
@@ -341,7 +339,7 @@ class DiagnosticsController(CoreController):
             # roundtrip through JSON to normalize (and validate) the data,
             # then sanitize all string values in the result
             return name, sanitize_data(json_loads(json_dumps(result)))
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - contributor code, a failing section must not fail the report
             return name, {"error": sanitize_text(f"{type(err).__name__}: {err}")}
 
     def _build_log_tail(self) -> list[dict[str, str]]:

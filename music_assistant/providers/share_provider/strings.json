@@ -1,0 +1,12 @@
+{
+  "manifest": {
+    "name": "Share Links",
+    "description": "Generate and open provider-agnostic share links for tracks, albums and artists."
+  },
+  "config_entries": {
+    "share_base_url": {
+      "label": "Share base URL",
+      "description": "Base URL of the share landing page."
+    }
+  }
+}

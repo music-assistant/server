@@ -26,6 +26,8 @@ from deezer_python_gql.generated.get_recently_played import (
 from deezer_python_gql.generated.get_track import GetTrackTrack
 from music_assistant_models.enums import (
     AlbumType,
+    ArtistType,
+    ContentType,
     ExternalID,
     ImageType,
     MediaType,
@@ -34,6 +36,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
+    AudioFormat,
     ItemMapping,
     MediaItemChapter,
     MediaItemImage,
@@ -52,11 +55,13 @@ from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_A
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 from .constants import (
+    AUTHOR_ARTIST_PREFIX,
     FLOW_CONFIG_PREFIX,
     FLOW_PLAYLIST_ID,
     PERSONAL_ALBUM_PREFIX,
     PERSONAL_ARTIST_PREFIX,
     SMART_TRACKLIST_PREFIX,
+    UNKNOWN_ARTIST_ID,
 )
 from .helpers import (
     create_virtual_playlist,
@@ -143,6 +148,7 @@ def _provider_mapping(
     *,
     available: bool = True,
     is_unique: bool | None = None,
+    audio_format: AudioFormat | None = None,
 ) -> ProviderMapping:
     """Create a ProviderMapping for the given item."""
     return ProviderMapping(
@@ -151,6 +157,7 @@ def _provider_mapping(
         provider_instance=provider.instance_id,
         available=available,
         is_unique=is_unique,
+        audio_format=audio_format or AudioFormat(),
     )
 
 
@@ -167,6 +174,20 @@ def _track_available(
     if media.rights.sub is None:
         return False
     return bool(media.rights.sub.available)
+
+
+def _track_audio_format(
+    provider: DeezerProvider,
+    track: TrackFields | SearchSearchResultsTracksEdgesNode | GetTrackTrack,
+) -> AudioFormat:
+    """Return the best format the track has among those the account asks for."""
+    if track.media is None:
+        return AudioFormat()
+    sizes = track.media.estimated_sizes.model_dump(by_alias=True)
+    for fmt in provider.gw_client.formats:
+        if sizes.get(fmt["format"]):
+            return parse_audio_format(fmt["format"])
+    return AudioFormat()
 
 
 def parse_track(
@@ -244,7 +265,12 @@ def parse_track(
         artists=artists,
         album=album,
         provider_mappings={
-            _provider_mapping(provider, track.id, available=_track_available(track))
+            _provider_mapping(
+                provider,
+                track.id,
+                available=_track_available(track),
+                audio_format=_track_audio_format(provider, track),
+            )
         },
         metadata=_parse_track_metadata(provider, track),
         track_number=track_number,
@@ -310,6 +336,27 @@ def parse_artist(
     if getattr(artist, "is_favorite", False):
         item.favorite = True
     return item
+
+
+def parse_author(
+    provider: DeezerProvider,
+    artist_id: str,
+    name: str,
+    metadata: MediaItemMetadata | None = None,
+    favorite: bool | None = None,
+) -> Artist:
+    """Parse a Deezer artist as the author of audiobooks."""
+    item_id = f"{AUTHOR_ARTIST_PREFIX}{artist_id}"
+    return Artist(
+        item_id=item_id,
+        provider=provider.instance_id,
+        name=name,
+        artist_type=ArtistType.AUTHOR,
+        media_type=MediaType.ARTIST,
+        provider_mappings={_provider_mapping(provider, item_id)},
+        metadata=metadata or MediaItemMetadata(),
+        favorite=favorite,
+    )
 
 
 def parse_album(
@@ -526,6 +573,8 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
     metadata = MediaItemMetadata(
         images=images,
         explicit=audiobook.is_explicit,
+        # releaseDate can be a later re-release, the original one matches the album
+        release_date=parse_date(audiobook.original_release_date or audiobook.release_date),
     )
     if audiobook.description:
         metadata.description = audiobook.description
@@ -537,8 +586,8 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
     for edge in audiobook.contributors.edges:
         if AudiobookContributorRoles.NARRATOR in edge.roles:
             narrators.append(edge.node.name)
-        else:
-            authors.append(edge.node.name)
+        elif edge.node.id != UNKNOWN_ARTIST_ID:
+            authors.append(parse_author(provider, edge.node.id, edge.node.name))
 
     item = Audiobook(
         item_id=audiobook.id,
@@ -575,20 +624,52 @@ def parse_audiobook_from_album(
 
     authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
     for edge in album.contributors.edges:
-        if edge.node is not None:
-            authors.append(edge.node.name)
+        if edge.node is not None and edge.node.id != UNKNOWN_ARTIST_ID:
+            authors.append(parse_author(provider, edge.node.id, edge.node.name))
 
     return Audiobook(
         item_id=album.id,
         provider=provider.instance_id,
         name=album.display_title,
+        publisher=getattr(album, "label", None),
         authors=authors,
         media_type=MediaType.AUDIOBOOK,
         provider_mappings={_provider_mapping(provider, album.id)},
         metadata=MediaItemMetadata(
             images=images,
             explicit=getattr(album, "is_explicit", None),
+            release_date=parse_date(album.release_date),
         ),
+    )
+
+
+def parse_audiobook_from_chapter(
+    provider: DeezerProvider, chapter: SearchSearchResultsTracksEdgesNode
+) -> Audiobook:
+    """
+    Create the Audiobook a chapter belongs to (search context).
+
+    :param provider: The Deezer provider instance.
+    :param chapter: A track search result whose album is an audiobook.
+    """
+    assert chapter.album is not None
+    images: UniqueList[MediaItemImage] = UniqueList()
+    if img := _cover_image(provider, chapter.album.cover):
+        images.append(img)
+
+    authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
+    for edge in chapter.contributors.edges:
+        if "MAIN" in edge.roles and edge.node.id != UNKNOWN_ARTIST_ID:
+            authors.append(parse_author(provider, edge.node.id, edge.node.name))
+
+    return Audiobook(
+        item_id=chapter.album.id,
+        provider=provider.instance_id,
+        name=chapter.album.display_title,
+        authors=authors,
+        media_type=MediaType.AUDIOBOOK,
+        provider_mappings={_provider_mapping(provider, chapter.album.id)},
+        metadata=MediaItemMetadata(images=images),
     )
 
 
@@ -696,8 +777,9 @@ def parse_gw_audiobook(provider: DeezerProvider, data: dict[str, Any]) -> Audiob
         )
 
     authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
-    if art_name := data.get("ART_NAME"):
-        authors.append(art_name)
+    art_id = str(data.get("ART_ID", ""))
+    if art_id and art_id != UNKNOWN_ARTIST_ID and (art_name := data.get("ART_NAME")):
+        authors.append(parse_author(provider, art_id, art_name))
 
     return Audiobook(
         item_id=album_id,
@@ -966,6 +1048,16 @@ def parse_date(date_value: str | None) -> datetime | None:
         return datetime.fromisoformat(str(date_value))
     except ValueError, TypeError:
         return None
+
+
+def parse_audio_format(deezer_format: str) -> AudioFormat:
+    """Return the audio format a Deezer format name stands for."""
+    return AudioFormat(
+        content_type=ContentType.try_parse(deezer_format.split("_", maxsplit=1)[0]),
+        # the sample rate of a FLAC_24 file is only known from the file itself
+        bit_depth=24 if deezer_format == "FLAC_24" else 16,
+        bit_rate={"MP3_320": 320, "MP3_128": 128}.get(deezer_format),
+    )
 
 
 def parse_bookmark_time(bookmarked_at: str) -> datetime | None:

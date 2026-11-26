@@ -34,6 +34,9 @@ CONF_HIDE_EMPTY_PODCASTS = "hide_empty_podcasts"
 CACHE_CATEGORY_LIBRARIES = 0
 CACHE_KEY_LIBRARIES = "libraries"
 
+# lets one pass over the library share the user's progress; cleared on every progress change
+MEDIA_PROGRESS_CACHE_SECONDS = 60
+
 # abs emits user_updated on every progress patch, so let a burst settle first
 USER_UPDATED_DEBOUNCE_SECONDS = 5
 

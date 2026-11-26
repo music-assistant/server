@@ -50,7 +50,6 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     ctrl._queue_data = {QUEUE_ID: PlayerQueueData(queue=queue, items=items)}
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl._preload_next_item = Mock()  # type: ignore[method-assign]
-    ctrl._cleanup_stale_queue_buffers = Mock()  # type: ignore[method-assign]
     ctrl._load_item = AsyncMock()  # type: ignore[method-assign]
     ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
@@ -69,15 +68,14 @@ def _player_reports(
     """Feed a player update naming the item it plays and its position in it."""
     player = SimpleNamespace(
         player_id=QUEUE_ID,
-        active_output_protocol=None,
-        current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id=item_id, uri=None),
-        state=SimpleNamespace(
-            name="Sonos",
-            available=True,
-            playback_state=state,
-            corrected_elapsed_time=elapsed,
-            group_members=[],
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id=item_id, uri=None)
         ),
+        name="Sonos",
+        available=True,
+        playback_state=state,
+        corrected_elapsed_time=elapsed,
+        group_members=[],
     )
     ctrl._update_queue_from_player(player)  # type: ignore[arg-type]
 
@@ -141,7 +139,7 @@ async def test_a_new_load_keeps_the_playing_item_eligible() -> None:
     await ctrl.play_index(QUEUE_ID, 2)
 
     # only the track the player is still playing survives the new load
-    assert ctrl._queue_data[QUEUE_ID].served_item_ids == {"a"}
+    assert ctrl._queue_data[QUEUE_ID].served_item_ids == {"a": None}
     ctrl.track_loaded_in_buffer(QUEUE_ID, "c")
     _player_reports(ctrl, PlaybackState.PLAYING, "c", 0)
     assert _reported(ctrl) == [("a", True)]
@@ -203,4 +201,4 @@ async def test_replaying_a_finished_queue_does_not_credit_a_load_that_never_serv
     _player_reports(ctrl, PlaybackState.IDLE, "a", 196)
 
     assert _reported(ctrl) == [("a", True)]
-    assert ctrl._queue_data[QUEUE_ID].served_item_ids == set()
+    assert ctrl._queue_data[QUEUE_ID].served_item_ids == {}

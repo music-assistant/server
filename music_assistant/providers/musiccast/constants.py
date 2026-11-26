@@ -8,15 +8,13 @@ from aiomusiccast.capabilities import OptionSetter as MCOptionSetter
 from aiomusiccast.capabilities import TextSensor as MCTextSensor
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
     create_sample_rates_config_entry,
 )
 
 # Constants for players
-# both the http profile and icy didn't matter for me testing it.
+# icy didn't matter for me testing it.
 PLAYER_CONFIG_ENTRIES = [
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
 ]
@@ -49,6 +47,8 @@ MC_DEVICE_UPNP_USER_AGENT = "MusicCast/6.00 (Android)"
 MC_NULL_GROUP = "00000000000000000000000000000000"
 MC_DEFAULT_ZONE = "main"
 
+# the built-in drive of a CD receiver; an analog input for a CD player has its own id
+MC_SOURCE_CD = "cd"
 MC_SOURCE_MC_LINK = "mc_link"
 MC_SOURCE_MAIN_SYNC = "main_sync"
 MC_LINK_SOURCES = [MC_SOURCE_MC_LINK, MC_SOURCE_MAIN_SYNC]

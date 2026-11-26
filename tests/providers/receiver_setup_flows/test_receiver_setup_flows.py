@@ -35,8 +35,9 @@ def _player(
     """Return a minimal player for setup-flow option generation."""
     player = mock.Mock()
     player.player_id = player_id
-    player.display_name = display_name
+    player.name = display_name
     player.type = player_type
+    player.session_only = False
     return player
 
 

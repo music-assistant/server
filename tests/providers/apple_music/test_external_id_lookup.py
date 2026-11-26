@@ -13,7 +13,7 @@ def _make_media_manager() -> tuple[AppleMusicMediaManager, MagicMock]:
     """Return a MediaManager together with its mock provider."""
     provider = MagicMock()
     provider.logger = MagicMock()
-    provider._storefront = "us"
+    provider.storefront = "us"
     provider.instance_id = "apple_music--test"
     provider.domain = "apple_music"
 

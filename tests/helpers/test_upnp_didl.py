@@ -41,3 +41,23 @@ def test_a_track_played_from_its_start_gets_its_duration() -> None:
     didl = create_didl_metadata(media, f"{_BASE_URL}/single/session1/queue1/q2/player1.flac")
 
     assert '<res duration="00:03:18"' in didl
+
+
+@pytest.mark.parametrize(("served_as_file", "flag"), [(True, "01"), (False, "00")])
+def test_only_a_track_served_as_a_file_offers_byte_seek(served_as_file: bool, flag: str) -> None:
+    """The metadata says what the stream itself answers: parts only of a file."""
+    media = PlayerMedia(uri="library://track/1", title="Buena", duration=198, queue_item_id="q2")
+    url = f"{_BASE_URL}/single/session1/queue1/q2/player1.wav"
+
+    didl = create_didl_metadata(media, url, served_as_file)
+
+    assert f"DLNA.ORG_OP={flag};" in didl
+
+
+def test_a_stream_without_a_duration_offers_no_byte_seek() -> None:
+    """A flow stream or a radio station answers no request for a part."""
+    media = PlayerMedia(uri="library://radio/1", title="Station")
+
+    didl = create_didl_metadata(media, f"{_BASE_URL}/flow/session1/queue1/q2/player1.flac")
+
+    assert "DLNA.ORG_OP=00;" in didl

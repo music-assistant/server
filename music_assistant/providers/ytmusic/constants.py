@@ -2,6 +2,9 @@
 
 from enum import StrEnum
 
+UPLOAD_ARTIST_ID_PREFIX = "FEmusic_library_privately_owned_artist"
+UPLOAD_ALBUM_ID_PREFIX = "FEmusic_library_privately_owned_release"
+
 
 class YTMRecommendationIcons(StrEnum):
     """Icons for YTM recommendation types."""

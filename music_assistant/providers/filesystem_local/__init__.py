@@ -100,6 +100,7 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.process import open_in_thread
+from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.tags import (
     AudioTags,
     async_parse_tags,
@@ -159,6 +160,7 @@ from .cue import (
     CueSheetHandler,
     cue_metadata_checksum,
     cue_referenced_audio_stem,
+    is_multi_file_cue,
     make_cue_track_id,
     parse_cue_track_id,
 )
@@ -499,12 +501,15 @@ class LocalFileSystemProvider(MusicProvider):
             for item in scanned:
                 if item.ext not in CUE_EXTENSIONS:
                     continue
-                cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                 try:
                     cue_sheet = await self._cue.load_cue_sheet(item)
                 except InvalidDataError as err:
+                    cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                     self.logger.warning("Unable to parse CUE sheet %s: %s", item.relative_path, err)
                     continue
+                if is_multi_file_cue(cue_sheet):
+                    continue
+                cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                 if await self._cue.find_audio_file(item, cue_sheet) is None:
                     self.logger.debug(
                         "Skipping CUE sheet with missing companion audio file: %s",
@@ -695,18 +700,14 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             if force_refresh_tracks:
                 await self._drop_stale_album_artist_caches()
-            # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
-                for cue_item in (
-                    *unchanged_cue_items,
-                    *(item for item, _ in items_to_process if item.ext in CUE_EXTENSIONS),
-                ):
-                    try:
-                        cue_sheet = await self._cue.load_cue_sheet(cue_item)
-                    except InvalidDataError:
-                        continue
-                    if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
-                        cue_stems.add(companion_stem)
+                await self._update_cue_stems(
+                    [
+                        *unchanged_cue_items,
+                        *(item for item, _ in items_to_process if item.ext in CUE_EXTENSIONS),
+                    ],
+                    cue_stems,
+                )
             # drop CUE companion audio: absorbed into CUE tracks and not tracked in
             # provider_mappings, so they would otherwise flag as changed every sync
             items_to_process = [
@@ -741,6 +742,8 @@ class LocalFileSystemProvider(MusicProvider):
                     self.logger.warning(
                         "Unable to parse CUE sheet %s: %s", cue_item.relative_path, err
                     )
+                    continue
+                if is_multi_file_cue(cue_sheet):
                     continue
                 for cue_track in cue_sheet.tracks:
                     cur_filenames.add(make_cue_track_id(cue_item.relative_path, cue_track.number))
@@ -950,8 +953,9 @@ class LocalFileSystemProvider(MusicProvider):
                         continue
                     tags = await self._parse_tags(file_item)
                     full_track = await self._parse_track(file_item, tags)
-                    assert isinstance(full_track.album, Album)
-                    return full_track.album
+                    # a file whose album tag was removed since the last sync names no album
+                    if isinstance(full_track.album, Album):
+                        return full_track.album
         if missing_file_error:
             raise missing_file_error
         msg = f"Album not found: {prov_album_id}"
@@ -1368,6 +1372,27 @@ class LocalFileSystemProvider(MusicProvider):
             # not-found so the image layer treats it as a missing image
             raise MediaNotFoundError(f"Image not found: {path}") from err
 
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path is shaped like a path relative to the folder of this source.
+
+        :param path: The stored image path.
+        """
+        # only cover files and audio files (for their embedded cover): the sources built on
+        # this one fetch any other path as a raw file from their share, and a playlist or
+        # cue file handed to ffmpeg could point it at other files
+        file_path = path.split("?cs=", 1)[0]
+        ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+        return ext in (
+            IMAGE_EXTENSIONS | TRACK_EXTENSIONS | AUDIOBOOK_EXTENSIONS | PODCAST_EPISODE_EXTENSIONS
+        ) and not (
+            path.startswith("/")
+            or "\\" in path
+            or "://" in path
+            or ".." in path.split("/")
+            or has_control_chars(path)
+        )
+
     async def check_write_access(self) -> None:
         """Perform check if we have write access."""
         # verify write access to determine we have playlist create/edit support
@@ -1378,7 +1403,7 @@ class LocalFileSystemProvider(MusicProvider):
                 await _file.write("test")
             await asyncio.to_thread(os.remove, temp_file_name)
             self.write_access = True
-        except Exception as err:
+        except OSError as err:
             self.logger.debug("Write access disabled: %s", str(err))
 
     async def resolve(self, file_path: str) -> FileSystemItem:
@@ -1499,6 +1524,35 @@ class LocalFileSystemProvider(MusicProvider):
                 os.close(root_fd)
 
         await asyncio.to_thread(_walk)
+
+    async def _update_cue_stems(self, cue_items: list[FileSystemItem], cue_stems: set[str]) -> None:
+        """
+        Add the audio files CUE sheets name to cue_stems and release ignored CUE sheets.
+
+        :param cue_items: Every CUE sheet found in this scan.
+        :param cue_stems: Absolute paths (without extension) of the CUE sheets in this scan,
+            updated to the audio files that must not be imported as regular tracks.
+        """
+        kept: set[str] = set()
+        ignored: set[str] = set()
+        for cue_item in cue_items:
+            own_stem = cue_item.absolute_path.rsplit(".", 1)[0]
+            try:
+                cue_sheet = await self._cue.load_cue_sheet(cue_item)
+            except InvalidDataError:
+                kept.add(own_stem)
+                continue
+            if is_multi_file_cue(cue_sheet):
+                # ignored, so its same-named audio file is a regular track
+                ignored.add(own_stem)
+                continue
+            kept.add(own_stem)
+            # a CUE may name an audio file other than its own; hide that companion too
+            if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
+                cue_stems.add(companion_stem)
+                kept.add(companion_stem)
+        # applied after every sheet is read so the result does not depend on their order
+        cue_stems.difference_update(ignored - kept)
 
     def _classify_scan_item(
         self,
@@ -2463,8 +2517,10 @@ class LocalFileSystemProvider(MusicProvider):
                 # excluding its same-named companion here would lose that otherwise
                 # playable file entirely, since this CUE itself yields nothing below
                 continue
-            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
             cue_sheets[item.relative_path] = cue_sheet
+            if is_multi_file_cue(cue_sheet):
+                continue
+            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
             if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
                 cue_stems.add(companion_stem)
         for item in items:
@@ -2474,6 +2530,8 @@ class LocalFileSystemProvider(MusicProvider):
                 loaded_cue_sheet = cue_sheets.get(item.relative_path)
                 if loaded_cue_sheet is None:
                     self.logger.warning("Skipping unreadable CUE sheet %s", item.relative_path)
+                    continue
+                if is_multi_file_cue(loaded_cue_sheet):
                     continue
                 if await self._cue.find_audio_file(item, loaded_cue_sheet) is None:
                     self.logger.warning(
@@ -2624,9 +2682,18 @@ class LocalFileSystemProvider(MusicProvider):
             if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
                 tracks = await self._cue.parse_tracks(item)
                 for track in tracks:
+                    prior = (
+                        await self.mass.music.tracks.get_library_item_by_prov_id(
+                            track.item_id, self.instance_id
+                        )
+                        if prev_checksum is not None
+                        else None
+                    )
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=prev_checksum is not None
                     )
+                    if prior is not None:
+                        await self._unlink_stale_albums(track, prior)
                     if cur_filenames is not None:
                         cur_filenames.add(track.item_id)
                 return True
@@ -2639,10 +2706,19 @@ class LocalFileSystemProvider(MusicProvider):
                     return False
                 tags = await self._parse_tags(item)
                 track = await self._parse_track(item, tags)
+                prior = (
+                    await self.mass.music.tracks.get_library_item_by_prov_id(
+                        track.item_id, self.instance_id
+                    )
+                    if prev_checksum is not None
+                    else None
+                )
                 # TODO: implement favorite status based on rating ?
                 await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
                 )
+                if prior is not None:
+                    await self._unlink_stale_albums(track, prior)
                 return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
@@ -2716,6 +2792,48 @@ class LocalFileSystemProvider(MusicProvider):
             for item_id in prev_filenames
             if (parsed := parse_cue_track_id(item_id)) and parsed[0] == item.relative_path
         )
+
+    async def _unlink_stale_albums(self, track: Track, prior: Track) -> None:
+        """
+        Unlink a changed file's library track from albums of this source its tags no longer name.
+
+        Albums left without tracks are removed by the orphan cleanup at the end of the sync.
+
+        :param track: The track as just parsed from the changed file.
+        :param prior: The library track as it was before the changed file was written to it.
+        """
+        # with more than one file of this source on the library track, it can not be told
+        # which of those files placed the track on which album
+        if sum(x.provider_instance == self.instance_id for x in prior.provider_mappings) > 1:
+            return
+        keep_album_id: str | None = None
+        if track.album and (
+            db_album := await self.mass.music.albums.get_library_item_by_prov_id(
+                track.album.item_id, self.instance_id
+            )
+        ):
+            keep_album_id = str(db_album.item_id)
+        assert self.mass.music.database
+        for db_row in await self.mass.music.database.get_rows(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": int(prior.item_id)}, limit=0
+        ):
+            if str(db_row["album_id"]) == keep_album_id:
+                continue
+            try:
+                linked_album = await self.mass.music.albums.get_library_item(db_row["album_id"])
+            except MediaNotFoundError:
+                continue
+            # an album of another source, or one shared with another source, is left alone:
+            # that source may still place the track on it, and the orphan cleanup would
+            # otherwise remove the shared album as a whole
+            if not linked_album.provider_mappings or any(
+                x.provider_instance != self.instance_id for x in linked_album.provider_mappings
+            ):
+                continue
+            self.logger.debug(
+                "%s no longer names album %s, unlinking it", track.item_id, linked_album.name
+            )
+            await self.mass.music.tracks.remove_album_link(prior.item_id, linked_album.item_id)
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Process deletion of orphaned albums and artists."""
@@ -3197,7 +3315,7 @@ class LocalFileSystemProvider(MusicProvider):
             try:
                 raw = await self._read_file(lrc_path)
                 track.metadata.lrc_lyrics = raw.decode("utf-8")
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - lyrics are optional, sources vary
                 self.logger.warning(
                     "Failed to read lyrics file %s: %s",
                     lrc_path,
@@ -3578,7 +3696,7 @@ class LocalFileSystemProvider(MusicProvider):
                     try:
                         raw = await self._read_file(_item.relative_path)
                         audio_book.metadata.description = raw.decode("utf-8")
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - description is optional, sources vary
                         self.logger.warning(
                             "Could not read description from file %s: %s",
                             _item.relative_path,

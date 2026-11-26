@@ -1,0 +1,69 @@
+{
+  "config_entries": {
+    "discover_intro": {
+      "label": "Music Assistant will search your network for LIFX lights. Make sure they are powered (they may be switched off in the app) and on the same network as Music Assistant."
+    },
+    "broadcast_address": {
+      "label": "Broadcast address",
+      "description": "Address the discovery broadcast is sent to. Keep 255.255.255.255 unless your lights are not found, then try your subnet's broadcast address (e.g. 192.168.1.255)."
+    },
+    "extra_hosts": {
+      "label": "Additional light IP addresses",
+      "description": "Optional comma separated IP addresses of LIFX lights to probe directly, for networks that block broadcasts."
+    },
+    "lights": {
+      "label": "Lights",
+      "description": "The LIFX lights that should react to music."
+    },
+    "grouping": {
+      "label": "Light players",
+      "description": "How the selected lights are turned into Music Assistant light players.",
+      "options": {
+        "group": "One player per LIFX group (rooms from the LIFX app)",
+        "all": "One player with all selected lights",
+        "light": "One player per light"
+      }
+    },
+    "brightness": {
+      "label": "Brightness",
+      "description": "Overall light brightness (0-100)."
+    },
+    "color_mode": {
+      "label": "Mode",
+      "description": "Visualization style. Smooth (default): spectrum-driven brightness with a slowly drifting palette. Ambient: colour cycling only, no brightness modulation. Flashing: brightness pulse on every beat, stronger on downbeats. Energetic: large brightness swings on hits plus fast palette rotation."
+    },
+    "light_latency_ms": {
+      "label": "Light latency (ms)",
+      "description": "Milliseconds to render light updates ahead of the audio, to offset the Wi-Fi and bulb delay. Increase if the lights lag the music, decrease if they run ahead of it."
+    },
+    "transition_ms": {
+      "label": "Transition (ms)",
+      "description": "Fade time the bulbs use to move to each new colour. Higher is smoother, lower is snappier."
+    },
+    "power_on": {
+      "label": "Switch on lights that are off",
+      "description": "Turn on lights that are off while music plays. Every light returns to its previous state (colour and power) when the music stops."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Find your LIFX lights",
+      "description": "Music Assistant will search your network for LIFX lights."
+    },
+    "discovering": {
+      "title": "Searching for LIFX lights",
+      "progress_text": "Searching the network for LIFX lights..."
+    },
+    "select_lights": {
+      "title": "Select your lights",
+      "description": "{0} LIFX light(s) found. Pick the lights that should react to music and how to group them."
+    }
+  },
+  "manifest": {
+    "description": "Sync LIFX lights to music over the LAN protocol."
+  },
+  "errors": {
+    "no_lights_found": "No LIFX lights were found. Check that they are powered and on the same network, or enter their IP addresses.",
+    "no_lights_selected": "Select at least one light."
+  }
+}

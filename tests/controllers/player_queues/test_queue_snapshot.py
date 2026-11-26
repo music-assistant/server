@@ -247,11 +247,13 @@ async def test_restore_keeps_its_position_when_the_stopped_player_reports_late()
     await ctrl.restore(QUEUE_ID, snapshot)
 
     player = SimpleNamespace(
-        active_output_protocol=None,
-        current_media=SimpleNamespace(
-            source_id=QUEUE_ID, queue_item_id=quiz_item.queue_item_id, uri=None
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(
+                source_id=QUEUE_ID, queue_item_id=quiz_item.queue_item_id, uri=None
+            )
         ),
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=6.0),
+        playback_state=PlaybackState.PLAYING,
+        corrected_elapsed_time=6.0,
     )
     ctrl._update_current_index_from_player(queue, player)
 
@@ -295,7 +297,7 @@ async def test_restore_is_not_settled_by_the_end_of_the_replaced_content() -> No
     # repeat would wrap the last item on to the first, which keeps the queue from ending at all
     queue.repeat_mode = RepeatMode.OFF
     quiz_item = queue_data.items[0]
-    queue_data.served_item_ids.add(quiz_item.queue_item_id)
+    queue_data.served_item_ids[quiz_item.queue_item_id] = None
     ctrl._handle_end_of_queue(
         queue,
         _played_to(quiz_item, PlaybackState.PLAYING),

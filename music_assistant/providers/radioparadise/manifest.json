@@ -6,7 +6,7 @@
   "type": "music",
   "requirements": [],
   "codeowners": ["@OzGav"],
-  "tier": "community",
+  "provides": ["radio"],
   "multi_instance": false,
   "stage": "stable"
 }

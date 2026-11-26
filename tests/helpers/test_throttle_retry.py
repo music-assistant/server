@@ -22,8 +22,11 @@ from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     Throttler,
     ThrottlerManager,
+    _give_up,
     current_priority,
+    is_rate_limit_error,
     parse_retry_after,
+    rate_limit_translation,
     request_priority,
     set_request_priority,
     throttle_with_retries,
@@ -145,9 +148,10 @@ class TestBasicBehavior:
     async def test_retries_exhausted(self, provider: FakeProvider, fake_clock: FakeClock) -> None:
         """Exhausting all retries raises RetriesExhausted."""
         provider.set_side_effects([ResourceTemporarilyUnavailable("fail")] * 5)
-        with pytest.raises(RetriesExhausted):
+        with pytest.raises(RetriesExhausted) as exc_info:
             await provider.api_call("test")
         assert provider.call_count == 5
+        assert exc_info.value.translation_key == "retries_exhausted"
 
     async def test_recovery_after_failures(
         self, provider: FakeProvider, fake_clock: FakeClock
@@ -255,10 +259,24 @@ class TestRateLimited:
     ) -> None:
         """A hostile Retry-After is clamped to MAX_RETRY_AFTER (1 day)."""
         provider.set_side_effects([RateLimited("rate limited", backoff_time=999999), "ok"])
-        with pytest.raises(RetriesExhausted):
+        with pytest.raises(RetriesExhausted) as exc_info:
             await provider.api_call("ok")
 
         assert provider.throttler.cooldown_remaining == MAX_RETRY_AFTER
+        assert exc_info.value.translation_key == "rate_limited_hours"
+        assert exc_info.value.translation_args == [24]
+
+    async def test_exhausted_retries_report_the_last_failure(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """Retries that end on another error than a rate limit do not report a rate limit."""
+        provider.set_side_effects(
+            [RateLimited("rate limited")] * 4 + [ResourceTemporarilyUnavailable("unavailable")]
+        )
+        with pytest.raises(RetriesExhausted) as exc_info:
+            await provider.api_call("test")
+        assert provider.call_count == 5
+        assert exc_info.value.translation_key == "retries_exhausted"
 
 
 class TestSharedCooldown:
@@ -293,8 +311,10 @@ class TestSharedCooldown:
             rate_limit=100, period=0.01, retry_attempts=5, initial_backoff=2
         )
         provider.set_side_effects([RateLimited("rate limited", backoff_time=50)] * 5)
-        with pytest.raises(RetriesExhausted):
+        with pytest.raises(RetriesExhausted) as exc_info:
             await provider.api_call("test")
+        assert exc_info.value.translation_key == "rate_limited"
+        assert exc_info.value.translation_args == []
         exhausted_at = fake_clock.now
 
         provider.set_side_effects(["ok"])
@@ -304,13 +324,14 @@ class TestSharedCooldown:
     async def test_exhausted_retries_gate_without_retry_after(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
-        """Without a Retry-After the gate closes on the backoff we escalated to."""
+        """Without a Retry-After the gate closes on the backoff we escalated to, still a rate limit."""
         provider.throttler = ThrottlerManager(
             rate_limit=100, period=0.01, retry_attempts=5, initial_backoff=2
         )
         provider.set_side_effects([RateLimited("rate limited")] * 5)
-        with pytest.raises(RetriesExhausted):
+        with pytest.raises(RetriesExhausted) as exc_info:
             await provider.api_call("test")
+        assert is_rate_limit_error(exc_info.value)
         exhausted_at = fake_clock.now
 
         provider.set_side_effects(["ok"])
@@ -415,7 +436,8 @@ class TestLongWaits:
         assert provider.call_count == 1
         assert fake_clock.now == 0
         assert fake_clock.sleeps == []
-        assert exc_info.value.translation_key == "rate_limited"
+        assert exc_info.value.translation_key == "rate_limited_minutes"
+        assert exc_info.value.translation_args == [60]
         assert isinstance(exc_info.value.__cause__, RateLimited)
 
     @pytest.mark.parametrize(
@@ -445,7 +467,8 @@ class TestLongWaits:
             await provider.api_call("ok")
         assert provider.call_count == 0
         assert fake_clock.now == 100
-        assert exc_info.value.translation_key == "rate_limited"
+        assert exc_info.value.translation_key == "rate_limited_minutes"
+        assert exc_info.value.translation_args == [59]
         assert isinstance(exc_info.value.__cause__, RateLimited)
         assert provider.throttler.cooldown_remaining == pytest.approx(3500)
 
@@ -508,11 +531,21 @@ class TestLongWaits:
         assert await provider.api_call("ok") == "ok"
         assert fake_clock.now == pytest.approx(MAX_WAIT_TIME)
 
-    async def test_playback_caller_ignores_a_long_cooldown(
+    async def test_playback_caller_gives_up_on_a_long_cooldown(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
-        """A playback caller still reaches the api during a long cooldown."""
+        """A playback caller sends nothing into a long cooldown and fails right away."""
         provider.throttler.set_cooldown(3600)
+        with request_priority(RequestPriority.HIGH), pytest.raises(RetriesExhausted):
+            await provider.api_call("ok")
+        assert provider.call_count == 0
+        assert fake_clock.now == 0
+
+    async def test_playback_caller_passes_a_short_cooldown(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A playback caller reaches the api during a short cooldown without waiting it out."""
+        provider.throttler.set_cooldown(MAX_WAIT_TIME)
         with request_priority(RequestPriority.HIGH):
             assert await provider.api_call("ok") == "ok"
         assert provider.call_count == 1
@@ -542,6 +575,35 @@ class TestLongWaits:
         assert fake_clock.now == 0
         assert exc_info.value.translation_key == "resource_temporarily_unavailable"
         assert provider.throttler.cooldown_remaining == 0
+
+    @pytest.mark.parametrize(
+        ("translation_key", "translation_args"),
+        [("quota_exceeded", ["Spotify"]), ("rate_limited", [])],
+    )
+    async def test_long_rate_limit_keeps_the_message_of_its_owner(
+        self,
+        provider: FakeProvider,
+        fake_clock: FakeClock,
+        translation_key: str,
+        translation_args: list[str],
+    ) -> None:
+        """A rate limit that brings a message of its own keeps it when the call gives up."""
+        provider.set_side_effects(
+            [
+                RateLimited(
+                    "rate limited",
+                    backoff_time=3600,
+                    translation_key=translation_key,
+                    translation_args=translation_args,
+                    translation_owner="provider.spotify",
+                )
+            ]
+        )
+        with pytest.raises(RetriesExhausted) as exc_info:
+            await provider.api_call("test")
+        assert exc_info.value.translation_key == translation_key
+        assert exc_info.value.translation_args == translation_args
+        assert exc_info.value.translation_owner == "provider.spotify"
 
     async def test_backing_off_caller_gives_up_when_a_long_cooldown_is_armed(
         self, provider: FakeProvider, fake_clock: FakeClock
@@ -880,13 +942,13 @@ class TestThrottlerVirtualClock:
 
 
 class TestThrottlerManagerPriority:
-    """Playback takes a slot without regard to a cooldown."""
+    """Playback takes a slot without sitting out a cooldown."""
 
-    @pytest.mark.parametrize("cooldown", [5, 3600])
-    async def test_high_priority_passes_a_cooldown(
+    @pytest.mark.parametrize("cooldown", [5, MAX_WAIT_TIME])
+    async def test_high_priority_passes_a_short_cooldown(
         self, fake_clock: FakeClock, cooldown: int
     ) -> None:
-        """A high priority request neither waits out nor fails on an armed cooldown."""
+        """A high priority request neither waits out nor fails on a short cooldown."""
         throttler = ThrottlerManager(rate_limit=1, period=10)
         throttler.set_cooldown(cooldown)
         with request_priority(RequestPriority.HIGH):
@@ -895,15 +957,84 @@ class TestThrottlerManagerPriority:
         assert fake_clock.now == 0
         assert throttler.cooldown_remaining == cooldown
 
+    async def test_high_priority_fails_on_a_long_cooldown(self, fake_clock: FakeClock) -> None:
+        """A high priority request fails right away instead of passing a long cooldown."""
+        throttler = ThrottlerManager(rate_limit=1, period=10)
+        throttler.set_cooldown(MAX_WAIT_TIME + 1)
+        with request_priority(RequestPriority.HIGH), pytest.raises(RateLimited) as exc_info:
+            async with throttler.acquire():
+                pytest.fail("a request went out during a long cooldown")
+        assert exc_info.value.backoff_time == MAX_WAIT_TIME + 1
+        assert fake_clock.now == 0
+
     async def test_high_priority_waits_for_a_free_slot(self, fake_clock: FakeClock) -> None:
         """A high priority request still waits for a free slot when the window is full."""
         throttler = ThrottlerManager(rate_limit=1, period=10)
-        throttler.set_cooldown(3600)
+        throttler.set_cooldown(MAX_WAIT_TIME)
         with request_priority(RequestPriority.HIGH):
             async with throttler.acquire():
                 pass
             async with throttler.acquire() as delay:
                 assert delay == pytest.approx(10)
+
+    @pytest.mark.parametrize("priority", [RequestPriority.NORMAL, RequestPriority.HIGH])
+    async def test_foreground_that_does_not_wait_fails_on_any_cooldown(
+        self, fake_clock: FakeClock, priority: RequestPriority
+    ) -> None:
+        """A call that can be served elsewhere fails on a short cooldown instead of waiting."""
+        throttler = ThrottlerManager(rate_limit=1, period=10, foreground_waits_out_cooldown=False)
+        throttler.set_cooldown(5)
+        with request_priority(priority), pytest.raises(RateLimited) as exc_info:
+            async with throttler.acquire():
+                pytest.fail("a request went out during a cooldown")
+        assert exc_info.value.backoff_time == 5
+        assert fake_clock.now == 0
+
+    async def test_call_failed_on_a_short_cooldown_gets_the_generic_message(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A call that fails on a cooldown of a minute or less does not name the wait."""
+        provider.throttler = ThrottlerManager(
+            rate_limit=100, period=0.01, foreground_waits_out_cooldown=False
+        )
+        provider.throttler.set_cooldown(5)
+        with pytest.raises(RetriesExhausted) as exc_info:
+            await provider.api_call("ok")
+        assert provider.call_count == 0
+        assert exc_info.value.translation_key == "rate_limited"
+        assert exc_info.value.translation_args == []
+
+    async def test_background_waits_out_a_short_cooldown_either_way(
+        self, fake_clock: FakeClock
+    ) -> None:
+        """Background work waits out a short cooldown, also when foreground calls do not."""
+        throttler = ThrottlerManager(rate_limit=1, period=10, foreground_waits_out_cooldown=False)
+        throttler.set_cooldown(5)
+        with request_priority(RequestPriority.LOW):
+            async with throttler.acquire() as delay:
+                assert delay == pytest.approx(5)
+        assert fake_clock.now == pytest.approx(5)
+
+    async def test_foreground_that_stood_in_line_fails_on_a_cooldown_armed_meanwhile(
+        self, fake_clock: FakeClock
+    ) -> None:
+        """A cooldown armed while a call waited for a free slot fails it instead of holding it."""
+        throttler = ThrottlerManager(rate_limit=1, period=10, foreground_waits_out_cooldown=False)
+        take_slot = throttler.throttler.acquire
+
+        async def _limited_meanwhile(priority: RequestPriority | None = None) -> float:
+            delay = await take_slot(priority)
+            throttler.set_cooldown(5)
+            return delay
+
+        with (
+            patch.object(throttler.throttler, "acquire", _limited_meanwhile),
+            request_priority(RequestPriority.NORMAL),
+            pytest.raises(RateLimited),
+        ):
+            async with throttler.acquire():
+                pytest.fail("a request went out during a cooldown")
+        assert fake_clock.now == 0
 
     async def test_set_rate_limit_changes_the_low_limit(self, fake_clock: FakeClock) -> None:
         """A raised rate limit raises the share of low priority requests along with it."""
@@ -954,3 +1085,71 @@ class TestParseRetryAfter:
         assert parse_retry_after("not-a-number") == 0
         assert parse_retry_after("") == 0
         assert parse_retry_after("1.5") == 0  # floats are not valid per RFC 9110
+
+
+class TestIsRateLimitError:
+    """Tests for recognising a rate limit among the errors a call fails with."""
+
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            pytest.param(RateLimited("Rate limited", backoff_time=90), True, id="rate-limited"),
+            pytest.param(
+                _give_up(RateLimited("Rate limited", backoff_time=30), 30),
+                True,
+                id="given-up-rate-limit",
+            ),
+            pytest.param(
+                _give_up(RateLimited("Rate limited", backoff_time=90), 90),
+                True,
+                id="given-up-rate-limit-in-minutes",
+            ),
+            pytest.param(
+                _give_up(RateLimited("Rate limited", backoff_time=7200), 7200),
+                True,
+                id="given-up-rate-limit-in-hours",
+            ),
+            # what Spotify raises itself for a rate limit
+            pytest.param(
+                RetriesExhausted("Rate limited", translation_key=RateLimited.translation_key),
+                True,
+                id="keyed-retries-exhausted",
+            ),
+            pytest.param(
+                RetriesExhausted("Retries exhausted, failed after 5 attempts"),
+                False,
+                id="retries-exhausted",
+            ),
+            # a 503 with a long Retry-After
+            pytest.param(
+                _give_up(ResourceTemporarilyUnavailable("Unavailable", backoff_time=120), 120),
+                False,
+                id="given-up-unavailable",
+            ),
+        ],
+    )
+    def test_recognises_a_rate_limit(self, error: Exception, expected: bool) -> None:
+        """A rate limit is recognised whether it was raised as is or given up on."""
+        assert is_rate_limit_error(error) is expected
+
+
+class TestRateLimitTranslation:
+    """Tests for the rate limit message that names the wait."""
+
+    @pytest.mark.parametrize(
+        ("wait", "expected"),
+        [
+            (60, ("rate_limited", [])),
+            (61, ("rate_limited_minutes", [2])),
+            (3600, ("rate_limited_minutes", [60])),
+            (7199, ("rate_limited_minutes", [120])),
+            (7200, ("rate_limited_hours", [2])),
+            (61500, ("rate_limited_hours", [17])),
+            (86400, ("rate_limited_hours", [24])),
+        ],
+    )
+    def test_wait_is_named_from_over_a_minute(
+        self, wait: float, expected: tuple[str, list[int]]
+    ) -> None:
+        """A wait over a minute is named in minutes, from two hours on in hours."""
+        assert rate_limit_translation(wait) == expected

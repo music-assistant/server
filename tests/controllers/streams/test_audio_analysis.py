@@ -7,18 +7,18 @@ import contextlib
 import inspect
 import pathlib
 import sqlite3
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, datetime
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import numpy as np
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import AudioError, ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, Track
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
@@ -31,6 +31,7 @@ from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_ANALYSIS_DOMAIN,
     LOUDNESS_PROVIDER_PRIORITY,
     PROVIDER_LOUDNESS_DOMAIN,
+    REALTIME_ANALYSIS_MAX_SESSIONS,
     SMART_FADES_ANALYSIS_DOMAIN,
     SONIC_ANALYSIS_DOMAIN,
     AudioAnalysisController,
@@ -38,8 +39,8 @@ from music_assistant.controllers.streams.audio_analysis import (
     _parse_row,
 )
 from music_assistant.controllers.streams.audio_analysis_codec import decode, encode
-from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
-from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer, AudioBufferEOF
+from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS, BufferMode
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -520,7 +521,7 @@ def _make_streamdetails(
     )
     sd.item_id = item_id
     sd.provider = "test-provider"
-    sd.media_type = MagicMock()
+    sd.media_type = MediaType.TRACK
     sd.duration = duration
     return sd
 
@@ -561,6 +562,8 @@ def _make_aa_provider(
     provider = MagicMock(spec=AudioAnalysisProvider)
     provider.instance_id = instance_id
     provider.available = available
+    provider.unloading = False
+    provider.media_types = frozenset(MediaType)
     provider.process_pcm_chunk = process_pcm_chunk or AsyncMock(return_value=None)
     provider.cancel = AsyncMock(return_value=None)
     provider.abort = AsyncMock(return_value=None)
@@ -2001,6 +2004,19 @@ async def test_get_track_audio_metadata_asks_the_copy_playback_would_pick_first(
 
 
 @pytest.mark.asyncio
+async def test_get_track_audio_metadata_energy_level_prefers_loudness_provider() -> None:
+    """The energy level uses a loudness provider's value over Sonic Analysis' own loudness."""
+    rows: list[Mapping[str, Any]] = [
+        _aa_row(SONIC_ANALYSIS_DOMAIN, 1, brightness=0.2, arousal=0.6, loudness_integrated=-20.0),
+        _aa_row(PROVIDER_LOUDNESS_DOMAIN, 2, loudness_integrated=-8.0),
+    ]
+    c = _analysis_controller_with_rows(rows)
+    result = await c.get_track_audio_metadata(_track_with_mapping())
+    assert result is not None
+    assert result.energy_level == 9
+
+
+@pytest.mark.asyncio
 async def test_get_wave_form_returns_rms_bins() -> None:
     """wave_form returns the stored RMS energy bins as a plain list of floats."""
     rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32).tolist()
@@ -2018,3 +2034,279 @@ async def test_get_wave_form_none_without_rms() -> None:
     """wave_form returns None when no AA provider stored RMS energy."""
     c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=120.0)])
     assert await c.get_wave_form("track-1", "test-provider") is None
+
+
+# --- radio sessions shared by every buffer that plays the station ---
+
+_PCM_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
+)
+_PCM_CHUNK = b"\x00" * _PCM_FORMAT.pcm_sample_size
+_STATION_URI = "test://radio/station"
+
+
+@contextlib.asynccontextmanager
+async def _realtime_controller(provider: MagicMock) -> AsyncGenerator[AudioAnalysisController]:
+    """Yield a controller that offers every session to provider, ending its tasks afterwards."""
+    controller = _make_controller()
+    tasks: list[asyncio.Future[Any]] = []
+
+    def _create_task(coro: Coroutine[Any, Any, Any]) -> asyncio.Future[Any]:
+        # tasks start eagerly, as mass.create_task does
+        task = asyncio.Task(coro, loop=asyncio.get_running_loop(), eager_start=True)
+        tasks.append(task)
+        return task
+
+    mass = cast("MagicMock", controller.mass)
+    mass.create_task = MagicMock(side_effect=_create_task)
+    mass.get_providers = MagicMock(return_value=[provider])
+    mass.get_provider = MagicMock(return_value=provider)
+    try:
+        yield controller
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _make_realtime_provider() -> MagicMock:
+    provider = _make_aa_provider("prov-1")
+    provider.name = "prov-1"
+    provider.start_analysis = AsyncMock(return_value=True)
+    provider.finalize = AsyncMock(return_value=None)
+    return provider
+
+
+def _make_stream(queue_id: str, media_type: MediaType = MediaType.RADIO) -> MagicMock:
+    sd = MagicMock()
+    sd.uri = _STATION_URI if media_type == MediaType.RADIO else f"test://track/{queue_id}"
+    sd.media_type = media_type
+    sd.queue_id = queue_id
+    sd.duration = None
+    return sd
+
+
+def _rolling_buffer() -> AudioBuffer:
+    return AudioBuffer(_PCM_FORMAT, mode=BufferMode.ROLLING)
+
+
+async def _settle() -> None:
+    """Let the analysis tasks run until they wait for audio again."""
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+
+def _session_keys(provider: MagicMock) -> list[str]:
+    """Return the session keys the provider was started with, in order."""
+    return [call.kwargs["session_id"] for call in provider.start_analysis.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_radio_second_queue_keeps_analysis_after_first_queue_stops() -> None:
+    """A second buffer on the station joins the session, which goes on when the first stops."""
+    provider = _make_realtime_provider()
+    async with _realtime_controller(provider) as controller:
+        buffer_a, buffer_b = _rolling_buffer(), _rolling_buffer()
+        await controller.start_analysis(buffer_a, _make_stream("queue-a"))
+        await buffer_a._put(_PCM_CHUNK)
+        await controller.start_analysis(buffer_b, _make_stream("queue-b"))
+        await _settle()
+        provider.start_analysis.assert_awaited_once()
+
+        await buffer_a.clear()
+        await buffer_b._put(_PCM_CHUNK)
+        await _settle()
+
+        assert provider.process_pcm_chunk.await_count == 2
+        provider.cancel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_radio_session_hands_over_on_end_of_stream() -> None:
+    """A buffer that reaches its end hands the session over to another buffer of the station."""
+    provider = _make_realtime_provider()
+    async with _realtime_controller(provider) as controller:
+        buffer_a, buffer_b = _rolling_buffer(), _rolling_buffer()
+        await controller.start_analysis(buffer_a, _make_stream("queue-a"))
+        await controller.start_analysis(buffer_b, _make_stream("queue-b"))
+        await buffer_a._set_eof()
+        await buffer_b._put(_PCM_CHUNK)
+        await _settle()
+
+        provider.process_pcm_chunk.assert_awaited_once()
+        provider.finalize.assert_not_called()
+        provider.cancel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_radio_session_hands_over_when_its_buffer_fails() -> None:
+    """A buffer whose source fails hands the session over to another buffer of the station."""
+    provider = _make_realtime_provider()
+    async with _realtime_controller(provider) as controller:
+        buffer_a, buffer_b = _rolling_buffer(), _rolling_buffer()
+        await controller.start_analysis(buffer_a, _make_stream("queue-a"))
+        await controller.start_analysis(buffer_b, _make_stream("queue-b"))
+        buffer_a._producer_error = AudioError("connection lost")
+        await buffer_a._notify_on_producer_error()
+        await buffer_b._put(_PCM_CHUNK)
+        await _settle()
+
+        provider.process_pcm_chunk.assert_awaited_once()
+        provider.cancel.assert_not_called()
+
+
+@pytest.mark.parametrize("ends_cleanly", [False, True])
+@pytest.mark.asyncio
+async def test_radio_session_ends_with_its_last_buffer(ends_cleanly: bool) -> None:
+    """The session is cancelled when its last buffer goes, and finalized when it ends cleanly."""
+    provider = _make_realtime_provider()
+    async with _realtime_controller(provider) as controller:
+        buffer_a, buffer_b = _rolling_buffer(), _rolling_buffer()
+        await controller.start_analysis(buffer_a, _make_stream("queue-a"))
+        await controller.start_analysis(buffer_b, _make_stream("queue-b"))
+        await buffer_a.clear()
+        await _settle()
+        provider.cancel.assert_not_called()
+
+        if ends_cleanly:
+            await buffer_b._set_eof()
+        else:
+            await buffer_b.clear()
+        await _settle()
+
+        (session_key,) = _session_keys(provider)
+        if ends_cleanly:
+            provider.finalize.assert_called_once_with(session_key)
+            provider.cancel.assert_not_called()
+        else:
+            provider.cancel.assert_called_once_with(session_key)
+            provider.finalize.assert_not_called()
+        assert not controller._active_sessions
+        assert not controller._workers
+
+
+@pytest.mark.asyncio
+async def test_radio_session_skips_ahead_when_falling_behind() -> None:
+    """Audio played before the reader got to it is skipped, and the session goes on."""
+    release = asyncio.Event()
+
+    async def _busy(*_: Any) -> None:
+        await release.wait()
+
+    provider = _make_realtime_provider()
+    provider.process_pcm_chunk = AsyncMock(side_effect=_busy)
+    async with _realtime_controller(provider) as controller:
+        audio_buffer = _rolling_buffer()
+        await controller.start_analysis(audio_buffer, _make_stream("queue-a"))
+        for _ in range(5):
+            await audio_buffer._put(_PCM_CHUNK)
+        await _settle()
+        # playback takes the chunks the busy reader has not read yet
+        for _ in range(4):
+            await audio_buffer._get()
+        release.set()
+        await _settle()
+
+        # chunk 0, then chunk 4: the first chunk the buffer still holds
+        assert provider.process_pcm_chunk.await_count == 2
+        provider.cancel.assert_not_called()
+        assert _session_keys(provider)[0] in controller._active_sessions
+
+
+@pytest.mark.asyncio
+async def test_radio_restart_gets_a_session_of_its_own() -> None:
+    """A stop and play on the same stream details never shares a key with the stopped session."""
+    provider = _make_realtime_provider()
+    async with _realtime_controller(provider) as controller:
+        streamdetails = _make_stream("queue-a")
+        first_buffer = _rolling_buffer()
+        await controller.start_analysis(first_buffer, streamdetails)
+        await first_buffer.clear()
+        # the stopped session's cancel has not run yet when the play starts
+        await controller.start_analysis(_rolling_buffer(), streamdetails)
+        await _settle()
+
+        first_key, second_key = _session_keys(provider)
+        assert first_key != second_key
+        provider.cancel.assert_called_once_with(first_key)
+        assert second_key in controller._active_sessions
+
+
+@pytest.mark.asyncio
+async def test_radio_stopped_while_its_providers_start_leaves_nothing_behind() -> None:
+    """A station whose only buffer goes while the providers start ends its session cleanly."""
+    starting = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_start(**_: Any) -> bool:
+        starting.set()
+        await release.wait()
+        return True
+
+    provider = _make_realtime_provider()
+    provider.start_analysis = AsyncMock(side_effect=_slow_start)
+    async with _realtime_controller(provider) as controller:
+        audio_buffer = _rolling_buffer()
+        start = asyncio.create_task(
+            controller.start_analysis(audio_buffer, _make_stream("queue-a"))
+        )
+        await starting.wait()
+        await audio_buffer.clear()
+        release.set()
+        await start
+        await _settle()
+
+        (session_key,) = _session_keys(provider)
+        assert not controller._workers
+        assert not controller._active_sessions
+        assert not controller._radio_analyses
+        provider.cancel.assert_called_once_with(session_key)
+
+
+@pytest.mark.asyncio
+async def test_radio_session_is_not_evicted_by_a_queue_moving_on_to_tracks() -> None:
+    """The per-queue session cap of tracks never ends a radio session another queue plays."""
+    provider = _make_realtime_provider()
+    async with _realtime_controller(provider) as controller:
+        buffer_a, buffer_b = _rolling_buffer(), _rolling_buffer()
+        await controller.start_analysis(buffer_a, _make_stream("queue-a"))
+        await controller.start_analysis(buffer_b, _make_stream("queue-b"))
+        await buffer_a.clear()
+        for i in range(REALTIME_ANALYSIS_MAX_SESSIONS):
+            track = _make_stream("queue-a", MediaType.TRACK)
+            track.uri = f"test://track/{i}"
+            await controller.start_analysis(AudioBuffer(_PCM_FORMAT), track)
+        await buffer_b._put(_PCM_CHUNK)
+        await _settle()
+
+        radio_key = _session_keys(provider)[0]
+        assert radio_key in controller._active_sessions
+        assert call(radio_key) not in provider.cancel.call_args_list
+        provider.process_pcm_chunk.assert_any_await(radio_key, _PCM_CHUNK)
+
+
+@pytest.mark.asyncio
+async def test_track_session_is_dropped_when_falling_behind() -> None:
+    """A track session still ends when the reader falls behind the buffer."""
+    release = asyncio.Event()
+
+    async def _busy(*_: Any) -> None:
+        await release.wait()
+
+    provider = _make_realtime_provider()
+    provider.process_pcm_chunk = AsyncMock(side_effect=_busy)
+    async with _realtime_controller(provider) as controller:
+        audio_buffer = _rolling_buffer()
+        streamdetails = _make_stream("queue-a", MediaType.TRACK)
+        await controller.start_analysis(audio_buffer, streamdetails)
+        for _ in range(5):
+            await audio_buffer._put(_PCM_CHUNK)
+        await _settle()
+        for _ in range(4):
+            await audio_buffer._get()
+        release.set()
+        await _settle()
+
+        provider.process_pcm_chunk.assert_awaited_once()
+        provider.cancel.assert_called_once_with(streamdetails.uri)
+        assert not controller._active_sessions

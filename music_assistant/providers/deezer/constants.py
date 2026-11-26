@@ -25,11 +25,29 @@ PERSONAL_ALBUM_PREFIX = "personal_album_"
 # Bump when personal-item parsing changes to invalidate cached parsed items.
 PERSONAL_METADATA_VERSION = "2"
 
+# -- Audiobook authors --
+
+# keeps the author apart from the music artist with the same Deezer id
+AUTHOR_ARTIST_PREFIX = "author_"
+# Deezer's placeholder artist "Unknown"
+UNKNOWN_ARTIST_ID = "8592"
+# Bump when audiobook or release parsing changes to invalidate cached items.
+AUDIOBOOK_METADATA_VERSION = "2"
+# an artist is an author if one of its newest releases is an audiobook; each one more
+# costs a request per 50 favorite artists in the library sync
+AUTHOR_NEWEST_RELEASES = 3
+
 # -- Pagination page sizes --
 
 FAVORITES_PAGE_SIZE = 50
 AUDIOBOOK_CHAPTERS_PAGE_SIZE = 200
 FLOW_BATCH_COUNT = 2
+
+# -- API rate limit, shared by the GraphQL and gw-light requests of a provider instance --
+
+# Deezer documents 50 requests per 5 seconds, enforced per second so they never come in one burst
+API_RATE_LIMIT = 10
+API_RATE_PERIOD = 1
 
 # -- Browse folder names (used as path segments for routing) --
 
@@ -49,6 +67,10 @@ BROWSE_TOP_ALBUMS = "Top Albums"
 BROWSE_TOP_ARTISTS = "Top Artists"
 BROWSE_TOP_PLAYLISTS = "Top Playlists"
 BROWSE_ALL_FLOWS = "All Flows"
+
+# -- Stream quality --
+
+CONF_QUALITY = "quality"
 
 # -- Track decryption --
 

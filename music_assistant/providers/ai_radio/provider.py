@@ -30,9 +30,11 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.helpers.plugin_engines import (
+    EngineKind,
+    EngineSetting,
     get_tts_engines,
-    select_ai_engine,
-    select_tts_engine,
+    resolve_ai_engine_setting,
+    resolve_tts_engine_setting,
 )
 from music_assistant.models.plugin import PluginProvider
 
@@ -79,6 +81,11 @@ class AIRadioProvider(
     PluginProvider,
 ):
     """Implementation of the AI Radio plugin provider."""
+
+    engine_settings = (
+        EngineSetting(EngineKind.TEXT, CONF_AI_ENGINE, in_setup_data=True),
+        EngineSetting(EngineKind.SPEECH, CONF_TTS_ENGINE, in_setup_data=True),
+    )
 
     def __init__(
         self,
@@ -385,7 +392,7 @@ class AIRadioProvider(
 
     async def _wait_for_engines(self, timeout: float | None = None) -> None:
         """
-        Wait (bounded) until a concrete AI and TTS engine are selected for this instance.
+        Wait (bounded) until the AI and TTS engine of this instance are available.
 
         :param timeout: How long to wait, defaulting to the engine discovery timeout.
         :raises SetupFailedError: When either engine is still unavailable at the deadline.
@@ -410,18 +417,21 @@ class AIRadioProvider(
 
     async def _engine_selection_error(self) -> SetupFailedError | None:
         """
-        Seed a concrete engine selection where none is stored yet.
+        Return the error for the first engine of this instance that is not available.
 
-        :return: The error for the first engine that cannot be selected or no longer
-            resolves, or None when both engines are settled.
+        :return: The error for the AI or TTS engine that does not resolve, or None when
+            both engines are available.
         """
-        if await select_ai_engine(self, CONF_AI_ENGINE, in_setup_data=True) is None:
+        config = self.mass.config
+        ai_engine = config.get_provider_setup_value(self.instance_id, CONF_AI_ENGINE)
+        if await resolve_ai_engine_setting(self.mass, ai_engine) is None:
             return SetupFailedError(
                 "AI Radio has no AI engine available",
                 translation_key="ai_radio_no_ai_engine",
                 translation_owner=TRANSLATION_OWNER,
             )
-        if await select_tts_engine(self, CONF_TTS_ENGINE, in_setup_data=True) is None:
+        tts_engine = config.get_provider_setup_value(self.instance_id, CONF_TTS_ENGINE)
+        if await resolve_tts_engine_setting(self.mass, tts_engine) is None:
             return SetupFailedError(
                 "AI Radio has no text-to-speech engine available",
                 translation_key="ai_radio_no_tts_engine",

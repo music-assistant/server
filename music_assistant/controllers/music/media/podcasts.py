@@ -27,6 +27,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PODCASTS
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT
 from music_assistant.controllers.music.helpers import ResumePoint, select_resume_point
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing, cached_listing
@@ -379,7 +380,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         )
         matches: list[ProviderMapping] = []
         search_str = db_podcast.name
-        search_result = await self.search(search_str, provider.instance_id)
+        search_result = await self.search(
+            search_str, provider.instance_id, limit=MATCH_SEARCH_LIMIT
+        )
         for search_result_item in search_result:
             if not search_result_item.available:
                 continue

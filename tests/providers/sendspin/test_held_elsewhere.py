@@ -82,10 +82,11 @@ class _HeldServerApi:
 
 def _make_provider(api: _HeldServerApi) -> tuple[SendspinProvider, Mock]:
     player = Mock(spec=SendspinBasePlayer)
-    player.initialized.is_set.return_value = True
+    # attached to its player
+    player.player = Mock()
     mass = _FakeMass(asyncio.get_running_loop())
     mass.players = SimpleNamespace(  # type: ignore[attr-defined]
-        get_player=lambda _client_id: player, trigger_player_update=Mock()
+        get_protocol=lambda _client_id: player
     )
     provider = SendspinProvider.__new__(SendspinProvider)
     provider.mass = cast("MusicAssistant", mass)
@@ -96,8 +97,11 @@ def _make_provider(api: _HeldServerApi) -> tuple[SendspinProvider, Mock]:
     provider._held_paired = set()
     provider._refused_here = {}
     provider._unencrypted_clients = set()
+    provider._announced_clients = set()
     provider._hass_auto_pairer = Mock()
+    provider._local_auto_pairer = Mock()
     provider._pending_pairing_evictions = set()
+    provider._multi_channel_speakers = {}
     return provider, player
 
 

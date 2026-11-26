@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from aioslimproto.client import PlayerState as SlimPlayerState
+from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, RepeatMode
@@ -16,15 +14,13 @@ CONF_PORT = "port"
 DEFAULT_SLIMPROTO_PORT = 3483
 CONF_DISPLAY = "display"
 CONF_VISUALIZATION = "visualization"
+CONF_STORED_VOLUME = "stored_volume"
+CONF_STORED_POWER = "stored_power"
+# category for caching previous player state (bumped to invalidate old format)
+CACHE_CATEGORY_PREV_STATE = 1
 
 DEFAULT_PLAYER_VOLUME = 20
 DEFAULT_VISUALIZATION = SlimVisualisationType.NONE
-
-# sync constants
-MIN_DEVIATION_ADJUST = 8  # 5 milliseconds
-MIN_REQ_PLAYPOINTS = 8  # we need at least 8 measurements
-DEVIATION_JUMP_IGNORE = 500  # ignore a sudden unrealistic jump
-MAX_SKIP_AHEAD_MS = 800  # 0.8 seconds
 
 STATE_MAP = {
     SlimPlayerState.BUFFERING: PlaybackState.PLAYING,
@@ -35,6 +31,7 @@ STATE_MAP = {
 }
 
 REPEATMODE_MAP = {RepeatMode.OFF: 0, RepeatMode.ONE: 1, RepeatMode.ALL: 2}
+REPEATMODE_BY_LMS_VALUE = {str(value): mode for mode, value in REPEATMODE_MAP.items()}
 
 CONF_ENTRY_DISPLAY = ConfigEntry(
     key=CONF_DISPLAY,
@@ -55,12 +52,3 @@ CONF_ENTRY_VISUALIZATION = ConfigEntry(
     advanced=True,
     depends_on=CONF_DISPLAY,
 )
-
-
-@dataclass
-class SyncPlayPoint:
-    """Simple structure to describe a Sync Playpoint."""
-
-    timestamp: float
-    sync_master: str
-    diff: int

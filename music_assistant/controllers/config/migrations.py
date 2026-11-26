@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -12,25 +13,50 @@ from music_assistant_models.enums import CrossfadeMode, TaskScheduleType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_AI,
+    CONF_AI_DEFAULT_ENGINES_MIGRATED,
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
+    CONF_ANNOUNCE_TTS_ENGINE,
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
+    CONF_CACHED_ARP_MAC,
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
+    CONF_DEFAULT_IMAGE_ENGINE,
+    CONF_DEFAULT_SPEECH_ENGINE,
+    CONF_DEFAULT_TEXT_ENGINE,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
     CONF_ENABLE_ICY_METADATA,
-    CONF_HTTP_PROFILE,
+    CONF_ENABLED,
     CONF_ICON,
-    CONF_LINKED_PROTOCOL_IDS,
+    CONF_MUTE_CONTROL,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
-    CONF_PROTOCOL_PARENT_ID,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_PROTOCOL_EXPERIMENTAL_NOTE,
+    CONF_PROTOCOL_IDENTIFIERS,
+    CONF_PROTOCOL_KEY_SPLITTER,
+    CONF_PROTOCOL_OFF_BY_DEFAULT,
     CONF_PROVIDERS,
     CONF_RAUMFELD_ICY_BASIC_MIGRATED,
+    CONF_REPORTED_MAC,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
     CONF_SMART_FADES_MODE,
+    CONF_SYNC_ADJUST,
+    CONF_UNDERLYING_PLAYER_ID,
+    CONF_VOLUME_CONTROL,
     CONF_VOLUME_NORMALIZATION,
 )
+from music_assistant.controllers.config.player_split import (
+    LEGACY_LINKED_PROTOCOL_IDS,
+    LEGACY_PROTOCOL_PARENT_ID,
+    migrate_player_split,
+    remove_player_records_of_older_versions,
+)
+from music_assistant.controllers.player_queues.constants import CONF_DEFAULT_ENQUEUE_SELECT_ARTIST
 from music_assistant.controllers.tasks.constants import TASK_STATE_CONFIG_KEY
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS
 
@@ -53,6 +79,52 @@ LEGACY_MSX_BRIDGE_KEYS = ("enable_player_grouping", "enable_sendspin_bridge")
 
 # player id prefix of the Sendspin clients the removed MSX Sendspin bridge registered
 LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
+
+# removed player HTTP profile config key, only referenced by its migrations
+LEGACY_HTTP_PROFILE_KEY = "http_profile"
+
+# domains of the removed builtin providers, whose stored configs nothing can load anymore
+RETIRED_BUILTIN_PROVIDER_DOMAINS = ("builtin_player", "universal_player", "sendspin_source")
+
+# the order in which the Sendspin bridges took a device while each kept an output of its
+# own, only referenced by the migration that folds those outputs into one
+LEGACY_SENDSPIN_BRIDGE_ORDER = ("airplay", "squeezelite", "chromecast")
+
+# values of a Sendspin output that the migration to one output per player reads and writes
+_SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
+_SENDSPIN_BRIDGE_STATIC_DELAYS = "sendspin_bridge_static_delays"
+_SENDSPIN_CAST_OPT_IN = "sendspin_cast_opt_in"
+# value of a Cast protocol whose bridge had yet to switch its new output off
+_LEGACY_SENDSPIN_OPT_OUT_PENDING = "sendspin_opt_out_pending"
+
+# values of a Sendspin output that describe that output only, which no other one inherits
+_SENDSPIN_OUTPUT_OWN_KEYS = frozenset(
+    {
+        CONF_CACHED_ARP_MAC,
+        CONF_PROTOCOL_EXPERIMENTAL_NOTE,
+        CONF_PROTOCOL_IDENTIFIERS,
+        CONF_PROTOCOL_OFF_BY_DEFAULT,
+        CONF_REPORTED_MAC,
+        CONF_UNDERLYING_PLAYER_ID,
+        _SENDSPIN_BRIDGE_STATIC_DELAYS,
+        _SENDSPIN_CAST_OPT_IN,
+        _SENDSPIN_STATIC_DELAY,
+    }
+)
+
+# the engine each feature picked before every kind of engine got a default, as (the key of the
+# default it seeds, provider domain or None for the players core module, section, key). Picks of
+# the same kind are listed in the order that breaks a tie between equally used engines.
+# TODO: remove after 2.12 release
+FEATURE_ENGINE_PICKS: tuple[tuple[str, str | None, str, str], ...] = (
+    (CONF_DEFAULT_SPEECH_ENGINE, None, "values", CONF_ANNOUNCE_TTS_ENGINE),
+    (CONF_DEFAULT_SPEECH_ENGINE, "ai_radio", "setup_data", "tts_engine"),
+    (CONF_DEFAULT_TEXT_ENGINE, "ai_radio", "setup_data", "ai_engine"),
+    (CONF_DEFAULT_TEXT_ENGINE, "smart_playlist", "values", "ai_engine"),
+    (CONF_DEFAULT_TEXT_ENGINE, "music_quiz", "values", "ai_engine"),
+    (CONF_DEFAULT_TEXT_ENGINE, "playlist_metadata", "values", "ai_text_engine"),
+    (CONF_DEFAULT_IMAGE_ENGINE, "playlist_metadata", "values", "ai_image_engine"),
+)
 
 
 # Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
@@ -485,7 +557,7 @@ PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
 }
 
 
-async def migrate(data: dict[str, Any]) -> bool:
+async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
 
@@ -550,13 +622,6 @@ async def migrate(data: dict[str, Any]) -> bool:
     if _migrate_bluesound_http_profile(data):
         changed = True
 
-    # Drop disabled protocol player configs that lost their parent player: the device they
-    # belong to can never register again while such a config lingers, and it is not shown
-    # in the UI so there is no way to enable it again.
-    # TODO: remove after 2.12 release
-    if _migrate_orphaned_disabled_protocol_configs(data):
-        changed = True
-
     # Clear the stored name of players that were never renamed, so an updated default
     # name is no longer shadowed by the auto-generated name stored at creation time.
     # TODO: remove after 2.12 release
@@ -586,9 +651,61 @@ async def migrate(data: dict[str, Any]) -> bool:
     if _migrate_nicovideo_drop_mail_login(data):
         changed = True
 
+    # Drop the stored value of the removed MilkDrop visualizer color tint setting.
+    # TODO: remove after 2.13 release
+    if _migrate_milkdrop_drop_color_tint(data):
+        changed = True
+
     # Move Raumfeld players still on the former "full" ICY default to "basic".
     # TODO: remove after 2.13 release
     if _migrate_raumfeld_icy_basic(data):
+        changed = True
+
+    # Move an artist selection that listed the artist's whole catalogue to the tracks of the
+    # artist's albums in the library.
+    # TODO: remove after 2.13 release
+    if _migrate_artist_catalogue_selection(data):
+        changed = True
+
+    # Split the player configs into one record per player and one per protocol. This runs
+    # after the steps above, which work on the records as they were before the split.
+    if migrate_player_split(data):
+        changed = True
+
+    # Remove the player records an older version stored in the old shape after the split.
+    if remove_player_records_of_older_versions(data):
+        changed = True
+
+    # Drop the stored value of the removed HTTP profile setting from every player and protocol.
+    # It reads both trees, so it also reaches a config that was split before this step existed.
+    # TODO: remove after 2.13 release
+    if _migrate_drop_http_profile(data):
+        changed = True
+
+    # Negate the stored sync adjust of every AirPlay player, whose positive value now plays
+    # earlier like it does on every other protocol. It reads the split trees, so it runs
+    # after the split.
+    # TODO: remove after 2.13 release
+    if _migrate_airplay_sync_adjust_sign(data):
+        changed = True
+
+    # Remove the stored configs of the retired builtin providers, which the UI would
+    # otherwise list as unavailable providers forever.
+    # TODO: remove after 2.13 release
+    if _migrate_remove_retired_builtin_providers(data):
+        changed = True
+
+    # Store every player that is stored as a stereo pair as a multi-channel player, the type
+    # a set of speakers has. It reads the split tree, so it runs after the split.
+    # TODO: remove after 2.13 release
+    if _migrate_stereo_pair_player_type(data):
+        changed = True
+
+    # Give every player one Sendspin output for all its bridges: mark what a Cast bridge
+    # left switched off as its default, and fold the outputs of a player that has several
+    # into the one in use. It reads the split tree, so it runs after the split.
+    # TODO: remove after 2.13 release
+    if _migrate_sendspin_one_output(data):
         changed = True
 
     return changed
@@ -667,8 +784,10 @@ def migrate_connected_player_plugins(
     domain, the explicitly configured players carry over into the multi-select and the
     per-instance device names are dropped (the advertised name follows the player now).
     For ariacast_receiver and yandex_ynison the connected player became mandatory: the
-    removed automatic selection and players that no longer exist are cleared (so the
-    provider fails into reconfigure) and their free-form device name keys are dropped.
+    removed automatic selection is cleared (so the provider fails into reconfigure) and
+    their free-form device name keys are dropped. A configured player is kept whether
+    a config is stored for it or not: a player that only exists while its device is
+    connected has none.
 
     Runs after encryption is initialized, and after migrate_provider_setup_data so the
     pre-setup-flow values have landed in setup_data by now.
@@ -680,23 +799,59 @@ def migrate_connected_player_plugins(
     all_provider_configs = data.get(CONF_PROVIDERS, {})
     if not isinstance(all_provider_configs, dict):
         return False
-    stored_players = data.get(CONF_PLAYERS, {})
-    known_player_ids = set(stored_players) if isinstance(stored_players, dict) else set()
     changed = False
     for domain in ("spotify_connect", "airplay_receiver"):
         if _collapse_connected_player_instances(
-            all_provider_configs, domain, known_player_ids, decrypt, storage_path
+            all_provider_configs, domain, decrypt, storage_path
         ):
             changed = True
-    if _clear_invalid_connected_players(all_provider_configs, known_player_ids, decrypt):
+    if _clear_invalid_connected_players(all_provider_configs, decrypt):
         changed = True
     return changed
+
+
+# TODO: remove after 2.12 release
+def migrate_ai_default_engines(data: dict[str, Any], decrypt: Callable[[str], str]) -> bool:
+    """
+    Seed the default AI engines from the engines the features picked themselves, once.
+
+    Each kind of engine (text, speech, image) has a default now, which a feature follows unless
+    it picks an engine of its own. Every default that is not set yet is seeded with the engine
+    most features of its kind picked, as long as the plugin providing it is still configured and
+    enabled. A pick equal to the default of its kind is removed, so that feature follows the
+    default; any other pick stays the feature's own choice. Guarded by
+    CONF_AI_DEFAULT_ENGINES_MIGRATED, which is claimed even when nothing moved, so a pick equal
+    to the default that is made afterwards is kept. Returns True when the settings were
+    modified, including the first run's marker.
+
+    Runs after encryption is initialized, since the AI Radio picks sit in its encrypted
+    setup_data.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param decrypt: Callback that decrypts a stored string value (a no-op for plain values).
+    """
+    if data.get(CONF_AI_DEFAULT_ENGINES_MIGRATED):
+        return False
+    picks = _read_feature_engine_picks(data, decrypt)
+    defaults = _seed_default_engines(data, picks)
+    followed = 0
+    for default_key, section, key, uid in picks:
+        if uid == defaults.get(default_key):
+            del section[key]
+            followed += 1
+    if defaults:
+        LOGGER.info(
+            "Default AI engines: %s; %d feature(s) follow them now",
+            ", ".join(f"{key}={uid}" for key, uid in defaults.items()),
+            followed,
+        )
+    data[CONF_AI_DEFAULT_ENGINES_MIGRATED] = True
+    return True
 
 
 def _collapse_connected_player_instances(
     all_provider_configs: dict[str, Any],
     domain: str,
-    known_player_ids: set[str],
     decrypt: Callable[[str], str],
     storage_path: str,
 ) -> bool:
@@ -705,7 +860,6 @@ def _collapse_connected_player_instances(
 
     :param all_provider_configs: The stored provider configurations, modified in-place.
     :param domain: The plugin domain to collapse (spotify_connect or airplay_receiver).
-    :param known_player_ids: The player ids present in the stored player configurations.
     :param decrypt: Callback that decrypts a stored string value.
     :param storage_path: The server storage path holding per-instance provider data dirs.
     """
@@ -761,16 +915,12 @@ def _collapse_connected_player_instances(
             survivor_id,
         )
     # ordered de-duped carry-over of the explicitly configured players; the removed
-    # automatic selection and vanished players contribute nothing
+    # automatic selection contributes nothing
     connected_players: list[str] = []
     soloist_player_ids: dict[str, str] = {}
     for instance_id in enabled_ids:
         player_id = decrypted.get(instance_id, {}).get("mass_player_id")
-        if (
-            not isinstance(player_id, str)
-            or player_id == LEGACY_PLAYER_ID_AUTO
-            or player_id not in known_player_ids
-        ):
+        if not isinstance(player_id, str) or player_id == LEGACY_PLAYER_ID_AUTO:
             continue
         if player_id not in connected_players:
             connected_players.append(player_id)
@@ -839,14 +989,12 @@ def _move_soloist_data_dirs(storage_path: str, soloist_player_ids: dict[str, str
 
 def _clear_invalid_connected_players(
     all_provider_configs: dict[str, Any],
-    known_player_ids: set[str],
     decrypt: Callable[[str], str],
 ) -> bool:
     """
     Enforce the now-mandatory connected player on the single-player plugins.
 
     :param all_provider_configs: The stored provider configurations, modified in-place.
-    :param known_player_ids: The player ids present in the stored player configurations.
     :param decrypt: Callback that decrypts a stored string value.
     """
     changed = False
@@ -874,7 +1022,7 @@ def _clear_invalid_connected_players(
                 "Could not read the configured player of %s; leaving it in place", instance_id
             )
             continue
-        if player_id == LEGACY_PLAYER_ID_AUTO or player_id not in known_player_ids:
+        if player_id == LEGACY_PLAYER_ID_AUTO:
             del setup_data["mass_player_id"]
             changed = True
             LOGGER.warning(
@@ -953,7 +1101,7 @@ def _migrate_local_audio_attribution_stubs(data: dict[str, Any]) -> bool:
             continue
         player_cfg["player_type"] = "player"
         values = player_cfg.setdefault("values", {})
-        values.pop(CONF_PROTOCOL_PARENT_ID, None)
+        values.pop(LEGACY_PROTOCOL_PARENT_ID, None)
         changed = True
 
         # the universal player wrapper was keyed on the stub's player_id
@@ -999,8 +1147,8 @@ def _absorb_universal_player_config(
     universal_values = universal_values if isinstance(universal_values, dict) else {}
     # bookkeeping only relevant to the universal player wrapper itself
     internal_keys = (
-        CONF_LINKED_PROTOCOL_IDS,
-        CONF_PROTOCOL_PARENT_ID,
+        LEGACY_LINKED_PROTOCOL_IDS,
+        LEGACY_PROTOCOL_PARENT_ID,
         "device_identifiers",
         "device_info",
     )
@@ -1012,11 +1160,11 @@ def _absorb_universal_player_config(
     # carry the linked protocols (minus the stub itself, it is the parent now)
     # and re-point their cached parent so they restore fast on the next start
     linked_ids = [
-        pid for pid in (universal_values.get(CONF_LINKED_PROTOCOL_IDS) or []) if pid != player_id
+        pid for pid in (universal_values.get(LEGACY_LINKED_PROTOCOL_IDS) or []) if pid != player_id
     ]
     if linked_ids:
-        existing_ids = list(values.get(CONF_LINKED_PROTOCOL_IDS) or [])
-        values[CONF_LINKED_PROTOCOL_IDS] = existing_ids + [
+        existing_ids = list(values.get(LEGACY_LINKED_PROTOCOL_IDS) or [])
+        values[LEGACY_LINKED_PROTOCOL_IDS] = existing_ids + [
             pid for pid in linked_ids if pid not in existing_ids
         ]
     all_player_configs = data.get(CONF_PLAYERS, {})
@@ -1025,8 +1173,8 @@ def _absorb_universal_player_config(
         if not isinstance(protocol_cfg, dict):
             continue
         protocol_values = protocol_cfg.setdefault("values", {})
-        if protocol_values.get(CONF_PROTOCOL_PARENT_ID) == universal_id:
-            protocol_values[CONF_PROTOCOL_PARENT_ID] = player_id
+        if protocol_values.get(LEGACY_PROTOCOL_PARENT_ID) == universal_id:
+            protocol_values[LEGACY_PROTOCOL_PARENT_ID] = player_id
 
     # move per-queue settings and DSP configuration to the new player_id
     for tree_key in (CONF_PLAYER_QUEUES, CONF_PLAYER_DSP):
@@ -1104,11 +1252,40 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
         player_values = player_cfg.get("values")
         if not isinstance(player_values, dict):
             continue
-        if player_values.get(CONF_HTTP_PROFILE, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
-            del player_values[CONF_HTTP_PROFILE]
+        if player_values.get(LEGACY_HTTP_PROFILE_KEY, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
+            del player_values[LEGACY_HTTP_PROFILE_KEY]
             changed = True
     if changed:
         LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
+    return changed
+
+
+def _migrate_drop_http_profile(data: dict[str, Any]) -> bool:
+    """Drop the stored value of the removed HTTP profile setting from every player and protocol."""
+    # a player record can hold a copy of a protocol's value under a prefixed key: a parent
+    # player stored one for a linked protocol player, and the split keeps the values of a
+    # universal player on its player record
+    protocol_key_suffix = f"{CONF_PROTOCOL_KEY_SPLITTER}{LEGACY_HTTP_PROFILE_KEY}"
+    changed = False
+    for tree in (CONF_PLAYERS, CONF_PLAYER_PROTOCOLS):
+        records = data.get(tree)
+        if not isinstance(records, dict):
+            continue
+        for record in records.values():
+            if not isinstance(record, dict):
+                continue
+            values = record.get("values")
+            if not isinstance(values, dict):
+                continue
+            for key in [
+                key
+                for key in values
+                if key == LEGACY_HTTP_PROFILE_KEY or key.endswith(protocol_key_suffix)
+            ]:
+                del values[key]
+                changed = True
+    if changed:
+        LOGGER.info("Dropped the removed HTTP profile from the player configuration(s)")
     return changed
 
 
@@ -1135,53 +1312,6 @@ def _migrate_unrenamed_player_names(data: dict[str, Any]) -> bool:
         player_cfg["name"] = None
         changed = True
     return changed
-
-
-def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
-    """
-    Remove disabled protocol player configs that no longer belong to a player.
-
-    A protocol player is only ever presented as part of the player that owns it, so a
-    disabled config that outlived its owner keeps the device from registering again while
-    offering no way to enable it.
-    """
-    all_player_configs = data.get(CONF_PLAYERS, {})
-    if not isinstance(all_player_configs, dict):
-        return False
-    linked_ids: set[str] = set()
-    for player_cfg in all_player_configs.values():
-        if not isinstance(player_cfg, dict):
-            continue
-        player_values = player_cfg.get("values")
-        if not isinstance(player_values, dict):
-            continue
-        if isinstance(cached_ids := player_values.get(CONF_LINKED_PROTOCOL_IDS), list):
-            linked_ids.update(pid for pid in cached_ids if isinstance(pid, str))
-    orphaned: list[str] = []
-    for player_id, player_cfg in all_player_configs.items():
-        if not isinstance(player_cfg, dict):
-            continue
-        if player_cfg.get("player_type") != "protocol":
-            continue
-        if player_cfg.get("enabled", True):
-            continue
-        # a player owns a protocol player from either side of the link
-        if player_id in linked_ids:
-            continue
-        player_values = player_cfg.get("values")
-        parent_id = (
-            player_values.get(CONF_PROTOCOL_PARENT_ID) if isinstance(player_values, dict) else None
-        )
-        if parent_id in all_player_configs:
-            continue
-        orphaned.append(player_id)
-    dsp_configs = data.get(CONF_PLAYER_DSP)
-    for player_id in orphaned:
-        del all_player_configs[player_id]
-        if isinstance(dsp_configs, dict):
-            dsp_configs.pop(player_id, None)
-        LOGGER.warning("Removed orphaned player configuration %s", player_id)
-    return bool(orphaned)
 
 
 def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
@@ -1232,7 +1362,7 @@ def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
         player_values = player_cfg.get("values")
         if not isinstance(player_values, dict):
             continue
-        cached_ids = player_values.get(CONF_LINKED_PROTOCOL_IDS)
+        cached_ids = player_values.get(LEGACY_LINKED_PROTOCOL_IDS)
         if not isinstance(cached_ids, list):
             continue
         kept_ids = [
@@ -1241,7 +1371,7 @@ def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
             if not (isinstance(pid, str) and pid.startswith(LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX))
         ]
         if len(kept_ids) != len(cached_ids):
-            player_values[CONF_LINKED_PROTOCOL_IDS] = kept_ids
+            player_values[LEGACY_LINKED_PROTOCOL_IDS] = kept_ids
             changed = True
     return changed
 
@@ -1470,6 +1600,28 @@ def _migrate_nicovideo_drop_mail_login(data: dict[str, Any]) -> bool:
     return True
 
 
+def _migrate_milkdrop_drop_color_tint(data: dict[str, Any]) -> bool:
+    """Remove the stored color tint value from every milkdrop_visualizer provider instance."""
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    dropped = 0
+    for provider_cfg in all_provider_configs.values():
+        if (
+            not isinstance(provider_cfg, dict)
+            or provider_cfg.get("domain") != "milkdrop_visualizer"
+        ):
+            continue
+        stored = provider_cfg.get("values")
+        if isinstance(stored, dict) and "color_tint" in stored:
+            del stored["color_tint"]
+            dropped += 1
+    if not dropped:
+        return False
+    LOGGER.info("Removed %d unused milkdrop color tint value(s)", dropped)
+    return True
+
+
 def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
     """
     Move Raumfeld players still on the former "full" ICY default to "basic", once.
@@ -1505,3 +1657,402 @@ def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
     # claim the marker even when nothing moved, so a "full" picked later is kept
     data[CONF_RAUMFELD_ICY_BASIC_MIGRATED] = True
     return True
+
+
+def _migrate_airplay_sync_adjust_sign(data: dict[str, Any]) -> bool:
+    """
+    Negate the stored sync adjust of every AirPlay player and protocol, once.
+
+    AirPlay played later for a positive value, unlike every other protocol. Guarded by
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED, which is claimed even when nothing moved, so a
+    value stored afterwards keeps its sign. Returns True when the settings were modified,
+    including the first run's marker.
+    """
+    if data.get(CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED):
+        return False
+    migrated: list[str] = []
+    for tree in (CONF_PLAYERS, CONF_PLAYER_PROTOCOLS):
+        records = data.get(tree)
+        if not isinstance(records, dict):
+            continue
+        for record_id, record in records.items():
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("provider") or "").split("--", maxsplit=1)[0] != "airplay":
+                continue
+            values = record.get("values")
+            if not isinstance(values, dict):
+                continue
+            sync_adjust = values.get(CONF_SYNC_ADJUST)
+            if isinstance(sync_adjust, int) and sync_adjust:
+                values[CONF_SYNC_ADJUST] = -sync_adjust
+                migrated.append(f"{record_id} ({sync_adjust} -> {-sync_adjust})")
+    if migrated:
+        LOGGER.info(
+            "Negated the AirPlay sync adjust, a positive value now plays earlier: %s",
+            ", ".join(migrated),
+        )
+    data[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] = True
+    return True
+
+
+def _migrate_stereo_pair_player_type(data: dict[str, Any]) -> bool:
+    """
+    Store every player that is stored as a stereo pair as a multi-channel player.
+
+    Returns True when the settings were modified.
+    """
+    all_player_configs = data.get(CONF_PLAYERS)
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if isinstance(player_cfg, dict) and player_cfg.get("player_type") == "stereo_pair":
+            player_cfg["player_type"] = "multi_channel"
+            changed = True
+    return changed
+
+
+def _migrate_artist_catalogue_selection(data: dict[str, Any]) -> bool:
+    """Move a stored artist selection that is no longer offered to the library album tracks."""
+    core_cfg = data.get(CONF_CORE)
+    queues_cfg = core_cfg.get("player_queues") if isinstance(core_cfg, dict) else None
+    queue_values = queues_cfg.get("values") if isinstance(queues_cfg, dict) else None
+    if not isinstance(queue_values, dict):
+        return False
+    if queue_values.get(CONF_DEFAULT_ENQUEUE_SELECT_ARTIST) not in (
+        "all_tracks",
+        "all_album_tracks",
+    ):
+        return False
+    queue_values[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST] = "library_album_tracks"
+    LOGGER.info("Moved the artist playback selection to the tracks of the library albums")
+    return True
+
+
+def _migrate_remove_retired_builtin_providers(data: dict[str, Any]) -> bool:
+    """Remove the stored configs of the retired builtin providers."""
+    all_provider_configs = data.get(CONF_PROVIDERS)
+    if not isinstance(all_provider_configs, dict):
+        return False
+    retired = [
+        instance_id
+        for instance_id, provider_cfg in all_provider_configs.items()
+        if isinstance(provider_cfg, dict)
+        and provider_cfg.get("domain") in RETIRED_BUILTIN_PROVIDER_DOMAINS
+    ]
+    for instance_id in retired:
+        del all_provider_configs[instance_id]
+        LOGGER.info("Removed the config of the retired provider %s", instance_id)
+    return bool(retired)
+
+
+def _migrate_sendspin_one_output(data: dict[str, Any]) -> bool:
+    """
+    Give every player one Sendspin output for all its bridges, once.
+
+    A Cast bridge left its output switched off until the user opted in, which the stored
+    output did not tell apart from a user who switched it off: every output a Cast protocol
+    carries is marked, as that default when it is off or was never offered to the user,
+    and as opted in when it is on. A player whose bridges each stored an output keeps the
+    one in use, with the settings of the others. Guarded by
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED, which is claimed even when nothing changed, so an
+    output the user switches off afterwards is not read as a default.
+    Returns True when the settings were modified, including the first run's marker.
+    """
+    if data.get(CONF_SENDSPIN_ONE_OUTPUT_MIGRATED):
+        return False
+    try:
+        _mark_cast_sendspin_outputs(data)
+        for player_id, output_ids in _sendspin_outputs_by_player(data).items():
+            if len(output_ids) < 2:
+                continue
+            try:
+                _fold_sendspin_outputs(data, player_id, output_ids)
+            except Exception:
+                LOGGER.exception(
+                    "Could not fold the Sendspin outputs of player %s, skipping it", player_id
+                )
+    except Exception:
+        LOGGER.exception("Could not migrate the Sendspin outputs to one per player")
+    data[CONF_SENDSPIN_ONE_OUTPUT_MIGRATED] = True
+    return True
+
+
+def _sendspin_outputs(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return the stored Sendspin outputs that ride on another protocol, by their id."""
+    protocols = data.get(CONF_PLAYER_PROTOCOLS)
+    if not isinstance(protocols, dict):
+        return {}
+    return {
+        protocol_id: record
+        for protocol_id, record in protocols.items()
+        if isinstance(protocol_id, str)
+        and isinstance(record, dict)
+        and _provider_domain(data, record) == "sendspin"
+        and isinstance(values := record.get("values"), dict)
+        and isinstance(values.get(CONF_UNDERLYING_PLAYER_ID), str)
+    }
+
+
+def _sendspin_outputs_by_player(data: dict[str, Any]) -> dict[str, list[str]]:
+    """Return the ids of the stored Sendspin outputs of each stored player, by its id."""
+    players = data.get(CONF_PLAYERS)
+    by_player: dict[str, list[str]] = {}
+    for output_id, record in _sendspin_outputs(data).items():
+        player_id = record.get("player_id")
+        if (
+            isinstance(player_id, str)
+            and isinstance(players, dict)
+            and isinstance(players.get(player_id), dict)
+        ):
+            by_player.setdefault(player_id, []).append(output_id)
+    return by_player
+
+
+def _stored_provider(data: dict[str, Any], record: Any) -> tuple[str, dict[str, Any] | None]:
+    """
+    Return the instance id of the provider of a stored protocol, and its stored config.
+
+    :param data: The settings.
+    :param record: The stored record of the protocol, if there is one.
+    :return: The instance id, empty when the record names none, and the config of that
+        provider when it is stored.
+    """
+    instance_id = record.get("provider") if isinstance(record, dict) else None
+    if not isinstance(instance_id, str):
+        return "", None
+    providers = data.get(CONF_PROVIDERS)
+    provider = providers.get(instance_id) if isinstance(providers, dict) else None
+    return instance_id, provider if isinstance(provider, dict) else None
+
+
+def _provider_domain(data: dict[str, Any], record: Any) -> str:
+    """
+    Return the domain of the provider of a stored protocol, empty when it is not known.
+
+    :param data: The settings.
+    :param record: The stored record of the protocol, if there is one.
+    """
+    instance_id, provider = _stored_provider(data, record)
+    domain = provider.get("domain") if provider else None
+    return domain if isinstance(domain, str) else instance_id.split("--", maxsplit=1)[0]
+
+
+def _sendspin_carrier(data: dict[str, Any], output: dict[str, Any]) -> tuple[str, bool]:
+    """
+    Return the domain of the protocol a stored Sendspin output rides on, and whether it is on.
+
+    :param data: The settings.
+    :param output: The stored record of the output.
+    :return: The domain, empty when that protocol is not stored anymore, and whether the
+        user has that protocol and its provider switched on.
+    """
+    carrier = data[CONF_PLAYER_PROTOCOLS].get(output["values"][CONF_UNDERLYING_PLAYER_ID])
+    if not isinstance(carrier, dict):
+        return "", False
+    _, provider = _stored_provider(data, carrier)
+    switched_on = (
+        bool(carrier.get(CONF_ENABLED, True))
+        and provider is not None
+        and bool(provider.get(CONF_ENABLED, True))
+    )
+    return _provider_domain(data, carrier), switched_on
+
+
+def _mark_cast_sendspin_outputs(data: dict[str, Any]) -> None:
+    """Mark every Sendspin output a Cast protocol carries as left off by default, or opted in."""
+    for output in _sendspin_outputs(data).values():
+        values = output["values"]
+        domain, _ = _sendspin_carrier(data, output)
+        # an output whose carrier is gone still tells by the warning Cast stored with it
+        if domain != "chromecast" and (domain or not values.get(CONF_PROTOCOL_EXPERIMENTAL_NOTE)):
+            continue
+        carrier = data[CONF_PLAYER_PROTOCOLS].get(values[CONF_UNDERLYING_PLAYER_ID])
+        carrier_values = carrier.get("values") if isinstance(carrier, dict) else None
+        # the warning is stored once the output is switched off, so an output without it
+        # whose carrier still has the marker was never offered to the user
+        never_offered = (
+            isinstance(carrier_values, dict)
+            and bool(carrier_values.get(_LEGACY_SENDSPIN_OPT_OUT_PENDING))
+            and not values.get(CONF_PROTOCOL_EXPERIMENTAL_NOTE)
+        )
+        if output.get(CONF_ENABLED, True) and not never_offered:
+            values[_SENDSPIN_CAST_OPT_IN] = True
+        else:
+            output[CONF_ENABLED] = False
+            values[CONF_PROTOCOL_OFF_BY_DEFAULT] = True
+    protocols = data.get(CONF_PLAYER_PROTOCOLS)
+    for record in protocols.values() if isinstance(protocols, dict) else ():
+        if isinstance(record, dict) and isinstance(values := record.get("values"), dict):
+            values.pop(_LEGACY_SENDSPIN_OPT_OUT_PENDING, None)
+
+
+def _fold_sendspin_outputs(data: dict[str, Any], player_id: str, output_ids: list[str]) -> None:
+    """
+    Fold the stored Sendspin outputs of a player into the one that is in use.
+
+    That is the output whose carrier comes first in LEGACY_SENDSPIN_BRIDGE_ORDER among the
+    protocols the user has switched on, so a player keeps the Sendspin output it has, or
+    has switched off. An output a Cast bridge left off by default only stays when the
+    player has no other. The one that stays takes the static delays of the others, by
+    their carrier, and the settings it has none of itself; a choice of the player that
+    names another one names it from then on.
+
+    :param data: The settings.
+    :param player_id: Id of the player.
+    :param output_ids: The ids of its stored Sendspin outputs.
+    """
+    protocols = data[CONF_PLAYER_PROTOCOLS]
+
+    def _rank(output_id: str) -> tuple[bool, bool, int, bool, str]:
+        output = protocols[output_id]
+        domain, switched_on = _sendspin_carrier(data, output)
+        return (
+            bool(output["values"].get(CONF_PROTOCOL_OFF_BY_DEFAULT)),
+            not switched_on,
+            # the order only applies among the carriers that are switched on
+            LEGACY_SENDSPIN_BRIDGE_ORDER.index(domain)
+            if switched_on and domain in LEGACY_SENDSPIN_BRIDGE_ORDER
+            else len(LEGACY_SENDSPIN_BRIDGE_ORDER),
+            not output.get(CONF_ENABLED, True),
+            output_id,
+        )
+
+    kept_id = min(output_ids, key=_rank)
+    kept_values = protocols[kept_id]["values"]
+    carrier_id = kept_values[CONF_UNDERLYING_PLAYER_ID]
+    stored_delays = kept_values.get(_SENDSPIN_BRIDGE_STATIC_DELAYS)
+    delays = dict(stored_delays) if isinstance(stored_delays, dict) else {}
+    player_values = data[CONF_PLAYERS][player_id].get("values")
+    for output_id in sorted(output_ids):
+        if output_id == kept_id:
+            continue
+        removed = protocols.pop(output_id)
+        values = removed["values"]
+        set_aside = values.get(_SENDSPIN_BRIDGE_STATIC_DELAYS)
+        if (delay := values.get(_SENDSPIN_STATIC_DELAY)) is not None:
+            delays.setdefault(values[CONF_UNDERLYING_PLAYER_ID], delay)
+        for other_carrier_id, delay in (set_aside if isinstance(set_aside, dict) else {}).items():
+            delays.setdefault(other_carrier_id, delay)
+        if values.get(_SENDSPIN_CAST_OPT_IN):
+            kept_values[_SENDSPIN_CAST_OPT_IN] = True
+        for key, value in values.items():
+            if key not in _SENDSPIN_OUTPUT_OWN_KEYS:
+                kept_values.setdefault(key, value)
+        if isinstance(player_values, dict):
+            for key in (CONF_PREFERRED_OUTPUT_PROTOCOL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL):
+                if player_values.get(key) == output_id:
+                    player_values[key] = kept_id
+        LOGGER.info(
+            "Player %s keeps the Sendspin output %s, removed its other one %s: %s",
+            player_id,
+            kept_id,
+            output_id,
+            removed,
+        )
+    if (delay := delays.pop(carrier_id, None)) is not None:
+        kept_values.setdefault(_SENDSPIN_STATIC_DELAY, delay)
+    if delays:
+        kept_values[_SENDSPIN_BRIDGE_STATIC_DELAYS] = delays
+    else:
+        kept_values.pop(_SENDSPIN_BRIDGE_STATIC_DELAYS, None)
+    if _sendspin_carrier(data, protocols[kept_id])[0] not in ("chromecast", ""):
+        kept_values.pop(CONF_PROTOCOL_EXPERIMENTAL_NOTE, None)
+
+
+def _read_feature_engine_picks(
+    data: dict[str, Any], decrypt: Callable[[str], str]
+) -> list[tuple[str, dict[str, Any], str, str]]:
+    """
+    Return the engines the features picked, as (default key, section, key, engine uid).
+
+    :param data: The persistent settings data to read.
+    :param decrypt: Callback that decrypts a stored string value.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS)
+    if not isinstance(all_provider_configs, dict):
+        all_provider_configs = {}
+    core_cfg = data.get(CONF_CORE)
+    players_cfg = core_cfg.get("players") if isinstance(core_cfg, dict) else None
+    picks: list[tuple[str, dict[str, Any], str, str]] = []
+    for default_key, domain, section_name, key in FEATURE_ENGINE_PICKS:
+        owners = (
+            [players_cfg]
+            if domain is None
+            else [
+                provider_cfg
+                for provider_cfg in all_provider_configs.values()
+                if isinstance(provider_cfg, dict) and provider_cfg.get("domain") == domain
+            ]
+        )
+        for owner in owners:
+            section = owner.get(section_name) if isinstance(owner, dict) else None
+            if not isinstance(section, dict) or not isinstance(value := section.get(key), str):
+                continue
+            try:
+                uid = decrypt(value)
+            except InvalidDataError:
+                LOGGER.warning("Could not read a stored %s; it is left in place", key)
+                continue
+            picks.append((default_key, section, key, uid))
+    return picks
+
+
+def _seed_default_engines(
+    data: dict[str, Any], picks: list[tuple[str, dict[str, Any], str, str]]
+) -> dict[str, str]:
+    """
+    Seed every default engine that is not set yet and return all defaults that are set.
+
+    :param data: The persistent settings data to seed the defaults in.
+    :param picks: The engines the features picked, see _read_feature_engine_picks.
+    """
+    core_cfg = data.get(CONF_CORE, {})
+    if not isinstance(core_cfg, dict):
+        return {}
+    ai_cfg = core_cfg.get(CONF_AI)
+    stored = ai_cfg.get("values") if isinstance(ai_cfg, dict) else None
+    if not isinstance(stored, dict):
+        stored = {}
+    all_provider_configs = data.get(CONF_PROVIDERS)
+    if not isinstance(all_provider_configs, dict):
+        all_provider_configs = {}
+    defaults: dict[str, str] = {}
+    seeds: dict[str, str] = {}
+    for default_key in (
+        CONF_DEFAULT_TEXT_ENGINE,
+        CONF_DEFAULT_SPEECH_ENGINE,
+        CONF_DEFAULT_IMAGE_ENGINE,
+    ):
+        if isinstance(value := stored.get(default_key), str) and value:
+            defaults[default_key] = value
+            continue
+        usable = [
+            uid
+            for pick_default_key, _section, _key, uid in picks
+            if pick_default_key == default_key
+            and _engine_provider_enabled(uid, all_provider_configs)
+        ]
+        if usable:
+            # an engine picked as often as another loses to the one picked first
+            seeds[default_key] = Counter(usable).most_common(1)[0][0]
+    if not seeds:
+        return defaults
+    data[CONF_CORE] = core_cfg
+    if not isinstance(ai_cfg, dict):
+        ai_cfg = core_cfg[CONF_AI] = {}
+    # a core block without its domain can not be parsed
+    ai_cfg.setdefault("domain", CONF_AI)
+    if not isinstance(ai_cfg.get("values"), dict):
+        ai_cfg["values"] = {}
+    ai_cfg["values"].update(seeds)
+    return {**defaults, **seeds}
+
+
+def _engine_provider_enabled(uid: str, all_provider_configs: dict[str, Any]) -> bool:
+    """Return whether the plugin providing an engine is configured and enabled."""
+    # an engine uid is the instance id of the providing plugin, a slash and the engine id
+    instance_id, separator, _engine_id = uid.partition("/")
+    provider_cfg = all_provider_configs.get(instance_id) if separator else None
+    return isinstance(provider_cfg, dict) and bool(provider_cfg.get("enabled", True))

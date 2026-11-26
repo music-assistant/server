@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator, Coroutine, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -16,6 +17,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -116,14 +118,14 @@ def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
     return (item_id, None)
 
 
-# Collection sub-folder browse ids -> (ProviderFeature, library sub_id, label key, English name).
-# The library sub_id ("tracks") and label key ("my_favorites") differ on purpose so the Collection
-# labels stay distinct from the core "media.folder.*" library labels.
-_COLLECTION_SUBFOLDERS: tuple[tuple[ProviderFeature, str, str, str], ...] = (
-    (ProviderFeature.LIBRARY_TRACKS, "tracks", "my_favorites", "My Favorites"),
-    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", "My Artists"),
-    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", "My Albums"),
-    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", "My Playlists"),
+# Collection sub-folder browse ids -> (ProviderFeature, library sub_id, label key, English name,
+# is_playable). The library sub_id ("tracks") and label key ("my_favorites") differ on purpose so
+# the Collection labels stay distinct from the core "media.folder.*" library labels.
+_COLLECTION_SUBFOLDERS: tuple[tuple[ProviderFeature, str, str, str, bool], ...] = (
+    (ProviderFeature.LIBRARY_TRACKS, "tracks", "my_favorites", "My Favorites", True),
+    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", "My Artists", False),
+    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", "My Albums", False),
+    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", "My Playlists", False),
 )
 
 
@@ -1085,7 +1087,7 @@ class KionMusicProvider(MusicProvider):
             async with self.mass.http_session.get(fetch_url) as resp:
                 resp.raise_for_status()
                 raw = await resp.read()
-        except Exception as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             self.logger.debug("Failed to fetch wave cover %s: %s", fetch_url, err)
             return fetch_url
 
@@ -1106,7 +1108,7 @@ class KionMusicProvider(MusicProvider):
 
         try:
             return await asyncio.to_thread(_composite)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - image decoding errors vary
             self.logger.debug("Wave cover composite failed for %s: %s", fetch_url, err)
             return fetch_url
 
@@ -1341,7 +1343,7 @@ class KionMusicProvider(MusicProvider):
         try:
             playlists = await self.client.get_tag_playlists(tag_slug)
             return len(playlists) > 0
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - tag discovery is optional, errors vary
             self.logger.debug("Tag validation failed for %s: %s", tag_slug, err)
             return False
 
@@ -1374,7 +1376,7 @@ class KionMusicProvider(MusicProvider):
                 cat = TAG_SLUG_CATEGORY.get(slug, "mood")
                 if cat == category and slug not in tags:
                     tags.append(slug)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - tag discovery is optional, errors vary
             self.logger.debug("Landing tag discovery failed: %s", err)
 
         # Validate tags in parallel with bounded concurrency
@@ -1415,7 +1417,7 @@ class KionMusicProvider(MusicProvider):
             for slug, title in landing_tags:
                 if slug not in all_tags:
                     all_tags[slug] = title
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - tag discovery is optional, errors vary
             self.logger.debug("Failed to discover tags from landing API: %s", err)
 
         # Validate tags in parallel with bounded concurrency
@@ -1491,7 +1493,7 @@ class KionMusicProvider(MusicProvider):
         root_base = (base_parts[0] + "//") if len(base_parts) > 1 else path.rstrip("/") + "/"
 
         folders: list[BrowseFolder] = []
-        for feature, sub_id, label_key, label_name in _COLLECTION_SUBFOLDERS:
+        for feature, sub_id, label_key, label_name, is_playable in _COLLECTION_SUBFOLDERS:
             if feature not in self.supported_features:
                 continue
             folders.append(
@@ -1501,7 +1503,7 @@ class KionMusicProvider(MusicProvider):
                     path=f"{root_base}{sub_id}",
                     name=label_name,
                     translation_key=label_key,
-                    is_playable=True,
+                    is_playable=is_playable,
                 )
             )
         return folders
@@ -2319,8 +2321,10 @@ class KionMusicProvider(MusicProvider):
                 track_count,
             )
             try:
-                tracks_list = await playlist.fetch_tracks_async()
-            except Exception as err:
+                tracks_list = await self.client.fetch_playlist_tracks(playlist)
+            except RateLimited:
+                raise
+            except Exception as err:  # noqa: BLE001 - library raises more than its own errors
                 self.logger.warning("fetch_tracks_async failed for %s/%s: %s", owner_id, kind, err)
             if not tracks_list:
                 raise ResourceTemporarilyUnavailable(

@@ -7,6 +7,7 @@ import pathlib
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -34,7 +35,7 @@ class FixtureLoader:
                 return [fixture_type.model_validate(item) for item in data]
             # Single object case
             return fixture_type.model_validate(data)
-        except Exception as e:
+        except ValidationError as e:
             pytest.fail(f"Failed to validate fixture {relative_path}: {e}")
 
     def _get_fixture_type_from_path(self, relative_path: pathlib.Path) -> type[BaseModel] | None:

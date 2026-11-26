@@ -31,7 +31,7 @@ COMMANDS: dict[str, Command] = {
 def controller() -> PlayerController:
     """Build a players controller over players "a" and "b" and a private client player "w"."""
     controller = grouping_player_controller("a", "b", "w")
-    controller._players["w"]._attr_private = True
+    controller._protocols["proto_w"]._attr_private = True
     return controller
 
 
@@ -83,13 +83,22 @@ def test_a_user_who_may_use_the_player_sets_and_clears_its_timer(
 def test_the_users_own_client_player_is_permitted(controller: PlayerController) -> None:
     """The private client player the user connected on passes, although it is not in the filter."""
     player = controller._players["w"]
-    with as_user(["a"], client_player_id="w"):
+    # the client announces the id of its own protocol
+    with as_user(["a"], client_player_id="proto_w"):
         expires_at = _api(controller, "players/sleep_timer/set")("w", 60)
         assert _api(controller, "players/sleep_timer/get")("w") == expires_at
         assert player.sleep_timer_expires_at == expires_at
         _api(controller, "players/sleep_timer/clear")("w")
 
     assert player.sleep_timer_expires_at is None
+
+
+@pytest.mark.parametrize(
+    "command", ["players/sleep_timer/get", "players/sleep_timer/set", "players/sleep_timer/clear"]
+)
+def test_the_commands_accept_a_user(controller: PlayerController, command: str) -> None:
+    """Home Assistant can run the sleep timer commands as one of its users."""
+    assert cast("MagicMock", controller.mass).command_handlers[command].allow_impersonation
 
 
 def _api(controller: PlayerController, command: str) -> Callable[..., Any]:

@@ -4,7 +4,7 @@ Native AirPlay announcement orchestration.
 The cliairplay binary mixes a raw-PCM clip over the outgoing music with the music
 ducked underneath - no flush, no re-anchor, the group timeline stays untouched. This
 module renders the shared announcement clip once per member stdin format, arms every
-member of the live session at one shared audible instant and tracks the per-member
+member the announcement targets at one shared audible instant and tracks the per-member
 outcome. Native announcements are only offered while there is live playback to mix
 into; without it the player controller plays the announcement its own way.
 
@@ -14,17 +14,16 @@ being said yet. That is where the announcement volume is raised, and the trailin
 silence is where it is put back - neither change is ever heard on the music itself.
 
 Targeting semantics: a player addressed individually announces alone - over its own
-ducked copy of the group's music, while the other rooms play on untouched - whenever
-a group ENTITY exists as the whole-group handle (a syncgroup member, even the one
-leading the underlying session). Only an ad-hoc sync leader, which has no entity
-above it, represents its whole group, exactly like playing media to it does.
+ducked copy of the group's music, while the other rooms play on untouched - also when
+it leads the session, ad hoc or under a group entity. Only a group ENTITY (e.g. a
+syncgroup) is the whole-group handle.
 
 A group-entity announcement is forwarded by the player controller to every member
 concurrently; each call arms its own member and they share one audible instant via
 the provider's announce-plan registry, so every room renders the clip in sync.
-Members of a Sendspin GROUP of bridged players each compute their own instant, so a
-group announcement there can be offset by tens of ms across rooms; cross-player
-plan sharing for that case is future work.
+A Sendspin-bridged player plays without a stream session to line up in, so it offers
+no coordinated start: a group entity with such members plays the announcement
+through its own stream instead.
 """
 
 from __future__ import annotations
@@ -62,18 +61,20 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.players.helpers import AnnounceData
     from music_assistant.controllers.streams.announcements import AnnouncementRender
+    from music_assistant.helpers.timeline_clock import TimelineClock
     from music_assistant.models.player import Player
 
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
     from .stream import AirPlayStream
+    from .stream_session import AirPlayStreamSession
 
 
 async def play_announcement(
     player: AirPlayPlayer, announcement: PlayerMedia, volume_level: int | None
 ) -> None:
     """
-    Play an announcement on the player (and, for an ad-hoc leader, its members).
+    Play an announcement on the player alone, also when it leads others.
 
     The clip is mixed over the live playing session without interrupting it. A
     group-entity announcement is forwarded per member by the controller; the
@@ -95,6 +96,16 @@ async def play_announcement(
         await _run_announcement(player, render, volume_level)
     finally:
         await renderer.release(render)
+
+
+def announce_session(player: AirPlayPlayer) -> AirPlayStreamSession | None:
+    """
+    Return the stream session an announcement on the player lines up in, None without one.
+
+    :param player: The player the announcement targets.
+    """
+    # a set plays in the session of its speakers
+    return player.session or (player.stream.session if player.stream else None)
 
 
 async def _run_announcement(
@@ -138,6 +149,7 @@ async def _announce_over_live_session(
     :raises PlayerCommandFailed: If the player stopped playing before the clip
         could be armed, or if no member armed it.
     """
+    clock = player.mass.timeline_clock
     clip_files: dict[str, str] = {}
     bumped: dict[str, int] = {}
     try:
@@ -164,7 +176,7 @@ async def _announce_over_live_session(
             streams: dict[str, AirPlayStream] = {}
             for member in members:
                 assert member.stream is not None  # guaranteed by _live_members
-                streams[member.player_id] = member.stream
+                streams[member.protocol_id] = member.stream
             # one clip file per distinct member stdin format, shared by all
             # members on that format
             for stream in streams.values():
@@ -176,8 +188,8 @@ async def _announce_over_live_session(
             at_unix_ms = _resolve_announce_instant(player, members, render.key)
             delivered = await asyncio.gather(
                 *[
-                    streams[member.player_id].announce(
-                        clip_files[_format_key(streams[member.player_id].pcm_format)],
+                    streams[member.protocol_id].announce(
+                        clip_files[_format_key(streams[member.protocol_id].pcm_format)],
                         at_unix_ms,
                         _member_duck_db(member, volume_level),
                     )
@@ -193,7 +205,7 @@ async def _announce_over_live_session(
                     sent,
                 )
         started_timeout = (
-            max(0.0, at_unix_ms / 1000 - cli_clock_time())
+            max(0.0, at_unix_ms / 1000 - cli_clock_time(clock))
             + AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS / 1000
         )
         acks = await asyncio.gather(
@@ -205,7 +217,7 @@ async def _announce_over_live_session(
             ]
         )
         started: dict[str, tuple[int, int]] = {
-            member.player_id: ack
+            member.protocol_id: ack
             for member, ack in zip(members, acks, strict=True)
             if ack is not None
         }
@@ -218,8 +230,8 @@ async def _announce_over_live_session(
                 "the running cliairplay binary may not support announcements yet "
                 "(version mismatch)"
             )
-        armed = [member for member in members if member.player_id in started]
-        if failed := [m.display_name for m in members if m.player_id not in started]:
+        armed = [member for member in members if member.protocol_id in started]
+        if failed := [m.display_name for m in members if m.protocol_id not in started]:
             player.logger.warning(
                 "Announcement was not played on %d member(s) of %s: %s",
                 len(failed),
@@ -243,13 +255,14 @@ async def _announce_over_live_session(
         # read as the user reaching for the volume mid-announcement
         for member in armed:
             member.suppress_volume_reports(
-                max(0.0, latest_end_unix_ms / 1000 - cli_clock_time()) + AIRPLAY_VOLUME_ECHO_GRACE_S
+                max(0.0, latest_end_unix_ms / 1000 - cli_clock_time(clock))
+                + AIRPLAY_VOLUME_ECHO_GRACE_S
             )
         # the done reports arrive while the volume timeline below runs its course
         done_task = asyncio.gather(
             *[
                 streams[member_id].wait_announce_done(
-                    max(0.0, (ack_at or at_unix_ms) / 1000 - cli_clock_time())
+                    max(0.0, (ack_at or at_unix_ms) / 1000 - cli_clock_time(clock))
                     + (ack_duration / 1000 if ack_duration else file_seconds)
                     + AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS / 1000
                 )
@@ -281,7 +294,7 @@ async def _announce_over_live_session(
         # would let the caller restore mutes (and arm a follow-up
         # announcement) over the audible tail, so hold the return until the
         # latest audible end across the started members.
-        await _hold_until(latest_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS)
+        await _hold_until(latest_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS, clock)
     finally:
         if bumped:
             # A failed or cancelled announcement leaves the music playing, so whatever
@@ -297,36 +310,27 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
     """
     Return the members a live announcement targets, or [] without live playback.
 
-    A synced member announced individually is just itself; a session leader
-    covers every member of its session. Only a PLAYING session can mix a clip -
-    a parked (paused) or idle player has no live timeline to mix into.
+    That is the player itself (a set: its speakers), also when it leads the
+    session. Only a PLAYING session can mix a clip - a parked (paused) or idle
+    player has no live timeline to mix into.
     """
     if not player.has_live_audio:
         return []
-    stream = player.stream
-    assert stream is not None  # guaranteed by has_live_audio
-    if player.synced_to:
-        return [player]
-    if stream.session is None:
-        # A Sendspin-bridged player plays without a stream session, but its
-        # stream is a regular AirPlayStream the clip mixes into (self-only).
-        provider = cast("AirPlayProvider", player.provider)
-        bridge = provider.bridge_manager.get_bridge(player.player_id)
-        if bridge is not None and bridge.owns_airplay_stream:
-            return [player]
-        return []
-    if _owning_group_entity(player):
-        # A group ENTITY (e.g. a syncgroup) owns this session, and that entity
-        # is the whole-group announcement handle: this player addressed
-        # individually announces alone, even as the session's sync leader.
-        return [player]
-    # An ad-hoc leader has no entity above it, so it IS the group handle:
-    # announcing to it covers every member of its session.
-    return [
-        member
-        for member in stream.session.sync_clients
-        if member.stream is not None and member.stream.running and member.stream.connected
+    # a set renders through its speakers
+    own_members = [
+        endpoint
+        for endpoint in player.endpoints
+        if endpoint.stream is not None and endpoint.stream.running and endpoint.stream.connected
     ]
+    if player.synced_to or player.session is not None:
+        return own_members
+    # A Sendspin-bridged player plays without a stream session, but its
+    # streams are regular AirPlayStreams the clip mixes into (its own members only).
+    provider = cast("AirPlayProvider", player.provider)
+    bridge = provider.bridge_manager.get_bridge(player.protocol_id)
+    if bridge is not None and bridge.owns_airplay_stream:
+        return own_members
+    return []
 
 
 def _resolve_announce_instant(
@@ -335,74 +339,72 @@ def _resolve_announce_instant(
     """
     Return the audible instant (unix ms) the announcement is armed for.
 
-    When the targets are only a part of a multi-member session (a group-entity
-    announcement is fanned out per member by the controller, each call arming
-    its own member), the instant is shared through the provider's plan
-    registry: the first call computes it from EVERY session member's span, the
-    concurrent sibling calls reuse it, and every room renders the clip in
-    sync. A call that arms its whole target set at once (ad-hoc leader, solo,
-    bridged) needs no plan.
+    A group-entity announcement is fanned out per member by the controller, each
+    call arming its own member. When such a call arms only a part of the
+    session, the instant is shared through the provider's plan registry: the
+    first call computes it from EVERY session member's span, the concurrent
+    sibling calls reuse it, and every room renders the clip in sync. Any other
+    call is timed on the members it arms alone.
 
     :param player: The player this call targets.
     :param members: The members this call arms.
     :param render_key: Identity of the announcement audio; instants are only
         ever shared between arms of the SAME announcement.
     """
-    session = player.stream.session if player.stream else None
-    session_members = session.sync_clients if session else members
-    if len(members) >= len(session_members):
+    group_entity = _owning_group_entity(player)
+    session = announce_session(player)
+    session_members = (
+        [member for member in session.sync_clients if member.renders_audio] if session else members
+    )
+    if group_entity is None or len(members) >= len(session_members):
         return _shared_announce_instant(
-            member.stream for member in members if member.stream is not None
+            (member.stream for member in members if member.stream is not None),
+            player.mass.timeline_clock,
         )
     provider = cast("AirPlayProvider", player.provider)
     plans = provider._announce_plans
-    now_ms = int(cli_clock_time() * 1000)
+    now_ms = int(cli_clock_time(player.mass.timeline_clock) * 1000)
     # prune settled plans so the registry cannot grow with announcement history
     for key in [key for key, at_ms in plans.items() if at_ms <= now_ms]:
         del plans[key]
-    plan_key = (
-        _owning_group_entity(player) or player.synced_to or player.player_id,
-        render_key,
-    )
+    plan_key = (group_entity, render_key)
     if (at_unix_ms := plans.get(plan_key)) is not None:
         return at_unix_ms
     # the instant must clear EVERY session member's span: the sibling calls of
     # a group fan-out reuse it for their own members
     at_unix_ms = _shared_announce_instant(
-        member.stream for member in session_members if member.stream is not None
+        (member.stream for member in session_members if member.stream is not None),
+        player.mass.timeline_clock,
     )
     plans[plan_key] = at_unix_ms
     return at_unix_ms
 
 
-def _shared_announce_instant(streams: Iterable[AirPlayStream]) -> int:
+def _shared_announce_instant(streams: Iterable[AirPlayStream], clock: TimelineClock) -> int:
     """
     Return the shared audible instant (unix ms) for arming an announcement.
 
     Every member must mix the clip into audio it has not delivered yet; its
     span is how far ahead of the audible position that delivery head runs, so
     the shared instant sits past the largest member span plus a fan-out margin.
+
+    :param streams: The streams of the members that mix the clip.
+    :param clock: The timeline clock of the server.
     """
     max_span_ms = max(_member_span_ms(stream) for stream in streams)
-    return int(cli_clock_time() * 1000) + max_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
+    return int(cli_clock_time(clock) * 1000) + max_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
 
 
 def _owning_group_entity(player: AirPlayPlayer) -> str | None:
     """
     Return the id of the group ENTITY that owns this player's session, if any.
 
-    ``active_group`` only ever names a real group player (e.g. a syncgroup) -
-    but a protocol player never carries it itself: the model keeps the group
-    state on the device player it renders for, so the ownership is read
-    through the protocol parent when needed.
+    ``active_group`` only ever names a real group player (e.g. a syncgroup), and
+    the group state lives on the player this protocol renders for.
     """
-    if player.state.active_group:
-        return player.state.active_group
-    if player.protocol_parent_id and (
-        parent := player.mass.players.get_player(player.protocol_parent_id)
-    ):
-        return parent.state.active_group
-    return None
+    if player.player is None:
+        return None
+    return player.player.active_group
 
 
 def _member_span_ms(stream: AirPlayStream) -> int:
@@ -414,19 +416,17 @@ def _member_span_ms(stream: AirPlayStream) -> int:
     return AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS
 
 
-def _volume_target(member: AirPlayPlayer) -> Player:
+def _volume_target(member: AirPlayPlayer) -> Player | None:
     """
     Return the player whose volume control owns this member's output.
 
     An AirPlay volume writes the receiver's own level, so it may only be set when
-    nothing else owns it; on a device that is also reachable through a native
-    provider the announcement volume belongs on that parent instead.
+    nothing else owns it: the announcement volume is set on the player, whose volume
+    control decides where it lands. None while the member is not attached.
     """
-    if (parent_id := member.protocol_parent_id) and (
-        parent := member.mass.players.get_player(parent_id)
-    ):
-        return parent
-    return member
+    # a speaker of a set plays at the volume of its set
+    owner = member.owner
+    return owner.player if owner else None
 
 
 def _member_duck_db(member: AirPlayPlayer, volume_level: int | None) -> float:
@@ -448,8 +448,9 @@ def _member_duck_db(member: AirPlayPlayer, volume_level: int | None) -> float:
     duck_db = float(AIRPLAY_ANNOUNCE_DUCK_DB)
     if volume_level is None:
         return duck_db
-    target = _volume_target(member)
-    if (prev_volume := target.state.volume_level) is None:
+    if (target := _volume_target(member)) is None:
+        return duck_db
+    if (prev_volume := target.volume_level) is None:
         return duck_db
     # the levels are logical, and the volume limits configured on the target decide
     # what they land on: the device levels are what the rise is actually made of
@@ -482,9 +483,10 @@ async def _volume_around_clip(
     :param content_end_unix_ms: End of the latest member's announcement audio.
     :param bumped: Mapping that tracks which players still need restoring.
     """
-    await _hold_until(lead_in_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS)
+    clock = player.mass.timeline_clock
+    await _hold_until(lead_in_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS, clock)
     await _apply_announcement_volume(armed, volume_level, bumped)
-    await _hold_until(content_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS)
+    await _hold_until(content_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS, clock)
     await _restore_announcement_volume(player, bumped)
 
 
@@ -501,8 +503,9 @@ async def _apply_announcement_volume(
     """
     targets: list[Player] = []
     for member in members:
-        target = _volume_target(member)
-        prev_volume = target.state.volume_level
+        if (target := _volume_target(member)) is None:
+            continue
+        prev_volume = target.volume_level
         if prev_volume is None or prev_volume == volume_level or target.player_id in bumped:
             continue
         bumped[target.player_id] = prev_volume
@@ -516,7 +519,7 @@ async def _apply_announcement_volume(
     for target, result in zip(targets, results, strict=True):
         if isinstance(result, BaseException):
             target.logger.warning(
-                "Could not set the announcement volume on %s: %r", target.display_name, result
+                "Could not set the announcement volume on %s: %r", target.name, result
             )
 
 
@@ -533,7 +536,7 @@ async def _restore_announcement_volume(player: AirPlayPlayer, bumped: dict[str, 
     for player_id in list(bumped):
         try:
             await player.mass.players.cmd_volume_set(player_id, bumped[player_id])
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing player must not stop restoring the others
             player.logger.warning(
                 "Could not restore the volume of %s after the announcement: %r", player_id, err
             )
@@ -541,9 +544,14 @@ async def _restore_announcement_volume(player: AirPlayPlayer, bumped: dict[str, 
         del bumped[player_id]
 
 
-async def _hold_until(unix_ms: float) -> None:
-    """Wait for the given cliairplay instant (unix ms) to arrive."""
-    await asyncio.sleep(max(0.0, unix_ms / 1000 - cli_clock_time()))
+async def _hold_until(unix_ms: float, clock: TimelineClock) -> None:
+    """
+    Wait for the given cliairplay instant (unix ms) to arrive.
+
+    :param unix_ms: The instant on the cliairplay timeline, in unix ms.
+    :param clock: The timeline clock of the server.
+    """
+    await asyncio.sleep(max(0.0, unix_ms / 1000 - cli_clock_time(clock)))
 
 
 async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat) -> str:

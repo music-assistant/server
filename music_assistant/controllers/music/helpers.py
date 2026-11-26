@@ -25,6 +25,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.external_ids import is_valid_isrc
+from music_assistant.helpers.json import json_dumps
 from music_assistant.helpers.uri import canonical_provider_url, discogs_id_from_url, parse_uri
 from music_assistant.helpers.util import parse_optional_bool
 
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.music.media.base import AudiobookSyncDetails
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.music_provider import MusicProvider
     from music_assistant.providers.musicbrainz.models import MusicBrainzRecording
 
 # the trigram tokenizer of the FTS5 search index cannot match
@@ -119,6 +121,24 @@ def search_name_match_clause(
         f"{db_table}.item_id IN "
         f"(SELECT rowid FROM {db_table}_fts WHERE {db_table}_fts MATCH :{param_name})"
     )
+
+
+def genre_lookup_cte(raw_name_to_genres: Mapping[str, Sequence[int]]) -> tuple[str, dict[str, str]]:
+    """
+    Return a ``genre_lookup(raw_name, genre_id)`` CTE and the query params it binds.
+
+    Raw names are lowercased so they can be joined on ``LOWER(TRIM(g.value))``.
+
+    :param raw_name_to_genres: The genre ids each raw genre name resolves to.
+    """
+    # one JSON param instead of a param per pair keeps huge libraries under SQLite's variable limit
+    pairs = [[name, gid] for name, gids in raw_name_to_genres.items() for gid in gids]
+    cte = (
+        "WITH genre_lookup(raw_name, genre_id) AS ("
+        "SELECT LOWER(json_extract(value, '$[0]')), json_extract(value, '$[1]') "
+        "FROM json_each(:genre_lookup))"
+    )
+    return cte, {"genre_lookup": json_dumps(pairs)}
 
 
 def sort_search_result[SortItemT: MediaItemType | ItemMapping](
@@ -400,6 +420,29 @@ async def provider_mappings_from_urls(
             )
         )
     return mappings
+
+
+def mappings_within_sources(
+    candidates: Iterable[ProviderMapping], sources: Sequence[MusicProvider]
+) -> list[ProviderMapping]:
+    """
+    Return the candidates that name one of the given music sources.
+
+    A candidate stays on its own instance when that is an available source; otherwise it
+    moves to the first available instance the sources have of its service, failing that to
+    the first there is. One on a service they do not include is left out.
+    """
+    available = {source.instance_id for source in sources if source.available}
+    first_by_domain: dict[str, str] = {}
+    for source in sorted(sources, key=lambda source: not source.available):
+        first_by_domain.setdefault(source.domain, source.instance_id)
+    within: list[ProviderMapping] = []
+    for candidate in candidates:
+        if candidate.provider_instance in available:
+            within.append(candidate)
+        elif instance := first_by_domain.get(candidate.provider_domain):
+            within.append(replace(candidate, provider_instance=instance))
+    return within
 
 
 def discogs_external_id(

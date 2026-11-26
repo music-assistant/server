@@ -5,7 +5,7 @@
   "name": "Jellyfin Media Server Library",
   "description": "Stream music from your self-hosted Jellyfin server.",
   "codeowners": ["@lokiberra"],
-  "tier": "community",
+  "provides": ["artist", "album", "track", "playlist"],
   "credits": ["[aiojellyfin](https://github.com/Jc2k/aiojellyfin)"],
   "requirements": ["aiojellyfin==0.14.1"],
   "documentation": "https://music-assistant.io/music-providers/jellyfin/",

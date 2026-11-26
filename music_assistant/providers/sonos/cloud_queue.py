@@ -68,8 +68,8 @@ class SonosCloudQueue:
         path_parts = request.path.strip("/").split("/")
         if len(path_parts) != 4 or path_parts[0] != "sonos_queue":
             return web.Response(status=404)
-        player_id = path_parts[1]
-        if not (sonos_player := self.mass.players.get_player(player_id)):
+        protocol_id = path_parts[1]
+        if not (sonos_player := self.provider.get_protocol(protocol_id)):
             return web.Response(status=501)
         if TYPE_CHECKING:
             assert isinstance(sonos_player, SonosPlayer)
@@ -127,7 +127,7 @@ class SonosCloudQueue:
             "queueVersion=%s -> %s begin=%s end=%s items=%s"
         )
         args: list[object] = [
-            player.player_id,
+            player.protocol_id,
             request.query.get("reason"),
             wire_center,
             request.query.get("previousWindowSize"),
@@ -168,7 +168,7 @@ class SonosCloudQueue:
         context_version = request.query.get("contextVersion") or "1"
         self.logger.debug(
             "Cloud queue version poll from %s: queueVersion=%s -> %s",
-            player.player_id,
+            player.protocol_id,
             request.query.get("queueVersion"),
             player.cloud_queue_version,
         )
@@ -212,7 +212,8 @@ class SonosCloudQueue:
                 "limitedSkips": True,
                 "canSkipToItem": True,  # unsure
                 "canSkipBack": True,
-                # seek needs to be disabled because we dont properly support range requests
+                # a seek asks for a part of the track, which only an item that is served
+                # as a file answers: such an item allows it in its own policies
                 "canSeek": False,
                 "canRepeat": False,  # handled by MA queue controller
                 "canRepeatOne": False,  # handled by MA queue controller
@@ -254,7 +255,7 @@ class SonosCloudQueue:
         # the speaker tracks its position within the audio we serve, which is
         # shorter than the media item when playback starts at a seek position
         duration = media.stream_duration or media.duration
-        return {
+        item: dict[str, Any] = {
             "id": wire_id or media.uri,
             "track": {
                 "type": "track",
@@ -276,6 +277,9 @@ class SonosCloudQueue:
                 else None,
             },
         }
+        if player.is_served_as_file(media.queue_item_id):
+            item["policies"] = {"canSeek": True}
+        return item
 
     def _handle_reported_playback_error(
         self, player: SonosPlayer, item: dict[str, Any], error: dict[str, Any]

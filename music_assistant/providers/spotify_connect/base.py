@@ -109,8 +109,8 @@ class SpotifyConnectBackend(ABC):
         """
         Whether the audio stream reaches a clean end when playback pauses.
 
-        A backend returning False never reaches one; the provider then stops the
-        player actively on the paused state event.
+        A backend returning False never reaches one; the provider then also stops the
+        player actively when playback stopped instead of paused.
         """
         return True
 

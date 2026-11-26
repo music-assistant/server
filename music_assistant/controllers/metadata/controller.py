@@ -8,7 +8,8 @@ import random
 import sqlite3
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
+from copy import copy
+from dataclasses import dataclass, replace
 from time import time
 from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, uuid5
@@ -18,7 +19,6 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
-    AlbumType,
     ConfigEntryType,
     EventType,
     ExternalID,
@@ -29,7 +29,7 @@ from music_assistant_models.enums import (
     SortField,
 )
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant_models.media_items import Album, Artist, BrowseFolder, Track
+from music_assistant_models.media_items import Album, Artist, BrowseFolder, MediaItemMetadata, Track
 
 from music_assistant.constants import (
     CONF_LANGUAGE,
@@ -40,6 +40,7 @@ from music_assistant.constants import (
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     VERBOSE_LOG_LEVEL,
 )
@@ -51,10 +52,6 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import system_auth_context
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.compare import (
-    ALBUM_RETAIL_SUFFIX_KEYS,
-    album_retail_suffix_sql_match,
-)
 from music_assistant.helpers.images import cleanup_thumb_cache
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.helpers.throttle_retry import Throttler
@@ -63,7 +60,6 @@ from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
-    ALBUM_RECONCILIATION_TASK_ID,
     CONF_ENABLE_ONLINE_METADATA,
     CONF_ENABLE_RADIO_METADATA_LOOKUP,
     CONF_LANGUAGE_CHANGED,
@@ -82,6 +78,7 @@ from .constants import (
     MUSICBRAINZ_LINK_ITEM_INTERVAL,
     MUSICBRAINZ_LINK_ITEM_TIMEOUT,
     MUSICBRAINZ_LINK_TASK_ID,
+    MUSICBRAINZ_RELINK_TASK_ID_PREFIX,
     PLAYLIST_METADATA_SCAN_TASK_ID,
     REFRESH_INTERVAL,
     THUMB_CACHE_CLEANUP_TASK_ID,
@@ -395,7 +392,12 @@ class MetaDataController(
         return item
 
     def schedule_update_metadata(self, item: MediaItemType) -> None:
-        """Schedule metadata update for given MediaItem."""
+        """
+        Schedule metadata update for given MediaItem.
+
+        An artist whose metadata is up to date is linked to the music providers loaded since
+        it was last looked up on MusicBrainz instead.
+        """
         if item.provider != "library":
             # this shouldn't happen but just in case.
             return
@@ -405,6 +407,8 @@ class MetaDataController(
             and self._description_language_outdated(item.metadata)
         )
         if not needs_update:
+            if isinstance(item, Artist):
+                self._schedule_musicbrainz_relink(item)
             return
         assert item.uri is not None
         uri = item.uri
@@ -494,8 +498,9 @@ class MetaDataController(
         track: Track,
     ) -> tuple[str | None, str | None]:
         """Look up (lyrics, lrc_lyrics) for the given track."""
-        if track.metadata and track.metadata.lyrics:
-            return track.metadata.lyrics, track.metadata.lrc_lyrics
+        has_lrc, lyrics = self._select_track_lyrics(track.metadata, (None, None))
+        if has_lrc:
+            return lyrics
 
         if track.provider == "library":
             # the stored item is refreshed, never the caller's copy of it; the refresh fills
@@ -503,12 +508,29 @@ class MetaDataController(
             track = await self.mass.music.tracks.get(
                 track.item_id, "library", allow_update_metadata=False
             )
+            _, lyrics = self._select_track_lyrics(track.metadata, (None, None))
+            if lyrics[0] or lyrics[1]:
+                for mapping in track.provider_mappings:
+                    source = self.mass.get_provider(
+                        mapping.provider_instance, provider_type=MusicProvider
+                    )
+                    if source and not source.is_streaming_provider:
+                        return lyrics
             with system_auth_context():
                 await self._update_track_metadata(track, force_refresh=False)
-            return track.metadata.lyrics, track.metadata.lrc_lyrics
+            _, lyrics = self._select_track_lyrics(track.metadata, (None, None))
+            return lyrics
 
         # prefer lyrics from the track's own provider
+        full_track = track
         track_provider = self.mass.music.get_visible_provider(track.provider)
+        if (
+            isinstance(track_provider, MusicProvider)
+            and not track_provider.is_streaming_provider
+            and lyrics[0]
+        ):
+            # lyrics from the user's own files are the final word
+            return lyrics
         if (
             isinstance(track_provider, MusicProvider)
             and ProviderFeature.LYRICS in track_provider.supported_features
@@ -516,15 +538,18 @@ class MetaDataController(
             full_track = await self.mass.music.tracks.get_provider_item(
                 track.item_id, track.provider
             )
-            if full_track.metadata and full_track.metadata.lyrics:
-                return full_track.metadata.lyrics, full_track.metadata.lrc_lyrics
+            has_lrc, lyrics = self._select_track_lyrics(full_track.metadata, lyrics)
+            if has_lrc or (not track_provider.is_streaming_provider and lyrics[0]):
+                return lyrics
 
         # fallback to other metadata providers
         for provider in self.providers:
             if ProviderFeature.LYRICS not in provider.supported_features:
                 continue
             try:
-                metadata = await provider.get_track_metadata(track)
+                lookup_track = copy(full_track)
+                lookup_track.metadata = replace(full_track.metadata, lyrics=lyrics[0])
+                metadata = await provider.get_track_metadata(lookup_track)
             except Exception as err:
                 # a provider failure must not abort the lookup — skip to the next provider
                 self.logger.warning(
@@ -535,9 +560,10 @@ class MetaDataController(
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
                 continue
-            if metadata and (metadata.lyrics or metadata.lrc_lyrics):
-                return metadata.lyrics, metadata.lrc_lyrics
-        return None, None
+            has_lrc, lyrics = self._select_track_lyrics(metadata, lyrics)
+            if has_lrc:
+                return lyrics
+        return lyrics
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
@@ -575,19 +601,7 @@ class MetaDataController(
             metadata={"task_domain": "metadata_thumb_cache_cleanup"},
             allow_retry=True,
         )
-        # runs every hour rather than spread across the day: it is bounded to a small
-        # batch of albums per run, so there is no shared-mirror stampede to avoid
-        self.mass.tasks.register_scheduled_task(
-            task_id=ALBUM_RECONCILIATION_TASK_ID,
-            name="Reconcile duplicate albums",
-            handler=self._reconcile_duplicate_albums,
-            schedule=TaskSchedule.hourly(),
-            translation_key="reconcile_duplicate_albums",
-            translation_owner=self.translation_owner,
-            metadata={"task_domain": "metadata_album_reconciliation"},
-            allow_retry=True,
-        )
-        # bounded to a small batch per run and paced, so it can run hourly as well
+        # bounded to a small batch per run and paced, so it can run hourly
         self.mass.tasks.register_scheduled_task(
             task_id=MUSICBRAINZ_LINK_TASK_ID,
             name="Link library to MusicBrainz",
@@ -706,60 +720,6 @@ class MetaDataController(
                 )
         update_current_task_progress(100, f"Processed {len(playlists)} playlist(s)")
 
-    async def _reconcile_duplicate_albums(self) -> None:
-        """Enrich and re-match a small batch of sparse or possibly duplicated albums."""
-        update_current_task_progress_text("Searching for albums needing reconciliation")
-        # candidates are selected again once their refresh is due (sooner after a temporary
-        # provider failure), rather than only ever once
-        refresh_before = int(time() - REFRESH_INTERVAL)
-        query = (
-            f"({DB_TABLE_ALBUMS}.album_type = '{AlbumType.UNKNOWN.value}' "
-            f"OR {_duplicate_album_sibling_guard()}) AND ("
-            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
-            f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {refresh_before})"
-        )
-        albums = await self._get_scan_batch(self.mass.music.albums, DB_TABLE_ALBUMS, query)
-        if not albums:
-            update_current_task_progress_text("No albums require reconciliation")
-            return
-        skipped = 0
-        for index, album in enumerate(albums, 1):
-            if self._metadata_rate_limited(ProviderFeature.ALBUM_METADATA):
-                # the album stays untouched, so the next run selects it again
-                skipped += 1
-                continue
-            try:
-                update_current_task_progress_from_index(
-                    index,
-                    len(albums),
-                    f"Reconciling album {index}/{len(albums)}: {album.name}",
-                )
-                # enrich sparse provider data (type/year/metadata) first so the follow-up
-                # match has full album details to work with, then re-fetch the now-enriched
-                # library row before re-matching: match_providers merges a confirmed mapping
-                # into an existing duplicate through the safe add_provider_mappings path
-                try:
-                    await self._update_album_metadata(album, force_refresh=False)
-                    reconciled_album = await self.mass.music.albums.get_library_item(album.item_id)
-                except MediaNotFoundError:
-                    # both rows of a duplicate pair can share a batch, so this row may
-                    # already have been merged into its duplicate earlier in the run
-                    continue
-                await self.mass.music.albums.match_providers(reconciled_album)
-            except _SCAN_ITEM_ERRORS as err:
-                report_current_task_failure(f"{album.name}: {err}")
-                self.logger.warning(
-                    "Error while reconciling album %s: %s",
-                    album.name,
-                    str(err),
-                    exc_info=err if self.logger.isEnabledFor(10) else None,
-                )
-        summary = f"Processed {len(albums) - skipped} album(s)"
-        if skipped:
-            summary += f", skipped {skipped} while a metadata provider is rate limiting"
-            self.logger.debug("Album reconciliation: %s", summary)
-        update_current_task_progress(100, summary)
-
     async def _cleanup_thumb_cache(self) -> None:
         """Remove oldest thumbnails when the cache folder exceeds the configured limit."""
         max_size_mb = (
@@ -812,6 +772,7 @@ class MetaDataController(
                 limit=budget,
                 sort_field=SortField.TIMESTAMP_ADDED,
                 sort_direction=SortDirection.DESC,
+                in_library_only=False,
             )
             for item in items:
                 if musicbrainz.rate_limited:
@@ -932,6 +893,26 @@ class MetaDataController(
         dropped. The very first run seeds the providers present with 0, as the library was
         linked to those while it was identified.
         """
+        stored = self._stored_musicbrainz_linked_domains()
+        first_seen = 0 if stored is None else int(time())
+        # a provider whose instance was gone for a run comes back as a new one: the items
+        # identified meanwhile lack its links, so its relink phase re-checks those still not
+        # mapped to it, from the MusicBrainz cache
+        linked = {
+            domain: (stored or {}).get(domain, first_seen)
+            for domain in sorted(self._loaded_musicbrainz_link_domains())
+        }
+        # an empty map is persisted too: it tells the first run apart from a later one
+        if stored is None or linked != stored:
+            self.mass.config.set_raw_core_config_value(
+                self.domain,
+                CONF_MUSICBRAINZ_LINKED_DOMAINS,
+                [f"{domain}:{seen}" for domain, seen in linked.items()],
+            )
+        return linked
+
+    def _stored_musicbrainz_linked_domains(self) -> dict[str, int] | None:
+        """Return since when each linked music provider has been loaded, None before any run."""
         # persisted as "domain:epoch" entries, the map itself not being a config value type
         entries = cast(
             "list[str] | None",
@@ -939,30 +920,67 @@ class MetaDataController(
                 self.domain, CONF_MUSICBRAINZ_LINKED_DOMAINS
             ),
         )
+        if entries is None:
+            return None
         stored: dict[str, int] = {}
-        for entry in entries or []:
+        for entry in entries:
             domain, _, seen = entry.partition(":")
             if seen.isdigit():
                 stored[domain] = int(seen)
+        return stored
+
+    def _loaded_musicbrainz_link_domains(self) -> list[str]:
+        """Return the music providers MusicBrainz links to that have a loaded instance."""
         # the providers the link step maps to: those with a loaded instance, available or not
-        present = [
+        return [
             domain
             for domain in MUSICBRAINZ_LINK_DOMAINS
             if self.mass.music.get_provider_instances(domain, return_unavailable=True)
         ]
-        first_seen = 0 if entries is None else int(time())
-        # a provider whose instance was gone for a run comes back as a new one: the items
-        # identified meanwhile lack its links, so its relink phase re-checks those still not
-        # mapped to it, from the MusicBrainz cache
-        linked = {domain: stored.get(domain, first_seen) for domain in sorted(present)}
-        # an empty map is persisted too: it tells the first run apart from a later one
-        if entries is None or linked != stored:
-            self.mass.config.set_raw_core_config_value(
-                self.domain,
-                CONF_MUSICBRAINZ_LINKED_DOMAINS,
-                [f"{domain}:{seen}" for domain, seen in linked.items()],
-            )
-        return linked
+
+    def _schedule_musicbrainz_relink(self, artist: Artist) -> None:
+        """Queue linking an artist to the music providers loaded since its MusicBrainz lookup."""
+        if not self._musicbrainz_relink_due(artist):
+            return
+        assert artist.uri is not None
+        uri, item_id = artist.uri, artist.item_id
+        self.mass.tasks.run_background_task(
+            task_id=f"{MUSICBRAINZ_RELINK_TASK_ID_PREFIX}_{uuid5(NAMESPACE_URL, uri).hex}",
+            name=f"Link {artist.name} to your music services",
+            handler=lambda: self._relink_artist(item_id),
+            translation_key="link_artist_to_music_services",
+            translation_args=[artist.name],
+            translation_owner=self.translation_owner,
+            # the user is looking at the artist, so it goes ahead of the metadata refreshes
+            priority=True,
+            metadata={"task_domain": "metadata_musicbrainz_relink", "item_uri": uri},
+        )
+
+    async def _relink_artist(self, item_id: str) -> None:
+        """Link a library artist to the music providers loaded since its MusicBrainz lookup."""
+        try:
+            artist = await self.mass.music.artists.get_library_item(item_id)
+        except MediaNotFoundError:
+            self.logger.debug("Artist %s left the library, skipping its relink", item_id)
+            return
+        # a metadata refresh or the link run may have linked it while the task waited
+        if self._musicbrainz_relink_due(artist):
+            await self.link_item_to_musicbrainz(artist)
+
+    def _musicbrainz_relink_due(self, artist: Artist) -> bool:
+        """Return whether an artist misses the links of a music provider loaded since its lookup."""
+        if not self.link_providers_via_musicbrainz or self.mass.music.active_sync_tasks:
+            return False
+        if (musicbrainz := self._musicbrainz_provider()) is None or musicbrainz.rate_limited:
+            return False
+        # a provider the link run has not recorded yet is left to that run
+        stored = self._stored_musicbrainz_linked_domains() or {}
+        linked = {
+            domain: stored[domain]
+            for domain in self._loaded_musicbrainz_link_domains()
+            if domain in stored
+        }
+        return _misses_musicbrainz_links(artist, linked)
 
     async def _pending_musicbrainz_link_counts(self) -> dict[str, int]:
         """Return how many albums, artists and tracks still await their MusicBrainz lookup."""
@@ -998,8 +1016,14 @@ class MetaDataController(
         limit: int = METADATA_SCAN_BATCH_SIZE,
         sort_field: SortField = SortField.RANDOM,
         sort_direction: SortDirection | None = None,
+        in_library_only: bool = True,
     ) -> list[ItemCls]:
-        """Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON."""
+        """
+        Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON.
+
+        :param in_library_only: Only select items in the library; False leaves the scope to
+            the query.
+        """
         try:
             items = await media_controller.get_library_items_by_query(
                 limit=limit,
@@ -1007,6 +1031,7 @@ class MetaDataController(
                 sort_direction=sort_direction,
                 extra_query_parts=[query],
                 extra_query_params=query_params,
+                in_library_only=in_library_only,
             )
         except sqlite3.OperationalError as err:
             if "malformed JSON" not in str(err):
@@ -1018,6 +1043,7 @@ class MetaDataController(
                 sort_direction=sort_direction,
                 extra_query_parts=[f"{_valid_metadata_guard(table)} AND {query}"],
                 extra_query_params=query_params,
+                in_library_only=in_library_only,
             )
         # a clean scan proves the table currently holds no corrupt rows
         self._corrupt_metadata_rows.pop(table, None)
@@ -1047,47 +1073,17 @@ class MetaDataController(
             report_current_task_failure(message)
             self.logger.warning(message)
 
-
-def _duplicate_album_sibling_guard() -> str:
-    """Return a query part that selects albums which may be a duplicate of another library row."""
-    shares_artist = (
-        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_ARTISTS} own "
-        f"JOIN {DB_TABLE_ALBUM_ARTISTS} other ON other.artist_id = own.artist_id "
-        f"WHERE own.album_id = {DB_TABLE_ALBUMS}.item_id AND other.album_id = dup.item_id)"
-    )
-    # a title that normalizes to nothing (e.g. Ed Sheeran's '+', '=' and '÷') matches every
-    # other such title, so those fall back to their raw spelling like the album comparison does
-    same_title = (
-        f"({DB_TABLE_ALBUMS}.search_name != '' OR "
-        f"REPLACE({DB_TABLE_ALBUMS}.name,' ','') = REPLACE(dup.name,' ',''))"
-    )
-    # a provider that spells out the retail suffix stores the album under the plain name
-    # plus that suffix, so the pair is related from either side. The raw title decides
-    # which side spelled it out, so an ordinary title that merely ends in those letters
-    # ("Step") is left alone.
-    # Every alternative stays an equality on dup.search_name, keeping the name index in use.
-    own_name = f"{DB_TABLE_ALBUMS}.search_name"
-    matches_name = [f"dup.search_name = {own_name}"]
-    for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
-        matches_name.append(
-            f"({album_retail_suffix_sql_match('dup.name', suffix)} "
-            f"AND dup.search_name = {own_name} || '{suffix}')"
-        )
-        matches_name.append(
-            f"({album_retail_suffix_sql_match(f'{DB_TABLE_ALBUMS}.name', suffix)} "
-            f"AND dup.search_name = "
-            f"substr({own_name}, 1, length({own_name}) - {len(suffix)}))"
-        )
-    same_name = " OR ".join(matches_name)
-    # deliberately an identity-only pre-filter: which editions may be merged is decided by
-    # the album comparison, which escalates an ambiguous edition to tracklists and
-    # MusicBrainz and rejects a recording-changing one (live, remix, ...) outright
-    return (
-        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUMS} dup "
-        f"WHERE dup.item_id != {DB_TABLE_ALBUMS}.item_id "
-        f"AND ({same_name}) "
-        f"AND {same_title} AND {shares_artist})"
-    )
+    @staticmethod
+    def _select_track_lyrics(
+        candidate: MediaItemMetadata | None,
+        fallback: tuple[str | None, str | None],
+    ) -> tuple[bool, tuple[str | None, str | None]]:
+        """Select the first plain lyrics and report whether synchronized lyrics were found."""
+        if candidate is None:
+            return False, fallback
+        lyrics = fallback[0] or candidate.lyrics or None
+        lrc_lyrics = candidate.lrc_lyrics or extract_lrc_lyrics(candidate.lyrics)
+        return bool(lrc_lyrics), (lyrics, lrc_lyrics)
 
 
 def _missing_metadata_query(table: str, *, description: bool = False) -> str:
@@ -1118,12 +1114,65 @@ def _has_musicbrainz_id(item_id: str, media_type: MediaType, id_type: ExternalID
     :param media_type: Media type of the item.
     :param id_type: The MusicBrainz id type the item has to carry.
     """
+    # without table statistics sqlite picks the unique index, which scans every id of the
+    # media type per item, so the index on the item id is forced
     return (
         f"EXISTS (SELECT 1 FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+        f"INDEXED BY {DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx "
         f"WHERE {DB_TABLE_EXTERNAL_ID_LOOKUP}.media_type = '{media_type.value}' "
         f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id_type = '{id_type.value}' "
         f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.item_id = {item_id})"
     )
+
+
+def _in_library_query(item_id: str, media_type: MediaType) -> str:
+    """
+    Return a query part that is true for an item in the library.
+
+    :param item_id: SQL expression of the library item id, e.g. ``albums.item_id``.
+    :param media_type: Media type of the item.
+    """
+    # the definition the library listings use (in_library_only)
+    return (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+        f"WHERE {DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{media_type.value}' "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.item_id = {item_id} "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.in_library = 1)"
+    )
+
+
+def _musicbrainz_link_scope(media_type: MediaType) -> str:
+    """
+    Return a query part selecting the items a MusicBrainz link run may work on.
+
+    That is every library item, plus an album holding a library track and an artist
+    credited on a library album or track.
+
+    :param media_type: Media type of the items: album, artist or track.
+    """
+    if media_type == MediaType.ALBUM:
+        library_track = _in_library_query(f"{DB_TABLE_ALBUM_TRACKS}.track_id", MediaType.TRACK)
+        holds_library_track = (
+            f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_TRACKS} "
+            f"WHERE {DB_TABLE_ALBUM_TRACKS}.album_id = {DB_TABLE_ALBUMS}.item_id "
+            f"AND {library_track})"
+        )
+        in_library = _in_library_query(f"{DB_TABLE_ALBUMS}.item_id", MediaType.ALBUM)
+        return f"({in_library} OR {holds_library_track})"
+    if media_type == MediaType.ARTIST:
+        scope = [_in_library_query(f"{DB_TABLE_ARTISTS}.item_id", MediaType.ARTIST)]
+        for credit_table, column, credited_type in (
+            (DB_TABLE_ALBUM_ARTISTS, "album_id", MediaType.ALBUM),
+            (DB_TABLE_TRACK_ARTISTS, "track_id", MediaType.TRACK),
+        ):
+            credited_item = _in_library_query(f"{credit_table}.{column}", credited_type)
+            scope.append(
+                f"EXISTS (SELECT 1 FROM {credit_table} "
+                f"WHERE {credit_table}.artist_id = {DB_TABLE_ARTISTS}.item_id "
+                f"AND {credited_item})"
+            )
+        return f"({' OR '.join(scope)})"
+    return _in_library_query(f"{DB_TABLE_TRACKS}.item_id", MediaType.TRACK)
 
 
 def _albums_to_identify_query() -> str:
@@ -1133,7 +1182,10 @@ def _albums_to_identify_query() -> str:
         f"{DB_TABLE_ALBUMS}.item_id", MediaType.ALBUM, ExternalID.MB_ALBUM
     )
     # an album MusicBrainz did not know is looked up again once its lookup is stale
-    return f"({marker} ISNULL OR ({marker} < :stale AND NOT {identified}))"
+    return (
+        f"({marker} ISNULL OR ({marker} < :stale AND NOT {identified})) "
+        f"AND {_musicbrainz_link_scope(MediaType.ALBUM)}"
+    )
 
 
 def _artists_to_identify_query() -> str:
@@ -1151,7 +1203,10 @@ def _artists_to_identify_query() -> str:
         f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {DB_TABLE_ARTISTS}.item_id "
         f"AND {album_identified})"
     )
-    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+    return (
+        f"({marker} ISNULL AND NOT {identified} AND {has_identified_album}) "
+        f"AND {_musicbrainz_link_scope(MediaType.ARTIST)}"
+    )
 
 
 def _tracks_to_identify_query() -> str:
@@ -1169,7 +1224,10 @@ def _tracks_to_identify_query() -> str:
         f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {DB_TABLE_TRACKS}.item_id "
         f"AND {album_identified})"
     )
-    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+    return (
+        f"({marker} ISNULL AND NOT {identified} AND {has_identified_album}) "
+        f"AND {_musicbrainz_link_scope(MediaType.TRACK)}"
+    )
 
 
 def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str:
@@ -1177,7 +1235,8 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
     Return a query part selecting identified items that miss the links of a music provider.
 
     Selects items not mapped to the provider (param ``domain``) that were looked up before
-    it was loaded (param ``seen``) or never looked up at all.
+    it was loaded (param ``seen``) or never looked up at all. :func:`_misses_musicbrainz_links`
+    makes the same selection for one item.
 
     :param table: The library table to select from.
     :param media_type: Media type of the items.
@@ -1192,7 +1251,30 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
     )
     marker = _musicbrainz_lookup_marker(table)
     # an id taken from tags or a local server leaves the marker unset: never linked at all
-    return f"({identified} AND NOT {mapped} AND ({marker} ISNULL OR {marker} <= :seen))"
+    return (
+        f"({identified} AND NOT {mapped} AND ({marker} ISNULL OR {marker} <= :seen)) "
+        f"AND {_musicbrainz_link_scope(media_type)}"
+    )
+
+
+def _misses_musicbrainz_links(item: Artist | Album, linked_domains: dict[str, int]) -> bool:
+    """
+    Return whether an identified item misses the links of one of the given music providers.
+
+    The same selection :func:`_relink_query` makes in the library database, for one item.
+
+    :param item: The library artist or album.
+    :param linked_domains: Since when each linked music provider has been loaded, by domain.
+    """
+    if not item.mbid:
+        return False
+    mapped = {mapping.provider_domain for mapping in item.provider_mappings}
+    marker = item.metadata.last_musicbrainz_lookup
+    # an id taken from tags or a local server leaves the marker unset: never linked at all
+    return any(
+        domain not in mapped and (marker is None or marker <= seen)
+        for domain, seen in linked_domains.items()
+    )
 
 
 def _valid_metadata_guard(table: str) -> str:

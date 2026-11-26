@@ -8,28 +8,40 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 """
 
 import asyncio
+import logging
 from collections.abc import Callable
+from functools import cache
 from http.cookies import SimpleCookie
 from time import time
 from typing import Any, Literal
 
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, RateLimited
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
+from ytmusicapi.models.content.enums import PlaylistSortOrder
 
-from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
+from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
+from music_assistant.providers.ytmusic.constants import (
+    UPLOAD_ALBUM_ID_PREFIX,
+    UPLOAD_ARTIST_ID_PREFIX,
+    YTMRecommendationIcons,
+)
 
 # subset of ytmusicapi's accepted search filters that we use
 YTMSearchFilter = Literal["artists", "albums", "songs", "videos", "playlists", "podcasts"]
 
 
 async def get_artist(
-    prov_artist_id: str, headers: dict[str, str], language: str = "en"
+    prov_artist_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> dict[str, Any]:
-    """Async wrapper around the ytmusicapi get_artist function."""
+    """Async wrapper around the ytmusicapi get_artist function, also resolving upload artists."""
 
     def _get_artist() -> dict[str, Any]:
+        if prov_artist_id.startswith(UPLOAD_ARTIST_ID_PREFIX):
+            return _get_upload_artist(prov_artist_id, headers, language, user)
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         try:
             artist = ytm.get_artist(channelId=prov_artist_id)
@@ -38,8 +50,8 @@ async def get_artist(
         except KeyError as err:
             _raise_if_signed_out(err)
             try:
-                user = ytm.get_user(channelId=prov_artist_id)
-                artist = {"channelId": prov_artist_id, "name": user["name"]}
+                channel_user = ytm.get_user(channelId=prov_artist_id)
+                artist = {"channelId": prov_artist_id, "name": channel_user["name"]}
             except KeyError as err:
                 _raise_if_signed_out(err)
                 artist = {"channelId": prov_artist_id, "name": "Unknown"}
@@ -67,7 +79,7 @@ async def get_artist_albums(
 
     def _get_artist_albums() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
-        return ytm.get_artist_albums(channelId=channel_id, params=params, limit=None)
+        return ytm.get_artist_albums(channelId=channel_id, params=params, limit=ARTIST_ALBUMS_LIMIT)
 
     return await _run_ytmusic(_get_artist_albums)
 
@@ -78,7 +90,7 @@ async def get_album(
     """Async wrapper around the ytmusicapi get_album function."""
 
     def _get_album() -> dict[str, Any]:
-        if prov_album_id.startswith("FEmusic_library_privately_owned_release"):
+        if prov_album_id.startswith(UPLOAD_ALBUM_ID_PREFIX):
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_library_upload_album(browseId=prov_album_id)
 
@@ -133,12 +145,12 @@ async def get_playlist(
 
 
 async def get_track(
-    prov_track_id: str, headers: dict[str, str], language: str = "en"
+    prov_track_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> dict[str, Any] | None:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_song() -> dict[str, Any] | None:
-        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         track_obj = ytm.get_song(videoId=prov_track_id)
         track: dict[str, Any] = {}
         if "videoDetails" not in track_obj:
@@ -237,11 +249,12 @@ async def get_episode_start_seconds(
 async def get_library_artists(
     headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> list[dict[str, Any]]:
-    """Async wrapper around the ytmusicapi get_library_artists function."""
+    """Return the user's subscribed artists and the artists of their uploads."""
 
     def _get_library_artists() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         artists = ytm.get_library_subscriptions(limit=9999)
+        artists += ytm.get_library_upload_artists(limit=None)
         # Sync properties with uniformal artist object
         for artist in artists:
             artist["id"] = artist["browseId"]
@@ -256,11 +269,12 @@ async def get_library_artists(
 async def get_library_albums(
     headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> list[dict[str, Any]]:
-    """Async wrapper around the ytmusicapi get_library_albums function."""
+    """Return the user's library albums and their upload albums."""
 
     def _get_library_albums() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
-        return ytm.get_library_albums(limit=9999)
+        albums = ytm.get_library_albums(limit=9999)
+        return albums + ytm.get_library_upload_albums(limit=None)
 
     return await _run_ytmusic(_get_library_albums)
 
@@ -286,11 +300,12 @@ async def get_library_playlists(
 async def get_library_tracks(
     headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> list[dict[str, Any]]:
-    """Async wrapper around the ytmusicapi get_library_tracks function."""
+    """Return the user's library songs and their uploaded songs."""
 
     def _get_library_tracks() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
-        return ytm.get_library_songs(limit=9999)
+        tracks = ytm.get_library_songs(limit=9999)
+        return tracks + ytm.get_library_upload_songs(limit=None)
 
     return await _run_ytmusic(_get_library_tracks)
 
@@ -375,6 +390,40 @@ async def add_remove_playlist_tracks(
     return await _run_ytmusic(_add_playlist_tracks)
 
 
+async def move_playlist_entries(
+    headers: dict[str, str],
+    prov_playlist_id: str,
+    set_video_ids: list[str],
+    successor: str | None,
+    user: str | None = None,
+) -> None:
+    """
+    Async wrapper around moving entries of a playlist.
+
+    :param set_video_ids: The setVideoIds of the entries to move, in the order they end up in.
+    :param successor: The setVideoId of the entry they are placed in front of, None for the end.
+    """
+
+    def _move_playlist_entries() -> None:
+        ytm = ytmusicapi.YTMusic(auth=headers, user=user)
+        # YouTube drops moves on a playlist sorted by date, and only honours the manual
+        # order when it is set in a call of its own
+        ytm.edit_playlist(prov_playlist_id, sortOrder=PlaylistSortOrder.MANUAL)
+        move = {"action": "ACTION_MOVE_VIDEO_BEFORE"}
+        if successor is not None:
+            move["movedSetVideoIdSuccessor"] = successor
+        # edit_playlist takes one move per call, so the request is made directly to send all
+        ytm._send_request(
+            "browse/edit_playlist",
+            {
+                "playlistId": prov_playlist_id,
+                "actions": [{**move, "setVideoId": set_video_id} for set_video_id in set_video_ids],
+            },
+        )
+
+    await _run_ytmusic(_move_playlist_entries)
+
+
 async def rate_track(
     headers: dict[str, str], prov_track_id: str, rating: LikeStatus, user: str | None = None
 ) -> None:
@@ -416,17 +465,33 @@ async def search(
     query: str,
     ytm_filter: YTMSearchFilter | None = None,
     limit: int = 20,
+    headers: dict[str, str] | None = None,
+    user: str | None = None,
+    scope: Literal["uploads"] | None = None,
 ) -> list[dict[str, Any]]:
-    """Async wrapper around the ytmusicapi search function."""
+    """
+    Async wrapper around the ytmusicapi search function.
+
+    :param query: Search query.
+    :param ytm_filter: Restrict the search to one result type.
+    :param limit: Maximum number of results.
+    :param headers: Account headers to search with, None to search signed out.
+    :param user: Brand account id to search as.
+    :param scope: "uploads" to search the account's own uploads, needs headers and no filter.
+    """
 
     def _search() -> list[dict[str, Any]]:
         # Always search in English: ytmusicapi (1.12.3) matches the result shelf title,
         # which YouTube returns translated, against the English filter name, so a filtered
         # search silently returns nothing in most other languages. Revisit once ytmusicapi
         # compares against the translated title.
-        # Unauthenticated on purpose: an account search lands in the user's YouTube search history.
-        ytm = ytmusicapi.YTMusic(language="en")
-        results = ytm.search(query=query, filter=ytm_filter, limit=limit)
+        # Unauthenticated by default: an account search lands in the user's YouTube search history.
+        ytm = (
+            ytmusicapi.YTMusic(auth=headers, language="en", user=user)
+            if headers
+            else _search_client()
+        )
+        results = ytm.search(query=query, filter=ytm_filter, scope=scope, limit=limit)
         # Sync result properties with uniformal objects
         for result in results:
             if result["resultType"] == "artist":
@@ -435,10 +500,9 @@ async def search(
                     result["name"] = result["artists"][0]["name"]
                     del result["artists"]
                 else:
-                    result["id"] = result["browseId"]
-                    result["name"] = result["artist"]
-                    del result["browseId"]
-                    del result["artist"]
+                    result["id"] = result.pop("browseId")
+                    # an upload artist carries its name as the title
+                    result["name"] = result.pop("artist", None) or result["title"]
             elif result["resultType"] == "playlist":
                 if "playlistId" in result:
                     result["id"] = result["playlistId"]
@@ -449,6 +513,15 @@ async def search(
         return results[:limit]
 
     return await _run_ytmusic(_search)
+
+
+async def get_visitor_id() -> str:
+    """Fetch a visitor id to send as the X-Goog-Visitor-Id header, empty if YouTube has none."""
+
+    def _get_visitor_id() -> str:
+        return str(ytmusicapi.YTMusic().base_headers.get("X-Goog-Visitor-Id") or "")
+
+    return await _run_ytmusic(_get_visitor_id)
 
 
 def get_playlist_checksum(playlist_obj: dict[str, Any]) -> str:
@@ -514,13 +587,42 @@ def determine_recommendation_icon(name: str) -> str:
     return YTMRecommendationIcons.DEFAULT
 
 
+class _YTMusicGate:
+    """Throttle shared by the ytmusicapi calls of all provider instances."""
+
+    logger = logging.getLogger(f"{MASS_LOGGER_NAME}.ytmusic")
+    # all instances share the server's IP, and YouTube is quick to flag bursts as a bot;
+    # a cold Endless Mix start resolves 100+ similar tracks, so it needs this headroom
+    throttler = ThrottlerManager(rate_limit=10, period=1, retry_attempts=3)
+
+    @throttle_with_retries
+    async def run_ytmusicapi(self, func: Callable[[], Any]) -> Any:
+        """Run a blocking ytmusicapi call in a thread."""
+        try:
+            return await asyncio.to_thread(func)
+        except YTMusicServerError as err:
+            # ytmusicapi only exposes the HTTP status through the error message
+            if str(err).startswith("Server returned HTTP 429"):
+                raise RateLimited("YouTube Music is rate limiting requests") from err
+            raise
+        except (KeyError, IndexError) as err:
+            _raise_if_signed_out(err)
+            raise
+
+
+_GATE = _YTMusicGate()
+
+
 async def _run_ytmusic[T](func: Callable[[], T]) -> T:
-    """Run a blocking ytmusicapi call in a thread, translating a signed-out session."""
-    try:
-        return await asyncio.to_thread(func)
-    except (KeyError, IndexError) as err:
-        _raise_if_signed_out(err)
-        raise
+    """Run a blocking ytmusicapi call in a thread, throttled and translating a signed-out session."""
+    result: T = await _GATE.run_ytmusicapi(func)
+    return result
+
+
+@cache
+def _search_client() -> ytmusicapi.YTMusic:
+    """Return the anonymous client shared by all searches, so it fetches a visitor id only once."""
+    return ytmusicapi.YTMusic(language="en")
 
 
 def _raise_if_signed_out(err: Exception) -> None:
@@ -540,3 +642,22 @@ def _raise_if_rejected_id(err: YTMusicServerError, message: str) -> None:
     # ytmusicapi only exposes the HTTP status through the error message
     if str(err).startswith(("Server returned HTTP 400", "Server returned HTTP 404")):
         raise MediaNotFoundError(message) from err
+
+
+def _get_upload_artist(
+    prov_artist_id: str, headers: dict[str, str], language: str, user: str | None
+) -> dict[str, Any]:
+    """Return an upload artist by its upload browse id."""
+    ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+    # the first page of songs is enough to find the credit
+    songs = ytm.get_library_upload_artist(browseId=prov_artist_id, limit=1)
+    name = next(
+        (
+            artist["name"]
+            for song in songs
+            for artist in song.get("artists") or []
+            if artist.get("id") == prov_artist_id
+        ),
+        "Unknown",
+    )
+    return {"channelId": prov_artist_id, "name": name}

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -933,6 +933,45 @@ def test_losing_the_device_after_the_item_is_over_is_not_a_takeover(tmp_path: Pa
     cast("MagicMock", run.mass.create_task).assert_called_once()
 
 
+async def _lose_the_device(run: _EngineRun) -> None:
+    """Report the engine as no longer the account's active device."""
+    run._observe_device_active(active=False)
+
+
+async def _move_away_from_a_fed_item(run: _EngineRun) -> None:
+    """Have the engine announce another track than the one fed to it."""
+    await _feed(run)
+    await run._handle_event(_track_event(TRACK_C))
+
+
+@pytest.mark.parametrize("take_over", [_lose_the_device, _move_away_from_a_fed_item])
+async def test_a_takeover_stops_the_queue_before_its_stream_fails(
+    tmp_path: Path, take_over: Callable[[_EngineRun], Awaitable[None]]
+) -> None:
+    """A stream failing before the queue stopped skips to the next item, taking the account back."""
+    run = _live_run(tmp_path)
+    tasks = _run_tasks(run)
+    consumer = asyncio.ensure_future(_collect(run))
+    await asyncio.sleep(0)
+    stream_failed_before_the_stop: list[bool] = []
+
+    async def _stop(_queue_id: str) -> None:
+        # the player acknowledges the stop only after a round trip
+        await asyncio.sleep(0.01)
+        stream_failed_before_the_stop.append(consumer.done())
+
+    queues = cast("MagicMock", run.mass).player_queues
+    queues.stop = AsyncMock(side_effect=_stop)
+    await take_over(run)
+    with pytest.raises(AudioError, match="already streaming somewhere else"):
+        async with asyncio.timeout(5):
+            await consumer
+    queues.stop.assert_awaited_once_with("player1")
+    assert stream_failed_before_the_stop == [False]
+    await asyncio.gather(*tasks)
+    assert run.stopped
+
+
 def _shorten_pause_grace(monkeypatch: pytest.MonkeyPatch) -> float:
     """Shrink the wait a pause is given to prove external, and return a sleep past it."""
     monkeypatch.setattr(soloist_backend, "_EXTERNAL_PAUSE_GRACE_S", 0.02)
@@ -1403,6 +1442,78 @@ async def test_an_item_the_engine_paused_short_of_its_cut_ends_at_once(
     await _read_quiet_fifo(run, 0.1)
     assert item.delivery_done
     assert await asyncio.wait_for(_collect(run, item), 1) == _audio(2)
+
+
+async def test_an_item_the_engine_stops_on_short_of_its_cut_ends_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine pausing on the item itself ends it, its pause reported without position first."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
+    run = _live_run(tmp_path)
+    item = run.current_item
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=2_500)
+    )
+    await _capture(run, _audio(2))
+    await run._handle_event(_playback_event("paused"))
+    _sink(run).suspend.assert_awaited_once()
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    # half a second short of the exact length, with the sink running for its tail
+    assert item.end_at == int(2.5 * _BYTES_PER_SECOND)
+    _sink(run).resume.assert_awaited_once()
+
+    await _read_quiet_fifo(run, 0.1)
+    assert item.delivery_done
+    assert await asyncio.wait_for(_collect(run, item), 1) == _audio(2)
+
+
+@pytest.mark.parametrize("hold", ["cushion_full", "released"])
+async def test_an_end_pause_leaves_a_sink_held_on_purpose(tmp_path: Path, hold: str) -> None:
+    """Nobody takes the tail of a released item, and a full cushion resumes the sink itself."""
+    run = _live_run(tmp_path)
+    item = run.current_item
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=2_500)
+    )
+    await _capture(run, _audio(2))
+    if hold == "released":
+        item.abandoned = True
+    else:
+        while not item.chunks.full():
+            item.chunks.put_nowait(b"\x01")
+    await run._set_sink(running=False)
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert item.ended
+    _sink(run).resume.assert_not_called()
+
+
+async def test_the_exact_length_replaces_the_rounded_one(tmp_path: Path) -> None:
+    """Only while it plays an item does the engine report its length beyond whole seconds."""
+    run = _live_run(tmp_path)
+    item = run.current_item
+    await run._handle_event(
+        _playback_event("buffering", uri=TRACK_A, position_ms=0, duration_ms=2_000)
+    )
+    assert item.engine_duration_ms == 2_000
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=2_400)
+    )
+    await _capture(run, _audio(2.3))
+    await run._handle_event(_track_event(TRACK_B))
+    assert item.end_at == int(2.4 * _BYTES_PER_SECOND)
+
+
+async def test_a_rounded_length_does_not_replace_the_exact_one(tmp_path: Path) -> None:
+    """The pause at an item's end reports the rounded length again, which a replay must not take."""
+    run = _live_run(tmp_path)
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=2_400)
+    )
+    await run._handle_event(
+        _playback_event("paused", uri=TRACK_A, position_ms=0, duration_ms=2_000)
+    )
+    assert run.current_item.engine_duration_ms == 2_400
+    assert run._new_item(TRACK_A, 0, switched=False).engine_duration_ms == 2_400
 
 
 @pytest.mark.parametrize(

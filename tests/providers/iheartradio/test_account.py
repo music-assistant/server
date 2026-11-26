@@ -7,7 +7,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
@@ -16,6 +16,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     RateLimited,
+    ResourceTemporarilyUnavailable,
     UnplayableMediaError,
 )
 from music_assistant_models.media_items import Podcast, Radio
@@ -39,6 +40,11 @@ from music_assistant.providers.iheartradio.constants import (
     PATH_LOGIN,
     PATH_PLAYBACK_REPORTING,
     PATH_PLAYBACK_STREAMS,
+    PATH_PODCAST,
+    PATH_PODCAST_EPISODE,
+    PATH_PODCAST_EPISODE_METADATA,
+    PATH_PODCAST_EPISODE_PROGRESS,
+    PATH_PODCAST_EPISODES,
     PATH_PODCAST_FOLLOW_ITEM,
     PATH_PODCAST_FOLLOWS,
     PATH_SEARCH,
@@ -48,6 +54,7 @@ from music_assistant.providers.iheartradio.provider import IHeartRadioProvider
 
 from .conftest import (
     ARTIST_STATION,
+    EPISODE,
     INSTANCE_ID,
     PODCAST,
     PROFILE_ID,
@@ -60,6 +67,13 @@ from .conftest import (
 STATION_ID = str(STATION["id"])
 TRACK_ID = str(RADIO_ITEM["content"]["id"])
 ARTIST_RADIO_ID = "artist:1805"
+PODCAST_ID = str(PODCAST["id"])
+EPISODE_ID = str(EPISODE["id"])
+EPISODE_ITEM_ID = f"{PODCAST_ID}:{EPISODE_ID}"
+EPISODE_METADATA_PATH = PATH_PODCAST_EPISODE_METADATA.format(podcast_id=PODCAST_ID)
+EPISODE_PROGRESS_PATH = PATH_PODCAST_EPISODE_PROGRESS.format(
+    podcast_id=PODCAST_ID, episode_id=EPISODE_ID
+)
 
 
 def _auth(provider: IHeartRadioProvider) -> IHeartRadioAuthManager:
@@ -72,6 +86,11 @@ def _configure(provider: IHeartRadioProvider, **setup: str) -> None:
     """Give the provider setup values, credentials and stored session alike, and no session yet."""
     provider.get_setup_value = Mock(side_effect=setup.get)  # type: ignore[method-assign]
     _auth(provider).session = None
+
+
+def _sign_in(provider: IHeartRadioProvider) -> None:
+    """Give the provider the session of a signed-in account."""
+    _auth(provider).session = IHeartRadioSession(PROFILE_ID, SESSION_ID, "user@example.com")
 
 
 def _serve_http(
@@ -423,3 +442,179 @@ def test_rate_limit_carries_retry_after(provider: IHeartRadioProvider) -> None:
     with pytest.raises(RateLimited) as err:
         provider.api._handle_response("https://au.api.iheart.com/x", response, b"")
     assert err.value.backoff_time == 7
+
+
+@pytest.mark.parametrize(
+    ("progress", "expected"),
+    [
+        pytest.param(
+            [{"episodeId": int(EPISODE_ID), "secondsPlayed": 123, "completed": False}],
+            (False, 123000, None),
+            id="in_progress",
+        ),
+        pytest.param(
+            [{"episodeId": int(EPISODE_ID), "secondsPlayed": 1862, "completed": True}],
+            (True, 1862000, None),
+            id="completed",
+        ),
+        pytest.param(
+            [{"episodeId": 1, "secondsPlayed": 50, "completed": False}],
+            (False, 0, None),
+            id="other_episode_only",
+        ),
+        pytest.param([], (False, 0, None), id="no_progress"),
+    ],
+)
+async def test_resume_position_comes_from_the_account(
+    provider: IHeartRadioProvider,
+    api: FakeApi,
+    progress: list[dict[str, Any]],
+    expected: tuple[bool, int, None],
+) -> None:
+    """The resume point of an episode is what the account holds for it, in milliseconds."""
+    _sign_in(provider)
+    api.responses[EPISODE_METADATA_PATH] = {"newEpisodes": [], "progress": progress}
+    result = await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+    assert result == expected
+
+
+async def test_episode_listing_carries_the_account_progress(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """Listed episodes show what the account finished or part played."""
+    _sign_in(provider)
+    api.responses[PATH_PODCAST.format(podcast_id=PODCAST_ID)] = PODCAST
+    api.pages[PATH_PODCAST_EPISODES.format(podcast_id=PODCAST_ID)] = [
+        {"data": [{**EPISODE, "id": episode_id} for episode_id in (3, 2, 1)], "links": {}}
+    ]
+    api.responses[EPISODE_METADATA_PATH] = {
+        "progress": [
+            {"episodeId": 3, "secondsPlayed": 1862, "completed": True},
+            {"episodeId": 2, "secondsPlayed": 123, "completed": False},
+        ]
+    }
+    episodes = [episode async for episode in provider.get_podcast_episodes(PODCAST_ID)]
+    assert [(episode.fully_played, episode.resume_position_ms) for episode in episodes] == [
+        (True, 1862000),
+        (False, 123000),
+        (None, None),
+    ]
+
+
+async def test_single_episode_carries_the_account_progress(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A single episode shows what the account part played, like the listing does."""
+    _sign_in(provider)
+    api.responses[PATH_PODCAST.format(podcast_id=PODCAST_ID)] = PODCAST
+    api.responses[PATH_PODCAST_EPISODE.format(episode_id=EPISODE_ID)] = {"episode": EPISODE}
+    api.pages[PATH_PODCAST_EPISODES.format(podcast_id=PODCAST_ID)] = [
+        {"data": [EPISODE], "links": {}}
+    ]
+    api.responses[EPISODE_METADATA_PATH] = {
+        "progress": [{"episodeId": int(EPISODE_ID), "secondsPlayed": 123, "completed": False}]
+    }
+    episode = await provider.get_podcast_episode(EPISODE_ITEM_ID)
+    assert (episode.fully_played, episode.resume_position_ms) == (False, 123000)
+
+
+async def test_resume_position_survives_an_api_failure(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A failed progress request leaves the resume point to Music Assistant instead of failing."""
+    _sign_in(provider)
+    api.responses[EPISODE_METADATA_PATH] = ResourceTemporarilyUnavailable("down")
+    with pytest.raises(NotImplementedError):
+        await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+
+
+async def test_resume_position_is_not_offered_without_an_account(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A guest session has no progress, so nothing is asked and Music Assistant uses its own."""
+    with pytest.raises(NotImplementedError):
+        await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+    _sign_in(provider)
+    with pytest.raises(NotImplementedError):
+        await provider.get_resume_position(STATION_ID, MediaType.RADIO)
+    assert api.requests == []
+
+
+@pytest.mark.parametrize(
+    ("fully_played", "position", "is_playing", "expected"),
+    [
+        pytest.param(False, 640, False, {"secondsPlayed": 640, "completed": False}, id="stopped"),
+        pytest.param(True, 1862, False, {"secondsPlayed": 1862, "completed": True}, id="done"),
+        pytest.param(False, 0, False, {"secondsPlayed": 0, "completed": False}, id="unplayed"),
+    ],
+)
+async def test_on_played_saves_episode_progress(
+    provider: IHeartRadioProvider,
+    api: FakeApi,
+    *,
+    fully_played: bool,
+    position: int,
+    is_playing: bool,
+    expected: dict[str, Any],
+) -> None:
+    """The progress of an episode is saved to the account, also when it is marked as unplayed."""
+    _sign_in(provider)
+    await provider.on_played(
+        MediaType.PODCAST_EPISODE,
+        EPISODE_ITEM_ID,
+        fully_played,
+        position,
+        Mock(),
+        is_playing=is_playing,
+    )
+    assert api.requests == [("PUT", EPISODE_PROGRESS_PATH, expected)]
+
+
+async def test_on_played_saves_no_episode_progress_while_playing(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """Progress reports while an episode plays are not sent, only the one when it stops."""
+    _sign_in(provider)
+    await provider.on_played(
+        MediaType.PODCAST_EPISODE, EPISODE_ITEM_ID, False, 300, Mock(), is_playing=True
+    )
+    assert api.requests == []
+
+
+async def test_on_played_saves_no_episode_progress_without_an_account(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A guest session has nowhere to save the progress of an episode."""
+    await provider.on_played(MediaType.PODCAST_EPISODE, EPISODE_ITEM_ID, False, 300, Mock())
+    assert api.requests == []
+
+
+async def test_progress_is_reused_until_it_is_saved(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """Back to back lookups share one progress request, and saving progress asks again."""
+    stored: dict[str, Any] = {}
+
+    async def get_with_freshness(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        return (stored[key], True, True) if key in stored else (None, False, False)
+
+    async def store(key: str, data: Any, **_kwargs: Any) -> None:
+        stored[key] = data
+
+    async def drop(key: str, **_kwargs: Any) -> None:
+        stored.pop(key, None)
+
+    _sign_in(provider)
+    api.responses[EPISODE_METADATA_PATH] = {"progress": []}
+    cache = provider.mass.cache
+    with (
+        patch.object(cache, "get_with_freshness", get_with_freshness),
+        patch.object(cache, "set", store),
+        patch.object(cache, "delete", drop),
+    ):
+        await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+        await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+        assert [path for path, _ in api.calls] == [EPISODE_METADATA_PATH]
+        await provider.on_played(MediaType.PODCAST_EPISODE, EPISODE_ITEM_ID, False, 0, Mock())
+        await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+        assert [path for path, _ in api.calls] == [EPISODE_METADATA_PATH] * 2

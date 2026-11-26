@@ -6,10 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.errors import InsufficientPermissions
+from music_assistant_models.enums import IdentifierType
+from music_assistant_models.errors import InsufficientPermissions, PlayerCommandFailed
 from music_assistant_models.media_items import (
     BrowseFolder,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
 )
@@ -20,6 +22,11 @@ from music_assistant.providers.fastmcp_server.target_filters import (
     filter_collection_result,
     target_rule,
 )
+from tests.common import as_user
+from tests.controllers.music.test_live_sources import LINE_IN, SPOTIFY, _Home
+from tests.scenarios.harness import Scenario
+
+_NOT_PERMITTED = r"^Command target is not permitted for the current user$"
 
 
 def _user(
@@ -43,6 +50,9 @@ def _user(
         ("players/cmd/set_members", "player_ids_to_add", TargetKind.PLAYERS),
         ("players/cmd/set_members", "player_ids_to_remove", TargetKind.PLAYERS),
         ("players/create_group_player", "members", TargetKind.PLAYERS),
+        ("players/merge", "player_id", TargetKind.PLAYER),
+        ("players/merge", "target_player", TargetKind.PLAYER),
+        ("players/unlink_protocol", "protocol_id", TargetKind.PROTOCOL),
         (
             "audio_analysis/wave_form",
             "provider_instance_id_or_domain",
@@ -443,3 +453,186 @@ def test_browse_roots_are_matched_by_the_instance_in_their_uri() -> None:
     )
 
     assert result == [allowed, library]
+
+
+def test_the_live_sources_folder_is_open_to_a_filtered_user() -> None:
+    """The folder of the live sources is no music source, so the provider filter lets it through."""
+    folder = BrowseFolder(
+        item_id="root",
+        provider="live_sources",
+        path="live_sources://",
+        name="Live sources",
+        uri="live_sources://",
+    )
+
+    enforce_target_filters(MagicMock(), _user(), "music/browse", {"path": "live_sources://"})
+    assert filter_collection_result(_user(), "music/browse", [folder]) == [folder]
+
+
+async def test_the_live_sources_folder_follows_the_players_of_the_user() -> None:
+    """
+    A user limited to some music sources gets the live sources of their players.
+
+    The core leaves out the sources of a player the user may not use; one of no player stays.
+    """
+    home = _Home()
+
+    with as_user(["kitchen"]):
+        listing = await home.music.browse(path="live_sources://")
+
+    result = filter_collection_result(_user(), "music/browse", listing)
+
+    assert [x.name for x in result] == ["..", "Spotify Connect (Kitchen)", "VBAN Receiver"]
+
+
+def test_a_live_source_starts_on_a_player_of_the_user() -> None:
+    """A user limited to some music sources starts a live source by its uri or as listed."""
+    for media in (SPOTIFY.uri, [SPOTIFY.uri], SPOTIFY.to_dict()):
+        enforce_target_filters(
+            MagicMock(),
+            _user(),
+            "player_queues/play_media",
+            {"queue_id": "kitchen", "media": media},
+        )
+
+    for target in (
+        {"queue_id": "living_room", "media": SPOTIFY.uri},
+        # only the uri of a live source makes one, whatever media type is claimed
+        {
+            "queue_id": "kitchen",
+            "media": {"media_type": "audio_source", "uri": "qobuz--other://track/1"},
+        },
+    ):
+        with pytest.raises(InsufficientPermissions, match=_NOT_PERMITTED):
+            enforce_target_filters(MagicMock(), _user(), "player_queues/play_media", target)
+
+
+async def test_a_live_source_of_a_player_outside_the_player_filter_stays_refused() -> None:
+    """The core refuses the line-in of Living Room to a user limited to Kitchen."""
+    home = _Home()
+    enforce_target_filters(
+        MagicMock(),
+        _user(),
+        "player_queues/play_media",
+        {"queue_id": "kitchen", "media": LINE_IN.uri},
+    )
+
+    with (
+        as_user(["kitchen"]),
+        pytest.raises(PlayerCommandFailed, match="is an invalid source for player Kitchen"),
+    ):
+        await home.players.select_source("kitchen", LINE_IN.uri)
+
+
+def test_discover_folders_pass_and_their_items_follow_the_provider_filter() -> None:
+    """
+    A user limited to some music sources browses Discover as the core lists it.
+
+    The core lists the Discover folders of the user's sources only, also those of a provider
+    that is no music source such as the library rows; the items in a row are filtered.
+    """
+    for path in ("discover://", "discover://recommendations", "discover://spotify--user/new"):
+        enforce_target_filters(MagicMock(), _user(), "music/browse", {"path": path})
+    folders = [
+        BrowseFolder(
+            item_id="spotify--user",
+            provider="spotify",
+            path="discover://spotify--user",
+            name="Spotify",
+        ),
+        BrowseFolder(
+            item_id="recommendations",
+            provider="recommendations",
+            path="discover://recommendations",
+            name="Library Recommendations",
+        ),
+        RecommendationFolder(
+            item_id="new",
+            provider="spotify--user",
+            path="discover://spotify--user/new",
+            name="New releases",
+        ),
+    ]
+    back = BrowseFolder(
+        item_id="back", provider="discover", path="discover://spotify--user", name=".."
+    )
+    allowed = SimpleNamespace(
+        provider_mappings=(SimpleNamespace(provider_instance="spotify--user"),)
+    )
+    blocked = SimpleNamespace(
+        provider_mappings=(SimpleNamespace(provider_instance="qobuz--other"),)
+    )
+
+    assert filter_collection_result(_user(), "music/browse", folders) == folders
+    assert filter_collection_result(_user(), "music/browse", [back, allowed, blocked]) == [
+        back,
+        allowed,
+    ]
+
+
+async def _kitchen_and_den(scenario: Scenario) -> tuple[str, str]:
+    """Attach the AirPlay protocols ap_kitchen and ap_den, and return the ids of their players."""
+    airplay = await scenario.add_provider("airplay")
+    for protocol_id, name, mac in (
+        ("ap_kitchen", "Kitchen", "54:78:C9:E6:0D:A0"),
+        ("ap_den", "Den", "54:78:C9:E6:0D:B0"),
+    ):
+        protocol = airplay.protocol(
+            protocol_id, name, role="audio", identifiers={IdentifierType.MAC_ADDRESS: mac}
+        )
+        await scenario.register(protocol)
+    return (
+        scenario.single_player(scenario.protocol("ap_kitchen")).player_id,
+        scenario.single_player(scenario.protocol("ap_den")).player_id,
+    )
+
+
+async def test_unlink_protocol_of_a_player_of_the_caller_is_permitted(scenario: Scenario) -> None:
+    """A protocol is checked as the player it is attached to."""
+    kitchen_id, _den_id = await _kitchen_and_den(scenario)
+
+    enforce_target_filters(
+        scenario.mass,
+        _user(players=(kitchen_id,)),
+        "players/unlink_protocol",
+        {"protocol_id": "ap_kitchen"},
+    )
+
+
+@pytest.mark.parametrize("protocol_id", ["ap_den", "ap_unknown"])
+async def test_unlink_protocol_outside_the_players_of_the_caller_is_refused(
+    scenario: Scenario, protocol_id: str
+) -> None:
+    """A protocol of another player, or of no player, is refused like a player outside the list."""
+    kitchen_id, _den_id = await _kitchen_and_den(scenario)
+
+    with pytest.raises(InsufficientPermissions, match=_NOT_PERMITTED):
+        enforce_target_filters(
+            scenario.mass,
+            _user(players=(kitchen_id,)),
+            "players/unlink_protocol",
+            {"protocol_id": protocol_id},
+        )
+
+
+async def test_unlink_protocol_that_is_not_attached_is_checked_as_its_stored_player(
+    scenario: Scenario,
+) -> None:
+    """The protocol of a disabled player is detached: the player its config names counts."""
+    kitchen_id, den_id = await _kitchen_and_den(scenario)
+    await scenario.disable(den_id)
+    assert scenario.mass.players.get_protocol("ap_den") is None
+
+    enforce_target_filters(
+        scenario.mass,
+        _user(players=(den_id,)),
+        "players/unlink_protocol",
+        {"protocol_id": "ap_den"},
+    )
+    with pytest.raises(InsufficientPermissions, match=_NOT_PERMITTED):
+        enforce_target_filters(
+            scenario.mass,
+            _user(players=(kitchen_id,)),
+            "players/unlink_protocol",
+            {"protocol_id": "ap_den"},
+        )

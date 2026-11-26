@@ -11,6 +11,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.datetime import from_utc_timestamp
+from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.providers.gpodder import FEED_REFRESH_CONCURRENCY, GPodder
 from music_assistant.providers.gpodder.client import (
     EpisodeActionDelete,
@@ -89,7 +90,11 @@ def test_index_ranks_actions_newest_first_whatever_their_timestamps() -> None:
 
 
 async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodder) -> None:
-    """Episodes reported by url only are matched although their item id holds the guid."""
+    """
+    Episodes reported by url only are matched although their item id holds the guid.
+
+    Each write carries the time of its action.
+    """
     _serve(provider)
     _subscribe(provider, [FEED])
     with patch(
@@ -101,11 +106,14 @@ async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodd
     assert [podcast.item_id for podcast in podcasts] == [FEED]
     music = cast("Mock", provider.mass.music)
     played = music.mark_item_played
-    assert [(c.args[0].item_id, c.kwargs["seconds_played"]) for c in played.call_args_list] == [
-        (f"{FEED} guid-1", 600)
-    ]
+    assert [
+        (c.args[0].item_id, c.kwargs["seconds_played"], c.kwargs["progress_timestamp"])
+        for c in played.call_args_list
+    ] == [(f"{FEED} guid-1", 600, 1704189600)]
     unplayed = music.mark_item_unplayed
-    assert [c.args[0].item_id for c in unplayed.call_args_list] == [f"{FEED} guid-2"]
+    assert [
+        (c.args[0].item_id, c.kwargs["progress_timestamp"]) for c in unplayed.call_args_list
+    ] == [(f"{FEED} guid-2", 1704362400)]
     assert provider.timestamp_actions == 999
 
 
@@ -279,6 +287,52 @@ async def test_listing_shows_what_is_new_and_leaves_the_playlog_to_the_sync(
     assert [(c.args[0].item_id, c.kwargs["fully_played"]) for c in played.call_args_list] == [
         (f"{FEED} guid-1", True)
     ]
+
+
+async def test_actions_are_fetched_once_per_pass(provider: GPodder) -> None:
+    """Lookups across podcasts share the episode actions, each restored as its own kind."""
+    stored: dict[str, Any] = {}
+
+    async def get_with_freshness(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        return (stored[key], True, True) if key in stored else (None, False, False)
+
+    async def store(key: str, data: Any, **_kwargs: Any) -> None:
+        # stored as json, as the real cache does
+        stored[key] = json_loads(json_dumps(data))
+
+    async def drop(key: str, **_kwargs: Any) -> None:
+        stored.pop(key, None)
+
+    async def drop_prefix(prefix: str, **_kwargs: Any) -> None:
+        for key in [key for key in stored if key.startswith(prefix)]:
+            stored.pop(key)
+
+    other_feed = "https://example.com/other.xml"
+    _serve(provider)
+    provider.feeds = {FEED, other_feed}
+    client = cast("Mock", provider._client)
+    client.update_progress = AsyncMock()
+    cache = provider.mass.cache
+    with (
+        patch.object(cache, "get_with_freshness", get_with_freshness),
+        patch.object(cache, "set", store),
+        patch.object(cache, "delete", drop),
+        patch.object(cache, "delete_prefix", drop_prefix),
+    ):
+        fetched = [_progress(x) async for x in provider.get_podcast_episodes(FEED)]
+        await asyncio.sleep(0)
+        _ = [x async for x in provider.get_podcast_episodes(other_feed)]
+        cached = [_progress(x) async for x in provider.get_podcast_episodes(FEED)]
+        # episode 2 was marked unplayed, which a play action would report as finished
+        resume = await provider.get_resume_position(f"{FEED} guid-2", MediaType.PODCAST_EPISODE)
+        assert cached == fetched
+        assert resume[:2] == (False, 0)
+        assert client.get_episode_actions.await_count == 1
+
+        played = await anext(provider.get_podcast_episodes(FEED))
+        await provider.on_played(played.media_type, played.item_id, False, 30, played)
+        _ = [x async for x in provider.get_podcast_episodes(FEED)]
+        assert client.get_episode_actions.await_count == 2
 
 
 @pytest.mark.parametrize(

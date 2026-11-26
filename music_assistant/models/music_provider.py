@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Sequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import aiohttp
 from music_assistant_models.background_task import TaskSchedule
@@ -54,6 +55,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     PlaylistPlayableItem,
 )
+from music_assistant.controllers.cache.helpers import forget_cached
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_text,
@@ -64,9 +66,11 @@ from .media_capabilities import AudioStreamMixin, MediaCatalogMixin, Recommendat
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Callable
 
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import PlaybackState
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -77,10 +81,18 @@ if TYPE_CHECKING:
         PodcastSyncDetails,
         TrackSyncDetails,
     )
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.mass import MusicAssistant
 
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
+# seconds a source-stream slot stays reserved for the queue whose source gave it back,
+# so the next source of that queue finds it: longer than a queue takes to ask for its
+# next track, shorter than another queue's playback start waits for a slot
+STREAM_SLOT_RESERVATION: Final[float] = 5.0
+# a music service stops paging through an artist's discography at this many releases, so
+# one user action never costs a number of requests that grows with the catalogue (usage policy)
+ARTIST_ALBUMS_LIMIT: Final[int] = 100
 # a provider-wide payload change fails every single item, so only the first failures
 # of a sync run are logged in full to keep the (rotating) log file usable
 MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
@@ -240,6 +252,121 @@ def describe_sync_error(err: Exception) -> str:
     return f"{type(err).__name__}: {detail}"
 
 
+class _StreamSlots:
+    """
+    The source-stream slots of one music provider.
+
+    Hands out a fixed number of slots, in the order they are asked for. A slot that is given
+    back can stay reserved for a queue for a moment: to that queue it is free, to every
+    other taker it is taken.
+    """
+
+    def __init__(self, limit: int) -> None:
+        """
+        Initialize the slots.
+
+        :param limit: The number of slots.
+        """
+        self._limit = limit
+        self._taken = 0
+        # who waits for a slot, in the order they asked, each with the queue it asks for
+        self._waiters: deque[tuple[asyncio.Future[None], str | None]] = deque()
+        # the queues a slot is reserved for, each with the timer that ends its reservation
+        self._reservations: dict[str, asyncio.TimerHandle] = {}
+
+    @property
+    def has_free(self) -> bool:
+        """Return whether fewer slots are taken than there are."""
+        return self._taken < self._limit
+
+    @property
+    def reserved_for(self) -> tuple[str, ...]:
+        """Return the queues a slot is reserved for."""
+        return tuple(self._reservations)
+
+    async def take(self, queue_id: str | None) -> None:
+        """
+        Take a slot, waiting until one is free for the given queue.
+
+        :param queue_id: The queue the slot is taken for, if any. Taking a slot ends the
+            reservation of that queue.
+        """
+        if self._is_free_for(queue_id):
+            self._grant(queue_id)
+            return
+        granted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        waiter = (granted, queue_id)
+        self._waiters.append(waiter)
+        try:
+            await granted
+        except asyncio.CancelledError:
+            if granted.cancelled():
+                self._waiters.remove(waiter)
+            else:
+                # the slot was granted in the moment the wait was given up: pass it on
+                self.give_back()
+            raise
+
+    def give_back(
+        self, queue_id: str | None = None, reserve: Callable[[], bool] | None = None
+    ) -> None:
+        """
+        Give a slot back.
+
+        :param queue_id: The queue the slot was taken for, if any.
+        :param reserve: Tells whether the slot stays reserved for that queue.
+        """
+        self._taken -= 1
+        if queue_id is not None and reserve is not None and reserve():
+            if (timer := self._reservations.get(queue_id)) is not None:
+                timer.cancel()
+            self._reservations[queue_id] = asyncio.get_running_loop().call_later(
+                STREAM_SLOT_RESERVATION, self.end_reservation, queue_id
+            )
+        self._serve_waiters()
+
+    def end_reservation(self, queue_id: str) -> None:
+        """
+        End the reservation of the given queue, if it has one.
+
+        :param queue_id: The queue whose reservation to end.
+        """
+        if (timer := self._reservations.pop(queue_id, None)) is None:
+            return
+        timer.cancel()
+        self._serve_waiters()
+
+    def _is_free_for(self, queue_id: str | None) -> bool:
+        """
+        Return whether a slot is free for the given queue.
+
+        :param queue_id: The queue that asks, if any.
+        """
+        reserved_for_others = len(self._reservations) - (queue_id in self._reservations)
+        return self._taken + reserved_for_others < self._limit
+
+    def _grant(self, queue_id: str | None) -> None:
+        """
+        Count a slot as taken, which ends the reservation of the queue that takes it.
+
+        :param queue_id: The queue the slot is taken for, if any.
+        """
+        self._taken += 1
+        if queue_id is not None and (timer := self._reservations.pop(queue_id, None)):
+            timer.cancel()
+
+    def _serve_waiters(self) -> None:
+        """Grant a slot to every waiter one is free for, the longest wait first."""
+        for waiter in tuple(self._waiters):
+            granted, queue_id = waiter
+            # a wait that was given up takes itself out of the line
+            if granted.cancelled() or not self._is_free_for(queue_id):
+                continue
+            self._waiters.remove(waiter)
+            self._grant(queue_id)
+            granted.set_result(None)
+
+
 class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, Provider):
     """
     Base representation of a Music Provider (controller).
@@ -263,11 +390,12 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         max_concurrent_streams = self.max_concurrent_streams
         if max_concurrent_streams is not None and max_concurrent_streams < 1:
             raise ValueError("max_concurrent_streams must be at least 1 or None")
-        self._stream_semaphore = (
-            asyncio.BoundedSemaphore(max_concurrent_streams)
-            if max_concurrent_streams is not None
-            else None
+        self._stream_slots = (
+            _StreamSlots(max_concurrent_streams) if max_concurrent_streams is not None else None
         )
+        self._stream_slot_holders: set[AudioBuffer] = set()
+        # the waits in line, each woken once a source takes a slot and is listed as its holder
+        self._stream_slot_watches: set[asyncio.Future[None]] = set()
 
     def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
         """
@@ -286,6 +414,17 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         return False
 
     @property
+    def account_id(self) -> str | None:
+        """
+        Return a stable id of the account this instance is signed in to, if known.
+
+        Read once the instance has initialized. An instance stays bound to the account it
+        reported first: a load that reports another account is refused. Only return
+        something the provider already knows without an extra call to the service.
+        """
+        return None
+
+    @property
     def max_concurrent_streams(self) -> int | None:
         """
         Return the number of source streams Music Assistant may run against this provider.
@@ -300,33 +439,119 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
     @property
     def has_available_stream_slot(self) -> bool:
-        """Return whether a source stream can start without waiting."""
-        return self._stream_semaphore is None or not self._stream_semaphore.locked()
+        """
+        Return whether fewer source streams are open than this provider allows.
+
+        A slot that is reserved for a queue counts as free here, though only that queue
+        gets it without waiting.
+        """
+        return self._stream_slots is None or self._stream_slots.has_free
+
+    @property
+    def stream_slot_holders(self) -> tuple[AudioBuffer, ...]:
+        """Return the audio buffers whose sources hold a source-stream slot right now."""
+        return tuple(self._stream_slot_holders)
+
+    @property
+    def stream_slot_reservations(self) -> tuple[str, ...]:
+        """Return the queues a source-stream slot is reserved for right now."""
+        return tuple(self._stream_slots.reserved_for) if self._stream_slots is not None else ()
 
     @asynccontextmanager
-    async def acquire_stream_slot(self, wait_timeout: float | None) -> AsyncGenerator[None]:
+    async def acquire_stream_slot(
+        self,
+        wait_timeout: float | None,
+        holder: AudioBuffer | None = None,
+        queue_id: str | None = None,
+        reserve: Callable[[], bool] | None = None,
+    ) -> AsyncGenerator[None]:
         """
         Acquire one source-stream slot for the duration of the context.
 
         :param wait_timeout: Maximum seconds to wait, or None to wait without a timeout.
+        :param holder: The audio buffer the slot is for, listed in ``stream_slot_holders``
+            for as long as it holds the slot.
+        :param queue_id: The queue the slot is taken for, if any. A slot that is reserved
+            for this queue is free to it, and taking a slot ends that reservation.
+        :param reserve: Asked when the slot is given back: whether it stays reserved for the
+            queue. A reserved slot is taken to every other taker for
+            ``STREAM_SLOT_RESERVATION`` seconds, or until ``end_stream_slot_reservation``.
         :raises ProviderStreamLimitError: If no slot becomes available before the timeout.
         """
-        semaphore = self._stream_semaphore
-        if semaphore is None:
+        slots = self._stream_slots
+        if slots is None:
             yield
             return
         try:
             if wait_timeout is None:
-                await semaphore.acquire()
+                await slots.take(queue_id)
             else:
                 async with asyncio.timeout(wait_timeout):
-                    await semaphore.acquire()
+                    await slots.take(queue_id)
         except TimeoutError as err:
             raise ProviderStreamLimitError(self, wait_timeout) from err
+        if holder is not None:
+            self._stream_slot_holders.add(holder)
+            for watch in self._stream_slot_watches:
+                if not watch.done():
+                    watch.set_result(None)
         try:
             yield
         finally:
-            semaphore.release()
+            if holder is not None:
+                self._stream_slot_holders.discard(holder)
+            slots.give_back(queue_id, reserve)
+
+    async def wait_for_stream_slot(
+        self,
+        wait_timeout: float,
+        queue_id: str,
+        gives_up: Callable[[], bool],
+        wanted: Callable[[], bool],
+    ) -> None:
+        """
+        Wait in line for a source-stream slot, and keep the slot for the given queue.
+
+        The slot stays reserved for the queue, as one that a source of it gave back, so the
+        next source of the queue takes it.
+
+        :param wait_timeout: Maximum seconds to wait.
+        :param queue_id: The queue the slot is for.
+        :param gives_up: Asked whenever a source takes a slot, or a holder of one gets its
+            first audio, during the wait: True ends the wait without a slot, and it may raise
+            to refuse the wait.
+        :param wanted: Asked when a slot comes free for the wait: False passes it on at once
+            instead of keeping it for the queue.
+        :raises ProviderStreamLimitError: If no slot comes free within the timeout.
+        """
+        slots = self._stream_slots
+        if slots is None:
+            return
+        taking = asyncio.ensure_future(slots.take(queue_id))
+        granted = False
+        try:
+            async with asyncio.timeout(wait_timeout):
+                while not taking.done():
+                    await self._stream_slot_change(taking)
+                    if not taking.done() and gives_up():
+                        break
+                granted = taking.done()
+        except TimeoutError as err:
+            raise ProviderStreamLimitError(self, wait_timeout) from err
+        finally:
+            # a wait that ends without the slot leaves the line, and gives back a slot that
+            # was granted in that moment
+            if not taking.cancel():
+                slots.give_back(queue_id, lambda: granted and wanted())
+
+    def end_stream_slot_reservation(self, queue_id: str) -> None:
+        """
+        End the reservation of a source-stream slot for the given queue, if it has one.
+
+        :param queue_id: The queue whose reservation to end.
+        """
+        if self._stream_slots is not None:
+            self._stream_slots.end_reservation(queue_id)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -387,8 +612,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         Return all supported artist types by this provider.
 
-        Note, that this property currently is only used, to verify support of artists with
-        ArtistType.AUTHOR or ArtistType.NARRATOR.
+        Sent to clients with the provider; with ArtistType.AUTHOR or ArtistType.NARRATOR the
+        provider's audiobooks must list those as Artist objects instead of strings.
         """
         return {ArtistType.SINGER}
 
@@ -441,8 +666,9 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
-        Get a list of all albums for the given artist.
+        Get a list of albums for the given artist.
 
+        A music service stops paging through the discography at ARTIST_ALBUMS_LIMIT releases.
         Only called if provider supports ProviderFeature.ARTIST_ALBUMS.
         """
         raise NotImplementedError
@@ -707,6 +933,17 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         raise NotImplementedError
 
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """
+        Drop what the provider keeps of a playlist's tracks, so the next read fetches them anew.
+
+        Called once Music Assistant changed the playlist. The default drops what use_cache
+        keeps of get_playlist_tracks; override it when the provider keeps them another way.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        """
+        await forget_cached(self.get_playlist_tracks, prov_playlist_id)
+
     async def move_playlist_track(
         self, prov_playlist_id: str, from_position: int, to_position: int
     ) -> None:
@@ -923,6 +1160,26 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         is_playing is True when the track is currently playing.
         """
 
+    async def on_playback_progress(
+        self,
+        report: MediaItemPlaybackProgressReport,
+        prov_item_id: str,
+        state: PlaybackState,
+    ) -> None:
+        """
+        Handle callback when the playback of an item this provider streamed progresses.
+
+        Meant for reporting playback back to the provider's own service, such as the device
+        and position a service shows as playing now. Called only on the provider instance
+        that streamed the item, and only once a player received audio of it: when it starts,
+        pauses, resumes or stops, when the next item starts and every 30s while it plays.
+
+        :param report: The playback progress report; ``player_id`` names the playing player.
+        :param prov_item_id: The provider-specific id of the streamed item.
+        :param state: PLAYING or PAUSED while the item is current, IDLE once it stopped,
+            ended or was skipped.
+        """
+
     async def on_item_updated(self, item: MediaItemType) -> None:
         """
         Handle callback when a library item's metadata has been updated.
@@ -1032,6 +1289,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             raise KeyError(msg)
 
         # no subpath: return main listing
+        # artists, albums and playlists folders are not playable: playing one would fetch
+        # the tracks of every item in the library, one request each
         folders: list[BrowseFolder] = []
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             folders.append(
@@ -1041,7 +1300,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "artists",
                     name="",
                     translation_key="artists",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
@@ -1052,7 +1310,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "albums",
                     name="",
                     translation_key="albums",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
@@ -1074,7 +1331,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "playlists",
                     name="",
                     translation_key="playlists",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
@@ -1249,7 +1505,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
 
     # DO NOT OVERRIDE BELOW
@@ -1285,6 +1541,29 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             for track in tracks:
                 yield track
             page += 1
+
+    async def _stream_slot_change(self, taking: asyncio.Future[None]) -> None:
+        """
+        Wait until a slot is granted, a source takes a slot, or a holder gets its first audio.
+
+        :param taking: The wait in line for a slot.
+        """
+        # registered before anything else runs, so a source that takes a slot in this same
+        # loop turn wakes the wait too
+        held: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._stream_slot_watches.add(held)
+        ready_watches: list[asyncio.Future[Any]] = [
+            asyncio.ensure_future(holder.ready.wait())
+            for holder in self._stream_slot_holders
+            if not holder.ready.is_set()
+        ]
+        try:
+            await asyncio.wait([taking, held, *ready_watches], return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            self._stream_slot_watches.discard(held)
+            held.cancel()
+            for watch in ready_watches:
+                watch.cancel()
 
     async def _run_library_sync(self, media_type: MediaType) -> None:  # noqa: PLR0915
         """Sync the given media type into the library and process its deletions."""
@@ -1534,9 +1813,23 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 return
             genre_names = fallback_genres
 
-        await self.mass.music.genres.sync_media_item_genres(
+        if not await self.mass.music.genres.sync_media_item_genres(
             media_type, library_item_id, set(genre_names)
-        )
+        ):
+            return
+        # the genre scan keeps only links whose name is stored on the item, and an item with
+        # stored genres no longer inherits genres from its tracks, so store every name
+        controller = self.mass.music.get_controller(media_type)
+        library_item = await controller.get_library_item(library_item_id)
+        stored = set(library_item.metadata.genres or set())
+        # the genre scan compares names case-insensitively, so skip names stored in another case
+        stored_keys = {name.strip().lower() for name in stored}
+        stored |= {
+            name.strip()
+            for name in genre_names
+            if name.strip() and name.strip().lower() not in stored_keys
+        }
+        await controller.replace_metadata(library_item_id, {"genres": stored})
 
     async def _sync_library_artists(self) -> set[int]:
         """Sync Library Artists to Music Assistant library."""
@@ -1585,7 +1878,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.ARTIST, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.ARTIST, prov_item.item_id, db_id, cur_db_ids
@@ -1640,7 +1933,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.ALBUM, prov_item.item_id, db_id, cur_db_ids
@@ -1651,7 +1944,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if sync_album_tracks:
                 try:
                     await self.import_album_tracks(prov_item.item_id, prov_item)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                     self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
 
@@ -1755,7 +2048,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     )
 
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.AUDIOBOOK, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.AUDIOBOOK, prov_item.item_id, db_id, cur_db_ids
@@ -1814,7 +2107,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                             self.instance_id, MediaType.PLAYLIST, db_id, prov_item.favorite
                         )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.PLAYLIST, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.PLAYLIST, prov_item.item_id, db_id, cur_db_ids
@@ -1828,7 +2121,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             ):
                 try:
                     await self._sync_playlist_tracks(prov_item)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                     self._handle_sync_item_failure(MediaType.PLAYLIST, prov_item.uri, err)
         return cur_db_ids
 
@@ -1880,7 +2173,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
 
     async def _sync_library_tracks(self) -> set[int]:
@@ -1947,7 +2240,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.TRACK, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.TRACK, prov_item.item_id, db_id, cur_db_ids
@@ -2008,7 +2301,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.PODCAST, prov_item.item_id, db_id, cur_db_ids
@@ -2020,7 +2313,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 # precache podcast episodes
                 async for _ in self.mass.music.podcasts.iter_episodes(str(db_id), "library"):
                     await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
         return cur_db_ids
 
@@ -2076,7 +2369,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         )
                 await asyncio.sleep(0)  # yield to eventloop
 
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.RADIO, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.RADIO, prov_item.item_id, db_id, cur_db_ids

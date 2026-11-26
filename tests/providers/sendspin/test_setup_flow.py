@@ -304,7 +304,8 @@ def _make_player(
     api: _FakeApi, provider: _FakeProvider, *, cls: type[SendspinBasePlayer] = SendspinBasePlayer
 ) -> SendspinBasePlayer:
     player = cls.__new__(cls)
-    player._player_id = "client-1"
+    player._protocol_id = "client-1"
+    player._player = None
     player._provider = cast("SendspinProvider", provider)
     player.api = cast("SendspinClient", api)
     return player
@@ -637,7 +638,7 @@ async def test_consent_on_combo_approves_the_input_in_one_click() -> None:
     await task
     assert provider.trust_calls == [True]
     assert provider.allow_input_calls == [True]
-    mass.config.set_raw_player_config_value.assert_called_once_with(
+    mass.config.set_protocol_value.assert_called_once_with(
         "client-1", CONF_SOURCE_INPUT_DECLINED, False
     )
 
@@ -662,7 +663,7 @@ async def test_consent_without_the_input_approves_playback_only() -> None:
     await _wait_for(lambda: session.finished)
     await task
     assert provider.allow_input_calls == [False]
-    mass.config.set_raw_player_config_value.assert_called_once_with(
+    mass.config.set_protocol_value.assert_called_once_with(
         "client-1", CONF_SOURCE_INPUT_DECLINED, True
     )
 
@@ -738,7 +739,7 @@ async def test_consent_opting_into_pairing_pairs_instead() -> None:
 def _attach_mass(player: SendspinBasePlayer, *, dismissed: bool = False) -> mock.MagicMock:
     """Give a bare test player the mass surface the approval paths touch."""
     player.mass = mock.MagicMock()
-    player.mass.config.get_raw_player_config_value = mock.Mock(return_value=dismissed)
+    player.mass.config.get_protocol_value = mock.Mock(return_value=dismissed)
     player.mass.config.save_player_config = mock.AsyncMock()
     player.update_state = mock.Mock()  # type: ignore[method-assign, misc]
     return player.mass
@@ -772,7 +773,7 @@ async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> N
 
     await _wait_for(lambda: session.finished)
     await task
-    mass.config.set_raw_player_config_value.assert_called_once_with(
+    mass.config.set_protocol_value.assert_called_once_with(
         "client-1", CONF_SOURCE_INPUT_DECLINED, False
     )
     assert provider.trust_calls == [True]
@@ -800,7 +801,7 @@ async def test_input_picker_serves_a_device_that_withdrew_guest_access() -> None
 
     await _wait_for(lambda: session.finished)
     await task
-    mass.config.set_raw_player_config_value.assert_called_once_with(
+    mass.config.set_protocol_value.assert_called_once_with(
         "client-1", CONF_SOURCE_INPUT_DECLINED, True
     )
     assert provider.trust_calls == []
@@ -838,9 +839,10 @@ def _line_sense_combo(api: _FakeApi, player: SendspinBasePlayer) -> mock.MagicMo
     """Make the combo sense a line-in signal, with a speaker to autostart on."""
     api.info_or_none.source_support = SimpleNamespace(features=SimpleNamespace(line_sense=True))
     mass = _attach_mass(player)
-    player.set_protocol_parent_id(None)
+    # attached to the player "client-1"
+    player._player = cast("Any", SimpleNamespace(player_id="client-1"))
     mass.players.all_players.return_value = [
-        SimpleNamespace(player_id=pid, display_name=pid, type=PlayerType.PLAYER)
+        SimpleNamespace(player_id=pid, name=pid, type=PlayerType.PLAYER)
         for pid in ("client-1", "kitchen")
     ]
     return mass
@@ -866,7 +868,7 @@ async def test_allowing_the_input_offers_line_in_autostart() -> None:
 
     await _wait_for(lambda: session.finished)
     await task
-    mass.config.set_raw_player_config_value.assert_called_with(
+    mass.config.set_protocol_value.assert_called_with(
         "client-1", CONF_SOURCE_AUTOSTART_TARGET, None
     )
     assert session.finish_step_id == FINISH_STEP_SILENT
@@ -908,7 +910,7 @@ async def test_pairing_a_line_sensing_device_offers_line_in_autostart() -> None:
 
     await _wait_for(lambda: session.finished)
     await task
-    mass.config.set_raw_player_config_value.assert_called_once_with(
+    mass.config.set_protocol_value.assert_called_once_with(
         "client-1", CONF_SOURCE_AUTOSTART_TARGET, "kitchen"
     )
 

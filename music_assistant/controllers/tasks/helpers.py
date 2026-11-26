@@ -391,7 +391,7 @@ class TaskLogHandler(logging.Handler):
             return
         try:
             line = self.format(record)
-        except Exception:  # pragma: no cover - logging internals
+        except Exception:  # pragma: no cover - logging internals  # noqa: BLE001 - must never raise
             self.handleError(record)
             return
         self._mass.loop.call_soon_threadsafe(self._append_log, task_id, line)

@@ -14,16 +14,23 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import ClientSession, web
-from aiohttp.client_exceptions import ClientError
+from aiohttp import ClientSession, RequestInfo, web
+from aiohttp.client_exceptions import ClientError, ClientResponseError
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict, CIMultiDictProxy
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from PIL import Image
+from yarl import URL
 
 from music_assistant.helpers import images
 from music_assistant.helpers.images import (
     _SOURCE_CACHE_TTL,
+    MAX_CUSTOM_IMAGE_BYTES,
     create_thumb_hash,
     detect_image_content_format,
     detect_provider_icons,
@@ -32,6 +39,7 @@ from music_assistant.helpers.images import (
     get_image_thumb_path,
     invalidate_cached_image,
     load_provider_icon,
+    validate_custom_image,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
@@ -355,6 +363,7 @@ async def test_provider_resolved_ffmpeg_locator_never_reaches_ffmpeg(
     """An ffmpeg protocol locator reported as artwork is refused without spawning ffmpeg."""
     fake_provider = MagicMock(spec=PlayerProvider)
     fake_provider.resolve_image = AsyncMock(return_value="concat:/etc/passwd|/etc/hosts")
+    fake_provider.accepts_stored_image_path.return_value = False
     monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
 
     with (
@@ -383,6 +392,46 @@ async def test_own_imageproxy_url_with_control_chars_is_refused_before_resolving
             mass_minimal, f"http://127.0.0.1:8095/imageproxy/{image_id}?size=0\r\nX: 1", "builtin"
         )
     resolve_id.assert_not_awaited()
+
+
+@pytest.mark.parametrize("opted_in", [True, False], ids=["opted-in", "not-opted-in"])
+async def test_local_file_result_is_refused_only_for_an_accepted_stored_path(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    opted_in: bool,
+) -> None:
+    """A local file result is refused for an accepted stored path and read otherwise."""
+    image_path = _make_png_file(tmp_path)
+    fake_provider = MagicMock(spec=MusicProvider)
+    fake_provider.resolve_image = AsyncMock(return_value=image_path)
+    fake_provider.accepts_stored_image_path.return_value = opted_in
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    if opted_in:
+        with pytest.raises(FileNotFoundError):
+            await get_image_data(mass_minimal, "al-123", "sonic--1")
+    else:
+        assert (
+            await get_image_data(mass_minimal, "al-123", "sonic--1")
+            == Path(image_path).read_bytes()
+        )
+
+
+async def test_accepted_stored_path_resolved_to_nothing_is_not_read_locally(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An accepted stored path the provider resolves to an empty string is never read as a file."""
+    image_path = _make_png_file(tmp_path)
+    fake_provider = MagicMock(spec=MusicProvider)
+    fake_provider.resolve_image = AsyncMock(return_value="")
+    fake_provider.accepts_stored_image_path.return_value = True
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    with pytest.raises(FileNotFoundError):
+        await get_image_data(mass_minimal, image_path, "apple_music--1")
 
 
 async def test_provider_resolved_url_with_control_chars_is_not_fetched(
@@ -427,6 +476,7 @@ async def test_rogue_renderer_artwork_never_reaches_ffmpeg_or_a_fetch(
     """
     fake_provider = MagicMock(spec=PlayerProvider)
     fake_provider.resolve_image = AsyncMock(return_value=artwork)
+    fake_provider.accepts_stored_image_path.return_value = False
     monkeypatch.setattr(
         mass_minimal, "get_provider", lambda _prov, **_kw: fake_provider if via_provider else None
     )
@@ -639,6 +689,40 @@ async def test_failed_source_retried_after_ttl_or_invalidation(
     monkeypatch.setattr(images, "_fetch_remote_image", ok_remote_fetch)
     assert await get_image_data(mass_minimal, remote_url, "builtin") == b"remote-image-bytes"
     assert len(fetch_calls) == 3
+
+
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "http://plex.local:32400/library/metadata/1/thumb/2?X-Plex-Token=s3cr3t-token",
+        "http://jellyfin.local:8096/Items/abc/Images/Primary?api_key=s3cr3t-token",
+        "http://user:s3cr3t-token@art.example.com/cover.jpg",
+    ],
+)
+async def test_failed_fetch_hides_url_credentials(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    remote_url: str,
+) -> None:
+    """A failed fetch keeps the token in the URL out of the error and the log."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+
+    async def failing_remote_fetch(_mass: MusicAssistant, url: str) -> bytes:
+        request_info = RequestInfo(URL(url), "GET", CIMultiDictProxy(CIMultiDict()), URL(url))
+        raise ClientResponseError(request_info, (), status=401, message="Unauthorized")
+
+    monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
+    caplog.set_level(logging.WARNING, logger="music_assistant.helpers.images")
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        await get_image_data(mass_minimal, remote_url, "builtin")
+
+    assert "401" in str(exc_info.value)
+    assert "s3cr3t-token" not in str(exc_info.value)
+    assert caplog.records
+    assert all("s3cr3t-token" not in rec.getMessage() for rec in caplog.records)
 
 
 async def test_remote_http_404_yields_file_not_found(mass_minimal: MusicAssistant) -> None:
@@ -883,3 +967,76 @@ async def test_detect_provider_icons_png_and_variants(tmp_path: Path) -> None:
 async def test_detect_provider_icons_none(tmp_path: Path) -> None:
     """Test detecting icons in an empty directory returns empty dict."""
     assert await detect_provider_icons(str(tmp_path)) == {}
+
+
+TRUNCATED_JPEG_FRACTION = 0.7
+
+
+def _raster_bytes(image_format: str) -> bytes:
+    """Return a minimal valid raster image in the given Pillow format."""
+    buf = BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(buf, format=image_format)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("image_format", "expected_ext"),
+    [("PNG", "png"), ("JPEG", "jpg"), ("WEBP", "webp"), ("GIF", "gif"), ("BMP", "bmp")],
+)
+def test_validate_custom_image_accepts_raster(image_format: str, expected_ext: str) -> None:
+    """Any Pillow-decodable raster format validates and maps to its canonical extension."""
+    assert validate_custom_image(_raster_bytes(image_format)) == expected_ext
+
+
+def test_validate_custom_image_rejects_svg() -> None:
+    """SVG uploads are rejected with a clear error."""
+    with pytest.raises(InvalidDataError, match="SVG"):
+        validate_custom_image(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>")
+
+
+def test_validate_custom_image_rejects_garbage() -> None:
+    """Random bytes are not a valid image."""
+    with pytest.raises(InvalidDataError, match="not a supported image"):
+        validate_custom_image(b"certainly not an image")
+
+
+def test_validate_custom_image_rejects_oversized() -> None:
+    """Uploads over the byte limit are rejected before decoding."""
+    with pytest.raises(InvalidDataError, match="size limit"):
+        validate_custom_image(b"x" * (MAX_CUSTOM_IMAGE_BYTES + 1))
+
+
+def test_validate_custom_image_rejects_too_many_pixels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Uploads with more pixels than the limit are rejected."""
+    monkeypatch.setattr(images, "MAX_CUSTOM_IMAGE_PIXELS", 10)
+    with pytest.raises(InvalidDataError, match="dimensions"):
+        validate_custom_image(_raster_bytes("PNG"))
+
+
+def test_validate_custom_image_rejects_truncated() -> None:
+    """A truncated raster file fails validation."""
+    with pytest.raises(InvalidDataError):
+        validate_custom_image(_raster_bytes("PNG")[:20])
+
+
+def test_validate_custom_image_accepts_mpo() -> None:
+    """Multi-picture JPEG (phone cameras) is accepted through the JPEG decoder."""
+    buf = BytesIO()
+    first = Image.new("RGB", (4, 4), "blue")
+    first.save(buf, "MPO", save_all=True, append_images=[Image.new("RGB", (4, 4), "red")])
+    assert validate_custom_image(buf.getvalue()) == "jpg"
+
+
+def test_validate_custom_image_rejects_unlisted_format() -> None:
+    """A valid image in a format outside the allowlist is rejected."""
+    with pytest.raises(InvalidDataError, match="not a supported image"):
+        validate_custom_image(_raster_bytes("TIFF"))
+
+
+def test_validate_custom_image_rejects_undecodable() -> None:
+    """A JPEG cut off inside its pixel data fails the full decode."""
+    buf = BytesIO()
+    Image.frombytes("RGB", (256, 256), os.urandom(256 * 256 * 3)).save(buf, format="JPEG")
+    data = buf.getvalue()
+    with pytest.raises(InvalidDataError, match="not a supported image"):
+        validate_custom_image(data[: int(len(data) * TRUNCATED_JPEG_FRACTION)])

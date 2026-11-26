@@ -1,0 +1,126 @@
+{
+  "Any": {
+    "properties": {},
+    "type": "object"
+  },
+  "AsyncGenerator": {
+    "properties": {},
+    "type": "object"
+  },
+  "Colour": {
+    "description": "Enum: Colour. Possible values: red, blue",
+    "enum": [
+      "red",
+      "blue"
+    ],
+    "type": "string"
+  },
+  "ConfigValueType": {
+    "description": "Type alias for configuration value types. Can be boolean, number, integer, string, array of number, array of integer, array of string, array of boolean, or null.",
+    "oneOf": [
+      {
+        "type": "boolean"
+      },
+      {
+        "type": "number"
+      },
+      {
+        "type": "integer"
+      },
+      {
+        "type": "string"
+      },
+      {
+        "items": {
+          "type": "number"
+        },
+        "type": "array"
+      },
+      {
+        "items": {
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      {
+        "items": {
+          "type": "boolean"
+        },
+        "type": "array"
+      },
+      {
+        "type": "null"
+      }
+    ]
+  },
+  "Part": {
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "weight": {
+        "default": null,
+        "nullable": true,
+        "type": "number"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  },
+  "Widget": {
+    "properties": {
+      "colour": {
+        "$ref": "#/components/schemas/Colour"
+      },
+      "count": {
+        "default": 0,
+        "type": "integer"
+      },
+      "enabled": {
+        "default": true,
+        "type": "boolean"
+      },
+      "labels": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "owner": {
+        "$ref": "#/components/schemas/Widget",
+        "default": null,
+        "nullable": true
+      },
+      "parts": {
+        "items": {
+          "$ref": "#/components/schemas/Part"
+        },
+        "type": "array"
+      },
+      "size": {
+        "default": "small",
+        "enum": [
+          "small",
+          "large"
+        ],
+        "type": "string"
+      },
+      "widget_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "widget_id",
+      "colour"
+    ],
+    "type": "object"
+  }
+}

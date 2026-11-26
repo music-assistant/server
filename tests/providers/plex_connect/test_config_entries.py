@@ -33,7 +33,7 @@ def _make_provider(token: str | None = None) -> Any:
     mock_mass = MagicMock()
     mock_mass.version = "2.10.0"
     player = MagicMock()
-    player.display_name = "Living Room"
+    player.name = "Living Room"
     mock_mass.players.get_player.return_value = player
 
     setup_data: dict[str, Any] = {

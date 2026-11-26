@@ -31,7 +31,8 @@ def _player(
     mass.streams.get_announcement_duration = AsyncMock(return_value=3)
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.player")
-    player._player_id = PLAYER
+    player._protocol_id = PLAYER
+    player._player = None
     player._attr_name = "Office"
     player._cache = {}
     player._config = MagicMock()

@@ -8,5 +8,5 @@
   "requirements": [],
   "multi_instance": true,
   "codeowners": ["@bollewolle"],
-  "tier": "community"
+  "provides": ["radio", "podcast"]
 }

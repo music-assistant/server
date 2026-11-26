@@ -7,7 +7,7 @@
   "codeowners": [
     "@music-assistant"
   ],
-  "tier": "core",
+  "provides": ["visualizer"],
   "requirements": [],
   "documentation": "https://music-assistant.io/plugins/milkdrop-visualizer/",
   "multi_instance": false,

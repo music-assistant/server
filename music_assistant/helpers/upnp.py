@@ -13,6 +13,7 @@ from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import MASS_LOGO_ONLINE
 from music_assistant.helpers.audio import get_mime_type
+from music_assistant.helpers.player import served_duration
 
 if TYPE_CHECKING:
     from music_assistant.models.player import PlayerMedia
@@ -165,9 +166,19 @@ def get_xml_soap_create_queue() -> tuple[str, str]:
 
 
 # DIDL-LITE
-def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
-    """Create DIDL metadata string from url and PlayerMedia."""
+def create_didl_metadata(
+    media: PlayerMedia, url: str | None = None, served_as_file: bool = False
+) -> str:
+    """
+    Create DIDL metadata string from url and PlayerMedia.
+
+    :param media: The media the metadata describes.
+    :param url: The url the player fetches the media from, when that is not its uri.
+    :param served_as_file: Whether that url answers requests for a part of the media.
+    """
     uri = url or media.uri
+    # the same flag the stream itself answers with
+    dlna_op = "01" if served_as_file else "00"
 
     def escape_metadata(data: str) -> str:
         """Escape didl metadata."""
@@ -198,7 +209,7 @@ def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
             f"<dc:queueItemId>{escape_metadata(uri)}</dc:queueItemId>"
             f"<dc:description>Music Assistant</dc:description>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
-            f'<res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{escape_metadata(uri)}</res>'
+            f'<res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP={dlna_op};DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{escape_metadata(uri)}</res>'
             "</item>"
             "</DIDL-Lite>"
         )
@@ -210,12 +221,9 @@ def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
     # - Streaming transfer mode (bit 24)
     # - Background transfer mode supported (bit 22)
     # - DLNA v1.5 (bit 20)
-    # the res duration describes the audio we hand over, which is shorter than
-    # the media item when playback starts at a seek position. A flow stream carries on
-    # past that point into the next track, so a player told the shorter duration drops
-    # the stream at its end (or requests it again): give a flow the whole track
-    served = media.stream_duration if "/flow/" not in uri else None
-    stream_duration = int(served or media.duration or 0)
+    # a player told a shorter duration than a flow stream holds drops the stream at
+    # its end (or requests it again)
+    stream_duration = int(served_duration(media, uri) or 0)
     duration_str = str(stream_duration // 3600).zfill(2) + ":"
     duration_str += str((stream_duration % 3600) // 60).zfill(2) + ":"
     duration_str += str(stream_duration % 60).zfill(2)
@@ -231,7 +239,7 @@ def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
         f"<dc:description>Music Assistant</dc:description>"
         f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
         "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
-        f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(uri)}</res>'
+        f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP={dlna_op};DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(uri)}</res>'
         '<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">RINCON_AssociatedZPUDN</desc>'
         "</item>"
         "</DIDL-Lite>"

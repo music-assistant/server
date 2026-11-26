@@ -43,7 +43,7 @@ from music_assistant.constants import (
     CONF_USERNAME,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
 )
-from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.cache import forget_cached, use_cache
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.podcast_parsers import (
     get_episode_transcript,
@@ -64,6 +64,8 @@ if TYPE_CHECKING:
 
 
 FULLY_PLAYED_THRESHOLD = 0.9
+# lets one pass over the library share the account-wide listening status; cleared on every save
+LISTENING_STATUS_CACHE_SECONDS = 60
 SPECIAL_FOLDERS = ("up_next", "new_releases", "in_progress", "starred", "history")
 
 SUPPORTED_FEATURES = {
@@ -261,8 +263,8 @@ class PocketCastsProvider(MusicProvider):
             show_notes,
         ) = await asyncio.gather(
             self._client.get_podcast_episodes(prov_podcast_id),
-            self._client.get_in_progress_episodes(),
-            self._client.get_history(),
+            self._in_progress_episodes(),
+            self._history(),
             self._get_show_notes(prov_podcast_id),
         )
         in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
@@ -417,7 +419,7 @@ class PocketCastsProvider(MusicProvider):
         _, episode_uuid = item_id.split(":", 1)
 
         try:
-            in_progress = await self._client.get_in_progress_episodes()
+            in_progress = await self._in_progress_episodes()
         except (ProviderUnavailableError, ResourceTemporarilyUnavailable, RetriesExhausted) as err:
             # resume is best-effort; a transient failure should not break playback
             self.logger.warning("Could not fetch resume position for %s: %s", episode_uuid, err)
@@ -487,6 +489,8 @@ class PocketCastsProvider(MusicProvider):
                 self._announced_episodes.add(episode_uuid)
                 await self._announce_playback_start(podcast_uuid, episode_uuid, media_item)
             await self._client.update_episode_progress(podcast_uuid, episode_uuid, position)
+        await forget_cached(self._in_progress_episodes)
+        await forget_cached(self._history)
 
     def _convert_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
         """
@@ -588,6 +592,16 @@ class PocketCastsProvider(MusicProvider):
     async def _fetch_has_paid_plan(self) -> bool:
         """Return whether the account is on a paid Pocket Casts plan."""
         return await self._client.has_paid_plan()
+
+    @use_cache(LISTENING_STATUS_CACHE_SECONDS)
+    async def _in_progress_episodes(self) -> list[dict[str, Any]]:
+        """Return the account's episodes in progress."""
+        return await self._client.get_in_progress_episodes()
+
+    @use_cache(LISTENING_STATUS_CACHE_SECONDS)
+    async def _history(self) -> list[dict[str, Any]]:
+        """Return the account's listening history."""
+        return await self._client.get_history()
 
     @use_cache(3600 * 24)
     async def _fetch_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:

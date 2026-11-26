@@ -1,12 +1,17 @@
 """Tests for parsing audio file tags (ID3, MP4/AAC, Vorbis, APEv2, etc.)."""
 
+import asyncio
+import json
 import os
 import pathlib
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import mutagen
 import pytest
@@ -15,7 +20,7 @@ from aiohttp.test_utils import TestServer
 from music_assistant_models.errors import InvalidDataError
 from mutagen.apev2 import APEv2
 from mutagen.flac import FLAC
-from mutagen.id3 import ID3, TCOM, TDOR, TDRC, TXXX, UFID
+from mutagen.id3 import ID3, TCOM, TDOR, TDRC, TPE2, TXXX, UFID
 from mutagen.mp4 import MP4, MP4FreeForm
 from PIL import Image
 
@@ -31,6 +36,7 @@ from music_assistant.helpers.tags import (
     get_embedded_image,
     parse_tags_mutagen,
     split_artists,
+    split_items,
     write_replaygain_track_gain,
 )
 
@@ -44,6 +50,18 @@ FILE_FLAC_SEMICOLON = str(RESOURCES_DIR.joinpath("ArtistWithSemicolon.flac"))
 FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
 
 
+@pytest.fixture
+def probe_process(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Provide a probe whose output and exit status can be controlled."""
+    process = MagicMock(returncode=0)
+    process.communicate = AsyncMock(return_value=(b'{"format": {}, "streams": []}', b""))
+    process.__aenter__ = AsyncMock(return_value=process)
+    process.__aexit__ = AsyncMock(return_value=None)
+    factory = MagicMock(return_value=process)
+    monkeypatch.setattr(tags, "AsyncProcess", factory)
+    return factory
+
+
 @pytest.mark.parametrize(
     ("stderr", "expected_detail"),
     [
@@ -55,61 +73,142 @@ FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
         (b"broken.ogg: Unknown error occurred\n", "Invalid or unsupported media file"),
     ],
 )
-def test_parse_tags_reports_actionable_ffprobe_error(
-    monkeypatch: pytest.MonkeyPatch, stderr: bytes, expected_detail: str
+async def test_parse_tags_reports_actionable_ffprobe_error(
+    probe_process: MagicMock, stderr: bytes, expected_detail: str
 ) -> None:
     """Test that tag parsing reports a useful FFprobe failure."""
-    process_error = subprocess.CalledProcessError(
-        returncode=1,
-        cmd=("ffprobe",),
-        output=b'{"error":{"code":-1,"string":"Unknown error occurred"}}',
-        stderr=stderr,
+    process = probe_process.return_value
+    process.returncode = 1
+    process.communicate.return_value = (
+        b'{"error":{"code":-1,"string":"Unknown error occurred"}}',
+        stderr,
     )
-    check_output = MagicMock(side_effect=process_error)
-    monkeypatch.setattr(subprocess, "check_output", check_output)
-    monkeypatch.setenv("SUPERVISOR_TOKEN", "secret")
-    monkeypatch.setenv("HASSIO_TOKEN", "secret")
 
     with pytest.raises(InvalidDataError) as err:
-        tags.parse_tags("broken.ogg")
+        await tags.async_parse_tags("broken.ogg")
 
     assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
-    kwargs = check_output.call_args.kwargs
-    assert kwargs["stderr"] == subprocess.PIPE
-    assert "SUPERVISOR_TOKEN" not in kwargs["env"]
-    assert "HASSIO_TOKEN" not in kwargs["env"]
-    args = check_output.call_args.args[0]
+    assert probe_process.call_args.kwargs["stderr"] is True
+    args = probe_process.call_args.args[0]
     assert args[args.index("-loglevel") + 1] == "error"
 
 
-def test_parse_tags_skips_tls_verify_on_request(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_parse_tags_gives_up_on_a_hanging_probe(probe_process: MagicMock) -> None:
+    """A probe that never finishes is bounded by a timeout and reported as invalid data."""
+    process = probe_process.return_value
+    process.communicate.side_effect = TimeoutError
+
+    with pytest.raises(InvalidDataError) as err:
+        await tags.async_parse_tags("http://radio.example.com/stream")
+
+    assert "no result within" in str(err.value)
+    process.communicate.assert_awaited_once_with(timeout=tags.FFPROBE_TIMEOUT)
+
+
+async def test_parse_tags_skips_tls_verify_on_request(probe_process: MagicMock) -> None:
     """Tag parsing skips certificate verification when asked."""
-    check_output = MagicMock(return_value=b'{"format": {}, "streams": []}')
-    monkeypatch.setattr(subprocess, "check_output", check_output)
-
     with pytest.raises(InvalidDataError):
-        tags.parse_tags("https://192.168.1.10/a.mp3", verify_ssl=False)
+        await tags.async_parse_tags("https://192.168.1.10/a.mp3", verify_ssl=False)
 
-    args = list(check_output.call_args.args[0])
+    args = probe_process.call_args.args[0]
     tls_index = args.index("-tls_verify")
     assert args[tls_index + 1] == "0"
     assert tls_index < args.index("-i")
 
 
-def test_parse_tags_identifies_as_music_assistant_on_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_parse_tags_identifies_as_music_assistant_on_urls(probe_process: MagicMock) -> None:
     """Tag parsing of a URL sends the Music Assistant user agent, of a local file none."""
-    check_output = MagicMock(return_value=b'{"format": {}, "streams": []}')
-    monkeypatch.setattr(subprocess, "check_output", check_output)
-
     with pytest.raises(InvalidDataError):
-        tags.parse_tags("https://example.com/a.mp3")
-    args = list(check_output.call_args.args[0])
+        await tags.async_parse_tags("https://example.com/a.mp3")
+    args = probe_process.call_args.args[0]
     assert args[args.index("-user_agent") + 1] == MASS_USER_AGENT
     assert args.index("-user_agent") < args.index("-i")
+    assert args[args.index("-rw_timeout") + 1] == "10000000"
+    assert args.index("-rw_timeout") < args.index("-i")
 
     with pytest.raises(InvalidDataError):
-        tags.parse_tags("/music/a.mp3")
-    assert "-user_agent" not in check_output.call_args.args[0]
+        await tags.async_parse_tags("/music/a.mp3")
+    assert "-user_agent" not in probe_process.call_args.args[0]
+    assert "-rw_timeout" not in probe_process.call_args.args[0]
+
+
+async def test_async_parse_tags_decodes_missing_duration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing duration can be obtained from a cancellable full decode."""
+    raw = {
+        "format": {"filename": "https://example.com/audio", "format_name": "mp3"},
+        "streams": [{"codec_type": "audio", "channels": 2, "sample_rate": "44100"}],
+    }
+    processes = []
+    for output in (json.dumps(raw).encode(), b"time=00:03:21.25 bitrate="):
+        process = MagicMock(returncode=0)
+        process.communicate = AsyncMock(return_value=(output, b""))
+        process.__aenter__ = AsyncMock(return_value=process)
+        process.__aexit__ = AsyncMock(return_value=None)
+        processes.append(process)
+    factory = MagicMock(side_effect=processes)
+    monkeypatch.setattr(tags, "AsyncProcess", factory)
+
+    result = await tags.async_parse_tags("https://example.com/audio", require_duration=True)
+
+    assert result.duration == 201.25
+    decoder_args = factory.call_args.args[0]
+    assert decoder_args[0] == "ffmpeg"
+    assert decoder_args[decoder_args.index("-rw_timeout") + 1] == "10000000"
+    assert decoder_args.index("-rw_timeout") < decoder_args.index("-i")
+    processes[1].communicate.assert_awaited_once_with(timeout=tags.FFMPEG_DURATION_TIMEOUT)
+
+
+@pytest.mark.parametrize("command", ["ffprobe", "ffmpeg"])
+@pytest.mark.parametrize("cancel", [True, False])
+async def test_async_parse_tags_reaps_hanging_process(
+    monkeypatch: pytest.MonkeyPatch, command: str, cancel: bool
+) -> None:
+    """Cancellation and deadlines reap both probe and duration children and close the input."""
+    started = asyncio.Event()
+    children: list[asyncio.subprocess.Process] = []
+    create_subprocess = asyncio.create_subprocess_exec
+    raw = {
+        "format": {"filename": FILE_MP3, "format_name": "mp3"},
+        "streams": [{"codec_type": "audio", "channels": 2, "sample_rate": "44100"}],
+    }
+
+    async def start_process(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        hanging = args[0] == command
+        code = "import time; time.sleep(60)" if hanging else f"print({json.dumps(raw)!r})"
+        child = await create_subprocess(sys.executable, "-c", code, **kwargs)
+        children.append(child)
+        if hanging:
+            started.set()
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_process)
+    if not cancel:
+        timeout_key = "FFPROBE_TIMEOUT" if command == "ffprobe" else "FFMPEG_DURATION_TIMEOUT"
+        monkeypatch.setattr(tags, timeout_key, 0.1)
+    fd = os.open(FILE_MP3, os.O_RDONLY)
+    task = asyncio.create_task(
+        tags.async_parse_tags("provider-file.mp3", require_duration=True, opener=lambda *_args: fd)
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(
+                InvalidDataError, match=r"no result within|Unable to retrieve duration"
+            ):
+                await task
+        assert children
+        assert all(child.returncode is not None for child in children)
+        with pytest.raises(OSError, match="Bad file descriptor"):
+            os.fstat(fd)
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError, InvalidDataError):
+                await task
 
 
 def test_parse_rejects_file_without_audio_channels() -> None:
@@ -120,6 +219,24 @@ def test_parse_rejects_file_without_audio_channels() -> None:
     }
     with pytest.raises(InvalidDataError, match="No audio channels found"):
         tags.AudioTags.parse(raw)
+
+
+async def test_parse_tags_reads_a_probe_that_finished_before_it_was_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe that is done before its output is collected still yields the tags."""
+    start = AsyncProcess.start
+
+    async def start_and_finish(self: AsyncProcess) -> None:
+        """Start the process and let it run to its end, as a busy event loop does."""
+        await start(self)
+        await self.wait()
+
+    monkeypatch.setattr(AsyncProcess, "start", start_and_finish)
+
+    _tags = await tags.async_parse_tags(FILE_MP3)
+
+    assert _tags.title == "MyTitle"
 
 
 async def test_parse_metadata_from_id3tags() -> None:
@@ -702,6 +819,129 @@ def test_parse_apev2_tags_single_artist() -> None:
     # Plural keys should not be set
     assert "artists" not in result
     assert "albumartists" not in result
+
+
+def test_parse_apev2_tags_explicit_albumartists_beats_single_album_artist() -> None:
+    """An explicit ALBUMARTISTS tag (Picard 3.0+) is read alongside a single Album Artist."""
+    mock_tags = _create_mock_apev2_tags(
+        {"Album Artist": "Artist A & Artist B", "ALBUMARTISTS": "Artist A\x00Artist B"}
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    assert result.get("albumartist") == "Artist A & Artist B"
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+
+
+def test_parse_apev2_tags_explicit_albumartists_beats_multi_value_album_artist() -> None:
+    """An explicit ALBUMARTISTS tag overwrites a null-separated Album Artist field."""
+    mock_tags = _create_mock_apev2_tags(
+        {"Album Artist": "Wrong A\x00Wrong B", "ALBUMARTISTS": "Artist A\x00Artist B"}
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+    assert "albumartist" not in result
+
+
+def test_parse_apev2_tags_albumartists_key_is_case_insensitive() -> None:
+    """APEv2 keys are case-insensitive, so any spelling of ALBUMARTISTS is read."""
+    ape = APEv2()  # type: ignore[no-untyped-call]
+    ape["AlbumArtists"] = "Artist A\x00Artist B"
+
+    result = _parse_apev2_tags(ape)
+
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+
+
+def _create_id3_tags(
+    albumartist: list[str],
+    albumartists_desc: str | None = None,
+    albumartists: list[str] | None = None,
+) -> ID3:
+    """
+    Create in-memory ID3 tags with a TPE2 frame and an optional explicit album artists frame.
+
+    :param albumartist: Values for the TPE2 (album artist) frame.
+    :param albumartists_desc: TXXX description of the explicit album artists frame.
+    :param albumartists: Values for the explicit frame, defaults to ["Artist A", "Artist B"].
+    """
+    id3 = ID3()  # type: ignore[no-untyped-call]
+    id3.add(TPE2(encoding=3, text=albumartist))  # type: ignore[no-untyped-call]
+    if albumartists_desc:
+        id3.add(
+            TXXX(  # type: ignore[no-untyped-call]
+                encoding=3,
+                desc=albumartists_desc,
+                text=albumartists or ["Artist A", "Artist B"],
+            )
+        )
+    return id3
+
+
+@pytest.mark.parametrize("desc", ["ALBUMARTISTS", "Album Artists"])
+def test_parse_id3_explicit_albumartists_beats_single_tpe2(desc: str) -> None:
+    """An explicit TXXX album artists frame is read alongside a single TPE2 value."""
+    result = _parse_id3_tags(_create_id3_tags(["Artist A & Artist B"], desc))
+
+    assert result.get("albumartist") == "Artist A & Artist B"
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+
+
+def test_parse_id3_explicit_albumartists_beats_multi_value_tpe2() -> None:
+    """TXXX:ALBUMARTISTS overwrites an ID3v2.4 null-separated TPE2."""
+    result = _parse_id3_tags(_create_id3_tags(["Wrong A", "Wrong B"], "ALBUMARTISTS"))
+
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+    assert "albumartist" not in result
+
+
+def test_parse_id3_without_explicit_albumartists() -> None:
+    """Without an explicit frame, a single TPE2 stays the singular album artist."""
+    result = _parse_id3_tags(_create_id3_tags(["Artist A & Artist B"]))
+
+    assert result.get("albumartist") == "Artist A & Artist B"
+    assert "albumartists" not in result
+
+
+@pytest.mark.parametrize(
+    ("parsed", "fmt"),
+    [
+        (_parse_id3_tags(_create_id3_tags(["Artist A & Artist B"], "ALBUMARTISTS")), "mp3"),
+        # ID3v2.3 has no multi-value frames, so Picard joins the values with "; "
+        (
+            _parse_id3_tags(
+                _create_id3_tags(["Artist A & Artist B"], "ALBUMARTISTS", ["Artist A; Artist B"])
+            ),
+            "mp3",
+        ),
+        (
+            _parse_apev2_tags(
+                _create_mock_apev2_tags(
+                    {"Album Artist": "Artist A & Artist B", "ALBUMARTISTS": "Artist A\x00Artist B"}
+                )
+            ),
+            "wv",
+        ),
+    ],
+)
+def test_explicit_albumartists_drive_album_artists(parsed: dict[str, Any], fmt: str) -> None:
+    """The explicit album artists list wins over a combined album artist string without MBIDs."""
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format=fmt,
+        bit_rate=None,
+        duration=180.0,
+        tags=parsed,
+        has_cover_image=False,
+        filename=f"test.{fmt}",
+    )
+
+    assert audio_tags.album_artists == ("Artist A", "Artist B")
 
 
 def _create_mock_mp4_tags(tag_dict: dict[str, str | list[str | bytes]]) -> MagicMock:
@@ -1649,4 +1889,54 @@ def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:
         ],
         check=True,
         capture_output=True,
+    )
+
+
+def _audio_tags_with(raw_tags: dict[str, Any]) -> tags.AudioTags:
+    return tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="flac",
+        bit_rate=None,
+        duration=180.0,
+        tags=raw_tags,
+        has_cover_image=False,
+        filename="track.flac",
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_gain"),
+    [
+        ("-9.75 dB", -9.75),
+        ("-9.75dB", -9.75),
+        ("-9.75DB", -9.75),
+        ("+3.20 dB", 3.2),
+        ("-9.75", -9.75),
+        (" -9.75 dB ", -9.75),
+    ],
+)
+def test_replaygain_gain_tags_accept_unit_variants(value: str, expected_gain: float) -> None:
+    """ReplayGain track and album gain tags parse with or without a space before dB."""
+    audio_tags = _audio_tags_with({"replaygaintrackgain": value, "replaygainalbumgain": value})
+    assert audio_tags.track_loudness == pytest.approx(-18 - expected_gain)
+    assert audio_tags.track_album_loudness == pytest.approx(-18 - expected_gain)
+
+
+@pytest.mark.parametrize("value", ["dB", "loud", ""])
+def test_replaygain_gain_tags_without_number_are_ignored(value: str) -> None:
+    """A ReplayGain gain tag without a number yields no loudness."""
+    audio_tags = _audio_tags_with({"replaygaintrackgain": value, "replaygainalbumgain": value})
+    assert audio_tags.track_loudness is None
+    assert audio_tags.track_album_loudness is None
+
+
+def test_split_items_splits_on_nul() -> None:
+    """A NUL-separated tag value (ID3v2.4 style, also seen in Vorbis comments) is split."""
+    assert split_items("Rock\x00Disco;Funk", allow_unsafe_splitters=True) == (
+        "Rock",
+        "Disco",
+        "Funk",
     )

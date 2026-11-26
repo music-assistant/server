@@ -290,7 +290,8 @@ class AIRadioHostsMixin:
                     continue
                 try:
                     normalized = self._normalize_host(item)
-                except Exception as err:
+                except (InvalidDataError, TypeError) as err:
+                    # a TypeError is a field of the wrong kind, such as section_ids not being a list
                     self.logger.warning("Skipping invalid host profile: %s", err)
                     continue
                 parsed[normalized["id"]] = normalized
@@ -573,7 +574,7 @@ class AIRadioHostsMixin:
                 station["host_id"] = host_id
                 for key in legacy_keys:
                     station.pop(key, None)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - migrating old data must never raise
                 self.logger.warning(
                     "Skipping station %s during host migration: %s",
                     station.get("id") or station.get("name") or "<unknown>",
