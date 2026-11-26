@@ -1,13 +1,15 @@
 """Tests for the Web Broadcast provider's broadcast state and listener responses."""
 
 import asyncio
-from typing import TYPE_CHECKING, cast
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
-from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH
@@ -25,6 +27,7 @@ CHUNK_SIZE = 64
 CHUNKS = [bytes([65 + index]) * CHUNK_SIZE for index in range(3)]
 METADATA = b"\x01StreamTitle='T';"
 PLAYER_ID = "pl000000000001"
+PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE)
 
 
 def _make_player(
@@ -72,9 +75,11 @@ def _make_provider(*, fixed_content_length: bool = False) -> WebRadioProvider:
     return provider
 
 
-def _item(item_id: str) -> MagicMock:
+def _item(item_id: str, media_type: MediaType = MediaType.TRACK) -> MagicMock:
     """Return a queue item without stream details."""
-    return MagicMock(queue_item_id=item_id, streamdetails=None)
+    return MagicMock(
+        queue_item_id=item_id, queue_id=PLAYER_ID, media_type=media_type, streamdetails=None
+    )
 
 
 def _queue_with_items(provider: WebRadioProvider, current_item_id: str | None) -> MagicMock:
@@ -301,13 +306,26 @@ def test_restart_elapsed_time_only_while_playing() -> None:
 
 
 async def _run_producer(
-    provider: WebRadioProvider, exit_reason: str, *, exhausted: bool = False
+    provider: WebRadioProvider,
+    exit_reason: str,
+    *,
+    exhausted: bool = False,
+    start_item: MagicMock | None = None,
 ) -> _Station:
-    """Run the station's producer over one flow session that ends for the given reason."""
+    """
+    Run the station's producer over one flow session that ends for the given reason.
+
+    :param provider: The provider serving the station.
+    :param exit_reason: How the session ends.
+    :param exhausted: Whether the session played the queue to its end.
+    :param start_item: The queue item handed to play_media, a track by default.
+    """
     station = provider._stations["kitchen"]
     _queue_with_items(provider, "third")
     provider.set_pending_media("kitchen", MagicMock(queue_item_id="first"))
     mass = cast("MagicMock", provider.mass)
+    if start_item is not None:
+        mass.player_queues.get_item.side_effect = lambda _queue_id, _item_id: start_item
     mass.streams.audio.select_flow_pcm_format = AsyncMock()
     mass.streams.audio.get_output_format = AsyncMock(return_value=station.output_format)
     mass.player_queues.queue_data_or_none.return_value = MagicMock(session_id="session")
@@ -345,6 +363,200 @@ async def test_producer_stops_when_no_item_follows_a_flow_that_ended_early() -> 
 
     cast("MagicMock", station.protocol).mark_idle.assert_called_once()
     assert station.pending_media is None
+
+
+async def test_live_start_item_is_not_joined_at_a_position() -> None:
+    """A broadcast that starts on a radio item does not seek, one that starts on a track does."""
+    joined: list[MediaType] = []
+    for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.TRACK):
+        provider = _make_provider()
+        with patch(
+            "music_assistant.providers.webradio.provider._join_at_live_position"
+        ) as join_at_live_position:
+            await _run_producer(provider, "stopped", start_item=_item("first", media_type))
+        if join_at_live_position.called:
+            joined.append(media_type)
+
+    assert joined == [MediaType.TRACK]
+
+
+async def test_producer_carries_on_with_the_live_item_that_ended_the_flow() -> None:
+    """A radio item core plays after ending the flow early starts the next session, unjoined."""
+    provider = _make_provider()
+    radio = _item("radio", MediaType.RADIO)
+    sessions: list[MagicMock] = []
+
+    async def run_session(**kwargs: Any) -> str:
+        sessions.append(kwargs["start_item"])
+        return "ended" if len(sessions) == 1 else "stopped"
+
+    def play_radio() -> None:
+        # core plays the item after the flow once the station reports idle
+        station.protocol._attr_playback_state = PlaybackState.PLAYING
+        provider.set_pending_media("kitchen", MagicMock(queue_item_id="radio"))
+
+    station = provider._stations["kitchen"]
+    cast("MagicMock", station.protocol.update_state).side_effect = lambda: (
+        asyncio.get_running_loop().call_soon(play_radio)
+    )
+    _queue_with_items(provider, "first")
+    mass = cast("MagicMock", provider.mass)
+    mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: (
+        radio if item_id == "radio" else _item(item_id)
+    )
+    provider.set_pending_media("kitchen", MagicMock(queue_item_id="first"))
+    mass.streams.audio.select_flow_pcm_format = AsyncMock()
+    mass.streams.audio.get_output_format = AsyncMock(return_value=station.output_format)
+    mass.player_queues.queue_data_or_none.return_value = MagicMock(session_id="session")
+    mass.player_queues.flow_queue_exhausted.return_value = False
+    provider.__dict__["_run_one_flow_session"] = run_session
+
+    with patch(
+        "music_assistant.providers.webradio.provider._join_at_live_position"
+    ) as join_at_live_position:
+        await asyncio.wait_for(provider._run_producer(station), timeout=5)
+
+    assert [item.queue_item_id for item in sessions] == ["first", "radio"]
+    join_at_live_position.assert_called_once()
+    assert join_at_live_position.call_args.args[1].queue_item_id == "first"
+
+
+async def _audio(chunks: list[bytes], error: Exception | None = None) -> AsyncGenerator[bytes]:
+    """Yield the given chunks of audio, then fail with the given error if there is one."""
+    for chunk in chunks:
+        yield chunk
+    if error is not None:
+        raise error
+
+
+async def _broadcast_session(
+    provider: WebRadioProvider,
+    start_item: MagicMock,
+    *,
+    pending_item_id: str | None = None,
+    live_audio: AsyncGenerator[bytes] | None = None,
+) -> list[bytes]:
+    """
+    Run one session from the given item, returning what a listener of the station received.
+
+    The flow stream carries the first two chunks and the stream of a live item all three.
+
+    :param provider: The provider serving the station.
+    :param start_item: The queue item the session starts from.
+    :param pending_item_id: The item play_media named, the start item by default.
+    :param live_audio: The audio core hands out for a live item, all three chunks by default.
+    """
+    station = provider._stations["kitchen"]
+    subscriber = _Subscriber(queue=asyncio.Queue(), want_icy=False)
+    station.subscribers.add(subscriber)
+    provider.set_pending_media(
+        "kitchen", MagicMock(queue_item_id=pending_item_id or start_item.queue_item_id)
+    )
+
+    async def encode(audio_input: AsyncGenerator[bytes], **_: Any) -> AsyncGenerator[bytes]:
+        async for chunk in audio_input:
+            yield chunk
+
+    mass = cast("MagicMock", provider.mass)
+    mass.player_queues.player_media_from_queue_item = AsyncMock()
+    mass.streams.audio.get_queue_flow_stream.side_effect = lambda **_: _audio(CHUNKS[:2])
+    mass.streams.get_stream.side_effect = lambda *_: live_audio or _audio(CHUNKS)
+    with patch("music_assistant.providers.webradio.provider.get_ffmpeg_stream", encode):
+        exit_reason = await provider._run_one_flow_session(
+            station=station,
+            queue=MagicMock(),
+            start_item=start_item,
+            flow_pcm_format=PCM_FORMAT,
+            output_format=MagicMock(),
+            icy_preference="disabled",
+            chunk_size=CHUNK_SIZE,
+        )
+    assert exit_reason == "ended"
+    received: list[bytes] = []
+    while not subscriber.queue.empty():
+        chunk = subscriber.queue.get_nowait()
+        assert chunk is not None
+        received.append(chunk)
+    return received
+
+
+@pytest.mark.parametrize("media_type", [MediaType.RADIO, MediaType.AUDIO_SOURCE])
+async def test_live_item_is_broadcast_from_its_own_stream(media_type: MediaType) -> None:
+    """A live item reaches the listener through core's stream of its media, not the flow."""
+    provider = _make_provider()
+
+    received = await _broadcast_session(provider, _item("radio", media_type))
+
+    assert received == CHUNKS
+    mass = cast("MagicMock", provider.mass)
+    mass.streams.audio.get_queue_flow_stream.assert_not_called()
+    mass.streams.get_stream.assert_called_once_with(
+        provider._stations["kitchen"].pending_media, PCM_FORMAT, "webradio_kitchen"
+    )
+    mass.player_queues.player_media_from_queue_item.assert_not_awaited()
+
+
+async def test_live_item_resumed_from_the_queue_gets_its_own_media() -> None:
+    """A broadcast that resumes on a live item play_media did not name streams that item."""
+    provider = _make_provider()
+    radio = _item("radio", MediaType.RADIO)
+
+    received = await _broadcast_session(provider, radio, pending_item_id="first")
+
+    assert received == CHUNKS
+    mass = cast("MagicMock", provider.mass)
+    mass.player_queues.player_media_from_queue_item.assert_awaited_once_with(radio)
+    mass.streams.get_stream.assert_called_once_with(
+        mass.player_queues.player_media_from_queue_item.return_value,
+        PCM_FORMAT,
+        "webradio_kitchen",
+    )
+
+
+async def test_track_is_broadcast_from_the_flow_stream() -> None:
+    """A track reaches the listener through the queue's flow stream."""
+    provider = _make_provider()
+    track = _item("first")
+
+    received = await _broadcast_session(provider, track)
+
+    assert received == CHUNKS[:2]
+    mass = cast("MagicMock", provider.mass)
+    mass.streams.get_stream.assert_not_called()
+    assert mass.streams.audio.get_queue_flow_stream.call_args.kwargs["start_queue_item"] is track
+
+
+async def test_live_item_whose_source_fails_ends_the_session() -> None:
+    """A live source that fails ends the session with the audio it gave, without raising."""
+    provider = _make_provider()
+
+    received = await _broadcast_session(
+        provider,
+        _item("radio", MediaType.RADIO),
+        live_audio=_audio(CHUNKS[:1], AudioError("source gone")),
+    )
+
+    assert received == CHUNKS[:1]
+
+
+async def test_play_media_presets_flow_mode_only_for_media_that_ends() -> None:
+    """A track is played as a flow from the start, a live item never is."""
+    flow_modes: dict[MediaType, bool] = {}
+    for media_type in (MediaType.TRACK, MediaType.RADIO, MediaType.AUDIO_SOURCE):
+        player = _make_player()
+        player.mass = MagicMock()
+        queue = MagicMock(flow_mode=False)
+        player.mass.player_queues.get.return_value = queue
+
+        await player.play_media(MagicMock(media_type=media_type))
+
+        flow_modes[media_type] = queue.flow_mode
+
+    assert flow_modes == {
+        MediaType.TRACK: True,
+        MediaType.RADIO: False,
+        MediaType.AUDIO_SOURCE: False,
+    }
 
 
 async def test_listener_is_refused_right_away_when_nothing_is_playing() -> None:

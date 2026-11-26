@@ -12,9 +12,11 @@ from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
 )
+from music_assistant_models.errors import AudioError
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
@@ -46,7 +48,7 @@ from .constants import (
 from .helpers import slugify_station_name
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncGenerator, Callable
 
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
@@ -69,6 +71,8 @@ _ICY_NO_CHANGE_FRAME: bytes = b"\x00"
 _PRODUCER_READY_TIMEOUT: float = 10.0
 # How long the producer waits for the play_media of the next queue session.
 _NEXT_SESSION_TIMEOUT: float = 5.0
+# Media without an end, which core never plays inside a flow stream.
+_LIVE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE)
 
 
 @dataclass(eq=False)
@@ -448,8 +452,9 @@ class WebRadioProvider(PlayerProvider):
                 session_id_at_start = queue_data.session_id if queue_data else None
                 # Only on first start: catch up to where the broadcast would
                 # be now for a late-joining listener. On a restart MA already
-                # set streamdetails.seek_position to the intended value.
-                if first_iteration:
+                # set streamdetails.seek_position to the intended value. A live
+                # item has no position to catch up to.
+                if first_iteration and start_item.media_type not in _LIVE_MEDIA_TYPES:
                     _join_at_live_position(queue, start_item)
                 first_iteration = False
                 # Clear so a stale event can't satisfy the post-session wait.
@@ -532,11 +537,11 @@ class WebRadioProvider(PlayerProvider):
         chunk_size: int,
     ) -> str:
         """
-        Run one ffmpeg flow-stream pipeline to completion.
+        Run one ffmpeg pipeline to completion, fed by the queue flow or by a single live item.
 
         :param station: Station whose subscribers should receive the audio.
         :param queue: Active queue being streamed.
-        :param start_item: Queue item from which the flow stream starts.
+        :param start_item: Queue item from which the stream starts.
         :param flow_pcm_format: PCM format coming out of the queue flow.
         :param output_format: Encoded format pushed to subscribers.
         :param icy_preference: Per-station ICY mode (``disabled``/``basic``/``full``).
@@ -545,13 +550,18 @@ class WebRadioProvider(PlayerProvider):
             (last listener left), or ``"ended"`` (queue exhausted or session
             superseded by a skip).
         """
-        stream = get_ffmpeg_stream(
-            audio_input=self.mass.streams.audio.get_queue_flow_stream(
+        audio_input = (
+            self._live_item_stream(station, start_item, flow_pcm_format)
+            if start_item.media_type in _LIVE_MEDIA_TYPES
+            else self.mass.streams.audio.get_queue_flow_stream(
                 queue=queue,
                 start_queue_item=start_item,
                 pcm_format=flow_pcm_format,
                 protocol_player=station.protocol,
-            ),
+            )
+        )
+        stream = get_ffmpeg_stream(
+            audio_input=audio_input,
             input_format=flow_pcm_format,
             output_format=output_format,
             # 1.0x avoids long-broadcast drift (core uses 1.1 which clients
@@ -598,6 +608,24 @@ class WebRadioProvider(PlayerProvider):
                     return "stopped"
 
         return "stopped" if station.stop_event.is_set() else "ended"
+
+    async def _live_item_stream(
+        self, station: _Station, queue_item: QueueItem, pcm_format: AudioFormat
+    ) -> AsyncGenerator[bytes]:
+        """Yield the PCM audio of a live queue item, ending when its source fails."""
+        media = station.pending_media
+        if media is None or media.queue_item_id != queue_item.queue_item_id:
+            # The broadcast resumes from the queue, on an item no play_media named.
+            media = await self.mass.player_queues.player_media_from_queue_item(queue_item)
+        stream = self.mass.streams.get_stream(media, pcm_format, station.protocol.protocol_id)
+        try:
+            async with aclosing(stream):
+                async for chunk in stream:
+                    yield chunk
+        except AudioError as err:
+            self.logger.warning(
+                "Live stream of %s failed on station %s: %s", queue_item.name, station.slug, err
+            )
 
     def _resolve_pending_media(
         self, station: _Station
@@ -948,9 +976,10 @@ class WebRadioPlayer(PlayerProtocol):
         # enqueue_next_media during the listener-not-yet-connected window
         # (PlayerFeature.ENQUEUE is intentionally not advertised by this
         # player). get_queue_flow_stream sets the same flag once a listener
-        # attaches and the producer runs for real.
+        # attaches and the producer runs for real. A live item is never
+        # played as a flow.
         queue = self.mass.player_queues.get(self.player.player_id) if self.player else None
-        if queue is not None:
+        if queue is not None and media.media_type not in _LIVE_MEDIA_TYPES:
             queue.flow_mode = True
         self.update_state()
         provider = cast("WebRadioProvider", self.provider)
