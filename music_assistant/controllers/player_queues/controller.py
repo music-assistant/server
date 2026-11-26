@@ -2973,6 +2973,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_data: The data of that queue.
         """
         self.mass.streams.audio.clear_crossfade_handover(queue_id)
+        self.mass.streams.release_file_streams(queue_id, None)
         for item in queue_data.items:
             if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
                 streamdetails.buffer = None

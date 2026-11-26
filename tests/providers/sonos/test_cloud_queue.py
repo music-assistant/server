@@ -4,19 +4,22 @@ import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
+from types import MethodType
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiosonos.exceptions import FailedCommand
-from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
+from music_assistant_models.enums import CrossfadeMode, MediaType, PlaybackState, RepeatMode
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.constants import CONF_OUTPUT_CODEC
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.streams import StreamsController
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.cloud_queue import SonosCloudQueue, _requested_max
 from music_assistant.providers.sonos.const import PLAYBACK_STATE_MAP
@@ -53,9 +56,11 @@ class _FakeQueues:
         """Return the index of the item with the given id."""
         return next((i for i, x in enumerate(self.items) if x.queue_item_id == item_id), None)
 
-    def get_item(self, queue_id: str, index: int) -> QueueItem | None:
-        """Return the item at the given index."""
-        return self.items[index] if 0 <= index < len(self.items) else None
+    def get_item(self, queue_id: str, index_or_id: int | str) -> QueueItem | None:
+        """Return the item at the given index, or with the given id."""
+        if isinstance(index_or_id, str):
+            return next((x for x in self.items if x.queue_item_id == index_or_id), None)
+        return self.items[index_or_id] if 0 <= index_or_id < len(self.items) else None
 
     def get_next_item(self, queue_id: str, index_or_id: int | str) -> QueueItem | None:
         """Return the item that plays after the given index or item id."""
@@ -90,7 +95,15 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     mass.streams.resolve_stream_url = AsyncMock(
         side_effect=lambda _player_id, media, **_kwargs: media.uri
     )
+    # the streams controller's own decision on what a player gets as a file
+    mass.streams.mass = mass
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.streams.audio.fade_into_pending.return_value = False
+    mass.streams.serves_as_file = MethodType(StreamsController.serves_as_file, mass.streams)
     player = SonosPlayer.__new__(SonosPlayer)
+    # a speaker as it comes: every setting at its default
+    player._config = MagicMock()
+    player._config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.cloud_queue")
     player._protocol_id = "sonos_player"
@@ -108,6 +121,20 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player._queue_session_id = None
     player._evicted_cloud_queue = None
     return player, queues
+
+
+def _set_output_codec(player: SonosPlayer, codec: str) -> None:
+    """Set the codec the speaker gets its streams in."""
+    cast("MagicMock", player.config).get_value = MagicMock(
+        side_effect=lambda key, default=None: codec if key == CONF_OUTPUT_CODEC else default
+    )
+
+
+def _make_media_queue_item(item_id: str, media_type: MediaType) -> QueueItem:
+    """Build a queue item that carries media of the given type."""
+    item = _make_queue_item(item_id)
+    item.media_item = MagicMock(media_type=media_type, uri=f"library://{media_type}/{item_id}")
+    return item
 
 
 def _loads_into_a_session(
@@ -691,6 +718,55 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
     assert body["queueVersion"] == "12.5"
     assert body["contextVersion"] == "3"
     assert body["includesBeginningOfQueue"] is True
+
+
+@pytest.mark.parametrize(
+    ("codec", "policies"),
+    [("wav", [{"canSeek": True}, None]), ("flac", [None, None])],
+)
+async def test_only_a_track_served_as_a_file_allows_a_seek(
+    codec: str, policies: list[dict[str, bool] | None]
+) -> None:
+    """Test the speaker may seek in a track it gets as a file, and in nothing else it plays."""
+    items = [
+        _make_media_queue_item("track0", MediaType.TRACK),
+        _make_media_queue_item("radio0", MediaType.RADIO),
+    ]
+    player, _ = _make_player(items)
+    _set_output_codec(player, codec)
+    request = MagicMock()
+    request.query = {"itemId": "track0@0"}
+
+    response = await _make_cloud_queue()._handle_sonos_queue_itemwindow(player, request)
+
+    body = json.loads(response.text or "{}")
+    assert [item["id"] for item in body["items"]] == ["track0@0", "radio0@0"]
+    assert [item.get("policies") for item in body["items"]] == policies
+
+
+async def test_a_track_in_a_queue_with_crossfade_allows_no_seek() -> None:
+    """Test a track whose stream carries a mix is no file, so the speaker may not seek in it."""
+    player, _ = _make_player([_make_media_queue_item("track0", MediaType.TRACK)])
+    _set_output_codec(player, "wav")
+    streams = cast("MagicMock", player.mass.streams)
+    streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    request = MagicMock()
+    request.query = {"itemId": "track0@0"}
+
+    response = await _make_cloud_queue()._handle_sonos_queue_itemwindow(player, request)
+
+    body = json.loads(response.text or "{}")
+    assert [item.get("policies") for item in body["items"]] == [None]
+
+
+async def test_the_queue_itself_allows_no_seek() -> None:
+    """Test the queue keeps a seek off: only an item served as a file allows it for itself."""
+    player, _ = _make_player([_make_queue_item("track0")])
+
+    response = await _make_cloud_queue()._handle_sonos_queue_context(player, MagicMock())
+
+    body = json.loads(response.text or "{}")
+    assert body["playbackPolicies"]["canSeek"] is False
 
 
 async def test_itemwindow_reports_end_of_queue_when_it_cannot_be_described() -> None:
@@ -1418,15 +1494,16 @@ async def test_an_item_added_after_the_speaker_read_its_window_is_not_received()
     assert player.has_received_next_item(queues.items[1])
 
 
-async def test_an_item_the_window_holds_at_another_position_is_not_received() -> None:
-    """The speaker holds its window by position, so an item that moved since is not held."""
+async def test_an_item_that_replaced_one_the_window_holds_is_received() -> None:
+    """The speaker holds its window by position, so a replaced item there is not fetched cold."""
     player, queues = _make_player([_make_queue_item(f"track{i}") for i in range(4)])
     await _read_window(player, "track0@0")
-    queues.items.insert(1, _make_queue_item("guest"))
+    queues.items[1:] = [_make_queue_item(f"new{i}") for i in range(1, 6)]
 
-    # the window named track1 where the guest is now, and track2 where track1 is now
-    assert not player.has_received_next_item(queues.items[1])
-    assert not player.has_received_next_item(queues.items[2])
+    assert player.has_received_next_item(queues.items[1])
+    assert player.has_received_next_item(queues.items[3])
+    # the new tracks are more than the ones they replace: the last position is not held
+    assert not player.has_received_next_item(queues.items[4])
 
 
 async def test_a_window_read_before_the_current_load_is_not_received() -> None:

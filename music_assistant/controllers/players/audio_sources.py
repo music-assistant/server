@@ -99,6 +99,8 @@ class AudioSourceSession:
     repeat_mode: RepeatMode | None = None
     # token of the stream request currently holding the source's claim
     stream_session_id: str | None = None
+    # the source paused this selection; selecting it again is how it plays on
+    paused: bool = False
 
     @property
     def source_id(self) -> str:
@@ -302,6 +304,7 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
                         other_id, other.playback_session_id
                     )
                     del self._source_sessions[other_id]
+                    self._drop_fake_pause(other_id)
                     self.trigger_player_update(other_id)
         session.stream_session_id = stream_session_id
         return True
@@ -592,6 +595,49 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
                             player_id,
                         )
 
+    @handle_player_command(switched_off=SwitchedOffAction.CANCEL_POWER_ON, to_playback_owner=True)
+    async def pause_audio_source(
+        self, player_id: str, source_id: str, provider_instance_id: str
+    ) -> None:
+        """
+        Silence a player whose live source paused, and show the player as paused.
+
+        Call this from a plugin when its source pauses upstream and delivers no more audio. The
+        source keeps the player: the plugin plays on by selecting it again. A player that stays
+        paused for the pause timeout goes idle, and can still be played on after that. A player
+        that does not play is only stopped.
+
+        Ignored unless the source playing on the player is owned by ``provider_instance_id``
+        with ``item_id == source_id``.
+
+        :param player_id: The player the source plays on.
+        :param source_id: The AudioSource.item_id that paused.
+        :param provider_instance_id: The provider instance id that owns the source.
+        """
+        async with self._playback_owner_locks(player_id, hold_player=False):
+            player = self._get_player_with_redirect(player_id)
+            session = self._source_sessions.get(player.player_id)
+            if (
+                session is None
+                or session.source_id != source_id
+                or session.provider_instance_id != provider_instance_id
+            ):
+                self.logger.debug(
+                    "Ignoring pause of provider %s source %s: it does not play on player %s",
+                    provider_instance_id,
+                    source_id,
+                    player.player_id,
+                )
+                return
+            session.paused = True
+            if not player.fake_paused and (
+                player.playback_state == PlaybackState.IDLE or player.stop_called
+            ):
+                # stopped already (a source can pause because of that) or not started yet
+                await self._handle_cmd_stop(player.player_id)
+                return
+            await self._handle_fake_pause(player.player_id)
+
     async def release_provider_sources(self, provider_instance_id: str) -> None:
         """
         Give up the sources a provider owns on every player playing one.
@@ -657,6 +703,7 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
             session.source = source
             session.playback_session_id = uuid4().hex
             session.stream_session_id = None
+            session.paused = False
             return session
         if session is not None:
             self.mass.streams.audio_processing.clear_source(player_id, session.playback_session_id)
@@ -858,6 +905,7 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
         """
         if (session := self._end_audio_source_session(player_id)) is None:
             return
+        self._drop_fake_pause(player_id)
         self.trigger_player_update(player_id)
         provider = self.mass.get_provider(session.provider_instance_id)
         if not isinstance(provider, AudioSourceMixin):
@@ -872,6 +920,15 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
                 player_id,
                 exc_info=True,
             )
+
+    def _drop_fake_pause(self, player_id: str) -> None:
+        """
+        Stop showing a player as paused on a source it no longer has.
+
+        :param player_id: The player that lost its source.
+        """
+        if player := self.get_player(player_id):
+            player.set_fake_paused(False)
 
     async def _release_unclaimed_audio_source(
         self, player_id: str, session: AudioSourceSession, playback_session_id: str

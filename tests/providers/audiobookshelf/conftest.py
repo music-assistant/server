@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from music_assistant.providers.audiobookshelf import SUPPORTED_FEATURES, Audiobookshelf
 from music_assistant.providers.audiobookshelf.helpers import LibraryHelper
+from tests.common import use_real_create_task
 
 
 @pytest.fixture
 def provider() -> Audiobookshelf:
     """Create a real Audiobookshelf provider with mocked dependencies."""
     mass = Mock()
+    # a cold cache, so every lookup asks the server
+    mass.cache = AsyncMock()
+    mass.cache.get_with_freshness.return_value = (None, False, False)
+    use_real_create_task(mass)
     manifest = Mock()
     manifest.domain = "audiobookshelf"
     config = Mock()

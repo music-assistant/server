@@ -54,6 +54,10 @@ class _SessionStore(PlayerAudioSourcesMixin):
         self.logger = MagicMock()
         self.updated_players: list[str] = []
 
+    def get_player(self, *_args: object) -> Any:
+        """Return a player for any id."""
+        return MagicMock()
+
     def trigger_player_update(
         self,
         player_id: str,

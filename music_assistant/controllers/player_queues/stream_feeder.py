@@ -452,6 +452,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         This clears:
         - All audio buffers attached to queue item streamdetails
         - Any pending crossfade data for the queue
+        - The files players fetched its tracks as
 
         :param queue_id: The queue ID to clean up.
         :param session_id: The playback session being stopped. Audio the queue's currently
@@ -461,6 +462,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
         self.mass.streams.audio.clear_crossfade_handover(queue_id)
 
         queue_data = self._queue_data.get(queue_id)
+        self.mass.streams.release_file_streams(
+            queue_id, queue_data.session_id if queue_data else None
+        )
         queue_items = queue_data.items if queue_data else []
         buffers_cleared = 0
 

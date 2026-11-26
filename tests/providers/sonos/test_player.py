@@ -16,7 +16,13 @@ from aiosonos.exceptions import CannotConnect, FailedCommand
 from aiosonos.group import PlaybackActions
 from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import IdentifierType, PlaybackState, ProtocolRole, RepeatMode
+from music_assistant_models.enums import (
+    ContentType,
+    IdentifierType,
+    PlaybackState,
+    ProtocolRole,
+    RepeatMode,
+)
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo, OutputProtocol, PlayerMedia
 
@@ -56,8 +62,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._listen_task = None
     player.connected = False
     player._connect_lock = asyncio.Lock()
-    player._wakeable = False
-    player._portable = False
+    player._sleeps = False
     player._wol_mac = None
     player._marked_asleep = False
     player._woken_from_sleep = False
@@ -1340,8 +1345,7 @@ def _wakeable_player(*, portable: bool = True) -> tuple[SonosPlayer, MagicMock]:
     :param portable: Whether it is a portable, as opposed to a speaker on mains power.
     """
     player, mass = _make_player()
-    player._wakeable = True
-    player._portable = portable
+    player._sleeps = portable
     player._wol_mac = "C4:38:75:0D:18:9C"
     player._cache = {}
     player._attr_name = "Portable"
@@ -1460,7 +1464,7 @@ async def test_reconnecting_only_powers_on_after_a_confirmed_sleep(
 ) -> None:
     """Test a reconnect wakes a sleeping player but leaves a local power off alone."""
     player, client = _bind_player(timer_mass)
-    player._wakeable = True
+    player._sleeps = True
     player._attr_powered = False
     player._marked_asleep = marked_asleep
 
@@ -1640,3 +1644,45 @@ async def test_pause_stops_a_speaker_playing_the_queue_of_its_player(queue_playi
         group.pause.assert_not_awaited()
     else:
         group.pause.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("served_as_file", [True, False])
+async def test_pause_pauses_a_speaker_only_in_a_track_it_gets_as_a_file(
+    served_as_file: bool,
+) -> None:
+    """Test a speaker playing a queue is paused in a file, and stopped in any other stream."""
+    player, mass, client = _connected_player()
+    client.player.is_passive = False
+    group = client.player.group
+    group.stop = AsyncMock()
+    group.pause = AsyncMock()
+    group.playback_actions.can_pause = True
+    group.playback_metadata = {"currentItem": {"id": "abc@0", "track": {"name": "Shout"}}}
+    player._player = MagicMock(spec=Player)
+    player._player.active_source = "pl0123456789ab"
+    player.cloud_queue_id = "pl0123456789ab"
+    # the speaker reports the item it cached for the position, and plays what it fetched there
+    player._served_bindings = {"abc@0": (0, "xyz")}
+    player._config = MagicMock()
+    player._config.get_value.return_value = "wav"
+    queue_item = mass.player_queues.get_item.return_value
+    mass.streams.serves_as_file.return_value = served_as_file
+
+    await player.pause()
+
+    mass.player_queues.get_item.assert_called_once_with("pl0123456789ab", "xyz")
+    mass.streams.serves_as_file.assert_called_once_with(player, queue_item, ContentType.WAV)
+    if served_as_file:
+        group.pause.assert_awaited_once()
+        group.stop.assert_not_awaited()
+    else:
+        group.stop.assert_awaited_once()
+        group.pause.assert_not_awaited()
+
+
+def test_a_speaker_fetches_files() -> None:
+    """Test a speaker asks for a track as a file, where the stream server has one."""
+    player, _ = _make_player()
+
+    assert player.fetches_files is True

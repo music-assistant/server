@@ -972,6 +972,8 @@ class AirPlayProvider(PlayerProvider):
         # whether the set needs a password depends on its speakers
         airplay_set.update_state()
         airplay_set.report_speakers()
+        if isinstance(airplay_set, AirPlayControlPlayer):
+            airplay_set.on_speakers_changed()
         self._bridge_manager.update_endpoints(airplay_set.protocol_id)
 
     @staticmethod

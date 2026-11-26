@@ -150,10 +150,25 @@ REALTIME_COLD_START_BANK: Final[int] = 5
 REALTIME_COLD_START_MAX_REMAINING: Final[int] = 60
 
 
-def output_pacing_args(profile: PacingProfile = PacingProfile.REALTIME) -> list[str]:
-    """Return the ffmpeg pacing arguments for a stream handed to a player."""
-    readrate, burst = _PACING[profile]
-    return ["-readrate", readrate, "-readrate_initial_burst", burst, "-readrate_catchup", _CATCHUP]
+def output_pacing_args(
+    profile: PacingProfile = PacingProfile.REALTIME, burst: float | None = None
+) -> list[str]:
+    """
+    Return the ffmpeg pacing arguments for a stream handed to a player.
+
+    :param profile: The pace of the stream.
+    :param burst: Seconds of audio handed over at once when the stream starts, for a stream
+        that does not get the burst of its profile.
+    """
+    readrate, profile_burst = _PACING[profile]
+    return [
+        "-readrate",
+        readrate,
+        "-readrate_initial_burst",
+        profile_burst if burst is None else f"{burst:g}",
+        "-readrate_catchup",
+        _CATCHUP,
+    ]
 
 
 # Longest time to keep the flow stream response open after the last audio byte of a queue.

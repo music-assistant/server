@@ -19,7 +19,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -108,6 +108,11 @@ class DLNAPlayer(PlayerProtocol):
         self.bootid: int | None = None
         self.last_seen = time.time()
         self.last_command = time.time()
+
+    @property
+    def fetches_files(self) -> bool:
+        """Return if the renderer is built around files, which its user tells."""
+        return self.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False, return_type=bool)
 
     def set_available(self, available: bool) -> None:
         """Set the availability of the player."""
@@ -281,7 +286,9 @@ class DLNAPlayer(PlayerProtocol):
         if self.device.can_stop:
             await self.stop()
         url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
-        didl_metadata = create_didl_metadata(media, url)
+        didl_metadata = create_didl_metadata(
+            media, url, self.mass.streams.stream_url_serves_as_file(url)
+        )
         title = media.title or media.uri
         # optimistically set the state here to help in case of a player
         # that is slow or failing to report state changes.
@@ -306,7 +313,9 @@ class DLNAPlayer(PlayerProtocol):
         """Handle enqueuing of the next queue item on the player."""
         assert self.device is not None  # for type checking
         url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
-        didl_metadata = create_didl_metadata(media, url)
+        didl_metadata = create_didl_metadata(
+            media, url, self.mass.streams.stream_url_serves_as_file(url)
+        )
         title = media.title or media.uri
         try:
             await self.device.async_set_next_transport_uri(url, title, didl_metadata)

@@ -804,6 +804,14 @@ class SyncGroupPlayer(PlayerProtocol):
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(group_player_id)
 
+    def counts_in(self, player_id: str) -> bool:
+        """
+        Return whether a player belongs to the session of this group player.
+
+        :param player_id: Id of the player.
+        """
+        return self.is_active_session and player_id in self._attr_group_members
+
     def on_group_member_updated(
         self, member_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
@@ -1446,24 +1454,25 @@ class SyncGroupPlayer(PlayerProtocol):
         # for some 40 seconds, so members it holds outside that stream are ungrouped first.
         # A session that plays on the protocol that holds the members stops first: some
         # providers refuse a group change while they play.
-        if self._holds_members_outside_session(leader):
+        if self._members_outside_session(leader):
             await self._dissolve_syncgroup(leader_to_stop=leader)
             return
         await self._stop_departing_leader(leader)
         await self._dissolve_syncgroup()
 
-    def _holds_members_outside_session(self, leader: Player) -> bool:
+    def _members_outside_session(self, leader: Player) -> list[str]:
         """
-        Return whether a leader holds members on another protocol than the one it plays on.
+        Return the members a leader holds on another protocol than the one it plays on.
 
         :param leader: The leader.
         """
         session = leader.resolve_output_protocol() or leader.device_protocol
         session_members = self._to_player_ids(session.group_members) if session else []
-        return any(
-            member_id != leader.player_id and member_id not in session_members
+        return [
+            member_id
             for member_id in leader.group_members
-        )
+            if member_id != leader.player_id and member_id not in session_members
+        ]
 
     async def _stop_departing_leader(self, leader: Player, *, wait_for_update: bool = True) -> None:
         """
@@ -1568,6 +1577,8 @@ class SyncGroupPlayer(PlayerProtocol):
         Used when the provider supports dynamic leader selection (e.g. AirPlay,
         Snapcast). The old leader is removed from the live session and the
         remaining members keep playing uninterrupted on a newly selected leader.
+        Members it holds outside that session join the session if they can be
+        reached on its protocol, else they leave the group.
 
         If no remaining member takes part in the live session (e.g. only
         freshly-added players are left), a seamless handoff isn't possible. In
@@ -1597,6 +1608,20 @@ class SyncGroupPlayer(PlayerProtocol):
         # it over without a restart. Tracked membership is not enough — a member can be
         # dropped from the session (or never make it in) while still being listed.
         live_member_ids = self._to_player_ids(session.live_session_members) if session else []
+
+        # The members the old leader holds outside the session are released before its stream
+        # ends (see _stop_and_dissolve). Without a member to take the session over, the dissolve
+        # below does so.
+        outside_ids: list[str] = []
+        if (
+            session is not None
+            and _is_online(old_leader)
+            and any(x != old_leader_id and x in live_member_ids for x in self._attr_group_members)
+            and (outside_ids := self._members_outside_session(old_leader))
+        ):
+            await self._release_members(old_leader, outside_ids)
+            # that can take a while, so the session may have dropped members by now
+            live_member_ids = self._to_player_ids(session.live_session_members)
 
         # Remove the old leader from our group members list
         if old_leader_id in self._attr_group_members:
@@ -1663,10 +1688,12 @@ class SyncGroupPlayer(PlayerProtocol):
         # protocol-translation overhead in cmd_set_members.
         remaining_protocol_ids: list[str] = []
         for member_id in self._attr_group_members:
-            if member_id == new_leader.player_id:
+            if member_id == new_leader.player_id or member_id in outside_ids:
                 continue
             if member := self.mass.players.get_player(member_id):
-                if target := self._resolve_session_target(member, session_domain):
+                target = self._resolve_session_target(member, session_domain)
+                # one that lost its stream is left to its own return
+                if target and not target.rejoins_group(self._group_player.player_id):
                     remaining_protocol_ids.append(target.protocol_id)
 
         # 1. Old leader's session protocol steps out of the session.
@@ -1676,6 +1703,8 @@ class SyncGroupPlayer(PlayerProtocol):
         # them, so they are briefly without a leader until step 2 picks them back up.
         if session is not None:
             await session.set_members(player_ids_to_remove=[session.protocol_id])
+            # it plays nothing anymore, so its own protocol is its output again
+            self.mass.players.schedule_active_output_protocol_clear(old_leader)
 
         # 2. New leader's protocol takes over ownership tracking of the
         # remaining members. The members are already in the live session at the
@@ -1685,6 +1714,91 @@ class SyncGroupPlayer(PlayerProtocol):
             await new_target.set_members(player_ids_to_add=remaining_protocol_ids)
 
         self.update_state()
+
+        # 3. The members the old leader released join the session that plays on.
+        if outside_ids and new_target is not None:
+            await self._join_released_members(outside_ids, new_leader, new_target)
+
+    async def _release_members(self, leader: Player, member_ids: list[str]) -> None:
+        """
+        Let a leader release members and wait for their report, without raising when it can't.
+
+        :param leader: The leader.
+        :param member_ids: The player ids of the members to release.
+        """
+
+        async def _wait_released(member_id: str) -> None:
+            async with self.mass.players.wait_for_player_update(
+                member_id, attribute_name="synced_to", attribute_value=None, timeout=5
+            ):
+                pass
+
+        try:
+            await self.mass.players._handle_set_members(leader, player_ids_to_remove=member_ids)
+            await asyncio.gather(*(_wait_released(member_id) for member_id in member_ids))
+        except Exception as err:  # noqa: BLE001 - the handover carries on either way
+            self.logger.warning(
+                "Could not release %s from departing leader %s of group %s: %s",
+                member_ids,
+                leader.name,
+                self.display_name,
+                err,
+            )
+
+    async def _join_released_members(
+        self, member_ids: list[str], leader: Player, target: PlayerProtocol
+    ) -> None:
+        """
+        Let members that the previous leader released join the live session of the new one.
+
+        A member that can not play on the protocol of the session leaves the group.
+
+        :param member_ids: The player ids of the members.
+        :param leader: The new leader.
+        :param target: The protocol of the new leader in the session.
+        """
+        domain = target.provider.domain
+        joining: dict[str, Player] = {}
+        for member_id in member_ids:
+            member = self.mass.players.get_player(member_id)
+            if member is None or member_id not in self._attr_group_members:
+                continue
+            protocol = self._resolve_session_target(member, domain)
+            if protocol is None or not self._member_supports_protocol_domain(member, domain):
+                self.logger.warning(
+                    "Removing %s from group %s: it can not be grouped with %s",
+                    member.name,
+                    self.display_name,
+                    leader.name,
+                )
+                self._attr_group_members.remove(member_id)
+            elif (
+                member.synced_to is not None
+                or member.active_group not in (None, self._group_player.player_id)
+                or member.powered is False
+                or member.playback_state == PlaybackState.PLAYING
+            ):
+                # not let go of, or the user took it for something else meanwhile
+                self.logger.warning(
+                    "%s is not free, so it does not play along with group %s for now",
+                    member.name,
+                    self.display_name,
+                )
+            else:
+                joining[protocol.protocol_id] = member
+        if not joining:
+            return
+        try:
+            for protocol_id, member in joining.items():
+                await self.mass.players._activate_output_protocol(member, protocol_id)
+            await target.set_members(player_ids_to_add=list(joining))
+        except Exception as err:  # noqa: BLE001 - the group plays on without them
+            self.logger.warning(
+                "Could not add %s to group %s: %s",
+                ", ".join(member.name for member in joining.values()),
+                self.display_name,
+                err,
+            )
 
     async def _hand_over_lost_session(self, old_leader: Player, session: PlayerProtocol) -> bool:
         """
@@ -1852,6 +1966,8 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         grouped = set(leader.group_members)
         group_player_id = self._group_player.player_id
+        session = self._active_session_protocol()
+        domain = session.provider.domain if session else None
         return [
             member_id
             for member_id in self._attr_static_group_members
@@ -1861,11 +1977,22 @@ class SyncGroupPlayer(PlayerProtocol):
             # that is offline, or incompatible with it, is not on it
             and member_id in leader.can_group_with
             and (member := self.mass.players.get_player(member_id)) is not None
-            # a member another group holds, or that leads a group of its own, is left
-            # alone: this is a background recovery, not a play command
+            # a member another group holds, or that leads a group of its own or plays
+            # something of its own, is left alone: this is a background recovery, not a
+            # play command
             and member.synced_to in (None, leader.player_id)
             and member.active_group in (None, group_player_id)
             and all(child_id == member_id for child_id in member.group_members)
+            and not (
+                member.playback_state == PlaybackState.PLAYING
+                and member.synced_to is None
+                and member.active_group is None
+            )
+            # its protocol in the session can bring it back by itself
+            and not (
+                (target := self._resolve_session_target(member, domain))
+                and target.rejoins_group(group_player_id)
+            )
         ]
 
     async def _rejoin_members(self) -> None:

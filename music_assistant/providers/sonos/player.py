@@ -42,6 +42,7 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ChannelLayout,
     ConfigEntryType,
+    ContentType,
     EventType,
     IdentifierType,
     MediaType,
@@ -55,6 +56,7 @@ from music_assistant_models.player import PlayerMedia, PlayerOptionValueType
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    CONF_OUTPUT_CODEC,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -206,11 +208,12 @@ class SonosPlayer(PlayerProtocol):
         self._connect_lock = asyncio.Lock()
         mac_address = self._extract_mac_from_player_id()
         self._wol_mac = mac_address if mac_address and is_valid_mac_address(mac_address) else None
-        self._wakeable = self._wol_mac is not None and _has_device_feature(
-            discovery_info, DEVICE_FEATURE_WAKEABLE
-        )
         # a speaker on mains power can be wakeable too, but does not go to sleep
-        self._portable = _has_device_feature(discovery_info, DEVICE_FEATURE_PORTABLE)
+        self._sleeps = (
+            self._wol_mac is not None
+            and _has_device_feature(discovery_info, DEVICE_FEATURE_WAKEABLE)
+            and _has_device_feature(discovery_info, DEVICE_FEATURE_PORTABLE)
+        )
         # a dropped connection confirmed as sleep, as opposed to a passing blip
         self._marked_asleep = False
         # the connection followed a sleep; the speaker then restores its session paused
@@ -279,6 +282,11 @@ class SonosPlayer(PlayerProtocol):
         return {AnnouncementFeature.SUPPORTS_VOLUME, AnnouncementFeature.COORDINATES_START}
 
     @property
+    def fetches_files(self) -> bool:
+        """Return True: a speaker pauses, resumes and seeks by asking for a part of a track."""
+        return True
+
+    @property
     def group_controller(self) -> SonosGroup:
         """Get the group controller, raising if unavailable."""
         if self.client.player.group is None:
@@ -330,7 +338,7 @@ class SonosPlayer(PlayerProtocol):
         _supported_features.add(PlayerFeature.OPTIONS)
         # the speaker sends no event when its settings change; the first poll reads them
         self._attr_needs_poll = True
-        if self._wakeable:
+        if self._sleeps:
             _supported_features.add(PlayerFeature.POWER)
             self._attr_powered = True
         self._attr_supported_features = _supported_features
@@ -612,6 +620,9 @@ class SonosPlayer(PlayerProtocol):
         await self.group_controller.stop()
         self._forget_queue()
         self._announcement_media = None
+        if self._attr_playback_state == PlaybackState.PAUSED:
+            # a paused speaker has no change of state to report for the stop
+            self.update_attributes()
         self.update_state()
 
     async def pause(self) -> None:
@@ -624,13 +635,15 @@ class SonosPlayer(PlayerProtocol):
             self.logger.debug("Ignore PAUSE command: Player is synced to another player.")
             return
         active_source = self.player.active_source if self.player is not None else None
-        if active_source and self.mass.player_queues.get(active_source):
-            # Sonos seems to be bugged when playing our queue tracks and we send pause,
-            # it can't resume the current track and simply aborts/skips it
+        if (
+            active_source
+            and self.mass.player_queues.get(active_source)
+            and not self._plays_file(self.group_controller)
+        ):
+            # Sonos resumes a paused track by asking for the rest of it, which only a track
+            # served as a file answers: any other queue item starts over and is skipped,
             # so we stop the player instead.
             # https://github.com/music-assistant/support/issues/3758
-            # TODO: revisit this later once we implemented support for range requests
-            # as I have the feeling the pause issue is related to seek support (=range requests)
             await self.stop()
             return
         if not self.group_controller.playback_actions.can_pause:
@@ -941,6 +954,21 @@ class SonosPlayer(PlayerProtocol):
             and self.served_item_id(wire_item_id) == self.current_media.queue_item_id
         )
 
+    def is_served_as_file(self, queue_item_id: str | None) -> bool:
+        """
+        Return whether an item of the loaded cloud queue is served to the speaker as a file.
+
+        The speaker pauses, resumes and seeks in such an item by itself.
+
+        :param queue_item_id: The MA queue item id.
+        """
+        if not queue_item_id or not (queue_id := self.cloud_queue_id):
+            return False
+        if (queue_item := self.mass.player_queues.get_item(queue_id, queue_item_id)) is None:
+            return False
+        output_codec = ContentType.try_parse(self.get_config_value(CONF_OUTPUT_CODEC, "flac"))
+        return self.mass.streams.serves_as_file(self, queue_item, output_codec)
+
     def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:
         """
         Bind the audio served for a queue position to the id the speaker holds for it.
@@ -1138,9 +1166,9 @@ class SonosPlayer(PlayerProtocol):
 
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
-        Return whether the last cloud queue window the speaker read holds the given item.
+        Return whether the last cloud queue window the speaker read holds the item's position.
 
-        Only the item at its own queue position, served for the current load, counts.
+        Only a window served for the current load counts.
 
         :param queue_item: The queue item that follows the one playing out.
         """
@@ -1149,10 +1177,8 @@ class SonosPlayer(PlayerProtocol):
         index = self.mass.player_queues.index_by_id(queue_item.queue_id, queue_item.queue_item_id)
         if index is None or (wire_id := self._window_item_ids.get(index)) is None:
             return False
-        return (
-            self.from_current_load(wire_id)
-            and self.bare_item_id(wire_id) == queue_item.queue_item_id
-        )
+        # whichever item it read there: a held position gets the audio the queue has there now
+        return self.from_current_load(wire_id)
 
     async def set_members(
         self,
@@ -1415,10 +1441,15 @@ class SonosPlayer(PlayerProtocol):
 
         self._reflect_source_play_modes(active_group)
 
-        # special case: Sonos reports PAUSED state when MA stopped playback
-        if (
-            active_service == MusicService.MUSIC_ASSISTANT or self._own_airplay_session
-        ) and self._attr_playback_state == PlaybackState.PAUSED:
+        # special case: Sonos reports PAUSED state when MA stopped playback, and only
+        # plays on by itself from a pause in a track it gets as a file
+        if self._attr_playback_state == PlaybackState.PAUSED and (
+            self._own_airplay_session
+            or (
+                active_service == MusicService.MUSIC_ASSISTANT
+                and not (group_parent or self)._paused_in_file(active_group)
+            )
+        ):
             self._attr_playback_state = PlaybackState.IDLE
 
         # parse current media
@@ -1887,6 +1918,28 @@ class SonosPlayer(PlayerProtocol):
         # the library forgets our session on a reconnect, the queue we loaded is kept until a
         # stop or an eviction
         return group.active_session_id is not None or self._playing_queue_id() is not None
+
+    def _plays_file(self, group: SonosGroup) -> bool:
+        """
+        Return whether the item a group plays out of our cloud queue is served to it as a file.
+
+        :param group: The group, as this player's connection reports it.
+        """
+        current_item = group.playback_metadata.get("currentItem")
+        if not current_item or not (wire_item_id := current_item.get("id")):
+            return False
+        return self.is_served_as_file(self.served_item_id(wire_item_id))
+
+    def _paused_in_file(self, group: SonosGroup) -> bool:
+        """
+        Return whether a group that reports PAUSED was paused in a track it gets as a file.
+
+        :param group: The group, as this player's connection reports it.
+        """
+        # a stop is reported as a pause too, also while the stop command still runs
+        if self.player is None or self.player.stop_called:
+            return False
+        return self._plays_file(group)
 
     def _wire_id_at(
         self,
@@ -2377,8 +2430,7 @@ class SonosPlayer(PlayerProtocol):
     def _sleeps_as_power_off(self) -> bool:
         """Return whether the player reports sleep as powered off, MA controlling power natively."""
         return (
-            self._wakeable
-            and self._portable
+            self._sleeps
             and self.player is not None
             and self.player.power_control == PLAYER_CONTROL_NATIVE
         )

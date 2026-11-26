@@ -3381,7 +3381,7 @@ async def test_unexpected_death_of_synced_child_schedules_rejoin() -> None:
     leader.set_members.assert_not_called()
     players_controller.cmd_set_members.assert_not_called()
     players_controller.cmd_ungroup.assert_not_called()
-    player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
+    player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"], None)
     player.set_state_from_stream.assert_called_once_with(
         state=PlaybackState.IDLE, elapsed_time=0, stream=stream
     )
@@ -3401,7 +3401,7 @@ async def test_unexpected_death_of_leader_schedules_rejoin_to_members() -> None:
     player.provider.mass.players.cmd_ungroup.assert_not_called()
     # it leads its members until the controller is done with it
     player.schedule_group_rejoin.assert_called_once_with(
-        ["child1", "child2"], after=player.provider.mass.create_task.return_value
+        ["child1", "child2"], None, after=player.provider.mass.create_task.return_value
     )
     # the controller sets the leader's final state (transfer or dissolve)
     player.set_state_from_stream.assert_not_called()
@@ -3487,7 +3487,7 @@ async def test_unexpected_death_of_static_group_member_drops_member_only() -> No
     leader.set_members.assert_not_called()
     players_controller.cmd_set_members.assert_not_called()
     players_controller.cmd_ungroup.assert_not_called()
-    player.schedule_group_rejoin.assert_called_once_with(["leader"])
+    player.schedule_group_rejoin.assert_called_once_with(["leader"], "syncgroup1")
 
 
 @pytest.mark.asyncio
@@ -4689,6 +4689,7 @@ async def test_unexpected_death_of_a_speaker_takes_its_set_out_of_the_group() ->
     speaker.player = None
     airplay_set = MagicMock(protocol_id="apset", synced_to="leader", group_members=[])
     airplay_set.player.player_id = "plset"
+    airplay_set.player.active_group = "syncgroup1"
     airplay_set.provider = speaker.provider
     speaker.owner = airplay_set
     leader = MagicMock()
@@ -4698,7 +4699,7 @@ async def test_unexpected_death_of_a_speaker_takes_its_set_out_of_the_group() ->
     stream = await _run_unexpected_process_death(speaker)
 
     stream._leave_group.assert_called_once_with(leader.player, "plset")  # type: ignore[attr-defined]
-    airplay_set.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
+    airplay_set.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"], "syncgroup1")
     speaker.schedule_group_rejoin.assert_not_called()
     speaker.set_state_from_stream.assert_called_once_with(
         state=PlaybackState.IDLE, elapsed_time=0, stream=stream

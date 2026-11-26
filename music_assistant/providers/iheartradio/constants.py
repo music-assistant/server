@@ -74,6 +74,12 @@ PATH_PODCAST_CATEGORY: Final[str] = "/api/v3/podcast/categories/{category_id}"
 PATH_PODCAST: Final[str] = "/api/v3/podcast/podcasts/{podcast_id}"
 PATH_PODCAST_EPISODES: Final[str] = "/api/v3/podcast/podcasts/{podcast_id}/episodes"
 PATH_PODCAST_EPISODE: Final[str] = "/api/v3/podcast/episodes/{episode_id}"
+PATH_PODCAST_EPISODE_METADATA: Final[str] = (
+    "/api/v3/podcast/podcasts/{podcast_id}/my-episode-metadata"
+)
+PATH_PODCAST_EPISODE_PROGRESS: Final[str] = (
+    "/api/v3/podcast/podcasts/{podcast_id}/progress/{episode_id}"
+)
 PATH_SEARCH: Final[str] = "/api/v3/search/all"
 
 # -- Streaming --
@@ -160,6 +166,8 @@ CACHE_TTL_CATALOG: Final[int] = 3600 * 24 * 7
 CACHE_TTL_PODCAST: Final[int] = 3600 * 24
 CACHE_TTL_EPISODES: Final[int] = 3600
 CACHE_TTL_SEARCH: Final[int] = 3600
+# Bridges the resume lookup and the episode lookup of one playback; cleared on every save.
+PROGRESS_CACHE_TTL: Final[int] = 30
 
 # -- Browse paths --
 

@@ -55,6 +55,7 @@ class _FakeFFMpeg:
         self.input_format = input_format
         self._probed_codec_type = ContentType.FLAC  # arbitrary, distinct from PCM/OGG
         self.parsed_duration: int | None = None
+        self.duration_estimated = False
         # mirrors the real FFMpeg: unset while the process runs, filled in on reap
         self.returncode: int | None = None
         self.log_history: list[str] = []
@@ -236,8 +237,12 @@ class _TwoMinuteFFMpeg(_FakeFFMpeg):
     """FFMpeg double that emits exactly two minutes of PCM at the format below."""
 
     seconds_emitted = 120
+    reported_duration: int | None = None
+    reported_duration_estimated = False
 
     async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
+        self.parsed_duration = self.reported_duration
+        self.duration_estimated = self.reported_duration_estimated
         for _ in range(self.seconds_emitted):
             yield b"\x00" * _PCM_SAMPLE_SIZE
 
@@ -333,7 +338,7 @@ def _provider_http_streamdetails(provider: MusicProvider) -> StreamDetails:
     )
 
 
-def _multi_part_streamdetails() -> StreamDetails:
+def _multi_part_streamdetails(duration: int = 3600) -> StreamDetails:
     """Build StreamDetails for a multi-file audiobook of two 30 minute parts."""
     return StreamDetails(
         provider="test_provider",
@@ -345,7 +350,7 @@ def _multi_part_streamdetails() -> StreamDetails:
             MultiPartPath(path="http://test.invalid/part-1.mp3", duration=1800),
             MultiPartPath(path="http://test.invalid/part-2.mp3", duration=1800),
         ],
-        duration=3600,
+        duration=duration,
         can_seek=True,
         allow_seek=True,
     )
@@ -564,8 +569,8 @@ async def test_get_media_stream_stores_measured_duration_for_full_playthrough(
     monkeypatch: pytest.MonkeyPatch,
     patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
 ) -> None:
-    """A multi-file item streamed from the start gets its measured duration stored."""
-    streamdetails = _multi_part_streamdetails()
+    """A multi-file item of unknown length gets its measured duration stored."""
+    streamdetails = _multi_part_streamdetails(duration=0)
     audio = _make_audio_controller()
     fake_stream, _ = _recording_multi_file_stream()
     monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
@@ -573,6 +578,146 @@ async def test_get_media_stream_stores_measured_duration_for_full_playthrough(
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
 
     assert streamdetails.duration == patch_two_minute_ffmpeg.seconds_emitted
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_the_source_stops_short(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source that ends mid-item must not shrink the item's own length to it."""
+    streamdetails = _multi_part_streamdetails()
+    audio = _make_audio_controller()
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+    monkeypatch.setattr(audio_mod, "FFMpeg", _TwoMinuteFFMpeg)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    # the fake source delivered two minutes of a one hour book
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_the_source_reports_more_than_it_served(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A source announcing the whole item but ending after two minutes did not finish."""
+    streamdetails = _seekable_streamdetails()
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_corrects_a_declared_length_the_source_never_had(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A source that served everything it reports corrects a declared length that was too long."""
+    streamdetails = _seekable_streamdetails()
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 120)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == 120
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_corrects_a_declared_length_after_ffmpeg_seeked(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """Resuming an item that is shorter than declared still corrects its length."""
+    streamdetails = _seekable_streamdetails()
+    # unlike an MP3, a FLAC file is sought exactly
+    streamdetails.audio_format = AudioFormat(content_type=ContentType.FLAC)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 180)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=60))
+
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    assert "-ss" in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
+    # 60 s skipped plus the two minutes ffmpeg delivered is all the 180 s source has
+    assert streamdetails.duration == 180
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_ffmpeg_seeked_into_a_source_that_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A resumed source that stops before the end it announced keeps the declared length."""
+    streamdetails = _seekable_streamdetails()
+    # unlike an MP3, a FLAC file is sought exactly
+    streamdetails.audio_format = AudioFormat(content_type=ContentType.FLAC)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=60))
+
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    extra_input_args = patch_two_minute_ffmpeg.last_instance.extra_input_args or []
+    assert "-ss" in extra_input_args
+    assert "+fastseek" not in extra_input_args
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_ffmpeg_fast_seeks_an_mp3_by_itself(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """Ffmpeg fast-seeks a remote MP3 whether or not the probe found hints for it."""
+    streamdetails = _seekable_streamdetails()
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=3500))
+
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_the_seek_only_lands_approximately(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    mp3_probe: _FakeProbe,
+) -> None:
+    """A fast seek may land anywhere, so what follows it says nothing about the length."""
+    streamdetails = _seekable_streamdetails()
+    mp3_probe.result = Mp3SeekHints(True, 0)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=3500))
+
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    assert "+fastseek" in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_stores_measured_duration_that_ends_a_little_short(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A declared length a second too long is still corrected to what the source served."""
+    streamdetails = _multi_part_streamdetails(duration=120)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "seconds_emitted", 119)
+    audio = _make_audio_controller()
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    # inside the tolerance, so the delivery stands in for the item's length
+    assert streamdetails.duration == 119
 
 
 @pytest.mark.asyncio
@@ -622,6 +767,44 @@ async def test_get_media_stream_keeps_duration_when_provider_seek_is_delegated(
     assert patch_two_minute_ffmpeg.last_instance is not None
     assert "-ss" not in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
     assert streamdetails.duration == 240
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_a_seeked_source_serves_the_whole_item(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A seeked item that fades in keeps its length even when the source serves all of it."""
+    declared_duration = 120
+    # the source hands over a second more than the item declares: enough to look like a
+    # playthrough from the start, which this stream explicitly is not
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "seconds_emitted", declared_duration + 1)
+    streamdetails = StreamDetails(
+        provider="test_provider",
+        item_id="track-1",
+        audio_format=AudioFormat(content_type=ContentType.OGG),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.CUSTOM,
+        duration=declared_duration,
+        can_seek=True,
+        allow_seek=True,
+        # resuming a track mid-item is exactly the case that fades in
+        fade_in=True,
+    )
+    audio = _make_audio_controller()
+    provider = cast("MagicMock", cast("MagicMock", audio.mass.get_provider).return_value)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=90))
+
+    # the provider took the resume point and ignored it, so the whole item came through
+    provider.get_audio_stream.assert_called_once_with(streamdetails, seek_position=90)
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    # the delegated seek leaves nothing for ffmpeg to apply itself, so the position is
+    # only still known from before the resolver ran
+    assert "-ss" not in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
+    # whatever a stream asked to resume mid-item hands over is not evidence of the
+    # item's own length, so the declared length stays
+    assert streamdetails.duration == declared_duration
 
 
 @pytest.mark.asyncio
@@ -1370,3 +1553,205 @@ async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.Monke
         str(HLS_RADIO_INPUT_BURST),
     ]
     assert HLS_RADIO_INPUT_BURST < RADIO_BUFFER_SIZE
+
+
+@pytest.mark.parametrize(
+    ("declared", "delivered", "covers"),
+    [
+        (300, 300.0, True),
+        (300, 299.0, True),  # a full playthrough that ends a little short
+        (300, 296.9, False),  # a source that stopped well short
+        (3600, 3590.0, True),  # the tolerance grows with a long item, up to its cap
+        (3600, 3500.0, False),
+        (36000, 35995.0, True),  # ten hours: the cap keeps the tolerance at ten seconds
+        (36000, 35985.0, False),
+        (60, 58.0, True),  # the two second floor
+        (60, 57.5, False),
+        (0, 10.0, True),  # no declared length: any delivery measures it
+    ],
+)
+def test_delivered_media_covers_item(declared: int, delivered: float, covers: bool) -> None:
+    """A delivered length stands in for the item's own within a small tolerance."""
+    streamdetails = SimpleNamespace(duration=declared)
+
+    assert audio_mod._delivered_media_covers_item(streamdetails, delivered) is covers  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("declared", "reported", "delivered", "covers"),
+    [
+        (3600, 3540, 3540.0, True),  # the source served all it reports
+        (3600, 3540, 3530.0, True),  # ... within the tolerance of what it reports
+        (3600, 3540, 3400.0, False),  # short of both the declared and the reported length
+        (3600, 3600, 120.0, False),  # a source announcing everything, serving two minutes
+        (3600, 4000, 3595.0, True),  # a reported length that is too high does not hide a full item
+        (0, 3540, 10.0, False),  # no declared length: the source's own one counts
+        (0, 3540, 3540.0, True),
+    ],
+)
+def test_delivered_media_covers_item_the_source_reports(
+    declared: int, reported: int, delivered: float, covers: bool
+) -> None:
+    """The length a source reports counts next to the declared one."""
+    streamdetails = SimpleNamespace(duration=declared)
+
+    assert (
+        audio_mod._delivered_media_covers_item(streamdetails, delivered, reported)  # type: ignore[arg-type]
+        is covers
+    )
+
+
+@pytest.mark.parametrize(
+    ("declared", "delivered", "covers"),
+    [
+        (120, 120.0, True),
+        (120, 121.0, True),  # a full playthrough that ends a little long
+        (120, 211.0, False),  # a seek that was ignored: the resume position counted twice
+        (3600, 3700.0, False),  # a seek that landed early delivers more than the item holds
+    ],
+)
+def test_delivered_media_covers_a_resumed_item_only_up_to_its_length(
+    declared: int, delivered: float, covers: bool
+) -> None:
+    """A resumed item's delivery that overshoots its length is not a measurement of it."""
+    streamdetails = SimpleNamespace(duration=declared)
+
+    assert (
+        audio_mod._delivered_media_covers_item(streamdetails, delivered, resumed=True)  # type: ignore[arg-type]
+        is covers
+    )
+    assert audio_mod._delivered_media_covers_item(streamdetails, delivered) is True  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("estimated", "delivered", "covers"),
+    [
+        (3540, 3000.0, True),  # an estimate off by an unknown header, played to its clean end
+        (3540, 3100.0, True),
+        (3540, 2000.0, False),  # far short of even an estimate: a source that stopped
+        (3540, 10.0, False),
+    ],
+)
+def test_delivered_media_covers_an_estimated_length_loosely(
+    estimated: int, delivered: float, covers: bool
+) -> None:
+    """A length that ffmpeg only estimated is corrected by a playthrough that is near it."""
+    streamdetails = SimpleNamespace(duration=estimated)
+
+    assert (
+        audio_mod._delivered_media_covers_item(
+            streamdetails,  # type: ignore[arg-type]
+            delivered,
+            estimated,
+            duration_estimated=True,
+        )
+        is covers
+    )
+    assert (
+        audio_mod._delivered_media_covers_item(streamdetails, delivered, estimated)  # type: ignore[arg-type]
+        is False
+    )
+
+
+@pytest.mark.parametrize(("estimated", "expected"), [(True, 120), (False, 150)])
+@pytest.mark.asyncio
+async def test_get_media_stream_corrects_a_length_only_that_ffmpeg_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    estimated: bool,
+    expected: int,
+) -> None:
+    """A playthrough near an estimated length measures it, one near an exact length does not."""
+    streamdetails = _multi_part_streamdetails(duration=0)
+    audio = _make_audio_controller()
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 150)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", estimated)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == expected
+
+
+@pytest.mark.parametrize(("estimated", "expected"), [(True, 3600), (False, 120)])
+@pytest.mark.asyncio
+async def test_get_media_stream_does_not_take_an_estimated_source_length_as_the_items(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    estimated: bool,
+    expected: int,
+) -> None:
+    """A length that ffmpeg only guessed does not make a source that stops past it complete."""
+    streamdetails = _multi_part_streamdetails()
+    audio = _make_audio_controller()
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 100)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", estimated)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == expected
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_takes_an_estimated_source_length_the_playthrough_ends_on(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A file that ends on the length ffmpeg estimated for it is shorter than declared."""
+    streamdetails = _multi_part_streamdetails()
+    audio = _make_audio_controller()
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 120)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", True)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == 120
+
+
+@pytest.mark.parametrize(("estimated", "expected"), [(False, 3500), (True, 3600)])
+@pytest.mark.asyncio
+async def test_get_media_stream_takes_the_length_ffmpeg_reads_after_a_fast_seek(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    estimated: bool,
+    expected: int,
+) -> None:
+    """A resumed remote MP3 gets the file's own length where nothing measured can be trusted."""
+    streamdetails = _seekable_streamdetails()
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3500)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", estimated)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=1800))
+
+    assert streamdetails.duration == expected
+
+
+@pytest.mark.parametrize(
+    ("seek_position", "content_type"),
+    [(0, ContentType.MP3), (60, ContentType.FLAC)],
+    ids=["played_from_the_start", "seek_that_lands_exactly"],
+)
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_the_declared_length_unless_the_seek_is_by_byte_offset(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    seek_position: int,
+    content_type: ContentType,
+) -> None:
+    """The header length only stands in where a seek by byte offset leaves nothing to measure."""
+    streamdetails = _seekable_streamdetails()
+    streamdetails.audio_format = AudioFormat(content_type=content_type)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3500)
+    audio = _make_audio_controller()
+
+    await _drain(
+        audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=seek_position)
+    )
+
+    assert streamdetails.duration == 3600

@@ -12,6 +12,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
+from copy import copy
 from dataclasses import dataclass
 from functools import wraps
 from ipaddress import ip_address
@@ -70,6 +71,7 @@ from music_assistant.constants import (
     DEFAULT_HOST,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES,
+    DLNA_CONTENT_FEATURES_FILE,
     DLNA_CONTENT_FEATURES_REALTIME,
     ICY_HEADERS,
     VERBOSE_LOG_LEVEL,
@@ -107,6 +109,15 @@ from music_assistant.controllers.streams.constants import (
     PacingProfile,
     get_available_buffer_sizes,
     output_pacing_args,
+)
+from music_assistant.controllers.streams.file_stream import (
+    FileKey,
+    FileStream,
+    FileStreams,
+    declared_frames,
+    is_connected,
+    parse_range,
+    player_hangs_up,
 )
 from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
@@ -376,6 +387,8 @@ class StreamsController(CoreController):
         # load the new session, and a response blocked in a write never notices
         # on its own that its session is gone
         self._open_item_streams: dict[str, list[tuple[str, web.Request]]] = {}
+        # The tracks that players fetch as a file
+        self._file_streams = FileStreams()
         # Per queue, the session and the items whose GET requests ended in it since the
         # player last asked for another item, which that next request checks
         self._ended_item_streams: dict[str, tuple[str, set[str]]] = {}
@@ -958,6 +971,77 @@ class StreamsController(CoreController):
         session_id, queue_id = url_parts[:2]
         return self.mass.player_queues.restart_lost_flow_stream(queue_id, session_id)
 
+    def serves_as_file(
+        self, player: PlayerProtocol, queue_item: QueueItem, output_codec: ContentType
+    ) -> bool:
+        """
+        Return whether the single item stream of a queue item is served to a player as a file.
+
+        A file has a declared length and answers requests for a part of it, so the player
+        can pause, resume and seek by itself.
+
+        :param player: The player that fetches the stream.
+        :param queue_item: The queue item the stream carries.
+        :param output_codec: The codec the stream is encoded in for the player.
+        """
+        if not (
+            player.fetches_files
+            and output_codec == ContentType.WAV
+            and queue_item.media_type == MediaType.TRACK
+            and queue_item.duration
+            and queue_item.extra_attributes.get("playback_speed", 1.0) == 1.0
+            and (queue := self.mass.player_queues.get(queue_item.queue_id))
+        ):
+            return False
+        # a stream that fades or mixes is more than the track, and is made only once
+        if (
+            self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
+            or self.audio.fade_into_pending(queue.queue_id, queue_item.queue_item_id)
+            or overlay_mixed_in(queue, queue_item, flow_mode=False)
+        ):
+            return False
+        streamdetails = queue_item.streamdetails
+        return streamdetails is None or (
+            streamdetails.allow_seek
+            and not streamdetails.fade_in
+            and streamdetails.tail_overlap is None
+        )
+
+    def stream_url_serves_as_file(self, stream_url: str) -> bool:
+        """
+        Return whether a stream URL that is handed to a player is answered as a file.
+
+        :param stream_url: A URL from `resolve_stream_url`.
+        """
+        single_url_prefix = f"{self.base_url}/single/"
+        if not stream_url.startswith(single_url_prefix):
+            return False
+        # <session_id>/<queue_id>/<queue_item_id>/<player_id>.<fmt>, or with the item named
+        # by its position in the queue: <session_id>/<queue_id>/pos/<index>/<player_id>.<fmt>
+        url_parts = stream_url.removeprefix(single_url_prefix).split("/")
+        item: str | int
+        if len(url_parts) == 4:
+            item = url_parts[2]
+        elif len(url_parts) == 5 and url_parts[2] == "pos" and url_parts[3].isdecimal():
+            item = int(url_parts[3])
+        else:
+            return False
+        player_id, _, fmt = url_parts[-1].partition(".")
+        player = self.mass.players.get_output_protocol(player_id)
+        queue_item = self.mass.player_queues.get_item(url_parts[1], item)
+        if player is None or queue_item is None:
+            return False
+        return self.serves_as_file(player, queue_item, ContentType.try_parse(fmt))
+
+    def release_file_streams(self, queue_id: str, current_session_id: str | None) -> None:
+        """
+        Release the files that players fetched of tracks in sessions the queue has moved past.
+
+        :param queue_id: The queue whose files to release.
+        :param current_session_id: The session that owns playback now, if any.
+        """
+        self._file_streams.release(queue_id, current_session_id)
+
     @_log_not_found
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: C901, PLR0912, PLR0915
         """Stream single queueitem audio to a player."""
@@ -1176,6 +1260,11 @@ class StreamsController(CoreController):
                 "contentFeatures.dlna.org": dlna_features,
                 "Content-Type": get_mime_type(output_format.output_format_str),
             }
+
+            if self.serves_as_file(player, queue_item, output_format.content_type):
+                return await self._serve_file(
+                    request, queue, queue_item, player, pcm_format, output_format, headers
+                )
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
@@ -2605,6 +2694,254 @@ class StreamsController(CoreController):
                                 queue_item.queue_id, queue_item.queue_item_id
                             )
                 yield chunk
+
+    async def _serve_file(
+        self,
+        request: web.Request,
+        queue: PlayerQueue,
+        queue_item: QueueItem,
+        player: PlayerProtocol,
+        pcm_format: AudioFormat,
+        output_format: AudioFormat,
+        headers: dict[str, str],
+    ) -> web.StreamResponse:
+        """
+        Answer a request for a queue item that is served as a file.
+
+        :param request: The request of the player.
+        :param queue: The queue the item plays on.
+        :param queue_item: The queue item, with its stream details resolved.
+        :param player: The player that fetches the file.
+        :param pcm_format: PCM format a new file reads its audio in.
+        :param output_format: Format of a new file.
+        :param headers: The headers of a stream response for this item.
+        """
+        assert queue_item.streamdetails is not None
+        session_id = request.match_info["session_id"]
+        key = FileKey(
+            session_id,
+            queue.queue_id,
+            queue_item.queue_item_id,
+            int(queue_item.streamdetails.seek_position),
+        )
+        if (file := self._file_streams.get(player.protocol_id, key)) is None:
+            file = FileStream(
+                pcm_format, output_format, declared_frames(queue_item, output_format.sample_rate)
+            )
+            self._file_streams.add(player.protocol_id, key, file)
+
+        headers = {
+            **headers,
+            "Accept-Ranges": "bytes",
+            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_FILE,
+        }
+        part = parse_range(request.headers.get("Range"), file.size)
+        if part is None:
+            part = range(file.size)
+            resp = web.StreamResponse(status=200, reason="OK", headers=headers)
+        elif part:
+            headers["Content-Range"] = f"bytes {part.start}-{part.stop - 1}/{file.size}"
+            resp = web.StreamResponse(status=206, headers=headers)
+        else:
+            raise web.HTTPRequestRangeNotSatisfiable(
+                headers={"Content-Range": f"bytes */{file.size}"}
+            )
+        resp.content_length = len(part)
+        await resp.prepare(request)
+        if request.method != "GET":
+            return resp
+
+        self._update_audio_processing_context(
+            queue=queue,
+            queue_item=queue_item,
+            pcm_format=file.pcm_format,
+            overlay_enabled=False,
+            session_id=session_id,
+        )
+        if await self._send_file_part(request, resp, file, part, queue_item, player) < part.stop:
+            # the body stops short of the announced content length, and aiohttp relays
+            # the 'Connection: close' we advertise without applying it - so the player
+            # waits out a stream that already ended
+            resp.force_close()
+        return resp
+
+    async def _send_file_part(
+        self,
+        request: web.Request,
+        resp: web.StreamResponse,
+        file: FileStream,
+        part: range,
+        queue_item: QueueItem,
+        player: PlayerProtocol,
+    ) -> int:
+        """
+        Send a part of a file to a player: its start from memory, the rest from an encode.
+
+        :param request: The request of the player.
+        :param resp: The prepared response to that request.
+        :param file: The file.
+        :param part: The bytes of the file the player asks for.
+        :param queue_item: The queue item the file carries.
+        :param player: The player that fetches the file.
+        :return: The offset in the file up to where the part was sent.
+        """
+        assert queue_item.streamdetails is not None
+        session_id = request.match_info["session_id"]
+        pq_data = self.mass.player_queues.queue_data(queue_item.queue_id)
+        offset = part.start
+        if memory := file.head(part):
+            try:
+                await resp.write(memory)
+            except ConnectionError:
+                return offset
+            offset += len(memory)
+            if offset == part.stop:
+                return offset
+            if part.start == 0 and file.has_audio_in_memory:
+                # a player asks for the start of a file again before it resumes or seeks,
+                # and leaves that request for the part it really wants. An encode is only
+                # worth starting for a player that stays and reads on
+                running = file.request
+                if await player_hangs_up(request) or file.request not in (running, None):
+                    return offset
+
+        # one encode at a time per file: a player that asks for another part has left the
+        # one it was reading. Aborted rather than closed, as a graceful close waits for
+        # the very send buffer the player stopped reading
+        if (running := file.request) is not None and (transport := running.transport) is not None:
+            transport.abort()
+        file.request = request
+        self.logger.debug(
+            "Serving %s as a file to %s from byte %s of %s",
+            queue_item.name,
+            player.display_name,
+            offset,
+            file.size,
+        )
+        stream_failure: AudioError | None = None
+        self._active_output_streams += 1
+        try:
+            async with aclosing(
+                self._encode_file(request, file, queue_item, player, offset)
+            ) as audio_bytes:
+                async for chunk in audio_bytes:
+                    if pq_data.session_id != session_id:
+                        self.logger.debug(
+                            "Ending stream for %s: session %s is no longer current",
+                            queue_item.name,
+                            session_id,
+                        )
+                        break
+                    # more audio than the file declared is cut off
+                    data = chunk[: part.stop - offset]
+                    try:
+                        await resp.write(data)
+                    except ConnectionError:
+                        # a player that pauses or seeks hangs up, and asks for the rest later
+                        break
+                    file.keep(offset, data)
+                    offset += len(data)
+                    if not file.loaded:
+                        file.loaded = True
+                        # inform the queue that the track is now loaded in the buffer
+                        # so for example the next track can be enqueued
+                        self.mass.player_queues.track_loaded_in_buffer(
+                            queue_item.queue_id, queue_item.queue_item_id
+                        )
+                    if offset == part.stop:
+                        break
+        except AudioError as err:
+            stream_failure = err
+        finally:
+            self._active_output_streams -= 1
+            if file.request is request:
+                file.request = None
+        if stream_failure is not None or queue_item.streamdetails.stream_error:
+            self.logger.error(
+                "Error streaming QueueItem %s (%s) to %s: %s",
+                queue_item.name,
+                queue_item.uri,
+                player.display_name,
+                _root_cause(stream_failure) if stream_failure else "see the preceding log",
+            )
+        return offset
+
+    async def _encode_file(
+        self,
+        request: web.Request,
+        file: FileStream,
+        queue_item: QueueItem,
+        player: PlayerProtocol,
+        offset: int,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Encode a file from an offset to the end of its audio.
+
+        Audio that ends before the declared size of the file sets its real size.
+
+        :param request: The request the encode runs for.
+        :param file: The file to encode.
+        :param queue_item: The queue item the file carries.
+        :param player: The player that fetches the file.
+        :param offset: Offset in the file of the first byte to deliver, past the header.
+        """
+        assert queue_item.streamdetails is not None
+        session_id = request.match_info["session_id"]
+        second, run_in = file.encode_start(offset)
+        audio_input = self.audio.get_queue_item_stream(
+            queue_item=queue_item,
+            pcm_format=file.pcm_format,
+            seek_position=int(queue_item.streamdetails.seek_position) + second,
+            session_id=session_id,
+            exact_seek=True,
+            consumer_connected=lambda: is_connected(request),
+        )
+        output_plan = self.audio.get_player_output_plan(
+            protocol_id=player.protocol_id,
+            input_format=file.pcm_format,
+            output_format=file.output_format,
+            shared_player_ids=player.group_members,
+            queue_id=queue_item.queue_id,
+            session_id=session_id,
+            queue_item_id=queue_item.queue_item_id,
+        )
+        # ffmpeg only delivers the samples: the header is the file's own
+        samples_format = copy(file.output_format)
+        samples_format.content_type = ContentType.from_bit_depth(samples_format.bit_depth)
+        # the audio that is dropped comes on top of the head start, so it costs the player none
+        burst = file.take_head_start() + run_in / file.byte_rate
+        position = offset - run_in
+        async with aclosing(
+            get_ffmpeg_stream(
+                audio_input=audio_input,
+                input_format=file.pcm_format,
+                output_format=samples_format,
+                filter_params=output_plan.filter_params,
+                extra_input_args=output_pacing_args(burst=burst),
+            )
+        ) as encoded:
+            async for chunk in encoded:
+                position += len(chunk)
+                if position > offset:
+                    yield chunk[offset - position :]
+                    offset = position
+        # an encode also ends when its audio is taken away or its player has gone, so only
+        # a source that was read out for a player that stayed tells where the file ends
+        buffer = queue_item.streamdetails.buffer
+        if (
+            is_connected(request)
+            and buffer is not None
+            and buffer.eof
+            and not buffer.has_error
+            and position < file.size
+        ):
+            self.logger.debug(
+                "%s ends at byte %s of the %s its file declared",
+                queue_item.name,
+                position,
+                file.size,
+            )
+            file.end_at(position)
 
     def _served_by(self, queue_item: QueueItem | None, provider_instance: str) -> bool:
         """

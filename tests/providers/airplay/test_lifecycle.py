@@ -456,6 +456,20 @@ async def test_an_apple_tv_and_its_homepod_are_one_player_named_after_the_room(
     assert [player.name for player in scenario.visible_players()] == ["Study"]
 
 
+async def test_an_apple_tv_connects_to_a_homepod_that_is_found_after_it(
+    scenario: Scenario, provider: AirPlayProvider, apple_controls: AsyncMock
+) -> None:
+    """The Apple TV, which controls the volume of its HomePod, connects once it is found."""
+    await _announce(scenario, provider, _apple_tv())
+    await scenario.idle()
+    apple_controls.reset_mock()
+
+    await _announce(scenario, provider, _homepod())
+    await scenario.idle()
+
+    apple_controls.assert_awaited_once()
+
+
 @pytest.mark.usefixtures("apple_controls")
 async def test_an_apple_tv_with_a_pair_of_homepods_is_a_stereo_player(
     scenario: Scenario, provider: AirPlayProvider

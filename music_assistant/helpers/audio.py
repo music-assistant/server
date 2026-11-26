@@ -49,6 +49,9 @@ SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 
 _CONTROL_CHARS_RE: Final = re.compile(r"[\x00-\x1f\x7f]")
 
+# Size of the wave header in front of every WAV stream, see create_streaming_wave_header.
+WAVE_HEADER_SIZE: Final[int] = 44
+
 # Mapping of audio format identifiers to their correct IANA MIME types
 # where the format name differs from the MIME subtype.
 # Strict DLNA/UPnP devices reject non-standard MIME types (e.g. audio/mp3).
@@ -267,11 +270,12 @@ def create_wave_header(
     return file.getvalue()
 
 
-def create_streaming_wave_header(audio_format: AudioFormat) -> bytes:
+def create_streaming_wave_header(audio_format: AudioFormat, data_size: int | None = None) -> bytes:
     """
-    Generate a wave header for a stream whose length is not known up front.
+    Generate the wave header of a stream.
 
     :param audio_format: The PCM format the audio behind the header is in.
+    :param data_size: Size of that audio in bytes, or None when it is not known up front.
     """
     channels = audio_format.channels
     sample_rate = audio_format.sample_rate
@@ -280,16 +284,21 @@ def create_streaming_wave_header(audio_format: AudioFormat) -> bytes:
     block_align = channels * (bits_per_sample // 8)
     # RIFF size & data size both set to 0xFFFFFFFF so clients honoring the WAV
     # length fields don't cut the stream off (create_wave_header hardcodes ~6.7h).
+    riff_size = data_chunk_size = 0xFFFFFFFF
+    if data_size is not None:
+        # a size these fields can not hold leaves them as they are
+        riff_size = min(WAVE_HEADER_SIZE - 8 + data_size, riff_size)
+        data_chunk_size = min(data_size, data_chunk_size)
     return (
         b"RIFF"
-        + struct.pack("<L", 0xFFFFFFFF)
+        + struct.pack("<L", riff_size)
         + b"WAVE"
         + b"fmt "
         + struct.pack(
             "<LHHLLHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample
         )
         + b"data"
-        + struct.pack("<L", 0xFFFFFFFF)
+        + struct.pack("<L", data_chunk_size)
     )
 
 
@@ -631,7 +640,9 @@ def calculate_content_length(
     pcm_size = int(fmt.sample_rate * (fmt.bit_depth / 8) * fmt.channels * seconds)
     if fmt.content_type.is_pcm():
         return pcm_size
-    if fmt.content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
+    if fmt.content_type == ContentType.WAV:
+        return WAVE_HEADER_SIZE + pcm_size
+    if fmt.content_type in (ContentType.AIFF, ContentType.DSF):
         return pcm_size
     if fmt.bit_rate and fmt.bit_rate < 10000:
         return int(((fmt.bit_rate * 1000) / 8) * seconds)

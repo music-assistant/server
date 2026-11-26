@@ -404,8 +404,10 @@ async def _session_inactive(provider: SpotifyConnectProvider, daemon: _PlayerDae
     """Run the backend's 'session inactive' answer and return the players it wanted stopped."""
     stopped: list[str] = []
 
-    def _record_stop(daemon: _PlayerDaemon, player_id: str) -> None:
+    def _record_stop(daemon: _PlayerDaemon, player_id: str, *, paused: bool = False) -> None:
         del daemon
+        # a session that ended leaves nothing to play on
+        assert not paused
         stopped.append(player_id)
 
     provider._schedule_pause_stop = _record_stop  # type: ignore[method-assign]
@@ -532,18 +534,18 @@ async def test_a_slow_stop_after_pause_is_reported() -> None:
     """A stop that takes its time is reported, and still runs to completion."""
     stopped = asyncio.Event()
 
-    async def _slow_stop(_player_id: str) -> None:
+    async def _slow_stop(*_args: str) -> None:
         await asyncio.sleep(0.05)
         stopped.set()
 
-    provider, _daemon, _ = _tethered_provider()
+    provider, daemon, _ = _tethered_provider()
     mass = cast("Any", provider.mass)
     mass.loop = asyncio.get_running_loop()
-    mass.players.cmd_stop = AsyncMock(side_effect=_slow_stop)
+    mass.players.pause_audio_source = AsyncMock(side_effect=_slow_stop)
     logger = cast("MagicMock", provider.logger)
 
     with patch("music_assistant.providers.spotify_connect.provider.SLOW_STOP_WARN_S", 0.01):
-        await provider._stop_paused_player("player1")
+        await provider._stop_paused_player(daemon, "player1", paused=True)
 
     assert stopped.is_set()
     logger.warning.assert_called_once()
@@ -551,13 +553,13 @@ async def test_a_slow_stop_after_pause_is_reported() -> None:
 
 async def test_a_prompt_stop_after_pause_is_not_reported() -> None:
     """A stop that finishes promptly is not reported as slow."""
-    provider, _daemon, _ = _tethered_provider()
+    provider, daemon, _ = _tethered_provider()
     mass = cast("Any", provider.mass)
     mass.loop = asyncio.get_running_loop()
     mass.players.cmd_stop = AsyncMock()
     logger = cast("MagicMock", provider.logger)
 
-    await provider._stop_paused_player("player1")
+    await provider._stop_paused_player(daemon, "player1", paused=False)
 
     mass.players.cmd_stop.assert_awaited_once_with("player1")
     logger.warning.assert_not_called()

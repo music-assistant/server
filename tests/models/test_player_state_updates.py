@@ -696,6 +696,39 @@ class TestLiveSourceAudioDetails:
         assert player.active_source_audio is None
 
 
+class TestFakePause:
+    """Test the pause a player shows while its output is idle."""
+
+    def test_a_start_ends_the_pause_of_a_player_that_still_plays(self, player: Player) -> None:
+        """A player whose output did not stop for the pause yet is not paused any more."""
+        player.mark_stop_called()
+        player.set_fake_paused(True)
+        assert player.playback_state == PlaybackState.PLAYING
+
+        player.end_fake_pause()
+
+        assert not player.fake_paused
+        assert not player.stop_called
+
+    def test_a_start_ends_the_pause_of_an_idle_player_once_it_plays(
+        self, player: Player, protocol: MockProtocol
+    ) -> None:
+        """A player that is shown as paused goes on to playing, not to idle."""
+        player.set_fake_paused(True)
+        protocol._attr_playback_state = PlaybackState.IDLE
+        player.update_state()
+
+        player.end_fake_pause()
+        assert player.state.playback_state == PlaybackState.PAUSED
+
+        protocol._attr_playback_state = PlaybackState.PLAYING
+        player.update_state()
+        assert not player.fake_paused
+        protocol._attr_playback_state = PlaybackState.IDLE
+        player.update_state()
+        assert player.playback_state == PlaybackState.IDLE
+
+
 class TestMediaUpdatedCallback:
     """The (debounced) media-updated callback fires on media identity changes."""
 

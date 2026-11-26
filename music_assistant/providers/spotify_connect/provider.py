@@ -987,16 +987,25 @@ class SpotifyConnectProvider(PluginProvider):
                 return False
             await asyncio.sleep(0.1)
 
-    async def _stop_paused_player(self, player_id: str) -> None:
+    async def _stop_paused_player(
+        self, daemon: _PlayerDaemon, player_id: str, paused: bool
+    ) -> None:
         """
         Stop the active player after a pause.
 
+        :param daemon: The daemon whose consuming player paused.
         :param player_id: The player currently consuming the live source.
+        :param paused: Spotify only paused, so the player stays paused on this source.
         """
         self.logger.debug("Stopping player %s after pause", player_id)
         started = self.mass.loop.time()
         try:
-            await self.mass.players.cmd_stop(player_id)
+            if paused:
+                await self.mass.players.pause_audio_source(
+                    player_id, daemon.player_id, self.instance_id
+                )
+            else:
+                await self.mass.players.cmd_stop(player_id)
         except Exception as err:  # noqa: BLE001 - player code, any failure ends the handling
             self.logger.debug("Failed to stop player %s on pause: %s", player_id, err)
             return
@@ -1030,16 +1039,19 @@ class SpotifyConnectProvider(PluginProvider):
             task.cancel()
         daemon.pending_play_media_task = None
 
-    def _schedule_pause_stop(self, daemon: _PlayerDaemon, player_id: str) -> None:
+    def _schedule_pause_stop(
+        self, daemon: _PlayerDaemon, player_id: str, *, paused: bool = False
+    ) -> None:
         """
         Dispatch the stop of the paused player, replacing a still-pending one.
 
         :param daemon: The daemon whose consuming player paused.
         :param player_id: The player currently consuming the live source.
+        :param paused: Spotify only paused, so the player stays paused on this source.
         """
         self._cancel_pending_pause_stop(daemon)
         daemon.stopped_session_id = daemon.active_session_id
-        task = self.mass.create_task(self._stop_paused_player(player_id))
+        task = self.mass.create_task(self._stop_paused_player(daemon, player_id, paused))
         daemon.pending_pause_stop_task = task
         task.add_done_callback(partial(self._on_pause_stop_done, daemon))
 
@@ -1266,7 +1278,9 @@ class SpotifyConnectProvider(PluginProvider):
                 )
                 and (player_id := daemon.active_player_id)
             ):
-                self._schedule_pause_stop(daemon, player_id)
+                self._schedule_pause_stop(
+                    daemon, player_id, paused=event.type is BackendEventType.PAUSED
+                )
 
         if event.type is BackendEventType.METADATA and event.metadata is not None:
             self._apply_metadata(daemon, event.metadata)
