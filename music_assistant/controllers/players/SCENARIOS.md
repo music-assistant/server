@@ -2703,6 +2703,17 @@ such as Spotify, that took the speaker over, before or during the pause, and is 
   - `test_paused_queue.py::test_another_source_paused_at_the_speaker_is_not_stopped`
   - `test_paused_queue.py::test_a_source_that_takes_over_a_paused_speaker_is_not_stopped`
 
+### PAUSE-15 · A queue paused before an announcement plays on from its pause
+
+A speaker with a pause of its own is paused 5 s into a track of its queue, and an announcement
+plays on it. After the clip the speaker is idle, and so is its queue, at 5 s. Play starts the
+track again from there: the speaker is not told to unpause a stream it no longer has.
+
+- End-to-end: **possible with** a player of the lab that has a pause of its own and plays an
+  announcement while paused.
+- Proven by:
+  `test_announcements.py::test_a_queue_paused_before_an_announcement_plays_on_from_its_pause`
+
 ## A live source that pauses
 
 A live source of a plugin, such as Spotify Connect, has no audio while it is paused, so its stream
