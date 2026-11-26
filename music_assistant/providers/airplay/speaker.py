@@ -115,11 +115,12 @@ class AirPlaySpeaker(AirPlayPlayer):
             return
         owner.set_state_from_stream(state, elapsed_time)
 
-    def update_volume_from_device(self, volume: int) -> None:
+    def update_volume_from_device(self, volume: int, exact: bool = False) -> None:
         """
         Hand a volume the device reported to its set.
 
         :param volume: The level the device reported.
+        :param exact: Not used: the set owns the volume and writes back a new level either way.
         """
         if owner := self.owner:
             owner.update_volume_from_device(volume)

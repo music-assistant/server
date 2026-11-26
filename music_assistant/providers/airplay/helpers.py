@@ -82,6 +82,10 @@ def get_sync_offset_ms(config: PlayerConfig) -> int:
     return -sync_adjust if isinstance(sync_adjust, int) else 0
 
 
+# How far a reported dB volume may sit from a level we send and still be that level.
+_VOLUME_SCALE_TOLERANCE_DB = 0.001
+
+
 def convert_airplay_volume(value: float) -> int:
     """Remap AirPlay dB volume (-30..0) to 0..100 scale."""
     airplay_min = -30.0
@@ -89,6 +93,14 @@ def convert_airplay_volume(value: float) -> int:
     value = max(airplay_min, min(airplay_max, value))
     portion = (value - airplay_min) * 100.0 / (airplay_max - airplay_min)
     return max(0, min(100, round(portion)))
+
+
+def is_exact_airplay_volume(value: float) -> bool:
+    """Return True if an AirPlay dB volume is a whole 0..100 level on the scale we send."""
+    if not -30.0 <= value <= 0.0:
+        return False
+    # cliairplay sends level n as -30 + 0.3 * n dB; devices report it with float noise
+    return abs(value - (-30.0 + convert_airplay_volume(value) * 0.3)) <= _VOLUME_SCALE_TOLERANCE_DB
 
 
 def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911, C901

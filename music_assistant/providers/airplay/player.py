@@ -1080,24 +1080,28 @@ class AirPlayPlayer(PlayerProtocol):
             self._volume_reports_ignored_until, time.time() + seconds
         )
 
-    def update_volume_from_device(self, volume: int) -> None:
-        """Update volume from device feedback."""
+    def update_volume_from_device(self, volume: int, exact: bool = False) -> None:
+        """
+        Update volume from device feedback.
+
+        :param volume: The level the device reported.
+        :param exact: Whether the device reported the level exactly on the scale we send.
+        """
         if self.ignore_volume_reports:
             return
 
-        cur_volume = self.volume_level or 0
-        # Only the owner of the volume hands the device its level back. While another
-        # control owns it, the level that control set would come back rounded to whole
-        # percents, which can move the device a step on its own scale.
-        if self.owns_volume and (
-            abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3
-        ):
+        # Sonos in an AirPlay session only applies its own level once we set it. Under another
+        # control only an exact level goes back, as a rounded one can move the device a step;
+        # a repeat of our level right after a command is the device confirming it.
+        write_back = (self.owns_volume or exact) and (
+            volume != self.volume_level or (time.time() - self.last_command_sent) > 3
+        )
+        self._attr_volume_level = volume
+        self.mass.config.set_protocol_value(self.protocol_id, CONF_STORED_VOLUME, volume)
+        self.update_state()
+        self._sync_bridge_volume()
+        if write_back:
             self.mass.create_task(self._adopt_device_volume(volume))
-        else:
-            self._attr_volume_level = volume
-            self.mass.config.set_protocol_value(self.protocol_id, CONF_STORED_VOLUME, volume)
-            self.update_state()
-            self._sync_bridge_volume()
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
         """Set/update the discovery info for the player."""

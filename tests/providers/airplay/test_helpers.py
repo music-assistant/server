@@ -25,6 +25,7 @@ from music_assistant.providers.airplay.helpers import (
     get_model_info,
     is_apple_device,
     is_apple_tv,
+    is_exact_airplay_volume,
     parse_set_membership,
     probe_audio_formats,
     serialize_txt_records,
@@ -71,6 +72,24 @@ def test_cli_clock_args_give_cliairplay_the_same_timeline(rate_ppb: int) -> None
         # host_clock_now_ns() of cliairplay: the raw clock plus the offset and the rate term
         assert raw_ns + offset_ns + rate_term_ns(raw_ns, rate_ppb) == timeline_unix_ns
         assert unix_now == timeline_unix_ns / 1e9
+
+
+@pytest.mark.parametrize(
+    ("value", "exact"),
+    [
+        (-28.799999, True),
+        (-28.200001, True),
+        (-15.0, True),
+        (-30.0, True),
+        (0.0, True),
+        (-28.05, False),
+        (-144.0, False),
+    ],
+    ids=["sonos 4", "sonos 6", "50", "0", "100", "wiim 7", "mute"],
+)
+def test_is_exact_airplay_volume(value: float, exact: bool) -> None:
+    """Only a level on the scale levels are sent on comes back without rounding."""
+    assert is_exact_airplay_volume(value) is exact
 
 
 def test_get_decoded_property_matches_case_insensitively() -> None:

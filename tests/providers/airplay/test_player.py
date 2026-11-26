@@ -1745,6 +1745,92 @@ async def test_adopting_a_device_level_keeps_the_next_report_visible(
 
 
 @pytest.mark.asyncio
+async def test_small_device_volume_steps_are_each_written_back(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Every step of a volume turned in single steps reaches the device.
+
+    A Sonos speaker in an AirPlay session only applies a level of its own once the
+    sender sets it, so a step that is not written back is lost on the speaker.
+    """
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 4
+
+    def _deliver(_command: str) -> None:
+        airplay_player.last_command_sent = time.time()
+        airplay_player.suppress_volume_reports()
+
+    stream = MagicMock(running=True)
+    stream.send_cli_command = AsyncMock(side_effect=_deliver)
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    for level in (5, 6, 7, 6):
+        airplay_player.update_volume_from_device(level)
+        while adoptions:
+            await adoptions.pop()
+
+    assert [c.args[0] for c in stream.send_cli_command.await_args_list] == [
+        "VOLUME=5",
+        "VOLUME=6",
+        "VOLUME=7",
+        "VOLUME=6",
+    ]
+    assert airplay_player.volume_level == 6
+
+    # the device repeating the level it was just handed is not written back again
+    airplay_player.update_volume_from_device(6)
+    assert not adoptions
+    assert stream.send_cli_command.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_on_scale_device_steps_are_written_back_while_the_native_protocol_owns_the_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level that comes back exactly on our scale is written back, also under native control.
+
+    A Sonos speaker in an AirPlay session only applies a change of its own native volume
+    once the sender sets that level, and reports it exactly on the scale we send.
+    """
+    player = _attach_to_player(airplay_player, own=_native_protocol("sonos"))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 4
+
+    def _deliver(_command: str) -> None:
+        airplay_player.last_command_sent = time.time()
+        airplay_player.suppress_volume_reports()
+
+    stream = MagicMock(running=True)
+    stream.send_cli_command = AsyncMock(side_effect=_deliver)
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    for level in (5, 6, 7, 6):
+        airplay_player.update_volume_from_device(level, exact=True)
+        while adoptions:
+            await adoptions.pop()
+
+    assert [c.args[0] for c in stream.send_cli_command.await_args_list] == [
+        "VOLUME=5",
+        "VOLUME=6",
+        "VOLUME=7",
+        "VOLUME=6",
+    ]
+    assert airplay_player.volume_level == 6
+
+    # the device repeating the level it was just handed is not written back again
+    airplay_player.update_volume_from_device(6, exact=True)
+    assert not adoptions
+    assert stream.send_cli_command.await_count == 4
+
+
+@pytest.mark.asyncio
 async def test_adopting_a_device_level_keeps_an_announcement_window(
     airplay_player: AirPlayPlayer,
 ) -> None:

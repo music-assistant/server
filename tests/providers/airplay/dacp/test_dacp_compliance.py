@@ -202,7 +202,17 @@ async def test_device_volume_updates_volume(
     # -15 dB maps to 50 on the 0-100 scale
     raw = build_dacp_request("/ctrl-int/1/setproperty?dmcp.device-volume=-15.000000")
     await replay(airplay_provider, raw)
-    player.update_volume_from_device.assert_called_once_with(50)
+    player.update_volume_from_device.assert_called_once_with(50, exact=True)
+
+
+async def test_device_volume_off_our_scale_is_not_exact(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """A level a WiiM reports on its own scale is handed on as not exact."""
+    player = make_player(mock_mass)
+    raw = build_dacp_request("/ctrl-int/1/setproperty?dmcp.device-volume=-28.050000")
+    await replay(airplay_provider, raw)
+    assert player.update_volume_from_device.call_args.kwargs["exact"] is False
 
 
 async def test_device_volume_mute_threshold_mutes(

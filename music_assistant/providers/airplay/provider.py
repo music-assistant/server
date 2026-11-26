@@ -77,6 +77,7 @@ from .helpers import (
     get_protocol_id,
     is_airplay_record_of,
     is_apple_device,
+    is_exact_airplay_volume,
     parse_set_membership,
     probe_audio_formats,
 )
@@ -1589,8 +1590,8 @@ class AirPlayProvider(PlayerProvider):
             elif "dmcp.device-volume=" in path and not player.ignore_volume_reports:
                 # This is a bit annoying as this can be either the device confirming a new volume
                 # we've sent or the device requesting a new volume itself.
-                # In case of a small rounding difference, we ignore this,
-                # to prevent an endless pingpong of volume changes
+                # The player writes back only a new level, and only one without rounding
+                # while another control owns the volume, to prevent a pingpong of changes
                 airplay_volume = float(path.split("dmcp.device-volume=", 1)[-1])
                 if airplay_volume <= AIRPLAY_VOLUME_MUTE:
                     player._attr_volume_muted = True
@@ -1606,7 +1607,9 @@ class AirPlayProvider(PlayerProvider):
                                 player.stream.send_cli_command(f"VOLUME={player.volume_level or 0}")
                             )
                     volume = convert_airplay_volume(airplay_volume)
-                    player.update_volume_from_device(volume)
+                    player.update_volume_from_device(
+                        volume, exact=is_exact_airplay_volume(airplay_volume)
+                    )
             elif "dmcp.volume=" in path:
                 # volume change request from device (e.g. volume buttons)
                 volume = int(path.split("dmcp.volume=", 1)[-1])
