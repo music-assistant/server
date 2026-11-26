@@ -13,7 +13,7 @@ from music_assistant_models.constants import PLAYER_CONTROL_FAKE
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from zeroconf import ServiceStateChange
 
-from music_assistant.constants import CONF_POWER_CONTROL
+from music_assistant.constants import CONF_POWER_CONTROL, PLAYER_CONTROL_PROTOCOL
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
@@ -433,9 +433,17 @@ async def test_a_re_joined_member_keeps_its_volume_when_it_leads(
     """
     A member that was lost and came back leads at the volume it plays at.
 
+    The user selected "auto" as the volume and mute control of the players.
+
     :param lost: Whether the leader before it was lost too, or was taken out by the user.
     """
     a, b = await _receivers(scenario, provider, "AB", native=True)
+    for protocol in (a, b):
+        await scenario.configure_player(
+            _player_of(protocol).player_id,
+            volume_control=PLAYER_CONTROL_PROTOCOL,
+            mute_control=PLAYER_CONTROL_PROTOCOL,
+        )
     for letter, volume in (("A", 10), ("B", 20)):
         await scenario.report(scenario.protocol(f"RINCON_{letter}"), volume_level=volume)
     group = await _play_group(scenario, [a, b])

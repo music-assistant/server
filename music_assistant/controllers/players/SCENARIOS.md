@@ -2382,16 +2382,31 @@ and mute of both go to their own protocol again.
 
 ## Volume
 
-The level and mute of a player are its own. A volume or mute command goes to the output that
-renders, else to the own protocol, and an output that takes over gets the player's level first.
-The examples use the Kitchen speaker with its own protocol at level 30 and its AirPlay receiver at
-level 80.
+The level and mute of a player are its own. By default its own protocol controls them while it
+can be reached, also while another output renders. With "auto" selected as the volume and mute
+control, a volume or mute command goes to the output that renders, else to the own protocol, and
+an output that takes over gets the player's level first. The examples use the Kitchen speaker
+with its own protocol at level 30 and its AirPlay receiver at level 80.
 
-### VOLUME-1 · An output that takes over gets the player's level before it plays
+### VOLUME-8 · By default the own protocol keeps the volume and mute while another output renders
 
-The user prefers the AirPlay receiver as Kitchen's output and plays. The receiver gets level 30
-once, before the media, and the player never shows 80. When Kitchen and Hall group over AirPlay,
-each receiver gets the level and mute of its own player.
+The user prefers the AirPlay receiver as Kitchen's output and plays, with no volume or mute
+control selected. The receiver gets no level or mute, and the player shows level 30. Volume and
+mute commands go to the own protocol. A level the own protocol reports moves the player's level;
+one the receiver reports does not.
+
+- End-to-end: **possible with** a host that runs a native player and an AirPlay receiver at
+  different levels, such as Squeezelite and shairport-sync.
+- Proven by:
+  - `tests/controllers/players/test_routing.py::test_audio_protocol_that_takes_over_gets_no_level_while_the_native_owns_it`
+  - `tests/controllers/players/test_routing.py::test_volume_goes_to_the_native_protocol_while_an_audio_protocol_plays`
+
+### VOLUME-1 · With "auto" selected, an output that takes over gets the player's level before it plays
+
+The user selects "auto" as Kitchen's volume and mute control, prefers the AirPlay receiver as its
+output and plays. The receiver gets level 30 once, before the media, and the player never shows
+80. When Kitchen and Hall, both on "auto", group over AirPlay, each receiver gets the level and
+mute of its own player.
 
 - End-to-end: **possible with** a host that runs a native player and an AirPlay receiver at
   different levels, such as Squeezelite and shairport-sync.
@@ -2399,11 +2414,12 @@ each receiver gets the level and mute of its own player.
   - `tests/controllers/players/test_routing.py::test_audio_protocol_that_takes_over_gets_the_level_of_the_player_first`
   - `tests/controllers/players/test_routing.py::test_players_grouped_through_an_audio_protocol_hand_it_their_level_and_mute`
 
-### VOLUME-2 · A volume command goes to the output that renders, and only it reports back
+### VOLUME-2 · With "auto" selected, volume goes to the output that renders, and only it reports back
 
-While Kitchen plays through its AirPlay receiver, a volume command goes to the receiver, not to
-the own protocol. A level the idle own protocol reports does not move the player's level; one the
-receiver reports does. While nothing else renders, a volume command goes to the own protocol.
+While Kitchen plays through its AirPlay receiver with "auto" selected, a volume command goes to
+the receiver, not to the own protocol. A level the idle own protocol reports does not move the
+player's level; one the receiver reports does. While nothing else renders, a volume command goes
+to the own protocol.
 
 - End-to-end: **possible with** the setup of VOLUME-1.
 - Proven by:
@@ -2466,11 +2482,12 @@ has no level of its own; only its members count.
 
 ### VOLUME-7 · An output that plays nothing leaves volume and mute to the own protocol
 
-Lounge leads Study over AirPlay and the user stops the group. Lounge's AirPlay receiver stays its
-output for the group, but plays nothing, and an AirPlay receiver only takes a volume command while
-it streams. A volume or mute command goes to Lounge's own protocol, and the receiver gets none.
-The user turns Study down and mutes it meanwhile, which reaches Study's own protocol; when the
-group plays again, Study's receiver gets that level and mute before the music starts.
+Lounge and Study have "auto" selected as their volume and mute control. Lounge leads Study over
+AirPlay and the user stops the group. Lounge's AirPlay receiver stays its output for the group,
+but plays nothing, and an AirPlay receiver only takes a volume command while it streams. A volume
+or mute command goes to Lounge's own protocol, and the receiver gets none. The user turns Study
+down and mutes it meanwhile, which reaches Study's own protocol; when the group plays again,
+Study's receiver gets that level and mute before the music starts.
 
 - End-to-end: **possible with** two virtual players of different kinds that each also run an
   AirPlay receiver on their host.
