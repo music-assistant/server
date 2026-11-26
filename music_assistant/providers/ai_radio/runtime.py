@@ -36,6 +36,7 @@ from music_assistant.helpers.plugin_engines import (
     resolve_tts_engine,
     resolve_tts_engine_setting,
 )
+from music_assistant.helpers.provider_access import without_disallowed_explicit
 from music_assistant.helpers.uri import create_uri
 
 from .constants import (
@@ -143,6 +144,8 @@ class AIRadioRuntimeMixin:
         tracks = [
             track async for track in self.mass.music.playlists.iter_tracks(playlist_id, provider)
         ]
+        # the run plays as the user who started it, who may be kept from explicit tracks
+        tracks = await without_disallowed_explicit(self.mass, tracks, get_current_user())
         normalized: list[dict[str, Any]] = []
         for track in tracks:
             artist = ""

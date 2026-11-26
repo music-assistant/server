@@ -438,14 +438,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist = await self.get_library_item(item_id)
         if artist.artist_type != ArtistType.SINGER:
             return 0
+        query_params: dict[str, Any] = {"artist_id": int(item_id)}
         return await self.mass.music.tracks.get_library_items_count_by_query(
             favorite=favorite,
             provider_filter=self._ensure_provider_filter(provider_filter),
             extra_query_parts=[
                 f"tracks.item_id in (select track_id from {DB_TABLE_TRACK_ARTISTS} "
-                "where artist_id = :artist_id)"
+                "where artist_id = :artist_id)",
+                # the count leaves out what the listing leaves out for the calling user
+                *self.mass.music.tracks.listing_filter(query_params),
             ],
-            extra_query_params={"artist_id": int(item_id)},
+            extra_query_params=query_params,
             in_library_only=True,
         )
 
@@ -557,6 +560,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         if album_types:
             query_parts.append("albums.album_type in :album_types")
             query_params["album_types"] = [album_type.value for album_type in album_types]
+        # the count leaves out what the listing leaves out for the calling user
+        query_parts.extend(self.mass.music.albums.listing_filter(query_params))
         return await self.mass.music.albums.get_library_items_count_by_query(
             favorite=favorite,
             provider_filter=self._ensure_provider_filter(provider_filter),
@@ -1100,6 +1105,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             artist_type=library_artist.artist_type,
             collapse_collections=collapse_collections,
             provider_filter=provider_filter,
+            explicit=True,
         )
         result: list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]] = db_items
         if in_library_only:
@@ -1166,8 +1172,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         *,
         collapse_collections: bool = False,
         provider_filter: str | None = None,
+        explicit: bool = False,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
-        """Return all in-library audiobooks for an author/ narrator."""
+        """
+        Return all in-library audiobooks for an author/ narrator.
+
+        :param item_id: The library item ID of the author or narrator.
+        :param artist_type: Whether the artist is listed as author or as narrator.
+        :param collapse_collections: Return a series as one collection row.
+        :param provider_filter: Optional provider instance ID to limit the audiobooks to.
+        :param explicit: Also leave out the explicit audiobooks a restricted user may not see.
+        """
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
         if library_item.artist_type != artist_type:
@@ -1176,11 +1191,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         subquery = (
             f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id"
         )
-        query = f"audiobooks.item_id in ({subquery})"
+        query_parts = [f"audiobooks.item_id in ({subquery})"]
+        query_params: dict[str, Any] = {"artist_id": db_id}
+        if explicit:
+            # a collapsed series is one row with no flag of its own, so its books are
+            # narrowed here rather than in the listing
+            query_parts.extend(self.mass.music.audiobooks.listing_filter(query_params))
         return await self.mass.music.audiobooks.get_library_items_by_query(
             limit=0,
-            extra_query_parts=[query],
-            extra_query_params={"artist_id": db_id},
+            extra_query_parts=query_parts,
+            extra_query_params=query_params,
             collapse_collections=collapse_collections,
             provider_filter=self._ensure_provider_filter(provider_filter),
         )
@@ -2368,6 +2388,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         return [
             f"albums.item_id IN ({track_albums})",
             f"albums.item_id NOT IN ({own_albums})",
+            # the summary albums listed carry no explicit flag, so it is checked here
+            *self.mass.music.albums.listing_filter(query_params),
         ], query_params
 
     def _library_filter_parts(

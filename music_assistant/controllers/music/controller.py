@@ -181,6 +181,7 @@ from music_assistant.helpers.provider_access import (
     visible_music_sources,
     visible_playback_sources,
     visible_provider,
+    without_disallowed_explicit,
 )
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import (
@@ -745,12 +746,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
             )
         # use cache to avoid repeated searches; the library results are narrowed to what
-        # the calling user may see, so the entry is kept per user (and role)
+        # the calling user may see, so the entry is kept per user (role and explicit setting)
         user = get_current_user()
         cache_key = (
             f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
             f"{int(include_library)}-{','.join(search_providers)}-"
-            f"{f'{user.user_id}:{user.role}' if user else ''}"
+            f"{f'{user.user_id}:{user.role}:{int(user.allow_explicit)}' if user else ''}"
         )
         if cache := await self.mass.cache.get(
             key=cache_key,
@@ -765,7 +766,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 search_query, media_types, None if providers is None else search_providers
             )
         ) is not None:
-            return url_result
+            return await self._visible_search_results(url_result)
         # handle normal global search by querying the library and all providers
         # the library (if included) is searched first: it is fast and its results are
         # used to deduplicate provider results and to skip provider searches for media
@@ -1070,12 +1071,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ListingType.BROWSE, sort_field, sort_direction
         )
 
-        def _listed(
+        async def _listed(
             back_items: Sequence[BrowseFolder],
             items: Sequence[MediaItemType | ItemMapping | BrowseFolder],
         ) -> list[MediaItemType | ItemMapping | BrowseFolder]:
+            allowed = await without_disallowed_explicit(self.mass, items, get_current_user())
             listed = apply_listing(
-                items,
+                allowed,
                 ListingType.BROWSE,
                 search=search,
                 sort_field=sort_field,
@@ -1115,7 +1117,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         translation_key="live_sources",
                     )
                 )
-            return _listed([], root_items)
+            return await _listed([], root_items)
 
         # provider level
         prepend_items: list[BrowseFolder] = []
@@ -1131,7 +1133,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
             if not (browse_prov or is_recommendations or is_live_sources):
-                return _listed(prepend_items, [])
+                return await _listed(prepend_items, [])
         else:
             if is_recommendations:
                 # a row id may carry slashes of its own, so only the provider ends a level
@@ -1152,12 +1154,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
             )
         if is_recommendations:
-            return _listed(
+            return await _listed(
                 prepend_items,
                 await self.recommendations.browse(sub_path, random_seed=random_seed),
             )
         if is_live_sources:
-            return _listed(
+            return await _listed(
                 prepend_items,
                 [
                     self._client_audio_source(source)
@@ -1174,7 +1176,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for source in await self._get_provider_audio_sources(browse_prov, player_id)
                 if source.can_initiate
             ]
-            return _listed(prepend_items, initiable_items)
+            return await _listed(prepend_items, initiable_items)
         if (
             isinstance(browse_prov, MusicProvider)
             and ProviderFeature.BROWSE in browse_prov.supported_features
@@ -1215,7 +1217,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         else:
             prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)
-        return _listed(prepend_items, prov_items)
+        return await _listed(prepend_items, prov_items)
 
     @api_command("music/sort_options", required_scope=Scope.LIBRARY_READ)
     def sort_options(self, listing: ListingType) -> list[SortOptionInfo]:
@@ -1344,7 +1346,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     }
                 )
             )
-        return result
+        # a library entry is judged by its library item, any other reference counts as allowed
+        return await without_disallowed_explicit(self.mass, result, get_current_user())
 
     async def recently_played_tracks(
         self,
@@ -1501,7 +1504,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     }
                 )
             )
-        return result
+        # a library entry is judged by its library item, any other reference counts as allowed
+        return await without_disallowed_explicit(self.mass, result, get_current_user())
 
     async def get_playlog_provider_item_ids(
         self, provider_instance_id: str, limit: int = 0, userid: str | None = None
@@ -3217,9 +3221,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             summary=False,
             random_seed=random_seed,
         )
-        if not items and not await controller.library_items(
-            provider=provider.instance_id, limit=1, random_seed=random_seed
-        ):
+        if not items and not await self._library_holds_items_of(provider, media_type):
             return None
         page.extend(items)
         return page
@@ -3238,6 +3240,27 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if source.can_initiate
             ]
         return sources
+
+    async def _library_holds_items_of(self, provider: MusicProvider, media_type: MediaType) -> bool:
+        """
+        Return whether the library holds any of a provider's items of a media type.
+
+        :param provider: The provider whose library items to look for.
+        :param media_type: The media type to look for.
+        """
+        controller = self.get_controller(media_type)
+        # a library of nothing but explicit items is still synced, so this asks whether the
+        # items are there rather than whether the user may see them
+        query_params: dict[str, Any] = {}
+        return bool(
+            await controller.get_library_items_by_query(
+                limit=1,
+                provider_filter=[provider.instance_id],
+                extra_query_parts=controller.listing_filter(query_params, explicit=False) or None,
+                extra_query_params=query_params,
+                in_library_only=True,
+            )
+        )
 
     async def _get_provider_audio_sources(
         self, provider: AudioSourceMixin, player_id: str | None
@@ -3371,19 +3394,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         return self.get_visible_provider(mapping.provider_instance)
 
-    def _visible_search_results(self, results: SearchResults) -> SearchResults:
-        """Return the search results with only the items the current user may see."""
+    async def _visible_search_results(self, results: SearchResults) -> SearchResults:
+        """Return the search results with only the items the current user may see and play."""
         if (user := get_current_user()) is None:
             return results
+
+        async def _allowed[T](items: Sequence[T]) -> list[T]:
+            return await without_disallowed_explicit(
+                self.mass, visible_items(self.mass, items, user), user
+            )
+
         return SearchResults(
             artists=visible_items(self.mass, results.artists, user),
-            albums=visible_items(self.mass, results.albums, user),
+            albums=await _allowed(results.albums),
             genres=visible_items(self.mass, results.genres, user),
-            tracks=visible_items(self.mass, results.tracks, user),
+            tracks=await _allowed(results.tracks),
             playlists=visible_items(self.mass, results.playlists, user),
             radio=visible_items(self.mass, results.radio, user),
-            audiobooks=visible_items(self.mass, results.audiobooks, user),
-            podcasts=visible_items(self.mass, results.podcasts, user),
+            audiobooks=await _allowed(results.audiobooks),
+            podcasts=await _allowed(results.podcasts),
             sound_effects=visible_items(self.mass, results.sound_effects, user),
         )
 
@@ -3525,7 +3554,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         ) is not None:
             # the cache is shared by all users, so the results are narrowed on every read
-            return self._visible_search_results(
+            return await self._visible_search_results(
                 filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
             )
         # run the provider search as a separate task (deduplicated by task_id so
@@ -3555,7 +3584,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise
         if prov_search_results is None:
             return None
-        return self._visible_search_results(
+        return await self._visible_search_results(
             filter_search_results(prov_search_results, prov.domain, skip_item_ids)
         )
 
