@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
 from aiosonos.const import LOCAL_API_PORT
-from aiosonos.exceptions import CannotConnect, ConnectionFailed
+from aiosonos.exceptions import CannotConnect, ConnectionFailed, NotAPlayer
 from aiosonos.utils import get_discovery_info
 from music_assistant_models.enums import EventType, IdentifierType
 from zeroconf import ServiceStateChange
@@ -196,6 +196,10 @@ class SonosPlayerProvider(PlayerProvider):
             sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
             try:
                 await sonos_player.setup()
+            except NotAPlayer:
+                self.logger.debug(
+                    "Ignoring %s (manual IP) as it is part of another player's set.", ip_address
+                )
             except (CannotConnect, ConnectionFailed) as err:
                 self.logger.debug(
                     "Ignoring %s (manual IP) as it can not be connected: %s", ip_address, str(err)
@@ -272,7 +276,12 @@ class SonosPlayerProvider(PlayerProvider):
             upnp_port=upnp_port,
         )
         sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
-        await sonos_player.setup()
+        try:
+            await sonos_player.setup()
+        except NotAPlayer:
+            self.logger.debug(
+                "Ignoring %s in discovery as it is part of another player's set.", display_name
+            )
 
     def _ignore_disabled_discovery(self, protocol_id: str, name: str) -> bool:
         """
