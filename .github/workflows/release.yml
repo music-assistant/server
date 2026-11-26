@@ -1744,3 +1744,66 @@ jobs:
         if: steps.dispatch.outcome != 'success'
         run: |
           echo "::warning title=Docs site not notified::music-assistant.io was not told about this release; its daily check will merge the waiting docs pull requests instead. The failed step above says why."
+
+  notify_template:
+    name: Notify the community provider template
+    runs-on: ubuntu-latest
+    needs: [resolve, publish_release]
+    # rc releases come from the stable branch; the template follows dev
+    if: >-
+      needs.resolve.outputs.is_current == 'true' &&
+      (inputs.channel == 'nightly' || inputs.channel == 'beta')
+    permissions: {}
+    steps:
+      # The template moves its server pin to the release once its checks pass there, so a failed
+      # dispatch only keeps it on the previous release until the next one and must never fail
+      # the release.
+      - name: Create template repository token
+        id: template_token
+        continue-on-error: true
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: community-provider-template
+          permission-contents: write
+
+      - name: Verify GitHub App identity
+        id: identity
+        if: steps.template_token.outcome == 'success'
+        continue-on-error: true
+        env:
+          APP_SLUG: ${{ steps.template_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.template_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+
+      - name: Dispatch server release
+        id: dispatch
+        if: steps.identity.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.template_token.outputs.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          jq -n \
+            --arg server_version "$VERSION" \
+            '{
+              event_type: "server-release",
+              client_payload: {
+                server_version: $server_version
+              }
+            }' > "$RUNNER_TEMP/dispatch.json"
+          gh api --method POST \
+            "repos/music-assistant/community-provider-template/dispatches" \
+            --input "$RUNNER_TEMP/dispatch.json"
+
+      - name: Warn when the template was not notified
+        if: steps.dispatch.outcome != 'success'
+        run: |
+          echo "::warning title=Template not notified::The community provider template was not told about this release, so its server pin stays on the previous one until the next release. The failed step above says why."
