@@ -697,7 +697,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 "use Reconfigure to connect to AcoustID again",
                 state,
             )
-            self._update_setup_data(CONF_USER_KEY, None)
+            if self._get_user_key() == user_key:
+                self._update_setup_data(CONF_USER_KEY, None)
 
     async def _fetch_mb_extras(
         self, mbid: str, *, include_artist_mbids: bool = True
