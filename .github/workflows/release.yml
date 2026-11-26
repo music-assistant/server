@@ -1750,7 +1750,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [resolve, publish_release]
     # rc releases come from the stable branch; the template follows dev
-    if: inputs.channel == 'nightly' || inputs.channel == 'beta'
+    if: >-
+      needs.resolve.outputs.is_current == 'true' &&
+      (inputs.channel == 'nightly' || inputs.channel == 'beta')
     permissions: {}
     steps:
       # The template moves its server pin to the release once its checks pass there, so a failed
