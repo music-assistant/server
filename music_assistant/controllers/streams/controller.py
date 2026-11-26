@@ -12,7 +12,6 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
-from copy import copy
 from dataclasses import dataclass
 from functools import partial, wraps
 from ipaddress import ip_address
@@ -112,6 +111,7 @@ from music_assistant.controllers.streams.constants import (
     output_pacing_args,
 )
 from music_assistant.controllers.streams.file_stream import (
+    FILE_CODECS,
     MAX_MIXED_FILES_PER_PLAYER,
     FileKey,
     FileStream,
@@ -990,7 +990,7 @@ class StreamsController(CoreController):
         """
         if not (
             player.fetches_files
-            and output_codec == ContentType.WAV
+            and output_codec in FILE_CODECS
             and queue_item.media_type == MediaType.TRACK
             and queue_item.duration
             and queue_item.extra_attributes.get("playback_speed", 1.0) == 1.0
@@ -2787,17 +2787,17 @@ class StreamsController(CoreController):
             "Accept-Ranges": "bytes",
             "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_FILE,
         }
-        part = parse_range(request.headers.get("Range"), file.size)
+        range_header = request.headers.get("Range")
+        size = file.size_for(range_header)
+        part = parse_range(range_header, size)
         if part is None:
-            part = range(file.size)
+            part = range(size)
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         elif part:
-            headers["Content-Range"] = f"bytes {part.start}-{part.stop - 1}/{file.size}"
+            headers["Content-Range"] = f"bytes {part.start}-{part.stop - 1}/{size}"
             resp = web.StreamResponse(status=206, headers=headers)
         else:
-            raise web.HTTPRequestRangeNotSatisfiable(
-                headers={"Content-Range": f"bytes */{file.size}"}
-            )
+            raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{size}"})
         resp.content_length = len(part)
         await resp.prepare(request)
         if request.method != "GET":
@@ -2942,18 +2942,17 @@ class StreamsController(CoreController):
         """
         assert queue_item.streamdetails is not None
         session_id = request.match_info["session_id"]
-        second, run_in = file.encode_start(offset)
+        start_ms, run_in = file.encode_start(offset)
         if file.mix is not None:
             audio_input = file.mix.read(
-                second * file.pcm_format.pcm_sample_size, lambda: is_connected(request)
+                start_ms * file.pcm_format.pcm_sample_size // 1000, lambda: is_connected(request)
             )
         else:
             audio_input = self.audio.get_queue_item_stream(
                 queue_item=queue_item,
                 pcm_format=file.pcm_format,
-                seek_position=int(queue_item.streamdetails.seek_position) + second,
+                seek_position_ms=int(queue_item.streamdetails.seek_position) * 1000 + start_ms,
                 session_id=session_id,
-                exact_seek=True,
                 consumer_connected=lambda: is_connected(request),
             )
         output_plan = self.audio.get_player_output_plan(
@@ -2965,9 +2964,6 @@ class StreamsController(CoreController):
             session_id=session_id,
             queue_item_id=queue_item.queue_item_id,
         )
-        # ffmpeg only delivers the samples: the header is the file's own
-        samples_format = copy(file.output_format)
-        samples_format.content_type = ContentType.from_bit_depth(samples_format.bit_depth)
         # the audio that is dropped comes on top of the head start, so it costs the player none
         burst = file.take_head_start() + run_in / file.byte_rate
         position = offset - run_in
@@ -2975,9 +2971,10 @@ class StreamsController(CoreController):
             get_ffmpeg_stream(
                 audio_input=audio_input,
                 input_format=file.pcm_format,
-                output_format=samples_format,
+                output_format=file.encode_format,
                 filter_params=output_plan.filter_params,
                 extra_input_args=output_pacing_args(burst=burst),
+                extra_output_args=file.encoder_args,
             )
         ) as encoded:
             async for chunk in encoded:
