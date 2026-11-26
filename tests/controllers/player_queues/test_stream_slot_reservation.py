@@ -1268,7 +1268,7 @@ async def test_a_track_another_queue_prepares_waits_while_a_stream_is_kept(rig: 
             reason="prepare_next",
             capacity_wait_timeout=BRIEF_WAIT,
             allow_provider_match=False,
-            stop_paused_queues=False,
+            take_over_slots=False,
         )
 
     assert not isinstance(refusal.value, ProviderStreamHeldError)

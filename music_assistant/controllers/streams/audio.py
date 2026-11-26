@@ -987,7 +987,7 @@ class StreamsAudio:
         reason: str = "",
         capacity_wait_timeout: float = STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
         allow_provider_match: bool = True,
-        stop_paused_queues: bool = True,
+        take_over_slots: bool = True,
         consumer_connected: Callable[[], bool] | None = None,
         user: BufferUser | None = None,
     ) -> AudioBuffer | None:
@@ -996,7 +996,8 @@ class StreamsAudio:
 
         Compatible provider mappings are reselected while the owning provider has no free
         source-stream slot. A source that holds such a slot and that nothing needs is stopped
-        first, and a paused queue holding that slot is stopped to hand it over.
+        first, and another queue holding that slot is made to give it up when it is paused, or
+        when it plays the account for someone other than the owner this playback is for.
         Other AudioErrors propagate as on a direct buffer request.
 
         :param queue_item: Queue item whose source should be buffered.
@@ -1005,8 +1006,8 @@ class StreamsAudio:
         :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
         :param allow_provider_match: Whether an on-demand cross-provider match may widen
             the candidates when all are saturated.
-        :param stop_paused_queues: Whether another queue that is paused may be stopped to
-            hand over the slot it holds.
+        :param take_over_slots: Whether another queue may be made to give up the slot it
+            holds, as a paused queue or one playing the account for someone else does.
         :param consumer_connected: Reports whether the consumer this audio is for is still
             connected; once it reports False, no source is opened for it.
         :param user: The party the buffer is for, which uses it from here until it calls
@@ -1028,7 +1029,7 @@ class StreamsAudio:
                 reason,
                 capacity_wait_timeout,
                 allow_provider_match,
-                stop_paused_queues,
+                take_over_slots,
                 consumer_connected,
                 user,
             )
@@ -4458,7 +4459,7 @@ class StreamsAudio:
         reason: str,
         capacity_wait_timeout: float,
         allow_provider_match: bool,
-        stop_paused_queues: bool,
+        take_over_slots: bool,
         consumer_connected: Callable[[], bool] | None,
         user: BufferUser | None,
     ) -> AudioBuffer | None:
@@ -4471,8 +4472,8 @@ class StreamsAudio:
         :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
         :param allow_provider_match: Whether an on-demand cross-provider match may widen
             the candidates when all are saturated.
-        :param stop_paused_queues: Whether another queue that is paused may be stopped to
-            hand over the slot it holds.
+        :param take_over_slots: Whether another queue may be made to give up the slot it
+            holds, as a paused queue or one playing the account for someone else does.
         :param consumer_connected: Reports whether the consumer this audio is for is still
             connected, or None when there is no consumer to lose.
         :param user: The party the buffer is for, or None when it is only waited for.
@@ -4580,12 +4581,12 @@ class StreamsAudio:
             alternatives_left = bool(
                 all_candidate_instances - busy_instances - {streamdetails.provider}
             )
-            # a paused queue hands over its slot once an attempt finds none free, so that
-            # attempt has to be a probe rather than a wait behind the paused queue
-            paused_holder = (
-                stop_paused_queues
+            # another queue gives its slot up once an attempt finds none free, so that
+            # attempt has to be a probe rather than a wait behind that queue
+            slot_to_take_over = (
+                take_over_slots
                 and not final_pass
-                and self.mass.player_queues.has_paused_stream_slot_holder(
+                and self.mass.player_queues.has_stream_slot_to_take_over(
                     streamdetails.provider, queue_item.queue_id
                 )
             )
@@ -4593,7 +4594,7 @@ class StreamsAudio:
             # acquired instantly, while a busy one fails fast instead of spending the
             # whole budget on this candidate. Block only on the last resort.
             last_resort = final_pass or not (
-                alternatives_left or busy_instances or match_pending or paused_holder
+                alternatives_left or busy_instances or match_pending or slot_to_take_over
             )
             if last_resort and not resumes:
                 # a realtime source keeps its slot until its item ends, so the budget would
@@ -4612,11 +4613,11 @@ class StreamsAudio:
                             self._leaves_stream_slot_line,
                             streamdetails.provider,
                             queue_item.queue_id,
-                            stop_paused_queues,
+                            take_over_slots,
                         ),
                         partial(self._wants_stream_slot, queue_item, consumer_connected),
                     )
-                    # the slot is kept for the queue now, or a paused queue hands its slot over
+                    # the slot is kept for the queue now, or another queue gives its slot up
                     continue
             source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the
@@ -4656,10 +4657,10 @@ class StreamsAudio:
             except ProviderStreamLimitError as err:
                 last_capacity_error = err
                 last_failed_streamdetails = streamdetails
-                if paused_holder and await self._take_paused_stream_slot(
+                if slot_to_take_over and await self._take_over_stream_slot(
                     err.provider_instance, queue_item.queue_id, deadline
                 ):
-                    # the paused queue stopped and its slot comes free: wait for it here
+                    # the other queue gave its slot up and it comes free: wait for it here
                     final_pass = True
                     continue
                 busy_instances.add(err.provider_instance)
@@ -4755,18 +4756,18 @@ class StreamsAudio:
         return queue_data.session_id if queue_data is not None else None
 
     def _leaves_stream_slot_line(
-        self, provider_instance: str, queue_id: str, stop_paused_queues: bool
+        self, provider_instance: str, queue_id: str, take_over_slots: bool
     ) -> bool:
         """
-        Return whether a start that waits for a slot takes a paused queue's slot over instead.
+        Return whether a start that waits for a slot takes another queue's slot over instead.
 
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot.
-        :param stop_paused_queues: Whether a paused queue may be stopped to hand its slot over.
+        :param take_over_slots: Whether another queue may be made to give its slot up.
         :raises ProviderStreamLimitError: When another queue's realtime playback holds the slot.
         """
         self.mass.player_queues.refuse_held_stream_slot(provider_instance, queue_id)
-        return stop_paused_queues and self.mass.player_queues.has_paused_stream_slot_holder(
+        return take_over_slots and self.mass.player_queues.has_stream_slot_to_take_over(
             provider_instance, queue_id
         )
 
@@ -4858,25 +4859,25 @@ class StreamsAudio:
                 users.append(f"{claim.name} (claims it)")
         return users
 
-    async def _take_paused_stream_slot(
+    async def _take_over_stream_slot(
         self, provider_instance: str, queue_id: str, deadline: float
     ) -> bool:
         """
-        Stop a paused queue that holds a slot of the given provider, within the capacity budget.
+        Make another queue give up a slot of the given provider, within the capacity budget.
 
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot.
         :param deadline: Event loop time by which the handover has to be done.
-        :return: Whether a paused queue's session was ended, which frees its slot shortly.
+        :return: Whether the other queue's session was ended, which frees its slot shortly.
         """
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             return False
         try:
-            # the paused queue's lock and its device stop can both take longer than the
-            # budget of the playback waiting for them
+            # the other queue's lock, its device stop and the wait to keep the slot can all
+            # take longer than the budget of the playback waiting for them
             async with asyncio.timeout(remaining):
-                return await self.mass.player_queues.release_paused_stream_slot(
+                return await self.mass.player_queues.take_over_stream_slot(
                     provider_instance, queue_id
                 )
         except TimeoutError:
