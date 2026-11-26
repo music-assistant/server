@@ -233,7 +233,7 @@ This mirrors how a typical AVR or stereo system behaves: turn it on, it's an act
    │
 4. The leader and the members show the fake pause of the group
    │
-5. play_media plays on with the same members; a stop or the pause timeout dissolves the group
+5. play_media plays on with the same members; a stop or the pause timeout stops the group as any stop
 ```
 
 ### Stopping Playback

@@ -2773,7 +2773,8 @@ does one that pauses before the speaker got to play it. A pause of a source that
 Spotify plays on the sync group Downstairs of the Kitchen and Office speakers and is paused. The
 speakers are silent, and the group and both speakers show as paused, never idle in between. The
 group keeps its speakers, also past the idle grace in which a group that plays nothing lets them
-go, and play resumes Spotify on the same speakers without grouping them again. At the pause
+go, and play resumes Spotify on the same speakers without grouping them again. A speaker taken out
+of the group meanwhile, the Kitchen speaker that leads it as well, is free at once. At the pause
 timeout, on a stop of the group or of one of its speakers, or when Spotify ends the session, the
 speakers are idle and free again; a stop also ends the session of Spotify.
 
@@ -2782,6 +2783,7 @@ speakers are idle and free again; a stop also ends the session of Spotify.
 - Proven by:
   - `test_paused_live_source.py::test_a_paused_sync_group_keeps_its_speakers`
   - `test_paused_live_source.py::test_play_on_a_paused_sync_group_plays_on_with_the_same_speakers`
+  - `test_paused_live_source.py::test_a_speaker_taken_out_of_a_paused_sync_group_is_free_at_once`
   - `test_paused_live_source.py::test_a_paused_sync_group_lets_its_speakers_go_at_the_pause_timeout`
   - `test_paused_live_source.py::test_a_stop_of_a_paused_sync_group_lets_the_source_go`
   - `test_paused_live_source.py::test_a_sync_group_whose_source_ends_while_paused_goes_idle`

@@ -714,6 +714,31 @@ async def test_play_on_a_paused_sync_group_plays_on_with_the_same_speakers(
         assert PlaybackState.IDLE not in _seen_states(scenario, player_id)
 
 
+@pytest.mark.parametrize("taken_out", ["leader", "member"])
+async def test_a_speaker_taken_out_of_a_paused_sync_group_is_free_at_once(
+    scenario: Scenario, live_source: LiveSource, taken_out: str
+) -> None:
+    """
+    A speaker that leaves the paused group is idle and free within a second.
+
+    :param taken_out: Which speaker leaves: Kitchen, which leads the group, or Office.
+    """
+    _, player_ids, group_id = await _paused_sync_group(scenario, live_source)
+    await scenario.advance(5)
+    player_id = player_ids[0] if taken_out == "leader" else player_ids[1]
+
+    task = await scenario.command(scenario.mass.players.cmd_ungroup(player_id))
+    await scenario.advance(1)
+
+    assert task.done()
+    await task
+    state = _state(scenario, player_id)
+    assert state.playback_state == PlaybackState.IDLE
+    assert state.active_group is None
+    await scenario.mass.players.cmd_stop(group_id)
+    await scenario.advance(5)
+
+
 async def test_a_paused_sync_group_lets_its_speakers_go_at_the_pause_timeout(
     scenario: Scenario, live_source: LiveSource
 ) -> None:

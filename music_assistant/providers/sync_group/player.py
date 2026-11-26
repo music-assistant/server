@@ -470,7 +470,7 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         Silence the group while what it plays is paused, keeping its members together.
 
-        A play_media plays on with the same members; a stop dissolves the group.
+        A play_media plays on with the same members.
         """
         if session := self._active_session_protocol():
             await session.hold()
@@ -1494,7 +1494,9 @@ class SyncGroupPlayer(PlayerProtocol):
         # the leader leaves the group either way, so one that dropped off the network
         # (or fails to stop) must not abort the dissolve that follows
         try:
-            if wait_for_update:
+            # a silent leader, such as one held for a pause, reports nothing new on the stop
+            output = leader.resolve_output_protocol() or leader.device_protocol
+            if wait_for_update and output and output.playback_state != PlaybackState.IDLE:
                 async with self.mass.players.wait_for_player_update(leader.player_id, timeout=5):
                     await self.mass.players._handle_cmd_stop(leader.player_id)
             else:
