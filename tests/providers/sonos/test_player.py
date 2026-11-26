@@ -19,14 +19,19 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTR
 from music_assistant_models.enums import (
     ContentType,
     IdentifierType,
+    MediaType,
     PlaybackState,
     ProtocolRole,
     RepeatMode,
 )
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo, OutputProtocol, PlayerMedia
+from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import AnnouncementFeature
@@ -931,6 +936,89 @@ def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
     assert player.current_media.queue_item_id == "guest"
     stale_reports = "Position 4 of queue queue1 now holds guest, speaker Kantoor expected abc"
     assert caplog.text.count(stale_reports) == 1
+
+
+def _real_queues(queue_id: str, item_ids: list[str]) -> PlayerQueuesController:
+    """Return the real queue controller holding a playing queue of the given items."""
+    queue = PlayerQueue(queue_id=queue_id, active=True, display_name="Den", available=True, items=0)
+    queue.state = PlaybackState.PLAYING
+    data = PlayerQueueData(queue=queue)
+    data.items = [
+        QueueItem(queue_id=queue_id, queue_item_id=x, name=x, duration=180) for x in item_ids
+    ]
+    queue.items = len(data.items)
+    queues = PlayerQueuesController.__new__(PlayerQueuesController)
+    queues.mass = MagicMock()
+    queues._queue_data = {queue_id: data}
+    return queues
+
+
+async def test_a_jump_is_not_undone_by_the_report_on_the_replaced_load() -> None:
+    """
+    Test the queue stays on the item a jump loads until the speaker reports on the new load.
+
+    The speaker answers the load before its events of the new item are applied, so the queue
+    reads what it reported on the replaced load first, and then the old track playing out.
+    """
+    player, mass, client = _connected_player()
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    client.player.is_passive = False
+    group = client.player.group
+    group.play_cloud_queue = AsyncMock()
+    group.active_session_id = "session"
+    player._announcement_media = None
+    player.cloud_queue_id = "queue1"
+    queues = _real_queues("queue1", ["track0", "track1", "track2"])
+    mass.player_queues = queues
+    queue = queues._queue_data["queue1"].queue
+    reporting = MagicMock(corrected_elapsed_time=0.0)
+    reporting.resolve_output_protocol.return_value = player
+    _report_playing_our_queue(group, cast("str", player.wire_item_id("track0")))
+    player.on_player_event(None)
+    queues._update_current_index_from_player(queue, reporting)
+    assert queue.current_index == 0
+    # the jump moves the queue before it loads the item on the speaker
+    queue.current_index = 2
+
+    with patch.object(SonosPlayer, "flow_mode", new=property(lambda _self: False)):
+        await player.play_media(
+            PlayerMedia(
+                uri="library://track/3",
+                media_type=MediaType.TRACK,
+                source_id="queue1",
+                queue_item_id="track2",
+                queue_session_id="session-2",
+            )
+        )
+    queues._update_current_index_from_player(queue, reporting)
+    assert queue.current_index == 2
+    player.on_player_event(None)
+    queues._update_current_index_from_player(queue, reporting)
+    assert queue.current_index == 2
+
+    _report_playing_our_queue(group, cast("str", player.wire_item_id("track2")))
+    player.on_player_event(None)
+    assert queues._parse_player_current_item_id("queue1", reporting) == "track2"
+
+
+@pytest.mark.parametrize("item_id", ["abc@7", "abc"], ids=["coordinator load", "bare id"])
+def test_a_group_member_names_the_item_of_its_coordinators_load(item_id: str) -> None:
+    """Test a member reads the reported item against the load of its coordinator."""
+    player, mass, client = _connected_player()
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "sonos_leader"
+    player.cloud_queue_item_generation = 2
+    leader, _, leader_client = _connected_player()
+    leader.cloud_queue_id = "queue1"
+    leader.cloud_queue_item_generation = 7
+    _report_playing_our_queue(leader_client.player.group, item_id)
+    mass.players.get_protocol.return_value = leader
+
+    player.on_player_event(None)
+
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "abc"
 
 
 def test_a_failure_of_an_earlier_load_of_a_track_leaves_its_fresh_source_alone(

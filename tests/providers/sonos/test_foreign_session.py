@@ -111,6 +111,8 @@ def _speaker(
     player.connected = True
     player._attr_available = True
     player._attr_powered = True
+    # the load the item ids in _report were served under
+    player.cloud_queue_item_generation = 1
     owner = Player(
         mass,
         player_id,
