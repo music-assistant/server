@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 
 from music_assistant_models.enums import ContentType
 
+from music_assistant.controllers.streams.constants import REALTIME_BURST
 from music_assistant.helpers.audio import create_streaming_wave_header
 from music_assistant.helpers.ffmpeg import DEFAULT_MP3_BIT_RATE
 
@@ -32,10 +33,11 @@ if TYPE_CHECKING:
 HEAD_SIZE: Final[int] = 1024 * 1024
 
 # Seconds of audio a file hands over ahead of playback, and how much of that one encode
-# gets. Every part a player asks for is paced like any other stream, so a player that
-# seeks often ends up at playback speed. See the usage policy.
+# gets: the burst of any other stream. Every part a player asks for is paced like any
+# other stream, so a player that seeks often ends up at playback speed. See the usage
+# policy.
 HEAD_START_PER_FILE: Final[int] = 30
-HEAD_START_PER_ENCODE: Final[int] = 10
+HEAD_START_PER_ENCODE: Final[int] = REALTIME_BURST
 
 # Seconds an encode starts before the part it is asked for. Filters in the chain (DSP, a
 # resampler) need that audio to settle, so the part comes out as it would in one pass. An

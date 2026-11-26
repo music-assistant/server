@@ -115,8 +115,9 @@ class PacingProfile(StrEnum):
     # (the flow stream) from running ever further ahead, which some receivers do not survive.
     # The burst is the cushion a player holds: at a session start, at a track boundary for a
     # player that fetches each track only once the previous download completes (Sonos), and
-    # after a stall, which the catch-up refills. It is sized for receivers that need a deep
-    # one: a Samsung Music Frame restarts its Cast service on 6 s.
+    # after a stall, which the catch-up refills. It also has to hold what a player wants
+    # before it starts to play: a Sonos speaker waits for about 130 KB, which is over three
+    # seconds of MP3.
     REALTIME = "realtime"
     # a single track for a player that must hold a whole opening chunk before it plays
     # gapless, see PlayerProtocol.needs_gapless_burst
@@ -126,8 +127,12 @@ class PacingProfile(StrEnum):
     LOW_LATENCY = "low_latency"
 
 
+# Seconds of audio a stream hands over at once before it settles on playback speed. A
+# track served as a file hands out the same for every part a player asks for.
+REALTIME_BURST: Final[int] = 6
+
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
-    PacingProfile.REALTIME: ("1.0", "10"),
+    PacingProfile.REALTIME: ("1.0", str(REALTIME_BURST)),
     PacingProfile.GAPLESS_BURST: ("1.1", "60"),
     PacingProfile.LOW_LATENCY: ("1.0", "1"),
 }
