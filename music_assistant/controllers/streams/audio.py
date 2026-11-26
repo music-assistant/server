@@ -15,7 +15,7 @@ import os
 import re
 import time
 from collections import OrderedDict, deque
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
 from functools import partial
@@ -4276,7 +4276,8 @@ class StreamsAudio:
 
         # the playback user's own music sources are steered to first, the ones they
         # may not use at all are dropped
-        allowed, preferred_providers = await playback_sources(mass, queue_item.queue_id)
+        sources = await playback_sources(mass, queue_item.queue_id)
+        allowed, preferred_providers = sources.allowed, sources.preferred
 
         # reuse if the buffer can serve this seek position (fast seek path)
         buffered = bool(
@@ -4288,8 +4289,11 @@ class StreamsAudio:
             queue_item.streamdetails
             # cached details of an excluded instance are exactly what we select away from
             and queue_item.streamdetails.provider not in excluded_provider_instances
-            # nor of a source that is no longer one of the playback user's
-            and self._may_serve_playback(queue_item.streamdetails.provider, allowed)
+            # nor of a source that is no longer one of the playback user's; an account that
+            # stepped in only keeps the item for as long as its audio is there
+            and self._may_serve_playback(
+                queue_item.streamdetails.provider, sources.usable if buffered else allowed
+            )
             and (
                 buffered
                 # or reuse if streamdetails hasn't expired yet (new buffer will be created)
@@ -4334,6 +4338,7 @@ class StreamsAudio:
                 allowed,
                 policy,
                 pinned=pinned,
+                stand_ins=sources.stand_ins,
             )
             if not candidates and allowed is not None:
                 # tell an item blocked by the user's music sources apart from one whose
@@ -4366,6 +4371,7 @@ class StreamsAudio:
                     allowed,
                     policy,
                     pinned=pinned,
+                    stand_ins=sources.stand_ins,
                 )
             streamdetails = await self._request_streamdetails(candidates, media_item)
 
@@ -4487,14 +4493,15 @@ class StreamsAudio:
         )
         # what left the queue's scope gives its audio, and the slot of its source, up first
         self.mass.player_queues.release_unneeded_audio(queue_item.queue_id)
-        allowed, preferred = await playback_sources(self.mass, queue_item.queue_id)
+        sources = await playback_sources(self.mass, queue_item.queue_id)
+        allowed, preferred = sources.allowed, sources.preferred
         all_candidate_instances = {
             provider.instance_id
             for mapping in (
                 queue_item.media_item.provider_mappings if queue_item.media_item else ()
             )
             if mapping.available
-            for provider in self._get_mapping_providers(mapping, allowed)
+            for provider in self._get_mapping_providers(mapping, sources.usable)
         }
         if initial_streamdetails is not None:
             all_candidate_instances.add(initial_streamdetails.provider)
@@ -4883,12 +4890,14 @@ class StreamsAudio:
         allowed: list[str] | None,
         policy: StreamSourcePolicy,
         pinned: tuple[str, str] | None = None,
+        stand_ins: Sequence[str] = (),
     ) -> list[tuple[ProviderMapping, Provider]]:
         """
         Return the mapping candidates that may serve a stream, in the order to try them.
 
         Every mapping is expanded to the instances that can resolve it; the stream source
-        ranking then orders the candidates.
+        ranking then orders the candidates. The accounts that step in follow all others, in
+        the order given.
 
         :param provider_mappings: Mappings attached to the media item.
         :param preferred_providers: Provider instances the playback user owns, tried first.
@@ -4896,21 +4905,29 @@ class StreamsAudio:
         :param allowed: Music sources the playback user may use, or None for all of them.
         :param policy: The source selection settings to rank under.
         :param pinned: The (provider instance, item id) the item is to be played from, if any.
+        :param stand_ins: Accounts that step in when none of the allowed sources can serve it.
         :return: Ordered provider mapping candidates.
         """
-        candidates = [
-            SourceCandidate(
-                mapping=mapping,
-                provider=provider,
-                is_streaming=isinstance(provider, MusicProvider) and provider.is_streaming_provider,
-            )
-            for mapping, provider in self.get_stream_candidates(
-                provider_mappings, allowed, excluded_provider_instances
-            )
-        ]
+        provider_mappings = list(provider_mappings)
         ranked = rank_stream_sources(
-            candidates, pinned=pinned, preferred=preferred_providers, policy=policy
+            self._get_source_candidates(provider_mappings, allowed, excluded_provider_instances),
+            pinned=pinned,
+            preferred=preferred_providers,
+            policy=policy,
         )
+        # ranked apart from the rest: no pin and no better copy puts one ahead of a closer source
+        for stand_in in stand_ins:
+            ranked += rank_stream_sources(
+                (
+                    candidate
+                    for candidate in self._get_source_candidates(
+                        provider_mappings, [stand_in], excluded_provider_instances
+                    )
+                    # a plugin provider is not narrowed, so it is among the others already
+                    if candidate.provider.instance_id == stand_in
+                ),
+                policy=policy,
+            )
         if ranked and self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(
                 "Stream source order: %s",
@@ -4921,6 +4938,30 @@ class StreamsAudio:
                 ),
             )
         return [(candidate.mapping, candidate.provider) for candidate in ranked]
+
+    def _get_source_candidates(
+        self,
+        provider_mappings: Iterable[ProviderMapping],
+        allowed: list[str] | None,
+        excluded_provider_instances: set[str],
+    ) -> list[SourceCandidate]:
+        """
+        Return the mappings of an item on the sources that may stream them, for the ranking.
+
+        :param provider_mappings: Mappings attached to the media item.
+        :param allowed: Music sources that may serve the stream, or None for all of them.
+        :param excluded_provider_instances: Provider instances unavailable to this attempt.
+        """
+        return [
+            SourceCandidate(
+                mapping=mapping,
+                provider=provider,
+                is_streaming=isinstance(provider, MusicProvider) and provider.is_streaming_provider,
+            )
+            for mapping, provider in self.get_stream_candidates(
+                provider_mappings, allowed, excluded_provider_instances
+            )
+        ]
 
     def _may_serve_playback(self, instance_id: str, allowed: list[str] | None) -> bool:
         """

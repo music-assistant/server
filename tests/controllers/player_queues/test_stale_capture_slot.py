@@ -22,6 +22,7 @@ from music_assistant_models.enums import CrossfadeMode, QueueOption, RepeatMode
 
 import music_assistant.controllers.streams.audio as audio_mod
 import music_assistant.models.music_provider as music_provider_mod
+from music_assistant.helpers.provider_access import PlaybackSources
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from tests.controllers.streams.stream_slot_rig import (
     OTHER_QUEUE_ID,
@@ -208,9 +209,9 @@ async def test_a_request_that_ended_before_it_took_the_source_leaves_nothing_beh
     access_resolved = asyncio.Event()
     connected = True
 
-    async def _slow_sources(*_args: object) -> tuple[None, list[str]]:
+    async def _slow_sources(*_args: object) -> PlaybackSources:
         await access_resolved.wait()
-        return None, []
+        return PlaybackSources(None, [])
 
     # the speaker asks for the prepared track, and its request is held up before it has the
     # source
@@ -223,7 +224,9 @@ async def test_a_request_that_ended_before_it_took_the_source_leaves_nothing_beh
         )
     )
     await asyncio.sleep(0)
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
+    monkeypatch.setattr(
+        audio_mod, "playback_sources", AsyncMock(return_value=PlaybackSources(None, []))
+    )
     new_next = rig.track("track 5")
     await rig.queues._enqueue_with_option(QUEUE_ID, [new_next], QueueOption.REPLACE_NEXT)
     connected = False

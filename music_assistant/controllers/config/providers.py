@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     ProviderSharing,
     ProviderType,
+    SharedPlayback,
 )
 from music_assistant_models.errors import (
     ActionUnavailable,
@@ -366,6 +367,7 @@ class ProviderConfigMixin:
         sharing: ProviderSharing,
         owner: str | None = None,
         shared_users: list[str] | None = None,
+        shared_playback: SharedPlayback | None = None,
     ) -> ProviderConfig:
         """
         Set who owns a music source and who else may use it.
@@ -373,12 +375,15 @@ class ProviderConfigMixin:
         An admin may set this for any music source; any other caller may only change the
         sharing of a source it owns. The owner and the users on the share list keep their
         place while their account is disabled. A source without an owner must be shared
-        with someone, as nobody could use it otherwise.
+        with someone, as nobody could use it otherwise, and an account without an owner can
+        not be kept to its owner.
 
         :param instance_id: The music source (provider instance) to set the access of.
         :param sharing: Who, besides its owner, may use the source.
         :param owner: User id of the member owning the source, None for a source of the whole home.
         :param shared_users: The user ids the source is shared with, SELECTED sharing only.
+        :param shared_playback: When an account of a streaming service plays for the users it
+            is shared with, None to leave that as it is.
         """
         raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
         if not raw_conf:
@@ -430,7 +435,19 @@ class ProviderConfigMixin:
                 "A music source without an owner must be shared with someone",
                 translation_key="source_no_owner_must_be_shared",
             )
-        access = ProviderAccess(owner=owner, sharing=sharing, shared_users=shared)
+        if shared_playback is None:
+            shared_playback = current.shared_playback if current else SharedPlayback.WITHOUT_OWN
+        if owner is None and shared_playback == SharedPlayback.NEVER:
+            raise InvalidDataError(
+                "A music source without an owner must play for the users it is shared with",
+                translation_key="source_no_owner_must_play",
+            )
+        access = ProviderAccess(
+            owner=owner,
+            sharing=sharing,
+            shared_users=shared,
+            shared_playback=shared_playback,
+        )
         self.set(f"{CONF_PROVIDERS}/{instance_id}/access", access.to_dict())
         self.save(immediate=True)
         provider = self.mass.get_provider(instance_id, return_unavailable=True)

@@ -268,6 +268,7 @@ async def test_member_creates_a_music_source_of_its_own(flow_mass: MusicAssistan
         "owner": "member",
         "sharing": "private",
         "shared_users": [],
+        "shared_playback": "without_own",
     }
 
 

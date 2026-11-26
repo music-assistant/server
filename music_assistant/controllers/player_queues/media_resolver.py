@@ -1216,7 +1216,7 @@ class MediaResolver:
         """
         # not the queue's user: the queue takes on the playback user once the play is resolved
         user = await self.mass.webserver.auth.get_user(userid) if userid else None
-        allowed, preferred = playback_sources_for(self.mass, user)
+        allowed, preferred, _ = playback_sources_for(self.mass, user)
         providers: dict[str, MusicProvider] = {}
         served_by: dict[str, dict[str, tuple[Track, ProviderMapping]]] = {}
         # an account's own listing counts first, then the listings it plays in place of

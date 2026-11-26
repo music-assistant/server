@@ -9,6 +9,7 @@ import pytest
 
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.storage.backends import mountinfo
+from music_assistant.helpers.provider_access import PlaybackSources
 from tests.controllers.streams.stream_slot_rig import SingleStreamProvider, SlotRig
 
 if TYPE_CHECKING:
@@ -38,7 +39,9 @@ async def rig(
     :param request: Pytest request, with the provider class as its param, if any.
     :param monkeypatch: Pytest monkeypatch fixture.
     """
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
+    monkeypatch.setattr(
+        audio_mod, "playback_sources", AsyncMock(return_value=PlaybackSources(None, []))
+    )
     rig = SlotRig(getattr(request, "param", SingleStreamProvider))
     yield rig
     await rig.close()

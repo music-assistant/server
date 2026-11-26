@@ -31,7 +31,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
 )
-from music_assistant.helpers.provider_access import visible_playback_sources
+from music_assistant.helpers.provider_access import playback_sources_for
 from music_assistant.models.music_provider import (
     MusicProvider,
     ProviderStreamHeldError,
@@ -220,12 +220,12 @@ class StreamFeederMixin(_PlayerQueuesBase):
         :raises ProviderStreamLimitError: When no source the user may play the item from has a
             free slot.
         """
-        allowed = visible_playback_sources(self.mass, user)
+        sources = playback_sources_for(self.mass, user)
         refusal: ProviderStreamLimitError | None = None
         for mapping in media_item.provider_mappings:
             if not mapping.available:
                 continue
-            for provider in self.mass.streams.audio.get_stream_providers(mapping, allowed):
+            for provider in self.mass.streams.audio.get_stream_providers(mapping, sources.usable):
                 try:
                     self.refuse_held_stream_slot(provider.instance_id, queue_id)
                 except ProviderStreamLimitError as err:
@@ -234,7 +234,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     return
         # the stream itself may still find the item on a streaming provider it has no mapping on
         if refusal is not None and not self.mass.streams.audio.has_alternative_match_providers(
-            media_item, allowed
+            media_item, sources.allowed
         ):
             raise refusal
 
