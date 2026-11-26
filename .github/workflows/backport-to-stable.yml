@@ -7,25 +7,39 @@ on:
   push:
     branches:
       - dev
-  pull_request_target:
-    types: [labeled]
-    branches:
-      - dev
+  # A label added after the merge, through the "PR event" workflow.
+  workflow_run:
+    workflows: [PR event]
+    types: [completed]
 
 # Every run appends to the same backport branch, so runs must not overlap.
+# "PR event" runs for anything but this label do nothing and stay out of the queue.
 concurrency:
-  group: backport-to-stable
+  group: >-
+    ${{ (github.event_name != 'workflow_run'
+    || github.event.workflow_run.display_title == 'labeled backport-to-stable')
+    && 'backport-to-stable' || format('noop-{0}', github.run_id) }}
   cancel-in-progress: false
   queue: max
 
 jobs:
   find:
     name: Find merged PRs with 'backport-to-stable' label
-    if: github.repository == 'music-assistant/server'
+    if: >-
+      github.repository == 'music-assistant/server'
+      && (github.event_name != 'workflow_run'
+      || github.event.workflow_run.display_title == 'labeled backport-to-stable')
     runs-on: ubuntu-latest
     outputs:
       prs: ${{ steps.prs.outputs.result }}
     steps:
+      - name: Check out the PR lookup
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - name: Resolve merged PRs for this event
         id: prs
         uses: actions/github-script@v9
@@ -78,16 +92,16 @@ jobs:
               if (unconfirmed.length) {
                 core.setFailed(`Could not confirm the merge of labelled ${unconfirmed.join(', ')}, backport manually`);
               }
-            } else if (context.payload.label?.name === label) {
-              const { data: pr } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
+            } else if (context.eventName === 'workflow_run') {
+              const { findPullRequest } = require(
+                `${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-event.cjs`);
+              const pr = await findPullRequest({
+                github, context, core, base: 'dev', state: 'closed',
               });
-              if (wanted(pr)) {
+              if (pr && wanted(pr)) {
                 result.push(entry(pr));
               } else {
-                console.log('PR is not merged yet, skipping backport');
+                console.log('No merged PR found for this label, skipping backport');
               }
             }
 

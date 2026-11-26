@@ -7,24 +7,19 @@ name: PR Checks
 # title has to be rewritten at release time, and a body that replaced the template drops the rest
 # silently. Both are checked here, and reported to the author as one comment.
 #
-# Deliberately not a merge blocker — add it to branch protection only if that changes. It runs on
-# pull_request_target so the musicassistant-bot comment also works on pull requests from forks,
-# and so the checks themselves can't be weakened by the branch under review; only the base branch
-# is ever checked out, never the contributor's code.
+# Deliberately not a merge blocker. The result reaches the pull request as the "PR Checks" commit
+# status. It runs from `dev` after the "PR event" workflow so the musicassistant-bot comment also
+# works on pull requests from forks, and so the checks themselves can't be weakened by the branch
+# under review. The title and description are read through the API and only `dev` is ever checked
+# out, never the contributor's code.
 
 # yamllint disable-line rule:truthy
 on:
-  pull_request_target:
-    types:
-      - opened
-      - edited
-      - reopened
-      - ready_for_review
-    branches:
-      - dev
+  workflow_run:
+    workflows: [PR event]
+    types: [completed]
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   EXPECTED_APP_SLUG: musicassistant-bot
@@ -36,34 +31,58 @@ jobs:
   check_pull_request:
     name: Verify
     runs-on: ubuntu-latest
-    # GitHub-typed bots (Dependabot, musicassistant-bot[bot], etc.) generate their own titles and
-    # don't use the template.
-    if: github.event.pull_request.user.type != 'Bot'
+    permissions:
+      contents: read
+      statuses: write
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{
+        github.event.workflow_run.head_branch }}-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: true
     steps:
-      - name: ⤵️ Check out the base branch
+      - name: ⤵️ Check out dev
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
+          sparse-checkout: |
+            .github
+            scripts
           persist-credentials: false
+
+      - name: 🔎 Find the pull request
+        id: pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const { findPullRequest } = require(
+              `${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-event.cjs`);
+            const pr = await findPullRequest({ github, context, core, base: 'dev' });
+            // GitHub-typed bots (Dependabot, musicassistant-bot[bot], etc.) generate their own
+            // titles and don't use the template.
+            if (!pr || pr.user.type === 'Bot') {
+              return;
+            }
+            fs.writeFileSync('title.txt', pr.title);
+            fs.writeFileSync('body.md', pr.body || '');
+            core.setOutput('number', pr.number);
+            core.setOutput('author', pr.user.login);
+            core.setOutput('head_sha', pr.head.sha);
 
       - name: 📝 Check the title and description
         id: check
+        if: steps.pr.outputs.number
         continue-on-error: true
-        env:
-          # Passed via env, never inlined into the script: both are untrusted input.
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          printf '%s' "$PR_BODY" > body.md
           # The status is captured rather than piped through tee: the next step needs the
           # report file even when the check fails, and a pipeline would swallow the exit code.
           status=0
-          python3 -m scripts.check_pr_metadata --title "$PR_TITLE" < body.md > report.md || status=$?
+          python3 -m scripts.check_pr_metadata --title "$(cat title.txt)" < body.md > report.md || status=$?
           cat report.md
           exit "$status"
 
       - name: 🔑 Create musicassistant-bot token
         id: bot_token
+        if: steps.pr.outputs.number
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
@@ -73,6 +92,7 @@ jobs:
           permission-pull-requests: write
 
       - name: 🤖 Verify GitHub App identity
+        if: steps.pr.outputs.number
         env:
           APP_SLUG: ${{ steps.bot_token.outputs.app-slug }}
           INSTALLATION_ID: ${{ steps.bot_token.outputs.installation-id }}
@@ -84,18 +104,21 @@ jobs:
           fi
 
       - name: 💬 Tell the author what's missing
+        if: steps.pr.outputs.number
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           CHECK_OUTCOME: ${{ steps.check.outcome }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_AUTHOR: ${{ steps.pr.outputs.author }}
         with:
           github-token: ${{ steps.bot_token.outputs.token }}
           script: |
             const fs = require('fs');
             const marker = process.env.STICKY_MARKER;
             const failed = process.env.CHECK_OUTCOME === 'failure';
-            const author = context.payload.pull_request.user.login;
+            const author = process.env.PR_AUTHOR;
             const { owner, repo } = context.repo;
-            const issue_number = context.payload.pull_request.number;
+            const issue_number = Number(process.env.PR_NUMBER);
 
             // One sticky comment, edited in place: an "edited" event fires on every title or
             // description change, and a fresh comment each time would be spam. Matched on author
@@ -139,8 +162,22 @@ jobs:
               });
             }
 
-      - name: 🚦 Report the check result
-        if: steps.check.outcome == 'failure'
-        run: |
-          echo "The title or description needs a fix — see the comment on the pull request." >&2
-          exit 1
+      - name: 🚦 Report the check result on the pull request
+        if: steps.pr.outputs.number
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        with:
+          script: |
+            const failed = process.env.CHECK_OUTCOME === 'failure';
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: process.env.HEAD_SHA,
+              state: failed ? 'failure' : 'success',
+              context: 'PR Checks',
+              description: failed
+                ? 'The title or description needs a fix, see the comment on the pull request'
+                : 'The title and description are good to go',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });

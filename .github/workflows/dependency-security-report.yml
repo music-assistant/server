@@ -28,22 +28,17 @@
 #             already exist there are reported but never gate the PR
 #             (NOT overridable via /approve-dependencies; requires a re-run or fix)
 #
-# The `init` job runs on `pull_request_target` for EVERY PR (the analysis
+# The `init` job runs after the "PR event" workflow for EVERY PR (the analysis
 # workflow is path-filtered, so without it non-dependency PRs would never
-# receive the required status). It is safe despite the privileged trigger
-# because it never checks out or executes PR code — it only calls the API.
+# receive the required status). It is safe despite its write access because it
+# never checks out or executes PR code. It only calls the API.
 
 name: Dependency Security Report
 
 on:
   workflow_run:
-    workflows: ["Dependency Security Check"]
+    workflows: ["Dependency Security Check", "PR event"]
     types: [completed]
-  pull_request_target:
-    types: [opened, synchronize, reopened]
-    branches:
-      - stable
-      - dev
 
 permissions:
   contents: read
@@ -52,21 +47,38 @@ jobs:
   # Seed the commit status for every PR so the required check never hangs in
   # "Expected": success for PRs without dependency changes, pending for PRs
   # that will be analysed. The report job later posts the final state.
-  # SECURITY: privileged trigger, but no checkout — API calls only.
+  # SECURITY: write access, but only this repository's own scripts are checked
+  # out and the PR is read through the API.
   init:
-    if: github.event_name == 'pull_request_target'
+    # workflow_run.name holds the run name of "PR event" (actions/runner#4141), so match the file path.
+    if: >-
+      github.event.workflow_run.path == '.github/workflows/pr-event.yml'
+      && (startsWith(github.event.workflow_run.display_title, 'opened')
+      || startsWith(github.event.workflow_run.display_title, 'synchronize')
+      || startsWith(github.event.workflow_run.display_title, 'reopened'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
       statuses: write
     steps:
+      - name: Check out the PR lookup
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - name: Post initial commit status
         uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;
-            const pr = context.payload.pull_request;
+            const { findPullRequest } = require(
+              `${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-event.cjs`);
+            const pr = await findPullRequest({ github, context, core });
+            if (!pr || !['dev', 'stable'].includes(pr.base.ref)) {
+              return;
+            }
 
             // Gate only on actual dependency changes, mirroring the analysis
             // workflow: added/modified lines in requirements_all.txt, or a
@@ -106,6 +118,13 @@ jobs:
               }
             }
 
+            // The report may already have posted the final state for this commit.
+            const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
+              owner, repo, ref: pr.head.sha, per_page: 100,
+            });
+            if (statuses.some(s => s.context === 'Dependency Security Review')) {
+              return;
+            }
             await github.rest.repos.createCommitStatus({
               owner, repo, sha: pr.head.sha,
               state: depsChanged ? 'pending' : 'success',
@@ -118,7 +137,9 @@ jobs:
   report:
     # Only report for runs triggered by pull requests, so a workflow_run whose
     # originating event was a push/merge can never post a status.
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request'
+    if: >-
+      github.event.workflow_run.path == '.github/workflows/dependency-security.yml'
+      && github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
