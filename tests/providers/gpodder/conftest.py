@@ -33,6 +33,10 @@ def provider() -> GPodder:
     mass.music.mark_item_played = AsyncMock()
     mass.music.mark_item_unplayed = AsyncMock()
     mass.cache.set = AsyncMock()
+    # a cold cache, so every lookup asks the server
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    mass.cache.delete = AsyncMock()
+    mass.cache.delete_prefix = AsyncMock()
     config = Mock(instance_id="gpodder--test")
     config.get_value.side_effect = lambda key, default=None: {"log_level": "INFO"}.get(key, default)
     provider = GPodder(mass, Mock(domain="gpodder"), config, SUPPORTED_FEATURES)
