@@ -1521,6 +1521,32 @@ async def test_a_device_level_goes_back_exactly_as_the_device_reported_it(
     assert airplay_player._attr_volume_level == 5
 
 
+@pytest.mark.asyncio
+async def test_a_new_level_one_step_away_right_after_a_command_goes_back(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Every new level the device reports goes back, also one step away right after a command.
+
+    A Sonos turned up step by step asks for each level in turn; a level left out stays
+    unapplied, so a sweep would stop at its first step.
+    """
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 5
+    airplay_player.last_command_sent = time.time()
+    stream = MagicMock(running=True, send_cli_command=AsyncMock())
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    airplay_player.update_volume_from_device(6, -28.2)
+    while adoptions:
+        await adoptions.pop()
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME_DB=-28.200000")
+    assert airplay_player._attr_volume_level == 6
+
+
 def test_release_foreign_mute_latch_clears_mute_owned_by_other_control(
     airplay_player: AirPlayPlayer,
 ) -> None:
