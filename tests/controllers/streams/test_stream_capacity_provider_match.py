@@ -123,7 +123,7 @@ def _mass(
     mass.providers = list(providers.values())
     mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
-    mass.player_queues.has_paused_stream_slot_holder.return_value = False
+    mass.player_queues.has_stream_slot_to_take_over.return_value = False
     mass.player_queues.refuse_held_stream_slot.return_value = None
     if access is not None:
         mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
