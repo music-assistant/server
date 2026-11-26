@@ -466,6 +466,15 @@ class SyncGroupPlayer(PlayerProtocol):
             return
         await self._dissolve_syncgroup()
 
+    async def hold(self) -> None:
+        """
+        Silence the group while what it plays is paused, keeping its members together.
+
+        A play_media plays on with the same members.
+        """
+        if session := self._active_session_protocol():
+            await session.hold()
+
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
         # a source the leader plays itself is resumed on the leader, not streamed by us
@@ -1365,7 +1374,8 @@ class SyncGroupPlayer(PlayerProtocol):
         # back through our own state derivation (group → leader's state →
         # active_group=group → group). For those two we MUST use the leader's
         # raw attributes. ``playback_state`` / ``elapsed_time`` do not route via
-        # active_group and are safe to read from the leader's final values.
+        # active_group and are safe to read from the leader's final values; the leader
+        # does show the pause of the group, which Player.set_fake_paused accounts for.
         if (sync_leader := self.sync_leader) is None:
             # no sync leader, reset playback-related attributes to default values
             self._attr_playback_state = PlaybackState.IDLE
@@ -1484,7 +1494,9 @@ class SyncGroupPlayer(PlayerProtocol):
         # the leader leaves the group either way, so one that dropped off the network
         # (or fails to stop) must not abort the dissolve that follows
         try:
-            if wait_for_update:
+            # a silent leader, such as one held for a pause, reports nothing new on the stop
+            output = leader.resolve_output_protocol() or leader.device_protocol
+            if wait_for_update and output and output.playback_state != PlaybackState.IDLE:
                 async with self.mass.players.wait_for_player_update(leader.player_id, timeout=5):
                     await self.mass.players._handle_cmd_stop(leader.player_id)
             else:

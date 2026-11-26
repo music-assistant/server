@@ -840,11 +840,11 @@ def _shows_fake_pause(
         or inputs.powered is False
     ):
         return False
-    if synced_to:
-        # the output of a synced player stopped along with that of its leader
-        sync_parent = inputs.peers.get(synced_to)
-        return sync_parent is not None and sync_parent.fake_paused
-    return inputs.fake_paused and not active_group
+    if holder := active_group or synced_to:
+        # the output of a member stopped along with that of its group or leader
+        parent = inputs.peers.get(holder)
+        return parent is not None and parent.fake_paused
+    return inputs.fake_paused
 
 
 def _active_source(

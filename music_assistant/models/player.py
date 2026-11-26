@@ -1701,6 +1701,11 @@ class Player:
         if self._fake_paused != value:
             self._fake_paused = value
             self.update_state()
+            # a group that reads its state from its leader shows the same state until the
+            # leader, which shows the pause of the group, is updated as well
+            for member_id in self.group_members:
+                if member_id != self.player_id:
+                    self.mass.players.trigger_player_update(member_id)
 
     @property
     def fake_pause_ending(self) -> bool:
