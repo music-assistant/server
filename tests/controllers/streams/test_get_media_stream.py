@@ -1108,7 +1108,7 @@ async def test_ffmpeg_error_path_prefers_source_failure(
 async def test_get_media_stream_adds_realtime_pacing_for_audio_source(
     patch_ffmpeg: type[_FakeFFMpeg],
 ) -> None:
-    """A live AudioSource gets realtime pacing and a small initial burst."""
+    """A live AudioSource gets realtime pacing with a small initial burst of headroom."""
     audio = _make_audio_controller()
     await _drain(audio.get_media_stream(_flac_streamdetails(), _make_pcm_format()))
 

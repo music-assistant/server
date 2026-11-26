@@ -138,7 +138,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.constants import PlaylistPlayableItem
     from music_assistant.controllers.music.recency import RecencyWindows
-    from music_assistant.controllers.players.audio_sources import AudioSourceSession
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.helpers.json import SerializableType
     from music_assistant.models.player import Player
@@ -1720,9 +1719,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         # determine if this queue is currently active for this player
         queue.active = player.active_source in (queue.queue_id, None)
-        if not queue.active and player.playback_state == PlaybackState.PAUSED:
-            # a live source paused on the player is stopped at the queue's pause timeout
-            self._start_source_pause_watch(player)
         if not queue.active and self._queue_data[queue_id].prev_state is None:
             queue.state = PlaybackState.IDLE
             # return early if the queue is not active and we have no previous state
@@ -3586,59 +3582,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         else:
             # the queue stopped at the pause already, only its sleep timer is left to end
             self._clear_sleep_timer(queue_id)
-
-    def _start_source_pause_watch(self, player: Player) -> None:
-        """
-        Stop a player paused on a live source once the pause outlasts the pause timeout.
-
-        Does nothing while the player has a watcher already, or plays no live source.
-
-        :param player: The player whose live source paused.
-        """
-        # a player shown as paused while stopped ends that pause at the timeout itself
-        if player.fake_paused:
-            return
-        if (session := self.mass.players.get_audio_source_session(player.player_id)) is None:
-            return
-        task_id = f"watch_source_pause_{player.player_id}"
-        self.mass.create_task(
-            self._watch_source_pause(player, session), task_id=task_id, task_name=task_id
-        )
-
-    async def _watch_source_pause(self, player: Player, session: AudioSourceSession) -> None:
-        """
-        Stop the player once its pause on a live source outlasts the pause timeout.
-
-        The source stays selected, as it does when its own pause stops the player, so it can
-        play on the player again later. Returns once the player plays again or the source is no
-        longer the one it played.
-
-        :param player: The player whose live source paused.
-        :param session: The source session that was paused.
-        """
-        playback_session_id = session.playback_session_id
-
-        def _is_paused() -> bool:
-            return (
-                player.playback_state == PlaybackState.PAUSED
-                and self.mass.players.get_audio_source_session(player.player_id) is session
-                and session.playback_session_id == playback_session_id
-            )
-
-        count = 0
-        pause_timeout = self._get_pause_timeout()
-        while _is_paused() and count < pause_timeout:
-            count += 1
-            await asyncio.sleep(1)
-        if not _is_paused():
-            return
-        self.logger.info(
-            "Stopping %s after a pause of %s seconds on %s",
-            player.name,
-            pause_timeout,
-            session.source_id,
-        )
-        await self.mass.players.cmd_stop(player.player_id)
 
     def _resync_position(self, queue_id: str) -> None:
         """

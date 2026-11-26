@@ -1891,6 +1891,47 @@ async def test_synced_child_pause_parks_session(airplay_player: AirPlayPlayer) -
     send_cmd.assert_not_called()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grouped", [False, True])
+async def test_hold_parks_the_session(airplay_player: AirPlayPlayer, grouped: bool) -> None:
+    """A paused live source parks the session, of a single speaker as well as of a group."""
+    airplay_player._attr_group_members = ["test_player", "child"] if grouped else []
+    send_cmd = _setup_running_stream(airplay_player)
+    assert airplay_player.stream is not None
+    session = cast("MagicMock", airplay_player.stream.session)
+    session.standby = AsyncMock(return_value=True)
+
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.hold()
+
+    session.standby.assert_awaited_once()
+    mock_stop.assert_not_called()
+    send_cmd.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_hold_stops_a_session_that_cannot_be_parked(airplay_player: AirPlayPlayer) -> None:
+    """A speaker that lost its connection is stopped instead of parked."""
+    _setup_running_stream(airplay_player)
+    assert airplay_player.stream is not None
+    session = cast("MagicMock", airplay_player.stream.session)
+    session.standby = AsyncMock(return_value=False)
+
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.hold()
+
+    mock_stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_hold_stops_a_player_without_a_session(airplay_player: AirPlayPlayer) -> None:
+    """A player that streams nothing has no session to park, so it is stopped."""
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.hold()
+
+    mock_stop.assert_called_once()
+
+
 # --- Automatic group re-join after unexpected stream loss ---
 
 

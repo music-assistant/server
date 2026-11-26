@@ -724,7 +724,10 @@ keeps the way they are combined with the other protocols of the device stable.
    individually, so they can resume sample-aligned; a member that has lost its
    connection falls back to stop. The park belongs to the session rather than to
    the group membership, so breaking up a paused group leaves the remaining
-   player parked, and only a queue-driven re-anchor revives it
+   player parked, and only a queue-driven re-anchor revives it. A paused live
+   source (such as Spotify Connect) parks the session the same way, for a single
+   speaker too (`hold()`), so the speaker stays connected until it plays on or
+   the pause timeout stops it
 3. **HomePod power control**: Current HomePod firmware does not advertise
    Companion PIN pairing, so explicit power/wake control is unavailable
 4. **Apple TV artwork for non-public images**: Cover art only reachable through

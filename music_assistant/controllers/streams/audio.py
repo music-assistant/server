@@ -13,17 +13,9 @@ import html
 import logging
 import os
 import re
-import signal
 import time
 from collections import OrderedDict, deque
-from collections.abc import (
-    AsyncGenerator,
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Iterable,
-    Sequence,
-)
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
 from functools import partial
@@ -222,11 +214,7 @@ from music_assistant.helpers.util import (
     parse_title_and_version,
     remove_file,
 )
-from music_assistant.models.media_capabilities import (
-    AudioSourceMixin,
-    AudioStreamMixin,
-    SourcePause,
-)
+from music_assistant.models.media_capabilities import AudioStreamMixin
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
@@ -275,23 +263,6 @@ FADE_WAIT_SLICE_MS = 250
 # Chunk size for the realtime AudioSource path; small enough to keep ffmpeg→consumer
 # latency below ~50 ms while still amortising per-chunk overhead.
 AUDIO_SOURCE_CHUNK_SECONDS = 0.02
-
-# Silence fed in realtime while a live source is paused on purpose, so the player
-# never starves and keeps its buffer and clock for the resume.
-PAUSED_SOURCE_SILENCE_SECONDS = 0.1
-# How often a pending read of a source that delivered audio checks for a pause
-# starting or ending, so silence starts with the pause and the stall timeout
-# restarts in full with the resume.
-PAUSED_SOURCE_HOLD_POLL_SECONDS = 0.25
-
-# How far a live source may be read ahead of the time its stream has played. A
-# live source counts audio as played when it is read, so anything read beyond
-# this runs its clock ahead of what is heard. Spotify Connect (Soloist) runs
-# about 0.5 s ahead on its own; a cap it reaches holds its reads back, which
-# makes the player crackle and leaves its pipe full of audio it already counted.
-LIVE_SOURCE_READ_AHEAD_SECONDS = 2.0
-# How often a live source is checked for a pause, to freeze its reader in time.
-LIVE_SOURCE_PAUSE_POLL_SECONDS = 0.02
 
 MP3_SEEK_HINTS_CACHE_SIZE = 64
 MP3_SEEK_PROBE_RETRY_SECONDS = 60
@@ -932,198 +903,6 @@ class _SourceAnalysisTap:
         self._logger.warning(
             "Audio analysis of this source failed, it plays on without it: %s", err, exc_info=err
         )
-
-
-class _SourceChunkReader:
-    """Read a source's chunks, filling a deliberate pause of a live source with silence."""
-
-    def __init__(
-        self,
-        chunk_iter: AsyncIterator[bytes],
-        get_pause: Callable[[], SourcePause],
-        pcm_format: AudioFormat,
-        pacer: _LiveSourcePacer | None = None,
-    ) -> None:
-        """
-        Initialize the reader.
-
-        :param chunk_iter: The source's chunk iterator.
-        :param get_pause: Returns how the source holds its audio while paused on purpose.
-        :param pcm_format: PCM format of the chunks, used to size the silence.
-        :param pacer: Holds a live source to real time; the chunks are read through it.
-        """
-        self._pacer = pacer
-        self._chunk_iter = pacer.pace(chunk_iter) if pacer else chunk_iter
-        self._get_pause = get_pause
-        self._silence = (
-            b"\x00" * calculate_content_length(pcm_format, PAUSED_SOURCE_SILENCE_SECONDS)
-            if pcm_format.content_type.is_pcm()
-            else b""
-        )
-        self._pending: asyncio.Future[bytes] | None = None
-
-    async def read(self, timeout: float, delivered_audio: bool) -> bytes | None:
-        """
-        Return the next chunk, silence while the source is paused, or None once it ended.
-
-        :param timeout: Seconds the source may stay silent before it is stalled.
-        :param delivered_audio: Whether the source delivered audio before.
-        :raises AudioError: If the source stalled.
-        """
-        if self._pending is None:
-            self._pending = asyncio.ensure_future(anext(self._chunk_iter))
-        try:
-            return await self._wait_for_chunk(timeout, delivered_audio)
-        except BaseException:
-            await self.close()
-            raise
-
-    async def close(self) -> None:
-        """Cancel a read still pending, and stop pacing the source."""
-        pending, self._pending = self._pending, None
-        if pending is not None and not pending.done():
-            pending.cancel()
-            with suppress(asyncio.CancelledError, StopAsyncIteration):
-                await pending
-        if self._pacer is not None:
-            await self._pacer.close()
-
-    async def _wait_for_chunk(self, timeout: float, delivered_audio: bool) -> bytes | None:
-        assert self._pending is not None  # for type checking
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            pause = self._pause(delivered_audio)
-            if pause is not SourcePause.NONE:
-                # the stall timeout only runs while the source plays
-                deadline = loop.time() + timeout
-            if pause is SourcePause.FILL_SILENCE and self._silence:
-                wait_s = PAUSED_SOURCE_SILENCE_SECONDS
-            else:
-                # a source that delivered audio can pause during the read: it is
-                # checked again in slices, so its silence and paused time count
-                wait_s = max(0, deadline - loop.time())
-                if delivered_audio:
-                    wait_s = min(wait_s, PAUSED_SOURCE_HOLD_POLL_SECONDS)
-            if (await asyncio.wait({self._pending}, timeout=wait_s))[0]:
-                pending, self._pending = self._pending, None
-                try:
-                    return pending.result()
-                except StopAsyncIteration:
-                    return None
-            # The read is left pending, not cancelled: a source paused on purpose
-            # keeps its stream and resumes on this same read.
-            pause = self._pause(delivered_audio)
-            if pause is SourcePause.FILL_SILENCE and self._silence:
-                return self._silence
-            if pause is not SourcePause.NONE or loop.time() < deadline:
-                continue
-            raise AudioError(f"Source stalled: no audio for {timeout}s")
-
-    def _pause(self, delivered_audio: bool) -> SourcePause:
-        # only a source that delivered audio before can be paused
-        return self._get_pause() if delivered_audio else SourcePause.NONE
-
-
-class _LiveSourcePacer:
-    """
-    Hold a live source's reads to real time, and freeze its reader while it is paused.
-
-    A live source such as Spotify Connect counts audio as played when it is read.
-    ffmpeg's ``-readrate`` clock runs on through a pause, so after a resume ffmpeg
-    reads ahead to catch up, and on a pause it keeps draining what the source
-    already wrote, which the source refills (and counts) the moment it resumes.
-    Either way the source's clock ends up ahead of what is heard, a little more
-    on every pause. The pacer caps the read-ahead against the time the stream has
-    actually played, and stops ffmpeg (SIGSTOP) while the source is paused.
-    """
-
-    def __init__(
-        self,
-        ffmpeg_proc: FFMpeg,
-        get_pause: Callable[[], SourcePause],
-        pcm_format: AudioFormat,
-    ) -> None:
-        """
-        Initialize the pacer.
-
-        :param ffmpeg_proc: The started ffmpeg process reading the source.
-        :param get_pause: Returns how the source is paused right now.
-        :param pcm_format: The PCM format the chunks are in.
-        """
-        self._ffmpeg = ffmpeg_proc
-        self._get_pause = get_pause
-        self._bytes_per_second = calculate_content_length(pcm_format, 1)
-        self._delivered = 0
-        self._started: float | None = None
-        self._paused_total = 0.0
-        self._paused_since: float | None = None
-        self._frozen = False
-        self._watch_task: asyncio.Task[None] | None = None
-
-    def start(self) -> None:
-        """Start watching the source for pauses."""
-        self._watch_task = asyncio.create_task(self._watch())
-
-    async def pace(self, chunks: AsyncIterator[bytes]) -> AsyncGenerator[bytes]:
-        """
-        Yield the chunks, holding back any that would run ahead of real time.
-
-        :param chunks: The source's PCM chunks.
-        """
-        loop = asyncio.get_running_loop()
-        async for chunk in chunks:
-            self._delivered += len(chunk)
-            if self._started is None:
-                self._started = loop.time() - len(chunk) / self._bytes_per_second
-            while (ahead := self._read_ahead(loop.time())) > 0.005:
-                await asyncio.sleep(min(ahead, 0.05))
-            yield chunk
-
-    async def close(self) -> None:
-        """Stop watching, and let a frozen reader run again so it can be torn down."""
-        if self._watch_task is not None:
-            self._watch_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._watch_task
-            self._watch_task = None
-        if self._frozen:
-            self._signal(signal.SIGCONT)
-            self._frozen = False
-
-    def _read_ahead(self, now: float) -> float:
-        """Return how far the delivered audio runs ahead of the allowed read-ahead."""
-        assert self._started is not None
-        paused = self._paused_total
-        if self._paused_since is not None:
-            paused += now - self._paused_since
-        played = now - self._started - paused
-        delivered = self._delivered / self._bytes_per_second
-        return delivered - played - LIVE_SOURCE_READ_AHEAD_SECONDS
-
-    async def _watch(self) -> None:
-        loop = asyncio.get_running_loop()
-        while True:
-            # before the first audio nothing was counted as played yet: a pause then
-            # neither freezes the reader nor counts as paused time
-            paused = self._started is not None and self._get_pause() is not SourcePause.NONE
-            if paused != self._frozen:
-                now = loop.time()
-                if paused:
-                    self._paused_since = now
-                elif self._paused_since is not None:
-                    self._paused_total += now - self._paused_since
-                    self._paused_since = None
-                self._signal(signal.SIGSTOP if paused else signal.SIGCONT)
-                self._frozen = paused
-            await asyncio.sleep(LIVE_SOURCE_PAUSE_POLL_SECONDS)
-
-    def _signal(self, sig: signal.Signals) -> None:
-        proc = self._ffmpeg.proc
-        if proc is None or self._ffmpeg.returncode is not None:
-            return
-        with suppress(ProcessLookupError):
-            os.kill(proc.pid, sig)
 
 
 class StreamsAudio:
@@ -5678,12 +5457,7 @@ class StreamsAudio:
             and "-re" not in extra_input_args
             and "-readrate" not in extra_input_args
         ):
-            extra_input_args += [
-                "-readrate",
-                "1",
-                "-readrate_initial_burst",
-                "0.5",
-            ]
+            extra_input_args += ["-readrate", "1", "-readrate_initial_burst", "0.5"]
 
         # skip a remote MP3's ID3 tag on every launch and handle seek support
         ffmpeg_seek_position = 0
@@ -5726,7 +5500,6 @@ class StreamsAudio:
             verify_ssl=streamdetails.verify_ssl,
         )
 
-        reader: _SourceChunkReader | None = None
         try:
             await ffmpeg_proc.start()
             assert ffmpeg_proc.proc is not None  # for type checking
@@ -5748,21 +5521,19 @@ class StreamsAudio:
                 )
             stream_start = mass.loop.time()
             chunk_size = calculate_content_length(pcm_format, chunk_seconds)
-            get_pause = partial(self._get_source_pause, streamdetails)
-            reader = _SourceChunkReader(
-                ffmpeg_proc.iter_chunked(chunk_size),
-                get_pause,
-                pcm_format,
-                self._start_live_source_pacer(streamdetails, ffmpeg_proc, get_pause, pcm_format),
-            )
+            chunk_iter = ffmpeg_proc.iter_chunked(chunk_size)
             while True:
                 # Time the read, not the yield: catches a stalled source, ignores backpressure.
                 read_timeout = (
                     STREAM_START_TIMEOUT if not first_chunk_received else STREAM_STALL_TIMEOUT
                 )
-                chunk = await reader.read(read_timeout, first_chunk_received)
-                if chunk is None:
+                try:
+                    async with asyncio.timeout(read_timeout):
+                        chunk = await anext(chunk_iter)
+                except StopAsyncIteration:
                     break
+                except TimeoutError as err:
+                    raise AudioError(f"Source stalled: no audio for {read_timeout}s") from err
                 if not first_chunk_received:
                     # At this point ffmpeg has started and should now know the codec used
                     # for encoding the audio.
@@ -5826,8 +5597,6 @@ class StreamsAudio:
             logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
             raise AudioError(f"Error while streaming: {err}") from err
         finally:
-            if reader is not None:
-                await reader.close()
             for fd in pass_fds:
                 os.close(fd)
             # An ffmpeg wedged on an input that will never deliver again pays close()'s
@@ -7123,45 +6892,6 @@ class StreamsAudio:
 
         except Exception as err:  # noqa: BLE001 - metadata polling must never break playback
             self.logger.debug("Error fetching HLS metadata: %s", err)
-
-    def _start_live_source_pacer(
-        self,
-        streamdetails: StreamDetails,
-        ffmpeg_proc: FFMpeg,
-        get_pause: Callable[[], SourcePause],
-        pcm_format: AudioFormat,
-    ) -> _LiveSourcePacer | None:
-        """
-        Start holding a live source's PCM stream to real time, None for any other stream.
-
-        :param streamdetails: Details of the stream being read.
-        :param ffmpeg_proc: The started ffmpeg process reading it.
-        :param get_pause: Returns how the source is paused right now.
-        :param pcm_format: The format ffmpeg delivers.
-        """
-        if (
-            streamdetails.media_type != MediaType.AUDIO_SOURCE
-            or not pcm_format.content_type.is_pcm()
-        ):
-            return None
-        pacer = _LiveSourcePacer(ffmpeg_proc, get_pause, pcm_format)
-        pacer.start()
-        return pacer
-
-    def _get_source_pause(self, streamdetails: StreamDetails) -> SourcePause:
-        """
-        Return how the source's provider holds its live audio while paused on purpose.
-
-        :param streamdetails: Details of the stream that delivers no audio.
-        """
-        provider = self.mass.get_provider(streamdetails.provider)
-        if not isinstance(provider, AudioSourceMixin):
-            return SourcePause.NONE
-        try:
-            return provider.get_source_pause(streamdetails)
-        except Exception as err:  # noqa: BLE001 - a faulty provider must not hide a stall
-            self.logger.debug("Could not ask %s whether it is paused: %s", provider.domain, err)
-            return SourcePause.NONE
 
     @staticmethod
     def _normalize_reconnecting_urls(url: str | list[MultiPartPath]) -> list[str]:

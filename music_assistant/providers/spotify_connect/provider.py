@@ -23,7 +23,6 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     MediaType,
-    PlayerFeature,
     ProviderFeature,
     RepeatMode,
     SourceControl,
@@ -44,7 +43,7 @@ from music_assistant.helpers.config_entries import (
     resolve_publish_name,
 )
 from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
-from music_assistant.models.media_capabilities import SourceControlValue, SourcePause
+from music_assistant.models.media_capabilities import SourceControlValue
 from music_assistant.models.plugin import PluginProvider
 
 from .base import (
@@ -70,7 +69,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
-    from music_assistant.models.player_protocol import PlayerProtocol
 
     from .base import SpotifyConnectBackend
     from .models import BackendEvent, BackendPlaybackOptions, BackendTrackMetadata
@@ -109,13 +107,6 @@ PAUSE_EOF_TIMEOUT_S = 0.5
 # A stop after a pause runs while the player's playback lock is held, so a slow one
 # delays whatever the user does next; warn when it takes longer than this.
 SLOW_STOP_WARN_S = 10.0
-# How long a Spotify pause must last before the player is paused too. The engine
-# reports a track change as a pause of up to about 1.6 seconds, which must never
-# reach the player; until then the stream keeps the player fed with silence.
-PAUSE_OUTPUT_GRACE_S = 2.0
-# How long after a pause requested through Music Assistant (e.g. on the player itself)
-# the Spotify pause is taken as that request, so the player is paused straight away.
-REQUESTED_PAUSE_WINDOW_S = 5.0
 
 # Seconds to wait for the backend to report 'playing' after a resume request.
 PLAYBACK_START_TIMEOUT_S = 3.0
@@ -190,18 +181,6 @@ class _PlayerDaemon:
     # slow player can hold it for up to 10s), so a resume is never killed by a
     # stop landing late.
     pending_pause_stop_task: asyncio.Task[None] | None = None
-    # the player whose stream is held through a Spotify pause until the next 'playing'
-    # event, or until the player is stopped (e.g. at the pause timeout)
-    paused_in_place_player: str | None = None
-    paused_in_place_since: float = 0
-    # pauses the player once the pause outlasts a track change; output_paused is set
-    # from the moment that pause is sent
-    pause_output_task: asyncio.Task[None] | None = None
-    output_paused: bool = False
-    # unpauses a player paused in place; a new pause waits for it
-    resume_output_task: asyncio.Task[None] | None = None
-    # when a pause was last requested through Music Assistant (on_source_control)
-    pause_requested_at: float | None = None
     # holds the deferred release of a stream that ended while Spotify was playing;
     # a new stream claiming the source within the grace period cancels it.
     pending_release_task: asyncio.Task[None] | None = None
@@ -472,17 +451,6 @@ class SpotifyConnectProvider(PluginProvider):
         """
         return self._resolve_crossfade_ms() > 0
 
-    def get_source_pause(self, streamdetails: StreamDetails) -> SourcePause:
-        """
-        Return how this source's stream is held through a Spotify pause.
-
-        :param streamdetails: Stream details of the active Spotify Connect source.
-        """
-        daemon = self._daemons.get(streamdetails.item_id)
-        if daemon is None or daemon.paused_in_place_player is None:
-            return SourcePause.NONE
-        return SourcePause.HOLD if daemon.output_paused else SourcePause.FILL_SILENCE
-
     async def on_source_selected(
         self,
         source_id: str,
@@ -530,9 +498,6 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.active_session_id = stream_session_id
         daemon.active_player_id = active_player_id
         self.logger.debug("Active player set to: %s", active_player_id)
-        if daemon.paused_in_place_player not in (None, active_player_id):
-            # the held player is handed off: the resume plays on the new one
-            self._clear_pause_in_place(daemon)
 
         # If a different player was consuming the source, kick it out (the source
         # is exclusive).
@@ -619,8 +584,6 @@ class SpotifyConnectProvider(PluginProvider):
         daemon = self._daemons.get(source_id)
         if daemon is None or daemon.active_player_id != player_id:
             return
-        if daemon.paused_in_place_player == player_id:
-            self._clear_pause_in_place(daemon)
         # a stop still waiting for the player would hit what it plays next
         self._cancel_pending_pause_stop(daemon)
         if not daemon.spotify_session_active:
@@ -656,7 +619,6 @@ class SpotifyConnectProvider(PluginProvider):
             if action == SourceControl.PLAY:
                 await daemon.backend.resume()
             elif action == SourceControl.PAUSE:
-                daemon.pause_requested_at = self.mass.loop.time()
                 await daemon.backend.pause()
             elif action == SourceControl.NEXT:
                 await daemon.backend.next()
@@ -852,18 +814,12 @@ class SpotifyConnectProvider(PluginProvider):
             for task in (
                 daemon.pending_play_media_task,
                 daemon.pending_pause_stop_task,
-                daemon.pause_output_task,
-                daemon.resume_output_task,
                 daemon.pending_release_task,
             )
             if task is not None and not task.done()
         ]
         self._cancel_pending_play_media(daemon)
         self._cancel_pending_pause_stop(daemon)
-        self._clear_pause_in_place(daemon)
-        if daemon.resume_output_task is not None:
-            daemon.resume_output_task.cancel()
-            daemon.resume_output_task = None
         self._cancel_pending_release(daemon)
         # await the cancelled tasks so no late player command outlives the daemon
         for task in pending_tasks:
@@ -1031,215 +987,6 @@ class SpotifyConnectProvider(PluginProvider):
                 return False
             await asyncio.sleep(0.1)
 
-    def _start_or_resume_playback(self, daemon: _PlayerDaemon) -> None:
-        """
-        Resume a held stream, or schedule play_media for a new playback.
-
-        :param daemon: The daemon whose Spotify session started playing.
-        """
-        if (player_id := daemon.paused_in_place_player) is not None:
-            held_s = self.mass.loop.time() - daemon.paused_in_place_since
-            output_paused = daemon.output_paused
-            pause_task = daemon.pause_output_task
-            if output_paused:
-                # the pause may still be in flight: the resume waits for it
-                daemon.pause_output_task = None
-            self._clear_pause_in_place(daemon)
-            self.logger.debug("Spotify resumed %s after %.1f seconds", player_id, held_s)
-            if output_paused:
-                daemon.resume_output_task = self.mass.create_task(
-                    self._resume_output(daemon, player_id, pause_task)
-                )
-                return
-        # a no-op while a player still claims the source
-        self._schedule_play_media(daemon)
-
-    def _pause_or_stop_player(
-        self, daemon: _PlayerDaemon, player_id: str, event_type: BackendEventType
-    ) -> None:
-        """
-        Hold the player's stream through a Spotify pause where the player can pause, else stop it.
-
-        A player that is stopped on a pause shows as paused on the source meanwhile.
-
-        :param daemon: The daemon whose Spotify session paused or stopped.
-        :param player_id: The player currently consuming the live source.
-        :param event_type: The backend event that ended playback.
-        """
-        if (
-            event_type is BackendEventType.PAUSED
-            # a stream that ends on pause has nothing to hold
-            and not daemon.backend.stream_ends_on_pause
-            and self._get_pause_target(player_id) is not None
-        ):
-            self._hold_stream(daemon, player_id)
-        else:
-            self._schedule_pause_stop(
-                daemon, player_id, paused=event_type is BackendEventType.PAUSED
-            )
-
-    def _hold_stream(self, daemon: _PlayerDaemon, player_id: str) -> None:
-        """
-        Keep the player's stream open through a Spotify pause.
-
-        The player itself is paused once the pause outlasts a track change, or straight
-        away when the pause was requested through Music Assistant.
-
-        :param daemon: The daemon whose Spotify session paused.
-        :param player_id: The player currently consuming the live source.
-        """
-        if daemon.paused_in_place_player == player_id:
-            return
-        self._clear_pause_in_place(daemon)
-        now = self.mass.loop.time()
-        requested_at, daemon.pause_requested_at = daemon.pause_requested_at, None
-        requested = requested_at is not None and now - requested_at <= REQUESTED_PAUSE_WINDOW_S
-        daemon.paused_in_place_player = player_id
-        daemon.paused_in_place_since = now
-        self.logger.debug("Holding the stream of %s through a Spotify pause", player_id)
-        daemon.pause_output_task = self.mass.create_task(
-            self._pause_output(daemon, player_id, 0 if requested else PAUSE_OUTPUT_GRACE_S)
-        )
-
-    def _get_pause_target(self, player_id: str) -> PlayerProtocol | None:
-        """
-        Return the output that renders the player's audio, if it can pause.
-
-        :param player_id: The player currently consuming the live source.
-        """
-        # Paused on the output itself: the controller's cmd_pause would route the
-        # pause back to this source and on to Spotify.
-        if (player := self.mass.players.get_player(player_id)) is None:
-            return None
-        target = player.resolve_output_protocol()
-        if target is None or PlayerFeature.PAUSE not in target.supported_features:
-            return None
-        return target
-
-    async def _pause_output(self, daemon: _PlayerDaemon, player_id: str, delay_s: float) -> None:
-        """
-        Pause the player once a Spotify pause outlasts the given delay.
-
-        Falls back to stopping the player, shown as paused on the source, when it cannot pause.
-
-        :param daemon: The daemon whose Spotify session paused.
-        :param player_id: The player whose stream is held.
-        :param delay_s: Seconds to wait before pausing the player.
-        """
-        if delay_s:
-            await asyncio.sleep(delay_s)
-        # an unpause still on its way to the player would land after this pause
-        if (resume_task := daemon.resume_output_task) is not None and not resume_task.done():
-            await asyncio.wait({resume_task})
-        if daemon.stop_called or daemon.paused_in_place_player != player_id:
-            return
-        if (target := self._get_pause_target(player_id)) is not None:
-            # stops the silence: a paused player would buffer it and replay it on resume
-            daemon.output_paused = True
-            try:
-                await target.pause()
-            except Exception as err:  # noqa: BLE001 - a failed pause falls back to a stop
-                self.logger.debug("Pausing %s failed: %s", player_id, err)
-            else:
-                self.logger.info("Paused %s in place (Spotify Connect pause)", player_id)
-                return
-        if daemon.paused_in_place_player == player_id:
-            self._clear_pause_in_place(daemon)
-            self._schedule_pause_stop(daemon, player_id, paused=True)
-
-    async def _resume_output(
-        self, daemon: _PlayerDaemon, player_id: str, pause_task: asyncio.Task[None] | None
-    ) -> None:
-        """
-        Unpause a player paused in place, falling back to a fresh play_media.
-
-        :param daemon: The daemon whose Spotify session resumed.
-        :param player_id: The player paused in place.
-        :param pause_task: The task that paused the player, possibly still running.
-        """
-        session_id = daemon.active_session_id
-
-        def _still_owned() -> bool:
-            # the source moved to another player, or its stream was stopped, meanwhile
-            return (
-                not daemon.stop_called
-                and daemon.active_player_id == player_id
-                and daemon.active_session_id == session_id
-            )
-
-        if pause_task is not None and not pause_task.done():
-            await asyncio.wait({pause_task})
-        if not _still_owned():
-            return
-        if (target := self._get_pause_target(player_id)) is not None:
-            try:
-                await target.play()
-            except Exception as err:  # noqa: BLE001 - a failed unpause falls back to play_media
-                self.logger.debug("Resuming %s failed: %s", player_id, err)
-            else:
-                self.logger.info("Resumed %s in place (Spotify Connect play)", player_id)
-                if _still_owned():
-                    # covers a stream that ended while paused: a no-op while the claim holds
-                    self._schedule_play_media(daemon)
-                return
-        if daemon.paused_in_place_player is not None or not _still_owned():
-            return
-        self.logger.info("Restarting %s: it could not be resumed in place", player_id)
-        # Give up the claim first, so the stopped stream's teardown cannot release the
-        # Spotify session that is playing; play_media then starts a fresh stream.
-        daemon.active_session_id = None
-        daemon.in_use_by_player = None
-        await self._stop_paused_player(daemon, player_id, paused=False)
-        self._schedule_play_media(daemon)
-
-    def _handle_connection_lost(self, daemon: _PlayerDaemon) -> None:
-        """
-        Reset the session state of a backend whose Spotify session is gone (e.g. daemon exit).
-
-        :param daemon: The daemon whose backend lost its session.
-        """
-        # a dead/restarting backend must not be treated as active and controllable;
-        # a fresh 'active' event re-establishes it
-        daemon.set_playing(False)
-        daemon.spotify_session_active = False
-        # stale options must not outlive the session they belong to
-        daemon.last_playback_options = None
-        self._release_held_player(daemon)
-
-    def _release_held_player(self, daemon: _PlayerDaemon) -> None:
-        """
-        Stop the player of a held stream that nothing will resume any more.
-
-        :param daemon: The daemon whose Spotify session stopped or was lost.
-        """
-        if (player_id := daemon.paused_in_place_player) is None:
-            return
-        self._stop_held_player(daemon, player_id)
-
-    def _stop_held_player(self, daemon: _PlayerDaemon, player_id: str) -> None:
-        """
-        End a hold by stopping its player, giving up the claim first.
-
-        A resume racing the stop then starts a fresh stream instead of finding the
-        player still claimed (and paused), and the stopped stream's teardown cannot
-        release the Spotify session.
-
-        :param daemon: The daemon whose hold ends.
-        :param player_id: The held player.
-        """
-        self._clear_pause_in_place(daemon)
-        daemon.active_session_id = None
-        daemon.in_use_by_player = None
-        self._schedule_pause_stop(daemon, player_id)
-
-    def _clear_pause_in_place(self, daemon: _PlayerDaemon) -> None:
-        """Forget a held stream and cancel its pending pause."""
-        daemon.paused_in_place_player = None
-        daemon.output_paused = False
-        if daemon.pause_output_task is not None and not daemon.pause_output_task.done():
-            daemon.pause_output_task.cancel()
-        daemon.pause_output_task = None
-
     async def _stop_paused_player(
         self, daemon: _PlayerDaemon, player_id: str, paused: bool
     ) -> None:
@@ -1386,12 +1133,6 @@ class SpotifyConnectProvider(PluginProvider):
         """Release an ended stream's claim, and the Spotify session while it still plays."""
         if daemon.active_session_id != stream_session_id:
             return
-        # the stream a hold kept is gone: the next 'playing' starts a new one, and an
-        # unpause still on its way to the player is dropped
-        self._clear_pause_in_place(daemon)
-        if (resume_task := daemon.resume_output_task) is not None and not resume_task.done():
-            resume_task.cancel()
-        daemon.resume_output_task = None
         daemon.active_session_id = None
         if daemon.in_use_by_player == owner_player_id:
             daemon.in_use_by_player = None
@@ -1424,8 +1165,6 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.in_use_by_player = None
         daemon.active_session_id = None
         daemon.set_playing(False)
-        # a held stream has nothing left to resume it
-        self._clear_pause_in_place(daemon)
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
             # the player is not playing us any more, so it should stop saying it is;
@@ -1450,7 +1189,13 @@ class SpotifyConnectProvider(PluginProvider):
             # late event of its dying backend
             return
         if event.type is BackendEventType.CONNECTION_LOST:
-            self._handle_connection_lost(daemon)
+            # The backend's Spotify session is gone (e.g. daemon exit). Reset
+            # session state so a dead/restarting backend isn't treated as active
+            # and controllable; a fresh 'active' event re-establishes it.
+            daemon.set_playing(False)
+            daemon.spotify_session_active = False
+            # stale options must not outlive the session they belong to
+            daemon.last_playback_options = None
             return
         if event.type is BackendEventType.FATAL_ERROR:
             self._handle_fatal_error(daemon, event)
@@ -1492,7 +1237,6 @@ class SpotifyConnectProvider(PluginProvider):
             # stale options must not outlive the session they belong to
             daemon.last_playback_options = None
             prev_player_id = daemon.active_player_id
-            self._clear_pause_in_place(daemon)
             self._clear_active_player(daemon)
             if prev_player_id:
                 self._schedule_pause_stop(daemon, prev_player_id)
@@ -1509,9 +1253,8 @@ class SpotifyConnectProvider(PluginProvider):
             # playing/active burst from a reconnecting session can cancel it.
             # Only while the session is active: a daemon playing without being
             # the active Connect device (e.g. right after a deactivate) must
-            # not grab MA players in a loop. A player paused in place is
-            # unpaused instead (see _start_or_resume_playback).
-            self._start_or_resume_playback(daemon)
+            # not grab MA players in a loop.
+            self._schedule_play_media(daemon)
         elif event.type in (BackendEventType.PAUSED, BackendEventType.STOPPED):
             was_playing = daemon.playing
             daemon.set_playing(False)
@@ -1535,9 +1278,9 @@ class SpotifyConnectProvider(PluginProvider):
                 )
                 and (player_id := daemon.active_player_id)
             ):
-                self._pause_or_stop_player(daemon, player_id, event.type)
-            elif event.type is BackendEventType.STOPPED:
-                self._release_held_player(daemon)
+                self._schedule_pause_stop(
+                    daemon, player_id, paused=event.type is BackendEventType.PAUSED
+                )
 
         if event.type is BackendEventType.METADATA and event.metadata is not None:
             self._apply_metadata(daemon, event.metadata)
