@@ -2,9 +2,10 @@
 Generic LinkPlay player: the control protocol of a LinkPlay device without an audio path.
 
 Compatible LinkPlay speakers (e.g. Edifier) speak the LinkPlay HTTP API but have no
-Music Assistant native audio path. Their playback, transport state, current media and
-volume come from the DLNA/AirPlay protocols attached to the same player; this protocol
-only adds device identity and native LinkPlay multiroom grouping/topology on top.
+Music Assistant native audio path. Their playback, transport state and current media come
+from the DLNA/AirPlay protocols attached to the same player; this protocol adds device
+identity, the volume and mute of the device, and native LinkPlay multiroom
+grouping/topology on top.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType, ProtocolRole
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo
 from pywiim import WiiMClient, WiiMError
 
@@ -28,8 +30,8 @@ if TYPE_CHECKING:
     from .grouping import NativeGroupCoordinator
     from .provider import WiimProvider
 
-# The device is polled for reachability and native group topology only; playback state
-# comes from the audio protocols of the player, so a slow interval is plenty.
+# The device is polled for reachability, its volume and its native group topology; playback
+# state comes from the audio protocols of the player, so a slow interval is plenty.
 POLL_INTERVAL = 30
 
 
@@ -37,10 +39,10 @@ class LinkPlayPlayer(PlayerProtocol):
     """
     Control protocol of a generic LinkPlay device in Music Assistant.
 
-    Playback/state/volume come from the DLNA/AirPlay protocols attached to the same player;
-    this protocol owns only device identity and native LinkPlay multiroom grouping, driven
-    by the low-level public WiiMClient. Topology is resolved by the provider's shared
-    coordinator across both WiiM backends.
+    Playback/state come from the DLNA/AirPlay protocols attached to the same player; this
+    protocol owns device identity, the volume and mute of the device and native LinkPlay
+    multiroom grouping, driven by the low-level public WiiMClient. Topology is resolved by
+    the provider's shared coordinator across both WiiM backends.
     """
 
     _attr_type = PlayerType.PLAYER
@@ -74,9 +76,16 @@ class LinkPlayPlayer(PlayerProtocol):
         # join_slave so it can pick the correct (router vs WiFi-Direct) join mode.
         self._cached_device_info: PywiimDeviceInfo | None = device_info
         self._rebuild_lock = asyncio.Lock()
+        # the firmware lifts the mute on any volume command, so a level set while muted
+        # is held here and only sent at the unmute
+        self._volume_while_muted: int | None = None
 
         self._attr_name = upnp_device.friendly_name or protocol_id
-        self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        self._attr_supported_features = {
+            PlayerFeature.SET_MEMBERS,
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+        }
         self._attr_needs_poll = True
         self._attr_poll_interval = POLL_INTERVAL
         self._attr_device_info = DeviceInfo(
@@ -103,8 +112,10 @@ class LinkPlayPlayer(PlayerProtocol):
             await self._refresh_reachability()
 
     async def poll(self) -> None:
-        """Poll the device for reachability and push its native group topology."""
+        """Poll the device for reachability, its volume and its native group topology."""
         await self._refresh_reachability()
+        if self._linkplay_available:
+            await self._refresh_volume()
         await self._native_groups.refresh_leader(self, force=True)
 
     async def on_detach(self) -> None:
@@ -227,6 +238,28 @@ class LinkPlayPlayer(PlayerProtocol):
         """Handle SET_MEMBERS command on the player."""
         await self._native_groups.set_members(self, player_ids_to_add, player_ids_to_remove)
 
+    async def volume_set(self, volume_level: int) -> None:
+        """Handle VOLUME_SET command on the player."""
+        if self._attr_volume_muted:
+            self._volume_while_muted = volume_level
+        else:
+            await self._set_device_volume(volume_level)
+        self._attr_volume_level = volume_level
+        self.update_state()
+
+    async def volume_mute(self, muted: bool) -> None:
+        """Handle VOLUME MUTE command on the player."""
+        if not muted and self._volume_while_muted is not None:
+            # sent first, so the speaker never plays at the level it was muted at
+            await self._set_device_volume(self._volume_while_muted)
+            self._volume_while_muted = None
+        try:
+            await self._client.set_mute(muted)
+        except WiiMError as err:
+            raise PlayerCommandFailed(f"Failed to set the mute of {self.name}: {err}") from err
+        self._attr_volume_muted = muted
+        self.update_state()
+
     async def async_handle_address_change(
         self, new_ip: str, upnp_device: UpnpDevice, description_url: str
     ) -> None:
@@ -291,3 +324,29 @@ class LinkPlayPlayer(PlayerProtocol):
             # this device's native availability just flipped, which changes whether every peer
             # can offer it as a native grouping candidate; make them re-publish.
             self._native_groups.schedule_republish()
+
+    async def _refresh_volume(self) -> None:
+        """Read the level and mute of the device, keeping a level set while muted."""
+        try:
+            status = await self._client.get_player_status()
+        except WiiMError as err:
+            self.logger.debug("Failed to read the volume of %s: %s", self.name, err)
+            return
+        if (muted := status.get("mute")) is not None:
+            if not muted:
+                # unmuted on the device itself, which then plays at the level it reports
+                self._volume_while_muted = None
+            self._attr_volume_muted = muted
+        if (level := status.get("volume")) is not None:
+            self._attr_volume_level = (
+                level if self._volume_while_muted is None else self._volume_while_muted
+            )
+        self.update_state()
+
+    async def _set_device_volume(self, volume_level: int) -> None:
+        """Set the level of the device itself."""
+        try:
+            # the level goes out as is: pywiim's set_volume truncates the fraction it takes
+            await self._client.send_command(f"setPlayerCmd:vol:{volume_level}")
+        except WiiMError as err:
+            raise PlayerCommandFailed(f"Failed to set the volume of {self.name}: {err}") from err

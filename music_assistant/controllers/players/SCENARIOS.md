@@ -2393,13 +2393,17 @@ with its own protocol at level 30 and its AirPlay receiver at level 80.
 The user prefers the AirPlay receiver as Kitchen's output and plays, with no volume or mute
 control selected. The receiver gets no level or mute, and the player shows level 30. Volume and
 mute commands go to the own protocol. A level the own protocol reports moves the player's level;
-one the receiver reports does not.
+one the receiver reports does not. A LinkPlay device, which is controlled without an audio path
+of its own, keeps its volume and mute on that control in the same way while its DLNA renderer
+plays.
 
 - End-to-end: **possible with** a host that runs a native player and an AirPlay receiver at
-  different levels, such as Squeezelite and shairport-sync.
+  different levels, such as Squeezelite and shairport-sync; for the LinkPlay part, a LinkPlay
+  device that is no WiiM, with its DLNA renderer.
 - Proven by:
   - `tests/controllers/players/test_routing.py::test_audio_protocol_that_takes_over_gets_no_level_while_the_native_owns_it`
   - `tests/controllers/players/test_routing.py::test_volume_goes_to_the_native_protocol_while_an_audio_protocol_plays`
+  - `tests/providers/wiim/test_linkplay_control.py::test_volume_and_mute_go_to_the_linkplay_control_while_the_renderer_plays`
 
 ### VOLUME-1 · With "Follow protocol" selected, an output that takes over gets the player's level before it plays
 
@@ -2475,10 +2479,15 @@ a volume command reaches it.
 Living, a single speaker or a multi-channel player at level 60, leads a group with Office at level
 30. The group volume is 60, the level of the loudest member with Living included. A step up of
 the group volume turns both up and keeps their balance: Living to 63, Office to 35. A group player
-has no level of its own; only its members count.
+has no level of its own; only its members count. A LinkPlay device that leads a native LinkPlay
+group counts its own level the same way, and each device of the group gets its level on its own
+LinkPlay control.
 
-- End-to-end: **possible with** two players of one make that group, one of them a set of speakers.
-- Proven by: `test_grouping.py::test_a_leader_counts_its_own_level_in_the_group_volume`
+- End-to-end: **possible with** two players of one make that group, one of them a set of speakers;
+  for the LinkPlay part, two LinkPlay devices that are no WiiM, grouped natively.
+- Proven by:
+  - `test_grouping.py::test_a_leader_counts_its_own_level_in_the_group_volume`
+  - `tests/providers/wiim/test_linkplay_control.py::test_group_volume_reaches_each_device_of_a_native_linkplay_group`
 
 ### VOLUME-7 · An output that plays nothing leaves volume and mute to the own protocol
 
