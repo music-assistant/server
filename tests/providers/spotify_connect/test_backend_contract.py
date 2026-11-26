@@ -1729,6 +1729,32 @@ async def test_a_seek_in_the_app_while_paused_resyncs_on_resume(
     resync.assert_awaited_once_with(90.0)
 
 
+async def test_a_repeated_playing_does_not_restart_a_seek_resync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spotify repeats 'playing' after a seek; the re-sync in flight runs once."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    resync = _resync_output(mass)
+    mass.loop.time = MagicMock(return_value=100.0)
+    release = asyncio.Event()
+
+    async def _flushing(_position: float | None) -> bool:
+        await release.wait()
+        return True
+
+    resync.side_effect = _flushing
+
+    await provider.on_source_control(_PLAYER_ID, SourceControl.SEEK, 42)
+    await _let_the_resync_run()
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    await _let_the_resync_run()
+    release.set()
+    await _let_the_resync_run()
+
+    resync.assert_awaited_once_with(42.0)
+
+
 async def test_a_plain_pause_and_resume_does_not_resync() -> None:
     """Resuming without a seek leaves the player's queue alone."""
     provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")

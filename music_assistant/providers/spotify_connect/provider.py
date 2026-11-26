@@ -1521,12 +1521,15 @@ class SpotifyConnectProvider(PluginProvider):
         :param daemon: The daemon whose backend reported the state.
         :param playing: Whether the backend plays.
         """
+        was_playing = daemon.playing
         daemon.set_playing(playing)
         if not playing:
             # a re-sync waits for audio a paused source no longer delivers; it stays owed
             self.mass.cancel_task(f"spotify_connect_resync_{daemon.player_id}")
-        elif daemon.resync_pending:
-            # a seek made while paused (or a re-sync the pause cut short) is done now
+        elif daemon.resync_pending and not was_playing:
+            # only on a resume: Spotify repeats 'playing' after a seek, and restarting the
+            # re-sync then in flight would flush the player a second time. A seek made
+            # while paused (or a re-sync the pause cut short) is done now
             self._schedule_player_resync(daemon, SEEK_RESYNC_SETTLE_S)
         # a backend may report no position on pause or resume
         if daemon.position_ref is None or daemon.position_ref_playing == daemon.playing:
