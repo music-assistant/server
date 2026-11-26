@@ -311,6 +311,8 @@ async def _run_producer(
     *,
     exhausted: bool = False,
     start_item: MagicMock | None = None,
+    resume_from_queue: bool = False,
+    elapsed_time: float = 0,
 ) -> _Station:
     """
     Run the station's producer over one flow session that ends for the given reason.
@@ -319,12 +321,18 @@ async def _run_producer(
     :param exit_reason: How the session ends.
     :param exhausted: Whether the session played the queue to its end.
     :param start_item: The queue item handed to play_media, a track by default.
+    :param resume_from_queue: Whether the broadcast carries on from the queue's current item,
+        as after the last listener left, instead of starting on a play_media.
+    :param elapsed_time: How far the queue is into its current item, in seconds.
     """
     station = provider._stations["kitchen"]
-    _queue_with_items(provider, "third")
+    queue = _queue_with_items(provider, "third")
+    queue.elapsed_time = elapsed_time
     provider.set_pending_media("kitchen", MagicMock(queue_item_id="first"))
+    station.resume_from_queue = resume_from_queue
     mass = cast("MagicMock", provider.mass)
     if start_item is not None:
+        queue.current_item = start_item
         mass.player_queues.get_item.side_effect = lambda _queue_id, _item_id: start_item
     mass.streams.audio.select_flow_pcm_format = AsyncMock()
     mass.streams.audio.get_output_format = AsyncMock(return_value=station.output_format)
@@ -366,18 +374,50 @@ async def test_producer_stops_when_no_item_follows_a_flow_that_ended_early() -> 
 
 
 async def test_live_start_item_is_not_joined_at_a_position() -> None:
-    """A broadcast that starts on a radio item does not seek, one that starts on a track does."""
+    """A broadcast that carries on from a radio item does not seek, one from a track does."""
     joined: list[MediaType] = []
     for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.TRACK):
         provider = _make_provider()
         with patch(
             "music_assistant.providers.webradio.provider._join_at_live_position"
         ) as join_at_live_position:
-            await _run_producer(provider, "stopped", start_item=_item("first", media_type))
+            await _run_producer(
+                provider,
+                "stopped",
+                start_item=_item("first", media_type),
+                resume_from_queue=True,
+            )
         if join_at_live_position.called:
             joined.append(media_type)
 
     assert joined == [MediaType.TRACK]
+
+
+@pytest.mark.parametrize(
+    ("resume_from_queue", "elapsed_time", "expected"),
+    [
+        # play_media just set the resume point of a podcast, no listener has heard anything yet
+        pytest.param(False, 0, 300, id="after_play_media"),
+        # the clock of the queue kept running while nobody listened
+        pytest.param(True, 120, 120, id="carrying_on_from_the_queue"),
+    ],
+)
+async def test_start_position_is_only_replaced_when_carrying_on_from_the_queue(
+    resume_from_queue: bool, elapsed_time: int, expected: int
+) -> None:
+    """A resume point set by play_media survives the first listener tuning in."""
+    start_item = _item("first")
+    start_item.streamdetails = MagicMock(allow_seek=True, duration=1000, seek_position=300)
+
+    await _run_producer(
+        _make_provider(),
+        "stopped",
+        start_item=start_item,
+        resume_from_queue=resume_from_queue,
+        elapsed_time=elapsed_time,
+    )
+
+    assert start_item.streamdetails.seek_position == expected
 
 
 async def test_producer_carries_on_with_the_live_item_that_ended_the_flow() -> None:
@@ -417,8 +457,7 @@ async def test_producer_carries_on_with_the_live_item_that_ended_the_flow() -> N
         await asyncio.wait_for(provider._run_producer(station), timeout=5)
 
     assert [item.queue_item_id for item in sessions] == ["first", "radio"]
-    join_at_live_position.assert_called_once()
-    assert join_at_live_position.call_args.args[1].queue_item_id == "first"
+    join_at_live_position.assert_not_called()
 
 
 async def _audio(chunks: list[bytes], error: Exception | None = None) -> AsyncGenerator[bytes]:

@@ -450,11 +450,16 @@ class WebRadioProvider(PlayerProvider):
                     break
                 queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
                 session_id_at_start = queue_data.session_id if queue_data else None
-                # Only on first start: catch up to where the broadcast would
-                # be now for a late-joining listener. On a restart MA already
-                # set streamdetails.seek_position to the intended value. A live
-                # item has no position to catch up to.
-                if first_iteration and start_item.media_type not in _LIVE_MEDIA_TYPES:
+                # Only when the broadcast carries on from the queue: catch up to
+                # where it would be now for a late-joining listener. After a
+                # play_media MA already set streamdetails.seek_position to the
+                # intended value (e.g. a resume point). A live item has no
+                # position to catch up to.
+                if (
+                    first_iteration
+                    and station.resume_from_queue
+                    and start_item.media_type not in _LIVE_MEDIA_TYPES
+                ):
                     _join_at_live_position(queue, start_item)
                 first_iteration = False
                 # Clear so a stale event can't satisfy the post-session wait.
