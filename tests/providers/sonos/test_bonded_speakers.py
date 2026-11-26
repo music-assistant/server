@@ -320,5 +320,6 @@ async def test_a_speaker_whose_power_is_back_in_a_set_reads_unavailable(
         await asyncio.sleep(0)
 
     assert published[-1] == (False, False)
+    assert RECONNECT not in timer_mass._tracked_timers
     assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
     await speaker.on_detach()

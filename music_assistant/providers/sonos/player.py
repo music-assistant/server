@@ -494,6 +494,7 @@ class SonosPlayer(PlayerProtocol):
         if self.player is None:
             return
         listener = self._listen_task
+        not_a_player = False
         try:
             # from what a power cut leaves: a connection to the speaker as it was answers
             # nothing, and a reconnect that still runs may hang on it
@@ -504,10 +505,13 @@ class SonosPlayer(PlayerProtocol):
                 await asyncio.wait([listener])
             # a connect to a speaker that is not up hangs on its stale ARP entry, so probe first
             if await self._is_reachable() and self.player is not None:
-                with contextlib.suppress(ConnectionFailed, CannotConnect, ClientError, NotAPlayer):
+                with contextlib.suppress(ConnectionFailed, CannotConnect, ClientError):
                     await self._connect()
+        except NotAPlayer:
+            # part of another player's set: connecting again fails the same way
+            not_a_player = True
         finally:
-            if self.player is not None and not self.connected:
+            if self.player is not None and not self.connected and not not_a_player:
                 # not up yet, or the wait for it was ended before it answered
                 self.reconnect(5)
         if not self.connected:
