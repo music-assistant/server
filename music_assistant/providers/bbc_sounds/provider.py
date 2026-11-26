@@ -205,7 +205,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 return ma_radio
 
         self.logger.error("Failed to retrieve station with details: %s", station)
-        raise MediaNotFoundError("No valid radio stream found for %s", prov_radio_id)
+        raise MediaNotFoundError(f"No valid radio stream found for {prov_radio_id}")
 
     @property
     def is_streaming_provider(self) -> bool:
