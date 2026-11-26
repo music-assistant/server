@@ -1522,7 +1522,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
 
         # Steer provider selection to the playback user's own music sources
-        allowed, preferred = playback_sources_for(
+        allowed, preferred, _ = playback_sources_for(
             self.mass, await resolve_playback_user(self.mass, queue_id)
         )
 

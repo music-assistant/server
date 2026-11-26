@@ -132,7 +132,7 @@ class MediaAssistantprovider(PlayerProvider):
             try:
                 device = await roku.update()
                 await roku.close_session()
-            except Exception:
+            except Exception:  # noqa: BLE001 - one unreachable Roku must not stop discovery
                 self.logger.error("Failed to retrieve device info from Roku at: %s", ip)
                 await roku.close_session()
                 return

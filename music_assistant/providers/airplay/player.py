@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ChannelLayout,
     ConfigEntryType,
@@ -27,9 +28,10 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerOptionValueType
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import CONF_PASSWORD
+from music_assistant.constants import ATTR_VOLUME_TARGET, CONF_PASSWORD
 from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import (
     DeviceInfo,
     PlayerMedia,
@@ -44,6 +46,7 @@ from .constants import (
     AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
+    AIRPLAY_NATIVE_START_VOLUME_PROVIDERS,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
     AIRPLAY_VOLUME_ECHO_GRACE_S,
@@ -151,6 +154,10 @@ class AirPlayPlayer(PlayerProtocol):
         # set when the _airplay._tcp record said goodbye, until a fresh one arrives
         self._airplay_record_gone = False
         self._rejoin_task: asyncio.Task[None] | None = None
+        # the group player the re-join goes back to, if any
+        self._rejoin_group_id: str | None = None
+        # set when the device announces itself on the network
+        self._announced = asyncio.Event()
         # Set (static) player attributes
         self._attr_name = display_name
         self._attr_available = True
@@ -429,12 +436,16 @@ class AirPlayPlayer(PlayerProtocol):
 
     @property
     def announcement_features(self) -> set[AnnouncementFeature]:
-        """Return the full set: the clip is mixed into live audio, in step across members."""
-        return {
-            AnnouncementFeature.SUPPORTS_VOLUME,
-            AnnouncementFeature.APPLIES_VOLUME,
-            AnnouncementFeature.COORDINATES_START,
-        }
+        """
+        Return how the player announces: the clip is mixed into live audio at the given level.
+
+        The start is lined up with the other members of a group announcement only while
+        the player plays in a stream session; a Sendspin-bridged player has none.
+        """
+        features = {AnnouncementFeature.SUPPORTS_VOLUME, AnnouncementFeature.APPLIES_VOLUME}
+        if announce.announce_session(self) is not None:
+            features.add(AnnouncementFeature.COORDINATES_START)
+        return features
 
     @property
     def can_group_with(self) -> set[str]:
@@ -777,6 +788,17 @@ class AirPlayPlayer(PlayerProtocol):
                 return
             await self.stream.send_cli_command("ACTION=PAUSE")
 
+    async def hold(self) -> None:
+        """
+        Park the session while what the player plays is paused, keeping its speakers connected.
+
+        The next play_media plays on over the same connections. A speaker that lost its
+        connection is stopped instead.
+        """
+        if (session := self.session) and await session.standby():
+            return
+        await self.stop()
+
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         # the player is being (re)purposed on purpose: drop any pending
@@ -848,6 +870,9 @@ class AirPlayPlayer(PlayerProtocol):
                     media,
                 )
                 await stream_session.start(audio_source)
+            except AudioSourceRefusedError:
+                # the streams controller logs the refusal and takes the source off the player
+                pass
             finally:
                 self._transitioning = False
 
@@ -1072,7 +1097,12 @@ class AirPlayPlayer(PlayerProtocol):
             return
 
         cur_volume = self.volume_level or 0
-        if abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3:
+        # Only the owner of the volume hands the device its level back. While another
+        # control owns it, the level that control set would come back rounded to whole
+        # percents, which can move the device a step on its own scale.
+        if self.owns_volume and (
+            abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3
+        ):
             self.mass.create_task(self._adopt_device_volume(volume))
         else:
             self._attr_volume_level = volume
@@ -1090,6 +1120,8 @@ class AirPlayPlayer(PlayerProtocol):
             self.raop_discovery_info = discovery_info
         else:  # guard
             return
+        if owner := self.owner:
+            owner._announced.set()
         cur_address = self.address
         prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
         new_address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
@@ -1203,6 +1235,34 @@ class AirPlayPlayer(PlayerProtocol):
             return True
         return self._control_routes_to_self(player.volume_control_for_output(self.protocol_id))
 
+    @property
+    def native_start_volume(self) -> int | None:
+        """
+        Return the level a session starts at while the native protocol owns the volume.
+
+        None when the native protocol does not own the volume of this output, the player
+        is muted, or its device keeps its own level when a session starts without one.
+        """
+        if (player := self.player) is None or player.volume_muted:
+            return None
+        if player.volume_control_for_output(self.protocol_id) != PLAYER_CONTROL_NATIVE:
+            return None
+        native = player.get_control_protocol(PLAYER_CONTROL_NATIVE)
+        if native is None or native.provider.domain not in AIRPLAY_NATIVE_START_VOLUME_PROVIDERS:
+            return None
+        return native.volume_level
+
+    def volume_commanded_since(self, since: float) -> bool:
+        """
+        Return whether a volume command went to the player through Music Assistant since then.
+
+        :param since: A time.monotonic() timestamp.
+        """
+        if (player := self.player) is None:
+            return False
+        target = player.extra_data.get(ATTR_VOLUME_TARGET)
+        return target is not None and target[1] > since
+
     def release_foreign_mute_latch(self) -> None:
         """Clear our mute latch when another control owns the mute of this output."""
         if not self._attr_volume_muted:
@@ -1296,24 +1356,41 @@ class AirPlayPlayer(PlayerProtocol):
             self.protocol_id, permanent=True
         )
 
+    def rejoins_group(self, group_id: str) -> bool:
+        """
+        Return whether this protocol brings itself back to a group player it fell out of.
+
+        :param group_id: Id of the group player.
+        """
+        return (
+            self._rejoin_task is not None
+            and not self._rejoin_task.done()
+            and self._rejoin_group_id == group_id
+        )
+
     def schedule_group_rejoin(
-        self, candidate_ids: list[str], after: asyncio.Task[None] | None = None
+        self,
+        candidate_ids: list[str],
+        group_id: str | None = None,
+        after: asyncio.Task[None] | None = None,
     ) -> None:
         """
-        Schedule a bounded automatic re-join of this player to its still-active group.
+        Schedule the automatic re-join of this player to its still-active group.
 
         Used when this player's stream process died unexpectedly while it was part
         of a playing sync group (e.g. the device rode out a network blackout): the
         player is re-added to the group's live session through the regular
-        late-join path after a short backoff. Any user action on the player (or it
-        joining a session by other means) cancels the re-join; when the group is
-        no longer playing, its membership was changed meanwhile or the device is
-        offline or switched off at its power control, the re-join is abandoned and
-        the player simply stays idle.
+        late-join path after a short backoff, and after that each time the device
+        announces itself. Any user action on the player (or it joining a session by
+        other means) cancels the re-join; when the group is no longer playing, its
+        membership was changed meanwhile or the device is offline or switched off at
+        its power control, the re-join is abandoned and the player simply stays idle.
 
         :param candidate_ids: Protocol ids of the AirPlay players that led or shared
             the group at the moment the stream was lost, used to resolve the re-join
             target (the leadership may transfer while the backoff runs).
+        :param group_id: Id of the group player that held the player, if any. Its
+            members are the candidates then, for as long as it holds the player.
         :param after: Task that has to be done before the attempts start.
         """
         self.cancel_group_rejoin()
@@ -1323,7 +1400,10 @@ class AirPlayPlayer(PlayerProtocol):
             "Scheduling automatic re-join of %s to its group after unexpected stream loss",
             self.display_name,
         )
-        self._rejoin_task = self.mass.create_task(self._group_rejoin_attempts(candidate_ids, after))
+        self._rejoin_group_id = group_id
+        self._rejoin_task = self.mass.create_task(
+            self._group_rejoin_attempts(candidate_ids, group_id, after)
+        )
 
     def cancel_group_rejoin(self) -> None:
         """Cancel any pending automatic group re-join attempts for this player."""
@@ -1760,14 +1840,27 @@ class AirPlayPlayer(PlayerProtocol):
         return sync_clients
 
     async def _group_rejoin_attempts(
-        self, candidate_ids: list[str], after: asyncio.Task[None] | None = None
+        self,
+        candidate_ids: list[str],
+        group_id: str | None = None,
+        after: asyncio.Task[None] | None = None,
     ) -> None:
-        """Re-join this player to its group's live session after a bounded backoff."""
+        """Re-join this player to its group's live session, for as long as it belongs to it."""
         if after is not None:
             await asyncio.wait([after])
-        max_attempts = len(AIRPLAY_REJOIN_ATTEMPT_DELAYS)
-        for attempt, delay in enumerate(AIRPLAY_REJOIN_ATTEMPT_DELAYS, start=1):
-            await asyncio.sleep(delay)
+        attempt = 0
+        target_ids = candidate_ids
+        while await self._wait_rejoin_attempt(attempt, group_id):
+            attempt += 1
+            if group_id is not None:
+                if (group := self._group_counting_in(group_id)) is None:
+                    # the group was stopped, or the player was taken out of it
+                    self.logger.debug(
+                        "Automatic group re-join for %s cancelled: it left its group",
+                        self.display_name,
+                    )
+                    return
+                target_ids = self._protocols_in(group)
             if (
                 self.group_members
                 or (self.stream and self.stream.running)
@@ -1801,14 +1894,13 @@ class AirPlayPlayer(PlayerProtocol):
                     self.display_name,
                 )
                 return
-            target = self._resolve_rejoin_target(candidate_ids)
+            target = self._resolve_rejoin_target(target_ids)
             if target is None:
                 # the group may be between sessions (e.g. a track change); keep
                 # trying until the attempts run out
                 self.logger.debug(
-                    "Automatic group re-join attempt %d/%d for %s: no playing group found",
+                    "Automatic group re-join attempt %d for %s: no playing group found",
                     attempt,
-                    max_attempts,
                     self.display_name,
                 )
                 continue
@@ -1830,11 +1922,10 @@ class AirPlayPlayer(PlayerProtocol):
                     await target.set_members(player_ids_to_add=[self.protocol_id])
             except Exception as err:  # noqa: BLE001 - a failed re-join attempt is retried
                 self.logger.warning(
-                    "Automatic re-join of %s to group of %s failed (attempt %d/%d): %s",
+                    "Automatic re-join of %s to group of %s failed (attempt %d): %s",
                     self.display_name,
                     target.display_name,
                     attempt,
-                    max_attempts,
                     err,
                 )
                 continue
@@ -1851,10 +1942,9 @@ class AirPlayPlayer(PlayerProtocol):
                 )
                 return
             self.logger.warning(
-                "Automatic re-join of %s did not produce a running stream (attempt %d/%d)",
+                "Automatic re-join of %s did not produce a running stream (attempt %d)",
                 self.display_name,
                 attempt,
-                max_attempts,
             )
             if heal_session is None:
                 # undo the group membership this attempt created so a retry (or
@@ -1873,8 +1963,61 @@ class AirPlayPlayer(PlayerProtocol):
             "Giving up on automatic group re-join for %s after %d attempt(s); "
             "the player stays idle",
             self.display_name,
-            max_attempts,
+            attempt,
         )
+
+    async def _wait_rejoin_attempt(self, attempts: int, group_id: str | None) -> bool:
+        """
+        Wait until it makes sense to try and join the group again.
+
+        :param attempts: How many attempts were made already.
+        :param group_id: Id of the group player that held the player, if any.
+        :return: Whether to try.
+        """
+        if attempts < len(AIRPLAY_REJOIN_ATTEMPT_DELAYS):
+            # a device that was away for a moment does not announce itself
+            await asyncio.sleep(AIRPLAY_REJOIN_ATTEMPT_DELAYS[attempts])
+        elif group_id is None:
+            return False
+        else:
+            # a device can announce itself because of an attempt
+            await asyncio.sleep(AIRPLAY_REJOIN_ATTEMPT_DELAYS[-1])
+            await self._announced.wait()
+        self._announced.clear()
+        return True
+
+    def _group_counting_in(self, group_id: str) -> Player | None:
+        """
+        Return a group player, unless this player does not belong to its session anymore.
+
+        :param group_id: Id of the group player.
+        """
+        group = self.mass.players.get_player(group_id)
+        if (
+            self.player is None
+            or group is None
+            or (own := group.own_protocol) is None
+            or not own.counts_in(self.player.player_id)
+            # grouped elsewhere meanwhile
+            or self.player.active_group not in (None, group_id)
+            or (self.player.synced_to and not own.counts_in(self.player.synced_to))
+        ):
+            return None
+        return group
+
+    def _protocols_in(self, group: Player) -> list[str]:
+        """
+        Return the ids of the AirPlay protocols of the members of a group player.
+
+        :param group: The group player.
+        """
+        return [
+            protocol.protocol_id
+            for member_id in group.group_members
+            if (member := self.mass.players.get_player(member_id)) is not None
+            for protocol in member.attached_protocols.values()
+            if protocol.provider is self.provider
+        ]
 
     def _resolve_rejoin_target(self, candidate_ids: list[str]) -> AirPlayPlayer | None:
         """Resolve which player now carries the group's actively playing session."""

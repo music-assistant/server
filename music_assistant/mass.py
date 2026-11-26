@@ -293,7 +293,7 @@ class MusicAssistant:
         storage_path: str,
         cache_path: str,
         safe_mode: bool = False,
-        dev_providers_path: str | None = None,
+        dev_providers_paths: Sequence[str] | None = None,
     ) -> None:
         """Initialize the MusicAssistant Server."""
         self._state = CoreState.STARTING
@@ -303,7 +303,7 @@ class MusicAssistant:
         # default, which is a RAM-backed tmpfs on HAOS - redirect to the data volume.
         os.environ.setdefault("SQLITE_TMPDIR", storage_path)
         self.safe_mode = safe_mode
-        self.dev_providers_path = dev_providers_path
+        self.dev_providers_paths: tuple[str, ...] = tuple(dev_providers_paths or ())
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()

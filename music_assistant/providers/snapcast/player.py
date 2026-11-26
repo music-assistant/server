@@ -368,17 +368,29 @@ class SnapCastPlayer(PlayerProtocol):
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
-        """Handle (provider native) playback of an announcement on given player."""
+        """
+        Handle (provider native) playback of an announcement on given player.
+
+        The announcement plays on the player alone, also when it leads others: its members
+        play on meanwhile and join it again afterwards.
+        """
         was_synced_to: str | None = self.synced_to
         orig_volume_level: int | None = self.volume_level
 
         prev_stream = self.active_snap_ma_stream
         prev_snap_stream_id = self.snap_client.group.stream if self.snap_client.group else None
-        # the music keeps streaming unheard while the group plays the clip, so the queue
-        # restarts where the clip began instead of rejoining the live stream
+        # a leader plays the clip alone: its members play on in groups of their own meanwhile
+        member_client_ids = (
+            [client_id for client_id in group.clients if client_id != self.snap_client.identifier]
+            if (group := self.snap_client.group) is not None and group.name == self.protocol_id
+            else []
+        )
+        # the music keeps streaming unheard while the player plays the clip, so the queue
+        # restarts where the clip began instead of rejoining the live stream. The members of
+        # a leader hear it meanwhile, so the leader rejoins them on the live stream instead.
         resume_queue = (
             None
-            if was_synced_to or self.player is None
+            if was_synced_to or member_client_ids or self.player is None
             else self.mass.player_queues.get(self.player.player_id)
         )
         resume_item = (
@@ -399,6 +411,7 @@ class SnapCastPlayer(PlayerProtocol):
         if prev_stream:
             prev_stream.pin(self.protocol_id)
 
+        isolated_group: SnapgroupProto | None = None
         try:
             ma_stream = await self.snap_provider.get_snapcast_media_stream(
                 announcement, filter_settings_owner=self.protocol_id
@@ -407,6 +420,12 @@ class SnapCastPlayer(PlayerProtocol):
 
             if ma_stream is None or ma_stream.stream_id is None or player_group is None:
                 return
+
+            if member_client_ids:
+                isolated_group = player_group
+                await self.snap_provider.isolate_player_to_dedicated_group(
+                    self.protocol_id, others_stream_id=prev_snap_stream_id
+                )
 
             self._announcement_clip_playing = True
             await player_group.set_stream(ma_stream.stream_id)
@@ -446,6 +465,8 @@ class SnapCastPlayer(PlayerProtocol):
                 await self._restore_snap_stream(player_group, prev_snap_stream_id)
         finally:
             self._announcement_clip_playing = False
+            if isolated_group is not None:
+                await self._rejoin_members(isolated_group, member_client_ids, prev_snap_stream_id)
             if prev_stream:
                 prev_stream.unpin(self.protocol_id)
                 self.snap_provider.update_stream_usage()
@@ -714,3 +735,22 @@ class SnapCastPlayer(PlayerProtocol):
             stream_id,
             self.display_name,
         )
+
+    async def _rejoin_members(
+        self, group: SnapgroupProto, client_ids: list[str], stream_id: str | None
+    ) -> None:
+        """
+        Put the group back on the stream its members played on, and let them join it again.
+
+        :param group: The group the player leads.
+        :param client_ids: The snapclients of its members before the announcement.
+        :param stream_id: The stream the members played on meanwhile.
+        """
+        # after a failed announcement the group may still be on the clip
+        if group.stream != stream_id:
+            await self._restore_snap_stream(group, stream_id)
+        for client_id in client_ids:
+            if client_id not in group.clients:
+                await group.add_client(client_id)
+        # the isolation took the callback off the group
+        self.snap_provider._update_group_callbacks(poke=True)

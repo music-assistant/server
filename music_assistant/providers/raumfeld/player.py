@@ -744,7 +744,9 @@ class RaumfeldPlayer(PlayerProtocol):
             else self.get_supported_sample_rates()
         )
         url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
-        didl_metadata = create_didl_metadata(media, url)
+        didl_metadata = create_didl_metadata(
+            media, url, self.mass.streams.stream_url_serves_as_file(url)
+        )
         self._flow_url = url if self._is_queue_flow(url) else None
         self._announced_item_id = None
         self._announced_index = None
@@ -2161,7 +2163,9 @@ class RaumfeldPlayer(PlayerProtocol):
                 zone,
                 "BendAVTransportURI",
                 CurrentURI=url,
-                CurrentURIMetaData=create_didl_metadata(media, url),
+                CurrentURIMetaData=create_didl_metadata(
+                    media, url, self.mass.streams.stream_url_serves_as_file(url)
+                ),
             )
         except PlayerCommandFailed as err:
             self.logger.debug("Could not announce %s to %s: %s", media.title, self.room, err)

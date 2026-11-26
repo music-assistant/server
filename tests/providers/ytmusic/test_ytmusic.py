@@ -326,7 +326,10 @@ async def test_search_uses_account_only_when_enabled(
         await search(provider, "test", [MediaType.TRACK])
 
     if authenticated:
-        mock_ytmusic.assert_called_once_with(auth={"cookie": "abc"}, language="en", user="123")
+        assert all(
+            call == ((), {"auth": {"cookie": "abc"}, "language": "en", "user": "123"})
+            for call in mock_ytmusic.call_args_list
+        )
     else:
         mock_ytmusic.assert_called_once_with(language="en")
 
@@ -923,7 +926,9 @@ async def test_search_includes_videos_only_when_enabled(
     async def backend(**kwargs: Any) -> list[dict[str, Any]]:
         return [_search_track("Om6ae_QDZgI", "video")] if kwargs["ytm_filter"] == "videos" else []
 
-    cast("MagicMock", provider.config.get_value).return_value = enabled
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        key == "include_videos_in_search" and enabled
+    )
     search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch("music_assistant.providers.ytmusic.search", side_effect=backend) as backend_search:
         results = await search(provider, "Ocean Eyes", [MediaType.TRACK], 5)
@@ -939,7 +944,9 @@ async def test_video_search_interleaves_full_shelves(provider: YoutubeMusicProvi
         prefix = "video" if kwargs["ytm_filter"] == "videos" else "song"
         return [_search_track(f"{prefix}{index}", prefix) for index in range(1, 5)]
 
-    cast("MagicMock", provider.config.get_value).return_value = True
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        key == "include_videos_in_search"
+    )
     search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch("music_assistant.providers.ytmusic.search", side_effect=backend):
         results = await search(provider, "query", [MediaType.TRACK], 4)
@@ -1473,3 +1480,77 @@ async def test_move_playlist_tracks_leaves_a_block_already_in_place(
         await provider.move_playlist_tracks("PL1", [3, 4])
 
     mock_move.assert_not_called()
+
+
+async def test_install_packages_continues_when_upgrade_fails_but_installed(
+    provider: YoutubeMusicProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed yt-dlp upgrade only warns when a version is already installed."""
+    with (
+        patch(
+            "music_assistant.providers.ytmusic.install_package",
+            AsyncMock(side_effect=[RuntimeError("pypi down"), None]),
+        ),
+        patch(
+            "music_assistant.providers.ytmusic.get_package_version",
+            AsyncMock(return_value="2026.1.5"),
+        ),
+        patch("music_assistant.providers.ytmusic.import_module_in_thread", AsyncMock()),
+    ):
+        await provider._install_packages()
+
+    assert "pypi down" in caplog.text
+
+
+async def test_install_packages_raises_when_upgrade_fails_and_not_installed(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A failed yt-dlp install without an installed version fails the setup."""
+    with (
+        patch(
+            "music_assistant.providers.ytmusic.install_package",
+            AsyncMock(side_effect=RuntimeError("pypi down")),
+        ),
+        patch(
+            "music_assistant.providers.ytmusic.get_package_version",
+            AsyncMock(return_value=None),
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        await provider._install_packages()
+
+
+async def test_install_packages_warns_about_restart_on_loaded_version_mismatch(
+    provider: YoutubeMusicProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A yt_dlp imported before the upgrade triggers a restart warning."""
+    with (
+        patch("music_assistant.providers.ytmusic.install_package", AsyncMock()),
+        patch(
+            "music_assistant.providers.ytmusic.get_package_version",
+            AsyncMock(return_value="2026.2.1"),
+        ),
+        patch("music_assistant.providers.ytmusic.import_module_in_thread", AsyncMock()),
+        patch.dict("sys.modules", {"yt_dlp.version": SimpleNamespace(__version__="2026.01.05")}),
+    ):
+        await provider._install_packages()
+
+    assert "restart" in caplog.text
+
+
+async def test_install_packages_no_restart_warning_for_zero_padded_version(
+    provider: YoutubeMusicProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The zero padded yt_dlp version matches the normalized package version."""
+    with (
+        patch("music_assistant.providers.ytmusic.install_package", AsyncMock()),
+        patch(
+            "music_assistant.providers.ytmusic.get_package_version",
+            AsyncMock(return_value="2026.1.5"),
+        ),
+        patch("music_assistant.providers.ytmusic.import_module_in_thread", AsyncMock()),
+        patch.dict("sys.modules", {"yt_dlp.version": SimpleNamespace(__version__="2026.01.05")}),
+    ):
+        await provider._install_packages()
+
+    assert "restart" not in caplog.text

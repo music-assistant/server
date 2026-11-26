@@ -88,6 +88,59 @@ async def test_backend_start_probes_api_port_on_ipv4_loopback() -> None:
     assert backend._client.base_url == "http://127.0.0.1:38801"
 
 
+@pytest.mark.parametrize(
+    ("daemon_events", "expected"),
+    [
+        pytest.param(
+            ["active", "playing", "paused", "playing"],
+            [
+                BackendEventType.SESSION_ACTIVE,
+                BackendEventType.PLAYING,
+                BackendEventType.PAUSED,
+                BackendEventType.PLAYING,
+            ],
+            id="transfer",
+        ),
+        pytest.param(
+            ["playing", "paused", "playing"],
+            [
+                BackendEventType.SESSION_ACTIVE,
+                BackendEventType.PLAYING,
+                BackendEventType.PAUSED,
+                BackendEventType.PLAYING,
+            ],
+            id="play_request",
+        ),
+        pytest.param(
+            ["active", "playing", "inactive", "stopped", "playing"],
+            [
+                BackendEventType.SESSION_ACTIVE,
+                BackendEventType.PLAYING,
+                BackendEventType.SESSION_INACTIVE,
+                BackendEventType.STOPPED,
+                BackendEventType.SESSION_ACTIVE,
+                BackendEventType.PLAYING,
+            ],
+            id="play_request_after_deselect",
+        ),
+    ],
+)
+async def test_go_librespot_reports_an_active_session_once(
+    daemon_events: list[str], expected: list[BackendEventType]
+) -> None:
+    """A session is reported as active once, also when playback started on request."""
+    backend = object.__new__(GoLibrespotBackend)
+    backend.logger = MagicMock()
+    backend.name = "Spotify Test"
+    backend._session_active = False
+    backend._event_callback = event_callback = AsyncMock()
+
+    for event_type in daemon_events:
+        await backend._handle_event(event_type, {})
+
+    assert [call.args[0].type for call in event_callback.await_args_list] == expected
+
+
 async def test_daemon_runner_reselects_api_port_when_taken(tmp_path: Path) -> None:
     """An API port taken while the daemon was down is replaced before (re)starting."""
     backend = object.__new__(GoLibrespotBackend)
@@ -135,6 +188,36 @@ async def test_daemon_runner_reselects_api_port_when_taken(tmp_path: Path) -> No
     assert backend._client.base_url == "http://127.0.0.1:38801"
     # the daemon config pins the advertisement to the player-facing interface
     write_config.assert_called_once_with("192.168.1.5")
+
+
+async def test_deactivate_keeps_reading_until_the_daemon_stopped() -> None:
+    """A daemon that waits for its audio to be read can still be released."""
+    audio_read = asyncio.Event()
+    reads = 0
+
+    async def _read(_size: int) -> bytes:
+        nonlocal reads
+        reads += 1
+        audio_read.set()
+        await asyncio.sleep(0)
+        return b"\x00" * 64
+
+    backend = object.__new__(GoLibrespotBackend)
+    backend.mass = MagicMock()
+    backend.mass.create_task.side_effect = asyncio.create_task
+    backend._proc = MagicMock(read=_read)
+    backend._client = MagicMock()
+    backend._client.stop = AsyncMock(side_effect=audio_read.wait)
+
+    async with asyncio.timeout(1):
+        await backend.deactivate()
+
+    backend._client.stop.assert_awaited_once()
+    # the audio of a next session is left to its own stream
+    await asyncio.sleep(0)
+    reads_after_stop = reads
+    await asyncio.sleep(0.01)
+    assert reads == reads_after_stop
 
 
 def _volume_sync_provider(
@@ -321,8 +404,10 @@ async def _session_inactive(provider: SpotifyConnectProvider, daemon: _PlayerDae
     """Run the backend's 'session inactive' answer and return the players it wanted stopped."""
     stopped: list[str] = []
 
-    def _record_stop(daemon: _PlayerDaemon, player_id: str) -> None:
+    def _record_stop(daemon: _PlayerDaemon, player_id: str, *, paused: bool = False) -> None:
         del daemon
+        # a session that ended leaves nothing to play on
+        assert not paused
         stopped.append(player_id)
 
     provider._schedule_pause_stop = _record_stop  # type: ignore[method-assign]
@@ -449,18 +534,18 @@ async def test_a_slow_stop_after_pause_is_reported() -> None:
     """A stop that takes its time is reported, and still runs to completion."""
     stopped = asyncio.Event()
 
-    async def _slow_stop(_player_id: str) -> None:
+    async def _slow_stop(*_args: str) -> None:
         await asyncio.sleep(0.05)
         stopped.set()
 
-    provider, _daemon, _ = _tethered_provider()
+    provider, daemon, _ = _tethered_provider()
     mass = cast("Any", provider.mass)
     mass.loop = asyncio.get_running_loop()
-    mass.players.cmd_stop = AsyncMock(side_effect=_slow_stop)
+    mass.players.pause_audio_source = AsyncMock(side_effect=_slow_stop)
     logger = cast("MagicMock", provider.logger)
 
     with patch("music_assistant.providers.spotify_connect.provider.SLOW_STOP_WARN_S", 0.01):
-        await provider._stop_paused_player("player1")
+        await provider._stop_paused_player(daemon, "player1", paused=True)
 
     assert stopped.is_set()
     logger.warning.assert_called_once()
@@ -468,13 +553,13 @@ async def test_a_slow_stop_after_pause_is_reported() -> None:
 
 async def test_a_prompt_stop_after_pause_is_not_reported() -> None:
     """A stop that finishes promptly is not reported as slow."""
-    provider, _daemon, _ = _tethered_provider()
+    provider, daemon, _ = _tethered_provider()
     mass = cast("Any", provider.mass)
     mass.loop = asyncio.get_running_loop()
     mass.players.cmd_stop = AsyncMock()
     logger = cast("MagicMock", provider.logger)
 
-    await provider._stop_paused_player("player1")
+    await provider._stop_paused_player(daemon, "player1", paused=False)
 
     mass.players.cmd_stop.assert_awaited_once_with("player1")
     logger.warning.assert_not_called()

@@ -470,6 +470,9 @@ class TestFinalActiveGroupNewModel:
         group, member = self._group_of(controller, powered=None, protocol_class=_SessionedGroup)
 
         assert member.active_group == group.player_id
+        assert group.own_protocol is not None
+        assert group.own_protocol.counts_in(member.player_id)
+        assert not group.own_protocol.counts_in("other")
 
 
 class _LockingGroup(MockProtocol):
@@ -979,6 +982,8 @@ class TestPlayerBaseIsActiveSession:
         provider = MockProvider("test", instance_id="test", mass=mock_mass)
         _, protocol = attach_mock(provider, "p1", "P1")
         assert protocol.is_active_session is False
+        protocol._attr_group_members = ["p1", "p2"]
+        assert not protocol.counts_in("p2")
 
 
 def _attach(provider: MockProvider, player_id: str, name: str, **kwargs: Any) -> MockProtocol:

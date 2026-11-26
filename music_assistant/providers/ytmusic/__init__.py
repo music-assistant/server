@@ -7,6 +7,7 @@ import gettext
 import importlib
 import logging
 import secrets
+import sys
 import time
 from collections import Counter
 from collections.abc import AsyncGenerator, Iterable, Sequence
@@ -76,6 +77,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.helpers.playlists import validate_playlist_block_move
 from music_assistant.helpers.util import (
+    get_package_version,
     import_module_in_thread,
     infer_album_type,
     install_package,
@@ -132,6 +134,7 @@ CONF_STREAM_PROFILE = "stream_profile"
 STREAM_PROFILE_STABLE = "stable"
 STREAM_PROFILE_FAST = "fast"
 DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
+UPLOAD_MEDIA_TYPES = {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK}
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"
@@ -354,47 +357,56 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             if media_types[0] == MediaType.RADIO:
                 # bit of an edge case but still good to handle
                 return parsed_results
+        authenticated = bool(self.config.get_value(CONF_AUTHENTICATED_SEARCH))
         account: dict[str, Any] = (
-            {"headers": self._headers, "user": self._yt_user}
-            if self.config.get_value(CONF_AUTHENTICATED_SEARCH)
-            else {}
+            {"headers": self._headers, "user": self._yt_user} if authenticated else {}
         )
-        results = await search(query=search_query, ytm_filter=ytm_filter, limit=limit, **account)
-        if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
+        include_videos = ytm_filter == "songs" and bool(self.config.get_value(CONF_INCLUDE_VIDEOS))
+        results, videos, uploads = await asyncio.gather(
+            search(query=search_query, ytm_filter=ytm_filter, limit=limit, **account),
+            search(query=search_query, ytm_filter="videos", limit=limit, **account)
+            if include_videos
+            else _no_results(),
+            # uploads only come back from their own scope, which needs the account
+            search(query=search_query, scope="uploads", limit=limit, **account)
+            if authenticated and UPLOAD_MEDIA_TYPES & set(media_types)
+            else _no_results(),
+        )
+        if include_videos:
             # some tracks only exist as a video; interleave so videos survive the limit cut
-            videos = await search(query=search_query, ytm_filter="videos", limit=limit, **account)
             results = [item for pair in zip_longest(results, videos) for item in pair if item]
             results = results[:limit]
-        parsed_results = SearchResults()
-        artists: list[Artist | ItemMapping] = []
-        albums: list[Album | ItemMapping] = []
-        playlists: list[Playlist | ItemMapping] = []
-        tracks: list[Track | ItemMapping] = []
-        podcasts: list[Podcast | ItemMapping] = []
+        upload_items = await asyncio.gather(
+            *(self._parse_upload_search_result(result, media_types) for result in uploads)
+        )
+        items: list[MediaItemType] = [item for item in upload_items if item]
         for result in results:
-            try:
-                if result["resultType"] == "artist" and MediaType.ARTIST in media_types:
-                    artists.append(self._parse_artist(result))
-                elif result["resultType"] == "album" and MediaType.ALBUM in media_types:
-                    albums.append(self._parse_album(result))
-                elif result["resultType"] == "playlist" and MediaType.PLAYLIST in media_types:
-                    playlists.append(self._parse_playlist(result))
-                elif result["resultType"] == "podcast" and MediaType.PODCAST in media_types:
-                    if podcast := self._parse_browse_podcast(result):
-                        podcasts.append(podcast)
-                elif (
-                    result["resultType"] in ("song", "video")
-                    and MediaType.TRACK in media_types
-                    and (track := self._parse_track(result))
-                ):
-                    tracks.append(track)
-            except InvalidDataError:
-                pass  # ignore invalid item
-        parsed_results.artists = artists
-        parsed_results.albums = albums
-        parsed_results.playlists = playlists
-        parsed_results.tracks = tracks
-        parsed_results.podcasts = podcasts
+            with suppress(InvalidDataError):
+                if item := self._parse_search_result(result, media_types):
+                    items.append(item)
+        artists: list[Artist] = []
+        albums: list[Album] = []
+        playlists: list[Playlist] = []
+        tracks: list[Track] = []
+        podcasts: list[Podcast] = []
+        for item in items:
+            match item:
+                case Artist():
+                    artists.append(item)
+                case Album():
+                    albums.append(item)
+                case Playlist():
+                    playlists.append(item)
+                case Track():
+                    tracks.append(item)
+                case Podcast():
+                    podcasts.append(item)
+        # uploads come first, so the user's own items survive the limit cut
+        parsed_results.artists = artists[:limit]
+        parsed_results.albums = albums[:limit]
+        parsed_results.playlists = playlists[:limit]
+        parsed_results.tracks = tracks[:limit]
+        parsed_results.podcasts = podcasts[:limit]
         return parsed_results
 
     async def sync_library(self, media_type: MediaType) -> None:
@@ -446,7 +458,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             try:
                 yield self._parse_track(track)
             except InvalidDataError:
-                full_track = await self.get_track(track["videoId"])
+                try:
+                    full_track = await self.get_track(track["videoId"])
+                except (MediaNotFoundError, YTMusicServerError) as err:
+                    self.report_skipped_sync_item(MediaType.TRACK, track["videoId"], err)
+                    continue
                 if "entityId" in track:
                     for mapping in full_track.provider_mappings:
                         mapping.is_unique = True
@@ -526,6 +542,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             prov_track_id=prov_track_id,
             headers=self._headers,
             language=self.language,
+            user=self._yt_user,
         ):
             return self._parse_track(track_obj)
         msg = f"Item {prov_track_id} not found"
@@ -1219,6 +1236,43 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             }
         }
 
+    def _parse_search_result(
+        self, result: dict[str, Any], media_types: list[MediaType]
+    ) -> MediaItemType | None:
+        """Parse a search result, None when its media type was not asked for."""
+        result_type = result["resultType"]
+        if result_type == "artist" and MediaType.ARTIST in media_types:
+            return self._parse_artist(result)
+        if result_type == "album" and MediaType.ALBUM in media_types:
+            return self._parse_album(result)
+        if result_type == "playlist" and MediaType.PLAYLIST in media_types:
+            return self._parse_playlist(result)
+        if result_type == "podcast" and MediaType.PODCAST in media_types:
+            return self._parse_browse_podcast(result)
+        if result_type in ("song", "video") and MediaType.TRACK in media_types:
+            return self._parse_track(result)
+        return None
+
+    async def _parse_upload_search_result(
+        self, result: dict[str, Any], media_types: list[MediaType]
+    ) -> MediaItemType | None:
+        """Parse an uploads search result, None when it is invalid or not asked for."""
+        try:
+            item = self._parse_search_result(result, media_types)
+        except InvalidDataError:
+            # an untagged upload has no artist credit, same as in the library sync
+            if result["resultType"] != "song" or not result.get("videoId"):
+                return None
+            try:
+                item = await self.get_track(result["videoId"])
+            except MediaNotFoundError, YTMusicServerError:
+                return None
+        if item:
+            # upload search results carry no entityId, so mark them here
+            for mapping in item.provider_mappings:
+                mapping.is_unique = True
+        return item
+
     def _parse_album(self, album_obj: dict[str, Any], album_id: str | None = None) -> Album:
         """Parse a YT Album response to an Album model object."""
         album_id = album_id or album_obj.get("id") or album_obj.get("browseId")
@@ -1724,12 +1778,35 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         # some packages very frequently. Installing them dynamically prevents
         # us from having to update MA to ensure this provider works.
         for package_name in PACKAGES_TO_INSTALL:
-            await install_package(package_name)
+            try:
+                await install_package(package_name, upgrade=True)
+            except RuntimeError as err:
+                # e.g. PyPI unreachable, an already installed version is still usable
+                if await get_package_version(package_name.split("[", 1)[0]) is None:
+                    raise
+                self.logger.warning(
+                    "Failed to upgrade %s, using the installed version: %s", package_name, err
+                )
         # verify if the yt_dlp package is usable
         try:
             await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")
+        await self._warn_if_ytdlp_outdated_in_process()
+
+    async def _warn_if_ytdlp_outdated_in_process(self) -> None:
+        """Warn when the yt_dlp loaded in this process is older than the installed package."""
+        loaded = sys.modules.get("yt_dlp.version")
+        installed = await get_package_version("yt-dlp")
+        if loaded is None or installed is None:
+            return
+        # yt_dlp reports zero padded dates (2026.06.09), package metadata doesn't (2026.6.9)
+        if _version_parts(loaded.__version__) != _version_parts(installed):
+            self.logger.warning(
+                "yt-dlp was updated from %s to %s, restart the server to use the new version",
+                loaded.__version__,
+                installed,
+            )
 
     @use_cache(3600)  # Cache for 1 hour
     async def _get_artist_obj(self, prov_artist_id: str, language: str) -> dict[str, Any]:
@@ -1825,3 +1902,13 @@ def _album_type_labels(language: str) -> dict[str, AlbumType]:
     # a label shared by several types (e.g. Spanish) can't tell them apart, so it stays unknown
     counts = Counter(translated.values())
     return labels | {text: labels[label] for label, text in translated.items() if counts[text] == 1}
+
+
+async def _no_results() -> list[dict[str, Any]]:
+    """Stand in for a search that is not needed."""
+    return []
+
+
+def _version_parts(version: str) -> list[int]:
+    """Return the numeric parts of a yt-dlp version."""
+    return [int(part) for part in version.split(".")]

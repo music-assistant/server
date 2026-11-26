@@ -189,7 +189,7 @@ class MASTokenVerifier(TokenVerifier):
 
         try:
             user = await self._mass.webserver.auth.authenticate_with_token(token)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any auth failure rejects the token
             self._identity_registry.discard(token)
             LOGGER.error("MA token verification raised")
             return None
@@ -202,7 +202,7 @@ class MASTokenVerifier(TokenVerifier):
         client_id = LOOKUP_FAILURE_CLIENT_ID
         try:
             token_id = await self._mass.webserver.auth.get_token_id_from_token(token)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any lookup failure means safe policy
             self._identity_registry.discard(token)
             self._identity_registry.record_resolution_failure()
             LOGGER.error("MA token identity lookup raised; using Safe queries policy")

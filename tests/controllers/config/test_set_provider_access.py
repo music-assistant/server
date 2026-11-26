@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess, ProviderConfig
-from music_assistant_models.enums import EventType, ProviderSharing, ProviderType
+from music_assistant_models.enums import EventType, ProviderSharing, ProviderType, SharedPlayback
 from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 from music_assistant_models.provider import ProviderManifest
 
@@ -108,6 +108,7 @@ async def test_admin_sets_owner_and_shared_users(access_mass: MusicAssistant) ->
         "owner": owner.user_id,
         "sharing": "selected",
         "shared_users": [guest.user_id, admin.user_id],
+        "shared_playback": "without_own",
     }
 
 
@@ -347,6 +348,7 @@ async def test_a_disabled_member_keeps_its_place_on_the_share_list(
         "owner": owner.user_id,
         "sharing": "selected",
         "shared_users": [member.user_id, disabled.user_id],
+        "shared_playback": "without_own",
     }
     # the kept place is what gives the account its access back once it is enabled
     assert access_allows(config.access, disabled)
@@ -386,6 +388,7 @@ async def test_a_disabled_or_unknown_user_is_not_added_to_the_share_list(
         "owner": admin.user_id,
         "sharing": "selected",
         "shared_users": [member.user_id],
+        "shared_playback": "without_own",
     }
 
 
@@ -489,6 +492,7 @@ async def test_an_ownerless_source_must_be_shared_with_someone(
         "owner": owner.user_id,
         "sharing": "members",
         "shared_users": [],
+        "shared_playback": "without_own",
     }
 
 
@@ -516,6 +520,53 @@ async def test_an_ownerless_source_shared_with_someone_is_accepted(
         MUSIC_INSTANCE, sharing=ProviderSharing.EVERYONE
     )
     assert config.access == ProviderAccess(sharing=ProviderSharing.EVERYONE)
+
+
+async def test_the_owner_sets_when_others_play_from_its_account(
+    access_mass: MusicAssistant,
+) -> None:
+    """The setting is stored, and kept when a caller leaves it out."""
+    owner = await _create_user(access_mass, "owner")
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    set_current_user(owner)
+
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE,
+        owner=owner.user_id,
+        sharing=ProviderSharing.EVERYONE,
+        shared_playback=SharedPlayback.WHEN_BUSY,
+    )
+    assert config.access is not None
+    assert config.access.shared_playback is SharedPlayback.WHEN_BUSY
+
+    # a client that does not know the setting leaves it as it is
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE, owner=owner.user_id, sharing=ProviderSharing.MEMBERS
+    )
+    assert config.access is not None
+    assert config.access.shared_playback is SharedPlayback.WHEN_BUSY
+    stored = _stored_access(access_mass, MUSIC_INSTANCE)
+    assert stored is not None
+    assert stored["shared_playback"] == "when_busy"
+
+
+async def test_an_ownerless_source_can_not_be_kept_to_its_owner(
+    access_mass: MusicAssistant,
+) -> None:
+    """A source without an owner that plays for nobody is refused."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    set_current_user(admin)
+
+    with pytest.raises(InvalidDataError) as excinfo:
+        await access_mass.config.set_provider_access(
+            MUSIC_INSTANCE, sharing=ProviderSharing.EVERYONE, shared_playback=SharedPlayback.NEVER
+        )
+
+    assert excinfo.value.translation_key == "source_no_owner_must_play"
+    assert _stored_access(access_mass, MUSIC_INSTANCE) is None
 
 
 async def test_shared_users_are_dropped_unless_the_source_is_shared_with_a_selection(

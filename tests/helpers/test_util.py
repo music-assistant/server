@@ -30,6 +30,7 @@ from music_assistant.helpers.util import (
     get_source_ip_for_target,
     guard_single_request,
     import_module_in_thread,
+    install_package,
     is_port_in_use,
     join_task,
     load_provider_module,
@@ -414,6 +415,31 @@ class TestLoadProviderModule:
             await load_provider_module(_sendspin_manifest(ProviderTier.COMMUNITY))
         assert import_mock.call_count == 1
         install_mock.assert_not_awaited()
+
+
+class TestInstallPackage:
+    """Tests for install_package."""
+
+    @pytest.mark.asyncio
+    async def test_upgrade_targets_only_the_package(self) -> None:
+        """Upgrade passes the requirement name, without extras, to --upgrade-package."""
+        with patch(
+            "music_assistant.helpers.util.check_output", return_value=(0, b"")
+        ) as output_mock:
+            await install_package("yt-dlp[default]", upgrade=True)
+        args = list(output_mock.call_args.args)
+        assert args[args.index("--upgrade-package") + 1] == "yt-dlp"
+        assert args[-1] == "yt-dlp[default]"
+        assert "--upgrade" not in args
+
+    @pytest.mark.asyncio
+    async def test_no_upgrade_by_default(self) -> None:
+        """Without upgrade no upgrade flag is passed."""
+        with patch(
+            "music_assistant.helpers.util.check_output", return_value=(0, b"")
+        ) as output_mock:
+            await install_package("yt-dlp[default]")
+        assert "--upgrade-package" not in output_mock.call_args.args
 
 
 class TestGetIpAddresses:

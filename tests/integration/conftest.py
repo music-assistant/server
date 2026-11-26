@@ -90,9 +90,16 @@ def _create_mock_zeroconf() -> MagicMock:
     mock_zc.zeroconf = mock_inner_zc
     mock_zc.async_register_service = AsyncMock()
     mock_zc.async_update_service = AsyncMock()
-    mock_zc.async_unregister_service = AsyncMock()
+    mock_zc.async_unregister_service = AsyncMock(side_effect=_goodbyes_sent)
     mock_zc.async_close = AsyncMock()
     return mock_zc
+
+
+def _goodbyes_sent(_info: object) -> asyncio.Future[None]:
+    """Return a done future, like the awaitable the real unregister returns for its goodbyes."""
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    future.set_result(None)
+    return future
 
 
 @pytest.fixture

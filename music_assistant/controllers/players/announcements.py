@@ -61,6 +61,8 @@ from .constants import PlayerLockPurpose, SwitchedOffAction
 from .helpers import AnnounceData, handle_player_command
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from music_assistant.controllers.streams.announcements import AnnouncementRender
 
 # the caller waits for this command and it holds the player's playback lock while it runs,
@@ -407,6 +409,15 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # that live stream, in sync with the rest of the group) instead of a
             # second mechanism firing beside the playback.
             return announce_player
+        if (
+            (output := player.resolve_output_protocol())
+            and (underlying_id := output.underlying_protocol_id)
+            and (underlying := player.attached_protocols.get(underlying_id))
+            and PlayerFeature.PLAY_ANNOUNCEMENT in underlying.supported_features
+        ):
+            # The active output is a bridge (e.g. Sendspin over AirPlay) that streams
+            # through the output it rides on, so that output mixes the clip into it.
+            return underlying
         if player.playback_state != PlaybackState.PLAYING:
             # An idle player may announce through any audio protocol. A
             # PLAYING player deliberately gets no such fallback: routing to
@@ -524,10 +535,11 @@ class AnnouncementsMixin(_PlayerControllerBase):
         # an announcement is always meant to be heard, so a deliberate mute is lifted for
         # its duration. this happens before the announcement volume is resolved below,
         # since a fake mute control parks the player at volume 0 to mute it.
-        # in case of a (sync) group, this covers all child players.
+        # in case of a group player, this covers all its members; a player that leads
+        # others only announces on itself.
         muted_players = [
             muted_player
-            for member_id in player.group_members or (player.player_id,)
+            for member_id in self._announcement_audience(player)
             if (muted_player := self.get_player(member_id)) and muted_player.volume_muted
         ]
         # filled while the announcement volume is applied below
@@ -594,6 +606,16 @@ class AnnouncementsMixin(_PlayerControllerBase):
         )
         prev_synced_to = player.synced_to
         prev_group = self.get_player(player.active_group) if player.active_group else None
+        if prev_group and player.player_id not in prev_group.group_members:
+            # it fell out of the playback of the group, which plays on without it
+            prev_group = None
+        # a player that leads others plays the announcement alone: its members leave it
+        # for the clip and join it again afterwards
+        prev_members = (
+            [member_id for member_id in player.group_members if member_id != player.player_id]
+            if player.type != PlayerType.GROUP and not (prev_synced_to or prev_group)
+            else []
+        )
         prev_source = player.active_source
         prev_media = player.current_media
         prev_media_name = prev_media.title or prev_media.uri if prev_media else None
@@ -621,6 +643,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 prev_state=prev_state,
                 prev_synced_to=prev_synced_to,
                 prev_group=prev_group,
+                prev_members=prev_members,
                 prev_media_name=prev_media_name,
                 prev_volumes=prev_volumes,
                 prev_muted=prev_muted,
@@ -679,6 +702,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 prev_muted=prev_muted,
                 prev_synced_to=prev_synced_to,
                 prev_group=prev_group,
+                prev_members=prev_members,
                 prev_source=prev_source,
                 prev_media=prev_media,
                 restore_playback=restore_playback,
@@ -692,6 +716,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         prev_state: PlaybackState,
         prev_synced_to: str | None,
         prev_group: Player | None,
+        prev_members: list[str],
         prev_media_name: str | None,
         prev_volumes: dict[str, int],
         prev_muted: set[str],
@@ -704,6 +729,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         :param prev_state: The playback state the player had before the announcement.
         :param prev_synced_to: Player ID of the sync leader the player is synced to (if any).
         :param prev_group: The group player the player is a member of (if any).
+        :param prev_members: Player IDs of the members the player leads, which leave it.
         :param prev_media_name: Name of the media the player was playing (for logging).
         :param prev_volumes: Mapping that is filled in-place with the previous volume level
             per player id, so the caller can restore the volumes even if this call fails.
@@ -754,10 +780,19 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
             await self._wait_for_playback_state(player, PlaybackState.IDLE, 10, 0.4)
+        if prev_members:
+            # members play what their leader plays, so they leave it for the clip - after
+            # the stop above, which stopped the whole group at once
+            self.logger.debug(
+                "Announcement to player %s - ungrouping its members %s...",
+                player.name,
+                prev_members,
+            )
+            await self.cmd_set_members(player.player_id, player_ids_to_remove=prev_members)
         # unmute and adjust volume if needed
-        # in case of a (sync) group, we need to do this for all child players
+        # in case of a group player, we need to do this for all its members
         async with TaskManager(self.mass) as tg:
-            for volume_player_id in player.group_members or (player.player_id,):
+            for volume_player_id in self._announcement_audience(player):
                 if not (volume_player := self.get_player(volume_player_id)):
                     continue
                 if volume_player.offline_by_power_control:
@@ -795,6 +830,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         prev_muted: set[str],
         prev_synced_to: str | None,
         prev_group: Player | None,
+        prev_members: list[str],
         prev_source: str | None,
         prev_media: PlayerMedia | None,
         restore_playback: bool,
@@ -811,6 +847,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         :param prev_muted: The ids of the players that were muted before the announcement.
         :param prev_synced_to: Player ID of the sync leader the player was synced to (if any).
         :param prev_group: The group player the player was a member of (if any).
+        :param prev_members: Player IDs of the members the player led, which join it again.
         :param prev_source: The source that was active before the announcement.
         :param prev_media: The media that was loaded before the announcement.
         :param restore_playback: Whether playback needs to be resumed.
@@ -864,9 +901,17 @@ class AnnouncementsMixin(_PlayerControllerBase):
                         prev_group.name,
                     )
                     await self.cmd_play(prev_group.player_id)
-            elif restore_playback:
-                # player was playing something before the announcement - try to resume that here
-                await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
+            else:
+                if prev_members:
+                    # grouped back before the resume below, so the group plays on as a whole
+                    self.logger.debug(
+                        "Announcement to player %s - grouping its members back...", player.name
+                    )
+                    await self.cmd_set_members(player.player_id, player_ids_to_add=prev_members)
+                if restore_playback:
+                    # player was playing something before the announcement - try to resume
+                    # that here
+                    await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
         except Exception as err:  # noqa: BLE001 - see the comment below
             # deliberately broad: set_members is a raw provider call that is not wrapped
             # into a MusicAssistantError, so it can surface anything its client library
@@ -1003,3 +1048,16 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 return False
             provider_ids.add(announce_player.provider.instance_id)
         return len(provider_ids) <= 1
+
+    @staticmethod
+    def _announcement_audience(player: Player) -> Sequence[str]:
+        """
+        Return the ids of the players that play an announcement on the player.
+
+        Every member of a group player, else the player alone, also when it leads others.
+
+        :param player: The player the announcement is played on.
+        """
+        if player.type == PlayerType.GROUP and player.group_members:
+            return player.group_members
+        return (player.player_id,)

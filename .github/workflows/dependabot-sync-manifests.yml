@@ -3,15 +3,16 @@
 # requirements_all.txt is reverted by the gen_requirements_all pre-commit hook, so CI fails.
 #
 # This workflow back-propagates the bumped pin into the owning manifest.json and regenerates
-# requirements_all.txt, then pushes the fix onto the Dependabot branch.
+# requirements_all.txt, then pushes the fix onto the Dependabot branch. It runs from `dev` after
+# the "PR event" workflow, where the musicassistant-bot key is available: workflows Dependabot
+# starts directly only see Dependabot secrets.
 
 name: Sync manifests on Dependabot PRs
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
-    branches:
-      - dev
+  workflow_run:
+    workflows: [PR event]
+    types: [completed]
 
 permissions:
   contents: read
@@ -24,24 +25,53 @@ jobs:
   sync-manifests:
     name: Back-sync provider manifests
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    if: >-
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+      && (startsWith(github.event.workflow_run.display_title, 'opened')
+      || startsWith(github.event.workflow_run.display_title, 'synchronize')
+      || startsWith(github.event.workflow_run.display_title, 'reopened'))
     permissions:
       contents: read
+      pull-requests: read
     steps:
+      - name: Check out the PR lookup
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+          path: dev-scripts
+
+      - name: Find the Dependabot pull request
+        id: pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { findPullRequest } = require(
+              `${process.env.GITHUB_WORKSPACE}/dev-scripts/.github/scripts/pr-event.cjs`);
+            const pr = await findPullRequest({ github, context, core, base: 'dev' });
+            if (!pr || pr.user.login !== 'dependabot[bot]'
+                || pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              return;
+            }
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('base_ref', pr.base.ref);
+
       # Keep the checkout token out of git config while processing the Dependabot branch.
       # A repository-scoped musicassistant-bot[bot] token is minted only for the push so the
       # resulting commit re-triggers the required checks.
       - name: Check out the Dependabot branch
+        if: steps.pr.outputs.head_ref
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ steps.pr.outputs.head_ref }}
           persist-credentials: false
           fetch-depth: 0
 
       - name: Determine packages bumped in requirements_all.txt
+        if: steps.pr.outputs.head_ref
         id: bumped
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: |
           # Fetch the base branch so we can diff against the PR's true fork point and, later, run
           # its current (trusted) tooling. base.ref (not base.sha) is used throughout: the base tip
@@ -75,7 +105,7 @@ jobs:
           # Pass via env (not inline ${{ }}) to avoid shell injection; the names are already
           # constrained to [A-Za-z0-9._-] above, and word-splitting them into args is intended.
           PACKAGES: ${{ steps.bumped.outputs.packages }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: |
           # Run the trusted base-branch tooling (fetched above) against the PR's data files: the PR
           # branch may predate the sync script, and we must never execute scripts from the PR head.
@@ -113,7 +143,7 @@ jobs:
         if: steps.bumped.outputs.packages != ''
         env:
           PUSH_TOKEN: ${{ steps.push_token.outputs.token }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
           REPO: ${{ github.repository }}
         run: |
           # Stage only the data files (the base-branch scripts/ overlay is left unstaged) and key

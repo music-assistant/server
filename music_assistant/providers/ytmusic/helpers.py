@@ -145,12 +145,12 @@ async def get_playlist(
 
 
 async def get_track(
-    prov_track_id: str, headers: dict[str, str], language: str = "en"
+    prov_track_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> dict[str, Any] | None:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_song() -> dict[str, Any] | None:
-        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         track_obj = ytm.get_song(videoId=prov_track_id)
         track: dict[str, Any] = {}
         if "videoDetails" not in track_obj:
@@ -467,6 +467,7 @@ async def search(
     limit: int = 20,
     headers: dict[str, str] | None = None,
     user: str | None = None,
+    scope: Literal["uploads"] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Async wrapper around the ytmusicapi search function.
@@ -476,6 +477,7 @@ async def search(
     :param limit: Maximum number of results.
     :param headers: Account headers to search with, None to search signed out.
     :param user: Brand account id to search as.
+    :param scope: "uploads" to search the account's own uploads, needs headers and no filter.
     """
 
     def _search() -> list[dict[str, Any]]:
@@ -489,7 +491,7 @@ async def search(
             if headers
             else _search_client()
         )
-        results = ytm.search(query=query, filter=ytm_filter, limit=limit)
+        results = ytm.search(query=query, filter=ytm_filter, scope=scope, limit=limit)
         # Sync result properties with uniformal objects
         for result in results:
             if result["resultType"] == "artist":
@@ -498,10 +500,9 @@ async def search(
                     result["name"] = result["artists"][0]["name"]
                     del result["artists"]
                 else:
-                    result["id"] = result["browseId"]
-                    result["name"] = result["artist"]
-                    del result["browseId"]
-                    del result["artist"]
+                    result["id"] = result.pop("browseId")
+                    # an upload artist carries its name as the title
+                    result["name"] = result.pop("artist", None) or result["title"]
             elif result["resultType"] == "playlist":
                 if "playlistId" in result:
                     result["id"] = result["playlistId"]

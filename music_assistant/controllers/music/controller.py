@@ -94,6 +94,7 @@ from music_assistant.controllers.music.constants import (
     INITIAL_SYNC_DELAY,
     LIVE_SOURCES_BROWSE_SCHEME,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
+    NON_LIBRARY_MEDIA_TYPES,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     RECOMMENDATIONS_BROWSE_SCHEME,
     SEARCH_CACHE_EXPIRATION_COMBINED,
@@ -727,12 +728,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             include_library = "library" in providers
             requested_providers = set(providers)
-            search_providers = [
-                instance_id
-                for instance_id in all_search_providers
-                if (prov := self.get_visible_provider(instance_id))
-                and (prov.instance_id in requested_providers or prov.domain in requested_providers)
-            ]
+            # an account requested by its instance id is searched as is, also when
+            # another account represents its streaming service
+            requested_instances = requested_providers.intersection(
+                self.get_active_provider_instances()
+            )
+            search_providers = sorted(
+                requested_instances.union(
+                    instance_id
+                    for instance_id in all_search_providers
+                    if (prov := self.get_visible_provider(instance_id))
+                    and (
+                        prov.instance_id in requested_providers
+                        or prov.domain in requested_providers
+                    )
+                )
+            )
         # use cache to avoid repeated searches; the library results are narrowed to what
         # the calling user may see, so the entry is kept per user (and role)
         user = get_current_user()
@@ -1751,18 +1762,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 uri_media_type, _, _ = await parse_uri(item)
             except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
-            if uri_media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+            if uri_media_type in NON_LIBRARY_MEDIA_TYPES:
                 raise UnsupportedFeaturedException(
-                    f"{uri_media_type.value} items can not be favorites"
+                    f"{uri_media_type.value} items can not be favorites",
+                    translation_key="item_type_not_favorite",
+                    translation_owner=self.translation_owner,
                 )
             # a favorite URI always resolves to a media item, never a BrowseFolder
             item = cast("MediaItemType", await self.get_item_by_uri(item))
-        if item.media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+        if item.media_type in NON_LIBRARY_MEDIA_TYPES:
             # AudioSources and SoundEffects are live provider content (existence
-            # depends on a loaded provider) and have no stable library identity,
-            # so they can not be persisted as favorites.
+            # depends on a loaded provider) and have no stable library identity, and
+            # a podcast episode is not stored either, so none can be persisted as favorites.
             raise UnsupportedFeaturedException(
-                f"{item.media_type.value} items can not be favorites"
+                f"{item.media_type.value} items can not be favorites",
+                translation_key="item_type_not_favorite",
+                translation_owner=self.translation_owner,
             )
         # make sure we have a full library item
         # a favorite must always be in the library
@@ -1892,11 +1907,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 uri_media_type, _, _ = await parse_uri(item)
             except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
-            if uri_media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+            if uri_media_type in NON_LIBRARY_MEDIA_TYPES:
                 raise UnsupportedFeaturedException(
-                    f"{uri_media_type.value} items can not be library items"
+                    f"{uri_media_type.value} items can not be library items",
+                    translation_key="item_type_not_library_item",
+                    translation_owner=self.translation_owner,
                 )
             full_item = await self.get_item_by_uri(item)
+        elif item.media_type in NON_LIBRARY_MEDIA_TYPES:
+            # refused below, so there is no need to ask its provider for it
+            full_item = item
         # A manual URL track or radio of the builtin provider is used as provided,
         # to preserve custom modifications (name, images, etc.) that are not stored yet.
         # Anything else is fetched fresh to ensure data validity
@@ -1912,12 +1932,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if isinstance(full_item, Playlist):
             # who a Music Assistant playlist serves is only set through its own commands
             full_item.access = None
-        if full_item.media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+        if full_item.media_type in NON_LIBRARY_MEDIA_TYPES:
             # AudioSources and SoundEffects are live provider content (existence
-            # depends on a loaded provider) and have no stable library identity,
-            # so they can not be persisted as library items.
+            # depends on a loaded provider) and have no stable library identity, and
+            # a podcast episode is not stored either, so none can be persisted as library items.
             raise UnsupportedFeaturedException(
-                f"{full_item.media_type.value} items can not be library items"
+                f"{full_item.media_type.value} items can not be library items",
+                translation_key="item_type_not_library_item",
+                translation_owner=self.translation_owner,
             )
         # add to provider(s) library first
         write_targets = {

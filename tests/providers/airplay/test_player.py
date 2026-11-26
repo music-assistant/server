@@ -23,8 +23,9 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_PASSWORD, CONF_SYNC_ADJUST
+from music_assistant.constants import ATTR_VOLUME_TARGET, CONF_PASSWORD, CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import AnnouncementFeature
 from music_assistant.providers.airplay.constants import (
@@ -241,6 +242,39 @@ async def test_play_media_clears_transitioning_when_cold_start_raises(
     ):
         await airplay_player.play_media(MagicMock())
 
+    assert airplay_player._transitioning is False
+
+
+@pytest.mark.parametrize("warm", [False, True], ids=["cold_start", "warm_replace"])
+async def test_play_media_ends_quietly_when_the_source_refuses_the_player(
+    airplay_player: AirPlayPlayer, warm: bool
+) -> None:
+    """
+    A source refusing the player ends play_media without an error.
+
+    The streams controller logs the refusal and takes the source off the player, so an error
+    here would only add a warning for the command.
+    """
+    refusal = AudioSourceRefusedError("No AirPlay client is streaming to this receiver")
+    session = MagicMock()
+    session.can_replace = MagicMock(return_value=warm)
+    session.replace = AsyncMock(side_effect=refusal)
+    session.stop = AsyncMock()
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    with (
+        patch.object(airplay_player, "_get_sync_clients", return_value=[airplay_player]),
+        patch.object(airplay_player, "_get_session_pcm_format", new_callable=AsyncMock),
+        patch.object(airplay_player.mass.streams, "get_stream", MagicMock()),
+        patch(
+            "music_assistant.providers.airplay.player.AirPlayStreamSession",
+            return_value=MagicMock(start=AsyncMock(side_effect=refusal)),
+        ) as new_session,
+    ):
+        await airplay_player.play_media(MagicMock())
+
+    # a refused warm replacement is not retried cold, which would be refused as well
+    assert new_session.called is not warm
     assert airplay_player._transitioning is False
 
 
@@ -1301,6 +1335,95 @@ def test_owns_volume_false_when_another_control_owns_it(
     assert airplay_player.owns_volume is False
 
 
+@pytest.mark.parametrize("domain", ["wiim", "bose_soundtouch"])
+def test_native_start_volume_is_the_level_of_a_device_that_sets_its_own(
+    airplay_player: AirPlayPlayer, domain: str
+) -> None:
+    """A WiiM or Bose SoundTouch whose native protocol owns the volume starts at that level."""
+    player = _attach_to_player(airplay_player, own=_native_protocol(domain, volume_level=7))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume == 7
+    player.volume_control_for_output.assert_called_once_with(airplay_player.protocol_id)
+
+
+def test_native_start_volume_is_none_for_a_device_that_keeps_its_own_level(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A device not known to set a level of its own, such as a MusicCast receiver, gets none."""
+    player = _attach_to_player(airplay_player, own=_native_protocol("musiccast"))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume is None
+
+
+@pytest.mark.parametrize("control", ["test_player", "dlna_player", "media_player.amplifier"])
+def test_native_start_volume_is_none_when_the_native_protocol_does_not_own_the_volume(
+    airplay_player: AirPlayPlayer, control: str
+) -> None:
+    """The level of any other control is not the level of the device itself."""
+    player = _attach_to_player(
+        airplay_player,
+        own=_native_protocol("wiim"),
+        controls={"dlna_player": MagicMock(underlying_protocol_id=None)},
+    )
+    player.volume_control_for_output.return_value = control
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume is None
+
+
+def test_native_start_volume_is_none_while_the_player_is_muted(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A muted player is not handed a level that would make it heard."""
+    player = _attach_to_player(airplay_player, own=_native_protocol("wiim"))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = True
+
+    assert airplay_player.native_start_volume is None
+
+
+def test_native_start_volume_is_none_while_not_attached(airplay_player: AirPlayPlayer) -> None:
+    """A protocol without a player has no native protocol to take a level from."""
+    assert airplay_player.native_start_volume is None
+
+
+@pytest.mark.parametrize(
+    ("target", "commanded"),
+    [((25, 101.0), True), ((25, 99.0), False), (None, False)],
+)
+def test_volume_commanded_since_follows_the_last_volume_command(
+    airplay_player: AirPlayPlayer, target: tuple[int, float] | None, commanded: bool
+) -> None:
+    """Only a volume command given through Music Assistant after the moment counts."""
+    player = _attach_to_player(airplay_player)
+    player.extra_data = {} if target is None else {ATTR_VOLUME_TARGET: target}
+
+    assert airplay_player.volume_commanded_since(100.0) is commanded
+
+
+def test_volume_commanded_since_is_false_while_not_attached(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A protocol without a player has no volume commands to look at."""
+    assert airplay_player.volume_commanded_since(100.0) is False
+
+
+def _native_protocol(domain: str, volume_level: int = 30) -> MagicMock:
+    """
+    Build the native protocol of a player.
+
+    :param domain: Domain of the provider the native protocol belongs to.
+    :param volume_level: The level the native protocol reports.
+    """
+    return MagicMock(
+        provider=MagicMock(domain=domain), volume_level=volume_level, underlying_protocol_id=None
+    )
+
+
 def test_update_volume_from_device_keeps_native_parent_feedback(
     airplay_player: AirPlayPlayer,
 ) -> None:
@@ -1317,6 +1440,34 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
     assert airplay_player._attr_volume_level == 57
     airplay_player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
         airplay_player.protocol_id, CONF_STORED_VOLUME, 57
+    )
+    mock_update.assert_called_once()
+
+
+def test_a_device_level_is_not_written_back_while_the_native_protocol_owns_the_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level the device reports is only recorded while another control owns the volume.
+
+    Written back it would come back rounded to whole percents and could move the device
+    a step away from the level that control set.
+    """
+    player = _attach_to_player(airplay_player, own=_native_protocol("wiim"))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 30
+    airplay_player.last_command_sent = time.time() - 10
+    airplay_player.stream = MagicMock(running=True, send_cli_command=AsyncMock())
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.update_volume_from_device(7)
+
+    airplay_player.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
+    airplay_player.stream.send_cli_command.assert_not_called()
+    assert airplay_player._attr_volume_level == 7
+    airplay_player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.protocol_id, CONF_STORED_VOLUME, 7
     )
     mock_update.assert_called_once()
 
@@ -1489,12 +1640,33 @@ def test_announcements_are_advertised_only_with_live_audio(
     assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
 
 
-def test_player_reports_its_announcement_features(airplay_player: AirPlayPlayer) -> None:
+def test_player_in_a_session_lines_up_its_announcement_start(
+    airplay_player: AirPlayPlayer,
+) -> None:
     """The clip is mixed into live audio at the requested level, in step across members."""
+    airplay_player.stream = MagicMock(running=True, session=MagicMock())
+
     assert airplay_player.announcement_features == {
         AnnouncementFeature.SUPPORTS_VOLUME,
         AnnouncementFeature.APPLIES_VOLUME,
         AnnouncementFeature.COORDINATES_START,
+    }
+
+
+def test_bridged_player_does_not_line_up_its_announcement_start(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A Sendspin-bridged player has no stream session to line up its start in.
+
+    A group announcement then plays through the group's own stream, instead of each
+    member picking its own start and the rooms being heard out of step.
+    """
+    airplay_player.stream = MagicMock(running=True, session=None)
+
+    assert airplay_player.announcement_features == {
+        AnnouncementFeature.SUPPORTS_VOLUME,
+        AnnouncementFeature.APPLIES_VOLUME,
     }
 
 
@@ -1717,6 +1889,47 @@ async def test_synced_child_pause_parks_session(airplay_player: AirPlayPlayer) -
     session.standby.assert_awaited_once()
     mock_stop.assert_not_called()
     send_cmd.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grouped", [False, True])
+async def test_hold_parks_the_session(airplay_player: AirPlayPlayer, grouped: bool) -> None:
+    """A paused live source parks the session, of a single speaker as well as of a group."""
+    airplay_player._attr_group_members = ["test_player", "child"] if grouped else []
+    send_cmd = _setup_running_stream(airplay_player)
+    assert airplay_player.stream is not None
+    session = cast("MagicMock", airplay_player.stream.session)
+    session.standby = AsyncMock(return_value=True)
+
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.hold()
+
+    session.standby.assert_awaited_once()
+    mock_stop.assert_not_called()
+    send_cmd.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_hold_stops_a_session_that_cannot_be_parked(airplay_player: AirPlayPlayer) -> None:
+    """A speaker that lost its connection is stopped instead of parked."""
+    _setup_running_stream(airplay_player)
+    assert airplay_player.stream is not None
+    session = cast("MagicMock", airplay_player.stream.session)
+    session.standby = AsyncMock(return_value=False)
+
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.hold()
+
+    mock_stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_hold_stops_a_player_without_a_session(airplay_player: AirPlayPlayer) -> None:
+    """A player that streams nothing has no session to park, so it is stopped."""
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.hold()
+
+    mock_stop.assert_called_once()
 
 
 # --- Automatic group re-join after unexpected stream loss ---
@@ -1952,6 +2165,66 @@ async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
         await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
 
     leader.set_members.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_announcement_that_comes_early_counts() -> None:
+    """A device that announces itself too soon after an attempt is tried later on."""
+    player = _make_idle_player()
+
+    with patch(_NO_DELAYS, (0.01,)):
+        attempt = asyncio.create_task(player._wait_rejoin_attempt(1, "group"))
+        await asyncio.sleep(0)
+        player._announced.set()
+
+        assert await asyncio.wait_for(attempt, 1)
+
+    assert not player._announced.is_set()
+
+
+@pytest.mark.parametrize(
+    ("state", "counted_in"),
+    [
+        ({}, True),
+        ({"active_group": "group"}, True),
+        ({"active_group": "other_group"}, False),
+        ({"synced_to": "member"}, True),
+        ({"synced_to": "other"}, False),
+        ({"player_id": "other"}, False),
+    ],
+    ids=str,
+)
+def test_belongs_to_a_group_it_is_not_taken_out_of(state: dict[str, Any], counted_in: bool) -> None:
+    """A player that its group does not count in, or that is grouped elsewhere, is out of it."""
+    player = _make_idle_player()
+    values = {"player_id": "lost", "active_group": None, "synced_to": None} | state
+    group = MagicMock()
+    group.own_protocol.counts_in = lambda player_id: player_id in ("lost", "member")
+    _players_mock(player).get_player = {"group": group}.get
+
+    with patch.object(AirPlayPlayer, "player", MagicMock(**values)):
+        assert player._group_counting_in("group") is (group if counted_in else None)
+
+
+@pytest.mark.asyncio
+async def test_rejoins_the_group_it_fell_out_of_until_it_is_done() -> None:
+    """A player brings itself back to the group player it fell out of, and to no other one."""
+    player = _make_idle_player()
+    _players_mock(player).get_player.return_value = None
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+    assert not player.rejoins_group("group")
+
+    with patch(_NO_DELAYS, (0,)):
+        player.schedule_group_rejoin(["leader"], "group")
+        assert player.rejoins_group("group")
+        assert not player.rejoins_group("other_group")
+        # the group is gone
+        assert player._rejoin_task is not None
+        await player._rejoin_task
+
+    assert not player.rejoins_group("group")
 
 
 def test_resolve_rejoin_target_finds_promoted_sibling() -> None:

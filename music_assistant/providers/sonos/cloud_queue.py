@@ -212,7 +212,8 @@ class SonosCloudQueue:
                 "limitedSkips": True,
                 "canSkipToItem": True,  # unsure
                 "canSkipBack": True,
-                # seek needs to be disabled because we dont properly support range requests
+                # a seek asks for a part of the track, which only an item that is served
+                # as a file answers: such an item allows it in its own policies
                 "canSeek": False,
                 "canRepeat": False,  # handled by MA queue controller
                 "canRepeatOne": False,  # handled by MA queue controller
@@ -254,7 +255,7 @@ class SonosCloudQueue:
         # the speaker tracks its position within the audio we serve, which is
         # shorter than the media item when playback starts at a seek position
         duration = media.stream_duration or media.duration
-        return {
+        item: dict[str, Any] = {
             "id": wire_id or media.uri,
             "track": {
                 "type": "track",
@@ -276,6 +277,9 @@ class SonosCloudQueue:
                 else None,
             },
         }
+        if player.is_served_as_file(media.queue_item_id):
+            item["policies"] = {"canSeek": True}
+        return item
 
     def _handle_reported_playback_error(
         self, player: SonosPlayer, item: dict[str, Any], error: dict[str, Any]

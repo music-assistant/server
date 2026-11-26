@@ -10,6 +10,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.helpers.provider_access import PlaybackSources
 
 QUEUE_ID = "q1"
 LOADER = "music_assistant.controllers.player_queues.queue_loader"
@@ -51,7 +52,7 @@ async def _similar_tracks(queued: Track, similar: list[Track]) -> list[Track]:
     ctrl.mass.get_provider.return_value = radio_prov
     with (
         patch(f"{LOADER}.resolve_playback_user", AsyncMock(return_value=None)),
-        patch(f"{LOADER}.playback_sources_for", Mock(return_value=(None, None))),
+        patch(f"{LOADER}.playback_sources_for", Mock(return_value=PlaybackSources(None, []))),
     ):
         return await ctrl._get_similar_tracks(QUEUE_ID, is_initial=True)
 

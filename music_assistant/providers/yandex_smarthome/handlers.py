@@ -70,7 +70,7 @@ async def handle_devices_query(
     for device_id in device_ids:
         try:
             player = mass.players.get_player(device_id)
-        except Exception:
+        except TypeError:  # a list or dict id can not be looked up
             player = None
 
         if player is None:
@@ -100,7 +100,7 @@ async def handle_devices_action(
     for device_action in payload.devices:
         try:
             player = mass.players.get_player(device_action.id)
-        except Exception:
+        except TypeError:  # a list or dict id can not be looked up
             player = None
 
         if player is None:

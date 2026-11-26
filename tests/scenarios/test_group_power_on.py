@@ -2521,7 +2521,7 @@ async def _rendered_clip(render: AnnouncementRender) -> None:
 
 
 async def _announce(
-    scenario: Scenario, player_id: str, group_id: str, speakers: list[FakeProtocol]
+    scenario: Scenario, player_id: str, group_id: str | None, speakers: list[FakeProtocol]
 ) -> None:
     """
     Play an announcement on a player with the real controller, and let the clip play out.
@@ -2530,7 +2530,7 @@ async def _announce(
     it was told to play while the announcement of the group or of the player runs.
 
     :param player_id: The player the announcement is sent to.
-    :param group_id: The group player of the speakers.
+    :param group_id: The group player of the speakers, None when they have none.
     :param speakers: The speakers that may play the clip.
     """
 
@@ -2539,7 +2539,7 @@ async def _announce(
 
         async def _play(media: PlayerMedia) -> None:
             await play_media(media)
-            group = scenario.mass.players.get_player(group_id)
+            group = scenario.mass.players.get_player(group_id) if group_id else None
             if media.media_type == MediaType.ANNOUNCEMENT or (
                 group is not None and group.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
             ):

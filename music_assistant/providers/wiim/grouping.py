@@ -453,6 +453,7 @@ class NativeGroupCoordinator:
             join_plan: dict[str, tuple[DeviceInfo | None, tuple[NativePlayer, ...]] | None] = {}
             for member in add_members:
                 self._guard_regroupable(member)
+                self._guard_set_leader_join(leader, member)
                 join_plan[member.protocol_id] = await self._prevalidate_join(
                     leader, member, leader_info
                 )
@@ -483,6 +484,20 @@ class NativeGroupCoordinator:
         if self._is_unknown_leader_follower(player.protocol_id):
             raise PlayerCommandFailed(
                 f"Cannot regroup {player.protocol_id}: it follows a group MA has not discovered"
+            )
+
+    def _guard_set_leader_join(self, leader: NativePlayer, member: NativePlayer) -> None:
+        """
+        Assert a member does not lead a native set, which joining a leader would take apart.
+
+        :param leader: The leader the member would join.
+        :param member: The member that would join the leader.
+        """
+        if self.channel_layout_of(member.protocol_id) is not None:
+            raise PlayerCommandFailed(
+                f"Cannot add {member.display_name} to {leader.display_name}: a stereo pair or "
+                "other speaker set can only lead a group, "
+                f"add {leader.display_name} to {member.display_name} instead"
             )
 
     @staticmethod

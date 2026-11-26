@@ -113,6 +113,14 @@ async def test_expired_token_is_refreshed() -> None:
     transport.assert_called_once_with({"Authorization": "Bearer new-token"})
 
 
+async def test_queries_are_not_checked_against_the_schema_of_ard() -> None:
+    """The client does not fetch ARD's schema, which fails local validation."""
+    client = await _setup_provider({}).get_client()
+
+    assert client.fetch_schema_from_transport is False
+    assert client.schema is None
+
+
 async def test_concurrent_requests_refresh_once() -> None:
     """Requests that find the token expired at the same time share a single refresh."""
     provider = _setup_provider(

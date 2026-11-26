@@ -97,8 +97,8 @@ stored record or when a device is new. It holds:
 - the ids of all protocols that belong to it, also those that are away;
 - its own config (name, controls, volume limits, announcements, icon, ...);
 - what it keeps for itself while it lives: the active output, the active MA source and when an
-  idle player forgets it, the sleep timer, the stop flag, the external-pause bookkeeping, a power
-  on or power off under way, the palette, `extra_data`;
+  idle player forgets it, the sleep timer, the stop flag, the fake pause, the external-pause
+  bookkeeping, a power on or power off under way, the palette, `extra_data`;
 - the resolution of its power, volume and mute control and of the output that renders.
 
 A player gives the final value of every field of its state under the name of that field:
@@ -563,7 +563,8 @@ protocol. The `volume_control` and `mute_control` of the player state name where
 goes right now, so while another output than the own protocol renders the audio they are the id of
 that protocol. A client only reads from them whether the player has a control (`none` if not).
 When the output changes, the protocol that becomes the control gets the level and mute of the
-player before it is made the active output and before the stream starts.
+player before it is made the active output and before the stream starts. So does the output a
+group member kept while its group played nothing, before the group starts again.
 
 While its own protocol is attached but can not be reached, a player keeps the level and mute it had
 when that began: what any of its protocols reports may be stale then. It is shown as the quieter of
@@ -712,19 +713,27 @@ and still waits for another one, holds that off.
   Without such a protocol the controller plays the announcement as media and restores what the
   player did before. It does that too when the native route would ignore a requested volume, as
   long as it can set and restore that volume itself: the player has a volume control and a known
-  level. A group announcement goes to the
-  members when they can start it together. An announcement holds the player (and its group) for as
-  long as it plays.
+  level. An announcement to a player plays on that player alone, also when it is a member of a group
+  or leads others: played as media, it takes the player out of its group, or the members off the
+  leader, for the clip and puts them back afterwards. An announcement to a group player plays on all
+  its members: it goes to each member when they can start it together, else the group plays it as
+  media. An announcement holds the player (and its group) for as long as it plays.
 - **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a provider (an
   `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. Any
   provider type can deliver them by mixing in `AudioSourceMixin`
   (`music_assistant/models/media_capabilities.py`). The controller keeps the session per player
   and passes the transport commands for it to the provider that owns it; the queue keeps its
-  items and goes inactive meanwhile. A source carries its own name and the player it belongs to;
-  `get_audio_source_name` composes the name for where it is shown: the name alone on that player,
-  with the player's name after it elsewhere. An input a speaker offers from another speaker of its
-  system, such as the line-in of another Sonos speaker, names that player in `owner_player_id` of
-  its source list entry and is named by the same rule.
+  items and goes inactive meanwhile. A source that pauses upstream ends its stream: its provider
+  has the player silenced (`PlayerProtocol.hold`) and shown as paused with `pause_audio_source`,
+  and plays on by selecting the source again. This fake pause (`Player.fake_paused`) is the
+  player's: it shows over an idle output and ends when the player plays again, is stopped, loses
+  the source, or after the pause timeout of the queues. The members of a group and the players
+  synced to a leader show the fake pause of their group or leader, and a sync group keeps its
+  members meanwhile. The session outlives it. A source carries
+  its own name and the player it belongs to; `get_audio_source_name` composes the name for where it
+  is shown: the name alone on that player, with the player's name after it elsewhere. An input a
+  speaker offers from another speaker of its system, such as the line-in of another Sonos speaker,
+  names that player in `owner_player_id` of its source list entry and is named by the same rule.
 - **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
   player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
   an audio protocol is its active output, its own protocol plays (a paused player keeps its place
@@ -764,7 +773,9 @@ group's protocol runs first, and a failure later in the join aborts the takeover
   the leader hands its output over;
 - on a hand-over the protocol the leader rendered on before stops and lets its members go, the
   leader resumes when it played, and those members join it again;
-- the members of the leader's own protocol join last, and a dissolved leader stops.
+- the members of the leader's own protocol join last, those that leave it drop the audio
+  protocol they played on as their output, and a dissolved leader stops;
+- a leader that plays nothing drops the output it kept for a group it no longer has.
 
 A regroup at a fresh start takes the members off the protocol none of them needs anymore and runs
 the same join. The join reads the players again after each device call and takes its next decision

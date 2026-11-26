@@ -50,11 +50,15 @@ from music_assistant_models.enums import ContentType, MediaType, ProviderFeature
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     AudioFormat,
     BrowseFolder,
     ItemMapping,
+    MediaItemTranscriptCue,
     MediaItemType,
     Playlist,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     Radio,
     RecommendationFolder,
@@ -348,6 +352,44 @@ class MyDemoMusicprovider(MusicProvider):
         # the 'sync_library' method.
         yield  # type: ignore[misc]
 
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
+        """Retrieve library/subscribed audiobooks from the provider."""
+        # OPTIONAL
+        # Will only be called if you reported the LIBRARY_AUDIOBOOKS feature
+        # in the supported_features and you did not override the default sync method.
+        # It allows retrieving the library/favorite audiobooks from your provider.
+        # Warning: Async generator:
+        # You should yield Audiobook objects for each audiobook in the library.
+        # Authors and narrators go in the 'authors' and 'narrators' of the Audiobook as
+        # plain strings, unless you override supported_artist_types to include
+        # ArtistType.AUTHOR or ArtistType.NARRATOR: then they must be Artist objects of
+        # that type. The chapters go in 'metadata.chapters'.
+        # NOTE: This is only called on each full sync of the library (at the specified interval).
+        # You are free to implement caching in your provider, as long as you return all items
+        # on each call. The Music Assistant will take care of adding/removing items from the
+        # library based on the returned items in the (default) 'sync_library' method.
+        # If you need more fine grained control over the sync process, you can override
+        # the 'sync_library' method.
+        yield  # type: ignore[misc]
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
+        """Retrieve library/subscribed podcasts from the provider."""
+        # OPTIONAL
+        # Will only be called if you reported the LIBRARY_PODCASTS feature
+        # in the supported_features and you did not override the default sync method.
+        # It allows retrieving the library/subscribed podcasts from your provider.
+        # Warning: Async generator:
+        # You should yield Podcast objects for each podcast in the library.
+        # Only the podcasts themselves are synced: their episodes are never stored in the
+        # library and are fetched through get_podcast_episodes when needed.
+        # NOTE: This is only called on each full sync of the library (at the specified interval).
+        # You are free to implement caching in your provider, as long as you return all items
+        # on each call. The Music Assistant will take care of adding/removing items from the
+        # library based on the returned items in the (default) 'sync_library' method.
+        # If you need more fine grained control over the sync process, you can override
+        # the 'sync_library' method.
+        yield  # type: ignore[misc]
+
     async def get_artist(self, prov_artist_id: str) -> Artist:  # type: ignore[empty-body]
         """Get full artist details by id."""
         # Get full details of a single Artist.
@@ -419,6 +461,94 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:  # type: ignore[empty-body]
+        """Get full audiobook details by id."""
+        # Get full details of a single Audiobook, including its chapters (if any).
+        # Mandatory only if you reported LIBRARY_AUDIOBOOKS in the supported_features.
+        # NOTE: Always cache the result, so the provider's API is not called again for
+        # data Music Assistant already has. The @use_cache decorator from
+        # music_assistant.controllers.cache does this for you.
+        # Keep the listening progress of the user (fully_played, resume_position_ms) out of
+        # a cached result.
+
+    async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:  # type: ignore[empty-body]
+        """Get a list of all audiobooks for the given author."""
+        # Get a list of all audiobooks for the given author.
+        # This only applies if your provider has authors as Artist objects, see
+        # get_library_audiobooks. It is only called if you reported the
+        # AUTHOR_AUDIOBOOKS feature in the supported_features. Without it Music Assistant
+        # lists the audiobooks of the author that are in its library.
+        # NOTE: When the API pages through the audiobooks of the author, stop at
+        # ARTIST_ALBUMS_LIMIT audiobooks (music_assistant.models.music_provider) to keep the
+        # request count bounded.
+        # NOTE: Always cache the result, so the provider's API is not called again for
+        # data Music Assistant already has. The @use_cache decorator from
+        # music_assistant.controllers.cache does this for you.
+
+    async def get_narrator_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:  # type: ignore[empty-body]
+        """Get a list of all audiobooks for the given narrator."""
+        # Get a list of all audiobooks for the given narrator.
+        # This only applies if your provider has narrators as Artist objects, see
+        # get_library_audiobooks. It is only called if you reported the
+        # NARRATOR_AUDIOBOOKS feature in the supported_features. Without it Music Assistant
+        # lists the audiobooks of the narrator that are in its library.
+        # NOTE: When the API pages through the audiobooks of the narrator, stop at
+        # ARTIST_ALBUMS_LIMIT audiobooks (music_assistant.models.music_provider) to keep the
+        # request count bounded.
+        # NOTE: Always cache the result, so the provider's API is not called again for
+        # data Music Assistant already has. The @use_cache decorator from
+        # music_assistant.controllers.cache does this for you.
+
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:  # type: ignore[empty-body]
+        """Get full podcast details by id."""
+        # Get full details of a single Podcast.
+        # Mandatory only if you reported LIBRARY_PODCASTS in the supported_features.
+        # NOTE: Always cache the result, so the provider's API is not called again for
+        # data Music Assistant already has. The @use_cache decorator from
+        # music_assistant.controllers.cache does this for you.
+
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
+        """Get all PodcastEpisodes for given podcast id."""
+        # Get all episodes of a given podcast.
+        # Mandatory only if you reported LIBRARY_PODCASTS in the supported_features.
+        # Warning: Async generator:
+        # You should yield PodcastEpisode objects for each episode of the podcast.
+        # IMPORTANT: Set the 'position' of each episode so that the oldest episode has the
+        # lowest number and the newest the highest. The episode listing is sorted on it, so
+        # do not number the episodes by the order your API happens to return them in.
+        # rank_episodes_by_date in music_assistant.helpers.podcast_parsers works the positions
+        # out from the publication dates. Leave the position at 0 where it is unknown.
+        # See also DEVELOPMENT.md.
+        # NOTE: Episodes are not stored in the library, so they are fetched from the provider
+        # whenever Music Assistant needs them. Always cache the listing, so the provider's
+        # API is not called again for data Music Assistant already has.
+        # Keep the listening progress of the user (fully_played, resume_position_ms) out of
+        # a cached result.
+        yield  # type: ignore[misc]
+
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:  # type: ignore[empty-body]
+        """Get (full) podcast episode details by id."""
+        # Get full details of a single PodcastEpisode.
+        # Mandatory only if you reported LIBRARY_PODCASTS in the supported_features.
+        # NOTE: Always cache the result, so the provider's API is not called again for
+        # data Music Assistant already has. The @use_cache decorator from
+        # music_assistant.controllers.cache does this for you.
+
+    async def get_podcast_episode_transcript(
+        self, prov_episode_id: str
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """
+        Get a podcast episode's transcript as (readable text, timed cues).
+
+        Returns (None, None) when the provider has no transcript for the episode.
+        """
+        # OPTIONAL
+        # Only implement this if your provider has transcripts for its episodes,
+        # otherwise leave it out completely.
+        # Return the transcript as plain readable text, and as a list of timed cues as well
+        # if the source has timings. Either one may be None.
+        return None, None
 
     async def get_album_tracks(  # type: ignore[empty-body]
         self,
@@ -515,11 +645,11 @@ class MyDemoMusicprovider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
-        # Get stream details for a track or radio.
+        # Get stream details for a track, radio, podcast episode or audiobook.
         # Implementing this method is MANDATORY to allow playback.
-        # The StreamDetails contain info how Music Assistant can play the track.
-        # item_id will always be a track or radio id. Later, when/if MA supports
-        # podcasts or audiobooks, this may as well be an episode or chapter id.
+        # The StreamDetails contain info how Music Assistant can play the item.
+        # item_id is the id of the item to play and media_type tells which kind it is,
+        # for example an episode id for MediaType.PODCAST_EPISODE.
         # You should return a StreamDetails object here with the info as accurate as possible
         # to allow Music Assistant to process the audio using ffmpeg.
         # IMPORTANT: Streaming providers (ie. is_streaming_provider = True) are NOT allowed
@@ -534,7 +664,7 @@ class MyDemoMusicprovider(MusicProvider):
                 # set content type to unknown to let ffmpeg guess the codec/container
                 content_type=ContentType.UNKNOWN,
             ),
-            media_type=MediaType.TRACK,
+            media_type=media_type,
             # streamtype defines how the stream is provided
             # for most providers this will be HTTP but you can also use CUSTOM
             # to provide a custom stream generator in get_audio_stream.

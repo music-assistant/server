@@ -284,7 +284,9 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # recovering from a network dropout typically needs tens of seconds to come
 # back, so the ladder stretches to a few minutes; every attempt re-validates
 # that the group still plays and the player was not repurposed meanwhile, and
-# the whole schedule is abandoned as soon as either no longer holds.
+# the whole schedule is abandoned as soon as either no longer holds. A device that
+# is away for longer announces itself on the network once it is back, which is what
+# a member of a group player waits for after the last delay.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
 # Seconds before the one re-add of the Apple TV of a set that left the session of its
 # speakers: a session opened 5 s after the Apple TV reset one stayed up (measured).
@@ -395,6 +397,15 @@ AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
 # an echo that arrives after the next level was already sent would otherwise be
 # read as the user turning the knob and written straight back to the device.
 AIRPLAY_VOLUME_ECHO_GRACE_S: Final[float] = 2.0
+# Providers of the native protocol of devices that can set a level of their own when an
+# AirPlay session starts without one (a WiiM Mini jumps to 60%, a Bose SoundTouch to
+# 100%). While that native protocol owns the volume, a session to such a device starts
+# at its native level. Only devices whose AirPlay scale is their native scale are
+# listed: one with another scale needs its level converted first. Any other device gets
+# no start volume and keeps the level it has.
+AIRPLAY_NATIVE_START_VOLUME_PROVIDERS: Final[frozenset[str]] = frozenset(
+    {"wiim", "bose_soundtouch"}
+)
 
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16

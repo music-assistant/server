@@ -206,10 +206,9 @@ class ARDAudiothek(MusicProvider):
             if self.token:
                 headers = {"Authorization": f"Bearer {self.token}"}
 
-            self._client = Client(
-                transport=_create_aiohttptransport(headers),
-                fetch_schema_from_transport=True,
-            )
+            # no schema is fetched: ARD checks each query itself, and the schema it
+            # publishes does not pass local validation
+            self._client = Client(transport=_create_aiohttptransport(headers))
             self._client_initialized = True
             self._client_token = self.token
 
@@ -408,7 +407,7 @@ class ARDAudiothek(MusicProvider):
         for podcast_id in podcast_ids:
             try:
                 podcast = await self.get_podcast(podcast_id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # one podcast ARD cannot serve must not end the sync of the others
                 self.logger.warning("Skipping subscribed podcast %s: %r", podcast_id, err)
                 self.report_skipped_sync_item(MediaType.PODCAST, podcast_id, err)
@@ -710,7 +709,7 @@ class ARDAudiothek(MusicProvider):
                 CONF_EXPIRY_TIME,
             ):
                 self._update_setup_data(key, None)
-        except Exception as err:
+        except KeyError as err:
             # a failed cleanup is retried on the next start and must not keep the provider down
             self.logger.debug("Could not clear the former ARD credentials: %r", err)
 

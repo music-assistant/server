@@ -1229,6 +1229,33 @@ class TestNativeAnnouncementRouting:
         _refresh(group)
         return group
 
+    def _make_bridged_player(
+        self, mock_mass: MagicMock, *, own_support: bool = False, output_support: bool = True
+    ) -> tuple[PlayerController, Player, MockProtocol, AsyncMock, AsyncMock]:
+        """
+        Create a player playing through a bridge that rides on its audio protocol.
+
+        :param own_support: Whether the player's own protocol announces natively.
+        :param output_support: Whether the audio protocol the bridge rides on announces.
+        """
+        controller, player, audio, native_path, generic_path = (
+            self._make_player_with_audio_protocol(
+                mock_mass, PlaybackState.PLAYING, own_support=own_support
+            )
+        )
+        if not output_support:
+            audio._attr_supported_features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
+        bridge = _attach_audio(
+            MockProvider("sendspin", instance_id="sendspin", mass=mock_mass), player, "bridge"
+        )
+        bridge._attr_underlying_protocol_id = "audio_1"
+        bridge._attr_playback_state = PlaybackState.PLAYING
+        player.set_active_output_protocol("bridge")
+        _refresh(player)
+        # a playing player gets no idle fallback, so only the bridge's output can announce
+        assert player.playback_state == PlaybackState.PLAYING
+        return controller, player, audio, native_path, generic_path
+
     async def test_playing_player_does_not_route_to_an_idle_audio_protocol(
         self, mock_mass: MagicMock
     ) -> None:
@@ -1325,6 +1352,49 @@ class TestNativeAnnouncementRouting:
         """Without active playback the player's own announcement support wins."""
         controller, player, _audio, native_path, _generic_path = (
             self._make_player_with_audio_protocol(mock_mass, PlaybackState.IDLE, own_support=True)
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is _own(player)
+
+    async def test_bridge_announces_through_the_output_it_rides_on(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A player playing through a bridge announces through the output the bridge rides on.
+
+        E.g. a WiiM playing Sendspin over AirPlay: the AirPlay protocol mixes the clip
+        into the stream the bridge feeds it.
+        """
+        controller, _player, audio, native_path, generic_path = self._make_bridged_player(mock_mass)
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is audio
+        generic_path.assert_not_awaited()
+
+    async def test_bridge_on_an_output_that_does_not_announce_uses_the_default(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A bridge riding on an output without announcement support falls back to the default."""
+        controller, _player, _audio, native_path, generic_path = self._make_bridged_player(
+            mock_mass, output_support=False
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_not_awaited()
+        generic_path.assert_awaited_once()
+
+    async def test_own_native_support_beats_the_output_a_bridge_rides_on(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The player's own announcement handler wins over the output a bridge rides on."""
+        controller, player, _audio, native_path, _generic_path = self._make_bridged_player(
+            mock_mass, own_support=True
         )
 
         await controller.play_announcement("player_1", "http://test/announcement.mp3")
@@ -1503,6 +1573,15 @@ class TestPlayAnnouncementRestore:
         set_members = AsyncMock(side_effect=_set_members)
         group_protocol.set_members = set_members  # type: ignore[method-assign]
         return group, set_members
+
+    @staticmethod
+    def _add_member(leader: Player) -> Player:
+        """Attach a second player, synced to the given one, and return it."""
+        member, _ = _attach(cast("MockProvider", _own(leader).provider), "player_2", "Player 2")
+        _own(leader)._attr_group_members = [_proto("player_1"), _proto("player_2")]
+        _refresh(leader, member)
+        assert leader.group_members == ["player_1", "player_2"]
+        return member
 
     async def test_previous_playback_is_restored(self, mock_mass: MagicMock) -> None:
         """Content that was playing before the announcement is resumed afterwards."""
@@ -1758,27 +1837,109 @@ class TestPlayAnnouncementRestore:
 
         assert mute_mock.await_args_list == [call(False), call(True)]
 
-    async def test_muted_sync_group_members_all_hear_the_announcement(
+    async def test_group_player_plays_the_announcement_on_all_its_members(
         self, mock_mass: MagicMock
     ) -> None:
-        """Every member of a muted sync group is unmuted, keeping its mute lock."""
-        controller, leader, _ = self._make_player(
+        """A group player plays the clip on all its members, each unmuted with its mute lock."""
+        controller, player, _ = self._make_player(
             mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
         )
-        member, _ = _attach(cast("MockProvider", _own(leader).provider), "player_2", "Player 2")
-        _own(leader)._attr_group_members = [_proto("player_1"), _proto("player_2")]
-        _refresh(leader, member)
-        assert leader.group_members == ["player_1", "player_2"]
-        mute_mocks = {player.player_id: _mute_natively(player) for player in (leader, member)}
+        provider = cast("MockProvider", _own(player).provider)
+        member, _ = _attach(provider, "player_2", "Player 2")
+        group, group_protocol = _attach(
+            provider, "group_1", "Group 1", player_type=PlayerType.GROUP
+        )
+        group_protocol._attr_group_members = ["player_1", "player_2"]
+        _refresh(player, member, group)
+        assert group.group_members == ["player_1", "player_2"]
+        mute_mocks = {p.player_id: _mute_natively(p) for p in (player, member)}
         # both members were muted while grouped, so both hold a mute lock
-        for player in (leader, member):
-            player.extra_data[ATTR_MUTE_LOCK] = True
+        for p in (player, member):
+            p.extra_data[ATTR_MUTE_LOCK] = True
+        set_members = AsyncMock()
+        controller.cmd_set_members = set_members  # type: ignore[method-assign]
 
-        await controller._play_announcement(leader, _announcement())
+        await controller._play_announcement(group, _announcement())
 
+        # the group keeps its members and plays the clip through its own stream
+        set_members.assert_not_awaited()
+        cast("AsyncMock", controller._handle_play_media).assert_awaited_once_with("group_1", ANY)
         for player_id, mute_mock in mute_mocks.items():
             assert mute_mock.await_args_list == [call(False), call(True)], player_id
             assert controller._players[player_id].extra_data[ATTR_MUTE_LOCK] is True
+
+    async def test_player_leading_others_plays_the_announcement_alone(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A player that leads others plays the clip alone, and its group plays on after it.
+
+        Its members leave it once the group stopped, and join it again before the group
+        resumes, so the resumed playback reaches all of them.
+        """
+        controller, leader, resume_mock = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        self._add_member(leader)
+        set_members = AsyncMock()
+        controller.cmd_set_members = set_members  # type: ignore[method-assign]
+        recorder = MagicMock()
+        recorder.attach_mock(cast("AsyncMock", controller._handle_cmd_stop), "stop")
+        recorder.attach_mock(set_members, "set_members")
+        recorder.attach_mock(cast("AsyncMock", controller._handle_play_media), "play_media")
+        recorder.attach_mock(resume_mock, "resume")
+
+        await controller._play_announcement(leader, _announcement())
+
+        assert recorder.mock_calls == [
+            call.stop("player_1"),
+            call.set_members("player_1", player_ids_to_remove=["player_2"]),
+            call.play_media("player_1", ANY),
+            call.set_members("player_1", player_ids_to_add=["player_2"]),
+            call.resume("player_1", ANY, ANY),
+        ]
+
+    async def test_player_leading_others_is_the_only_one_unmuted_and_raised(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Only the player that plays the clip is unmuted and set to the announcement volume."""
+        controller, leader, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        member = self._add_member(leader)
+        controller.cmd_set_members = AsyncMock()  # type: ignore[method-assign]
+        for player in (leader, member):
+            _own(player)._attr_volume_level = 20
+        mute_mocks = {player.player_id: _mute_natively(player) for player in (leader, member)}
+        controller.get_announcement_volume = MagicMock(return_value=80)  # type: ignore[method-assign]
+        volume_mock = AsyncMock()
+        controller._handle_cmd_volume_set = volume_mock  # type: ignore[method-assign]
+
+        await controller._play_announcement(leader, _announcement())
+
+        assert volume_mock.call_args_list == [call("player_1", 80), call("player_1", 20)]
+        assert mute_mocks["player_1"].await_args_list == [call(False), call(True)]
+        mute_mocks["player_2"].assert_not_awaited()
+
+    async def test_synced_member_plays_the_announcement_alone(self, mock_mass: MagicMock) -> None:
+        """A synced member leaves its leader for the clip and joins it again, the leader untouched."""
+        controller, leader, resume_mock = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        member = self._add_member(leader)
+        assert member.synced_to == "player_1"
+        ungroup = AsyncMock()
+        controller.cmd_ungroup = ungroup  # type: ignore[method-assign]
+        set_members = AsyncMock()
+        controller.cmd_set_members = set_members  # type: ignore[method-assign]
+
+        await controller._play_announcement(member, _announcement())
+
+        ungroup.assert_awaited_once_with("player_2")
+        cast("AsyncMock", controller._handle_play_media).assert_awaited_once_with("player_2", ANY)
+        set_members.assert_awaited_once_with("player_1", player_ids_to_add=["player_2"])
+        cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
+        resume_mock.assert_not_awaited()
 
     async def test_fake_muted_player_announces_at_its_real_volume(
         self, mock_mass: MagicMock
@@ -1873,25 +2034,45 @@ class TestPlayNativeAnnouncement:
 
         assert mute_mock.await_args_list == [call(False), call(True)]
 
-    async def test_muted_sync_group_members_all_hear_the_announcement(
+    async def test_muted_group_player_members_all_hear_the_announcement(
         self, mock_mass: MagicMock
     ) -> None:
-        """Every member of a muted sync group is unmuted, keeping its mute lock."""
+        """Every muted member of a group player is unmuted, keeping its mute lock."""
+        controller, player, _ = self._make_player(mock_mass)
+        provider = cast("MockProvider", _own(player).provider)
+        member, _ = _attach(provider, "player_2", "Player 2")
+        group, group_protocol = _attach(
+            provider, "group_1", "Group 1", player_type=PlayerType.GROUP
+        )
+        group_protocol._attr_group_members = ["player_1", "player_2"]
+        group_protocol._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        group_protocol.play_announcement = AsyncMock()  # type: ignore[method-assign]
+        _refresh(player, member, group)
+        assert group.group_members == ["player_1", "player_2"]
+        mute_mocks = {p.player_id: _mute_natively(p) for p in (player, member)}
+        # both members were muted while grouped, so both hold a mute lock
+        for p in (player, member):
+            p.extra_data[ATTR_MUTE_LOCK] = True
+
+        await controller._play_native_announcement(group, _own(group), _announcement(), None)
+
+        for player_id, mute_mock in mute_mocks.items():
+            assert mute_mock.await_args_list == [call(False), call(True)], player_id
+            assert controller._players[player_id].extra_data[ATTR_MUTE_LOCK] is True
+
+    async def test_player_leading_others_only_unmutes_itself(self, mock_mass: MagicMock) -> None:
+        """A player that leads others announces on itself, so a muted member stays muted."""
         controller, leader, _ = self._make_player(mock_mass)
         member, _ = _attach(cast("MockProvider", _own(leader).provider), "player_2", "Player 2")
         _own(leader)._attr_group_members = [_proto("player_1"), _proto("player_2")]
         _refresh(leader, member)
         assert leader.group_members == ["player_1", "player_2"]
         mute_mocks = {player.player_id: _mute_natively(player) for player in (leader, member)}
-        # both members were muted while grouped, so both hold a mute lock
-        for player in (leader, member):
-            player.extra_data[ATTR_MUTE_LOCK] = True
 
         await controller._play_native_announcement(leader, _own(leader), _announcement(), None)
 
-        for player_id, mute_mock in mute_mocks.items():
-            assert mute_mock.await_args_list == [call(False), call(True)], player_id
-            assert controller._players[player_id].extra_data[ATTR_MUTE_LOCK] is True
+        assert mute_mocks["player_1"].await_args_list == [call(False), call(True)]
+        mute_mocks["player_2"].assert_not_awaited()
 
     async def test_fake_muted_player_announces_at_its_real_volume(
         self, mock_mass: MagicMock

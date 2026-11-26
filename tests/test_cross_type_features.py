@@ -1206,11 +1206,14 @@ async def test_global_search_includes_plugin_providers_with_search() -> None:
     mass.cache.set = AsyncMock(return_value=None)
     plugin_prov = _make_prov("plug_a", ProviderType.PLUGIN, {ProviderFeature.SEARCH})
     mass.get_providers_supporting_feature.return_value = [plugin_prov]
+    music_prov = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.SEARCH})
+    music_prov.domain = "music_service"
+    music_prov.is_streaming_provider = True
+    mass.providers = [music_prov, plugin_prov]
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
     controller.domain = "music"
-    controller.get_unique_providers = Mock(return_value=["m_a"])  # type: ignore[method-assign]
     controller.search_library = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
     controller._search_provider = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
 

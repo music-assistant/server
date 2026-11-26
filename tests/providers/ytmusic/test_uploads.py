@@ -1,12 +1,15 @@
 """Test that YouTube Music uploads are treated as library items."""
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import ytmusicapi
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MediaNotFoundError
+from ytmusicapi.exceptions import YTMusicServerError
 
+from music_assistant.models.music_provider import SYNC_RUN_STATE, SyncRunState
 from music_assistant.providers.ytmusic import YoutubeMusicProvider, helpers
 from tests.common import use_real_create_task
 
@@ -130,6 +133,47 @@ async def test_library_tracks_include_uploads(
     assert tracks[1] is untagged_track
 
 
+async def test_an_upload_that_cannot_be_resolved_is_skipped(
+    provider: YoutubeMusicProvider, ytm: MagicMock
+) -> None:
+    """An untagged upload that YouTube can not resolve is skipped, not the rest of the sync."""
+    error = MediaNotFoundError("Item herz2_yiP-w not found")
+    state = SyncRunState()
+    token = SYNC_RUN_STATE.set(state)
+    try:
+        with (
+            patch.object(ytmusicapi, "YTMusic", return_value=ytm),
+            patch.object(provider, "get_track", AsyncMock(side_effect=error)),
+        ):
+            tracks = [track async for track in provider.get_library_tracks()]
+    finally:
+        SYNC_RUN_STATE.reset(token)
+
+    assert [track.item_id for track in tracks] == ["2AcuBnPRv9s"]
+    assert state.skipped_item_ids == {MediaType.TRACK: {"herz2_yiP-w"}}
+
+
+async def test_get_track_resolves_as_the_brand_account(ytm: MagicMock) -> None:
+    """A track is resolved as the brand account, which owns that account's uploads."""
+    ytm.get_song.return_value = {
+        "videoDetails": {
+            "videoId": "herz2_yiP-w",
+            "title": "leva-eternity-149473.mp3",
+            "channelId": "UCE_krt2fFtgx3nJbI8HGAEg",
+            "author": "Music Library Uploads",
+            "lengthSeconds": "145",
+        },
+        "microformat": {"microformatDataRenderer": {"thumbnail": {"thumbnails": THUMBNAILS}}},
+        "playabilityStatus": {"status": "OK"},
+    }
+    with patch.object(ytmusicapi, "YTMusic", return_value=ytm) as ytm_cls:
+        track = await helpers.get_track("herz2_yiP-w", headers={}, user="brand-id")
+
+    assert track is not None
+    assert track["videoId"] == "herz2_yiP-w"
+    ytm_cls.assert_called_once_with(auth={}, language="en", user="brand-id")
+
+
 async def test_library_albums_and_artists_include_uploads(
     provider: YoutubeMusicProvider, ytm: MagicMock
 ) -> None:
@@ -170,3 +214,129 @@ async def test_upload_artist_links_to_browse_page(
     assert mapping.url == f"https://music.youtube.com/browse/{UPLOAD_ARTIST_ID}"
     assert albums == []
     assert top_tracks == []
+
+
+# Results of ytmusicapi 1.12.3 search(scope="uploads"), which carry no entityId
+UNTAGGED_UPLOAD_SEARCH_SONG: dict[str, Any] = {
+    "category": None,
+    "resultType": "song",
+    "title": "leva-eternity-149473.mp3",
+    "videoId": "herz2_yiP-w",
+    "playlistId": None,
+    "thumbnails": THUMBNAILS,
+}
+TAGGED_UPLOAD_SEARCH_SONG: dict[str, Any] = {
+    **UNTAGGED_UPLOAD_SEARCH_SONG,
+    "title": "MA Upload Test Track",
+    "videoId": "2AcuBnPRv9s",
+    "artists": [UPLOAD_ARTIST_CREDIT],
+    "album": {"name": "MA Upload Test Album", "id": UPLOAD_ALBUM_ID},
+}
+UPLOAD_SEARCH_ALBUM: dict[str, Any] = {
+    "category": None,
+    "resultType": "album",
+    "title": "MA Upload Test Album",
+    "browseId": UPLOAD_ALBUM_ID,
+    "artist": "MA Upload Test Artist",
+    "thumbnails": THUMBNAILS,
+}
+UPLOAD_SEARCH_ARTIST: dict[str, Any] = {
+    "category": None,
+    "resultType": "artist",
+    "title": "MA Upload Test Artist",
+    "browseId": UPLOAD_ARTIST_ID,
+    "thumbnails": THUMBNAILS,
+}
+
+
+def _search_ytm(authenticated: bool) -> MagicMock:
+    """Return a ytmusicapi client with one catalog song and the uploads."""
+    client = MagicMock()
+
+    def _search(**kwargs: Any) -> list[dict[str, Any]]:
+        if kwargs.get("scope") == "uploads":
+            assert authenticated, "uploads can only be searched with the account"
+            return [
+                dict(TAGGED_UPLOAD_SEARCH_SONG),
+                dict(UNTAGGED_UPLOAD_SEARCH_SONG),
+                dict(UPLOAD_SEARCH_ALBUM),
+                dict(UPLOAD_SEARCH_ARTIST),
+            ]
+        return [
+            {
+                "resultType": "song",
+                "videoId": "catalog1",
+                "title": "Catalog Track",
+                "artists": [{"id": "UC_artist", "name": "Catalog Artist"}],
+            }
+        ]
+
+    client.search.side_effect = _search
+    return client
+
+
+async def test_authenticated_search_includes_uploads(provider: YoutubeMusicProvider) -> None:
+    """Uploads come first in an authenticated search and exist on this account only."""
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        key == "authenticated_search"
+    )
+    untagged_track = provider._parse_track(
+        {
+            "videoId": "herz2_yiP-w",
+            "title": "leva-eternity-149473.mp3",
+            "artists": [{"channelId": "UCE_krt2fFtgx3nJbI8HGAEg", "name": "Music Library Uploads"}],
+        }
+    )
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=_search_ytm(authenticated=True)),
+        patch.object(provider, "get_track", AsyncMock(return_value=untagged_track)) as get_track,
+    ):
+        results = await search(provider, "upload", [MediaType.TRACK, MediaType.ARTIST], 5)
+
+    assert [track.item_id for track in results.tracks] == ["2AcuBnPRv9s", "herz2_yiP-w", "catalog1"]
+    assert [(a.item_id, a.name) for a in results.artists] == [
+        (UPLOAD_ARTIST_ID, "MA Upload Test Artist")
+    ]
+    # albums were not asked for
+    assert results.albums == []
+    get_track.assert_awaited_once_with("herz2_yiP-w")
+    uploads = [*results.tracks[:2], *results.artists]
+    assert all(m.is_unique for item in uploads for m in item.provider_mappings)
+    assert not any(m.is_unique for m in results.tracks[2].provider_mappings)
+
+
+@pytest.mark.parametrize(
+    ("authenticated", "media_types"),
+    [(False, [MediaType.TRACK]), (True, [MediaType.PLAYLIST])],
+)
+async def test_search_skips_uploads(
+    provider: YoutubeMusicProvider, authenticated: bool, media_types: list[MediaType]
+) -> None:
+    """Uploads are not searched signed out, nor for media types an upload can not be."""
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        key == "authenticated_search" and authenticated
+    )
+    ytm = _search_ytm(authenticated=authenticated)
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch.object(ytmusicapi, "YTMusic", return_value=ytm):
+        await search(provider, "upload", media_types, 5)
+
+    assert [call.kwargs.get("scope") for call in ytm.search.call_args_list] == [None]
+
+
+async def test_search_skips_an_upload_that_cannot_be_resolved(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """An untagged upload YouTube can not resolve is left out, not the rest of the search."""
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        key == "authenticated_search"
+    )
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=_search_ytm(authenticated=True)),
+        patch.object(provider, "get_track", AsyncMock(side_effect=YTMusicServerError("400"))),
+    ):
+        results = await search(provider, "upload", [MediaType.TRACK], 5)
+
+    assert [track.item_id for track in results.tracks] == ["2AcuBnPRv9s", "catalog1"]

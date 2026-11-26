@@ -240,6 +240,17 @@ class PlayerProtocol(ABC):
         """
         return False
 
+    @property
+    def fetches_files(self) -> bool:
+        """
+        Return if the player is built around files rather than streams.
+
+        Such a player wants to know the length of a track up front, and pauses, resumes and
+        seeks by asking for a part of it. It gets a track as a file where that is possible,
+        see `StreamsController.serves_as_file`.
+        """
+        return False
+
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
         Return whether the player already holds the given queue item as the one it plays next.
@@ -706,6 +717,16 @@ class PlayerProtocol(ABC):
         """
         raise NotImplementedError("pause needs to be implemented when PlayerFeature.PAUSE is set")
 
+    async def hold(self) -> None:
+        """
+        Silence the player while what it plays is paused, ready for a play_media to play on.
+
+        Called instead of pause for a stream that ends with the pause, so the player does not
+        have to support pausing. A player that can stay connected meanwhile keeps its connection;
+        by default it is stopped.
+        """
+        await self.stop()
+
     async def next_track(self) -> None:
         """
         Handle NEXT_TRACK command on the player.
@@ -1164,6 +1185,24 @@ class PlayerProtocol(ABC):
                 await leader.set_members(player_ids_to_remove=[self.protocol_id])
         elif self.group_members:
             await self.set_members(player_ids_to_remove=self.group_members)
+
+    def rejoins_group(self, group_id: str) -> bool:
+        """
+        Return whether this protocol brings itself back to a group player it fell out of.
+
+        :param group_id: Id of the group player.
+        """
+        return False
+
+    def counts_in(self, player_id: str) -> bool:
+        """
+        Return whether a player belongs to the session of this group player.
+
+        A member that fell out of playback still does, as it is part of it again once it is back.
+
+        :param player_id: Id of the player.
+        """
+        return self.is_active_session and player_id in self.group_members
 
     def on_group_member_updated(
         self, member_player: Player, changed_values: dict[str, tuple[Any, Any]]

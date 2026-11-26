@@ -4218,8 +4218,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # the transfer commits in steps (see `deferred_commit`), so it is ordered to
             # leave the source repairable wherever it is cut short: relations are copied
             # rather than moved, and only dropped once the target holds them and the
-            # provider mappings. A source that kept its relations stays a duplicate the
-            # reconciliation pass can finish; one that lost its mappings is cleaned up.
+            # provider mappings. A source that kept its relations stays a duplicate a
+            # later merge can finish; one that lost its mappings is cleaned up.
             await self._copy_library_item_relations(target_id, source_id)
             await self.mass.music.database.execute_write(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET item_id = :target_id "

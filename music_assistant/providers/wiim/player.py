@@ -313,7 +313,9 @@ class WiimPlayer(PlayerProtocol):
         """Play media command."""
         self._drop_join_restart_resume()
         stream_url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
-        didl_metadata = create_didl_metadata(media, url=stream_url)
+        didl_metadata = create_didl_metadata(
+            media, stream_url, self.mass.streams.stream_url_serves_as_file(stream_url)
+        )
         self.set_current_media(
             uri=stream_url,
             title=media.title,
@@ -339,7 +341,9 @@ class WiimPlayer(PlayerProtocol):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         stream_url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
-        didl_metadata = create_didl_metadata(media, url=stream_url)
+        didl_metadata = create_didl_metadata(
+            media, stream_url, self.mass.streams.stream_url_serves_as_file(stream_url)
+        )
         self.logger.debug(
             "enqueue_next_media on %s: queue_item_id=%s, uri=%s",
             self._attr_name,

@@ -51,6 +51,7 @@ from music_assistant.controllers.streams.stream_sources import (
     UpgradeQuality,
     select_container_source,
 )
+from music_assistant.helpers.provider_access import PlaybackSources
 from tests.common import set_music_source_access
 
 TIDAL = "tidal--abc"
@@ -266,7 +267,7 @@ def _sources(
     """Return the (allowed, preferred) music sources of the playback user, while in use."""
     return patch(
         f"{MediaResolver.__module__}.playback_sources_for",
-        return_value=(allowed, list(preferred)),
+        return_value=PlaybackSources(allowed, list(preferred)),
     )
 
 
