@@ -59,6 +59,9 @@ from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedPodcast as AbsLibraryItemExpandedPodcast,
 )
 from aioaudiobookshelf.schema.library import LibraryMediaType as AbsLibraryMediaType
+from aioaudiobookshelf.schema.media_progress import (
+    MediaProgress,  # noqa: TC002 - used in @use_cache
+)
 from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 from aioaudiobookshelf.schema.playlist import PlaylistItem as AbsPlaylistItem
 from aioaudiobookshelf.schema.playlist import (
@@ -128,7 +131,7 @@ from music_assistant.constants import (
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     PlaylistPlayableItem,
 )
-from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.cache import forget_cached, use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.playlists import move_playlist_block
 from music_assistant.models.music_provider import MusicProvider
@@ -154,6 +157,7 @@ from .constants import (
     CONF_HIDE_EMPTY_PODCASTS,
     CONF_OLD_TOKEN,
     CONF_URL,
+    MEDIA_PROGRESS_CACHE_SECONDS,
     PART_STREAM_CHUNK_SIZE,
     PART_STREAM_HEADERS,
     PART_STREAM_TIMEOUT,
@@ -167,7 +171,6 @@ from .helpers import LibrariesHelper, LibraryHelper, NarratorHelper, ProgressGua
 
 if TYPE_CHECKING:
     from aioaudiobookshelf.schema.events_socket import AuthorRemoved, LibraryItemRemoved
-    from aioaudiobookshelf.schema.media_progress import MediaProgress
     from aioaudiobookshelf.schema.user import User
     from music_assistant_models.provider import ProviderManifest
 
@@ -653,8 +656,7 @@ for more details.
                 )
             return []
         # the user has the progress of all items, one call instead of one per item
-        user = await self._client.get_my_user()
-        progresses = {(x.library_item_id, x.episode_id): x for x in user.media_progress}
+        progresses = {(x.library_item_id, x.episode_id): x for x in await self._media_progress()}
         for item in playlist.items:
             if isinstance(item, AbsPlaylistItemExpandedBook):
                 progress = progresses.get((item.library_item.id_, None))
@@ -929,10 +931,9 @@ for more details.
         # the user has the progress of all media items
         # so we use a single api call here to obtain possibly many
         # progresses for episodes
-        user = await self._client.get_my_user()
         abs_progresses = {
             x.episode_id: x
-            for x in user.media_progress
+            for x in await self._media_progress()
             if x.episode_id is not None and x.library_item_id == prov_podcast_id
         }
         for abs_episode in abs_podcast.media.episodes:
@@ -1434,6 +1435,7 @@ for more details.
                 )
                 if mp is not None:
                     await self._client.remove_my_media_progress(media_progress_id=mp.id_)
+                    await forget_cached(self._media_progress)
                     self.logger.debug("Removed media progress of %s.", media_type.value)
                 return
 
@@ -1453,6 +1455,7 @@ for more details.
                     progress_seconds=position,
                     is_finished=fully_played,
                 )
+            await forget_cached(self._media_progress)
 
         if media_type == MediaType.AUDIOBOOK:
             # guard, see progress guard class docstrings for explanation
@@ -1472,6 +1475,7 @@ for more details.
                 mp = await self._client.get_my_media_progress(item_id=prov_item_id)
                 if mp is not None:
                     await self._client.remove_my_media_progress(media_progress_id=mp.id_)
+                    await forget_cached(self._media_progress)
                     self.logger.debug("Removed media progress of %s.", media_type.value)
                 return
 
@@ -1489,6 +1493,7 @@ for more details.
                     progress_seconds=position,
                     is_finished=fully_played,
                 )
+            await forget_cached(self._media_progress)
 
     @handle_refresh_token
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -1858,6 +1863,7 @@ for more details.
             return
 
         self.logger.debug("Updated progress of item %s via socket.", progress.library_item_id)
+        await forget_cached(self._media_progress)
 
         if progress.episode_id is None:
             await self._update_playlog_book(progress)
@@ -1879,6 +1885,7 @@ for more details.
             await asyncio.sleep(USER_UPDATED_DEBOUNCE_SECONDS)
             user = self._pending_user_update
             self._pending_user_update = None
+            await forget_cached(self._media_progress)
             await self._set_playlog_from_user(user)
 
     async def _socket_abs_playlist_changed(self, abs_playlist: AbsPlaylistExpanded) -> None:
@@ -2165,6 +2172,12 @@ for more details.
                 provider_instance_id=self.instance_id,
                 progress_timestamp=progress.last_update // 1000,
             )
+
+    # the user payload also holds the login tokens, so only the progress is kept
+    @use_cache(MEDIA_PROGRESS_CACHE_SECONDS)
+    async def _media_progress(self) -> list[MediaProgress]:
+        """Return the user's progress of every item."""
+        return (await self._client.get_my_user()).media_progress
 
     # other abs clients report the progress of a playing episode every 15s
     @use_cache(300)
