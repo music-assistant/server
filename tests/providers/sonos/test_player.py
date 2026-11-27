@@ -29,7 +29,7 @@ from music_assistant_models.player import DeviceInfo, OutputProtocol, PlayerMedi
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
+from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, PlaybackQuality
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
@@ -1808,6 +1808,13 @@ def test_a_speaker_fetches_files() -> None:
     player, _ = _make_player()
 
     assert player.fetches_files is True
+
+
+def test_a_speaker_defaults_to_lossless_uncompressed() -> None:
+    """Test a speaker the user picked no playback quality for is streamed lossless, uncompressed."""
+    player, _ = _make_player()
+
+    assert player.default_playback_quality is PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
 
 def test_a_speaker_needs_no_content_length() -> None:

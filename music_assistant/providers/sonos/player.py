@@ -58,6 +58,7 @@ from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
+    PlaybackQuality,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.util import is_valid_mac_address
@@ -287,6 +288,11 @@ class SonosPlayer(PlayerProtocol):
     def fetches_files(self) -> bool:
         """Return True: a speaker pauses, resumes and seeks by asking for a part of a track."""
         return True
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
     @property
     def stops_on_pause(self) -> bool:
