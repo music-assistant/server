@@ -526,9 +526,15 @@ class DLNAPlayer(PlayerProtocol):
             return
         poll_first = False
         if service.service_id == "urn:upnp-org:serviceId:AVTransport":
+            current_uri = self._attr_current_media.uri if self._attr_current_media else ""
             for state_variable in state_variables:
-                # Force a state refresh when player begins or pauses playback
-                # to update the position info.
+                # Force a state refresh when player begins or pauses playback, or moves on
+                # to another track by itself, to update the position info.
+                # A device may repeat the uri of the playing track in every event.
+                if state_variable.name == "CurrentTrackURI" and (
+                    (state_variable.value or "") != current_uri
+                ):
+                    poll_first = True
                 if state_variable.name == "TransportState" and state_variable.value in (
                     TransportState.PLAYING,
                     TransportState.PAUSED_PLAYBACK,
