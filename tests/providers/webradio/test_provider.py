@@ -13,10 +13,7 @@ from music_assistant_models.errors import AudioError, UnsupportedFeaturedExcepti
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import (
-    CONF_ENABLE_ICY_METADATA,
-    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
-)
+from music_assistant.constants import CONF_ENABLE_ICY_METADATA
 from music_assistant.providers.webradio.provider import (
     WebRadioPlayer,
     WebRadioProvider,
@@ -35,9 +32,7 @@ PLAYER_ID = "pl000000000001"
 PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE)
 
 
-def _make_player(
-    provider: WebRadioProvider | None = None, *, fixed_content_length: bool = False
-) -> WebRadioPlayer:
+def _make_player(provider: WebRadioProvider | None = None) -> WebRadioPlayer:
     """Return a playing station, attached to a player, that records its state updates."""
     player = WebRadioPlayer(
         provider=provider or MagicMock(),
@@ -53,14 +48,12 @@ def _make_player(
     player._attr_elapsed_time_last_updated = 1.0
     player._attr_current_media = MagicMock()
     player.__dict__["update_state"] = MagicMock()
-    # every other setting keeps the default the provider asks for
-    player.__dict__["get_config_value"] = lambda key, default=None, **_: (
-        fixed_content_length if key == CONF_REQUIRES_FIXED_CONTENT_LENGTH else default
-    )
+    # every setting keeps the default the provider asks for
+    player.__dict__["get_config_value"] = lambda _key, default=None, **_: default
     return player
 
 
-def _make_provider(*, fixed_content_length: bool = False) -> WebRadioProvider:
+def _make_provider() -> WebRadioProvider:
     """Return a provider with one station and a mocked Music Assistant instance."""
     provider = WebRadioProvider.__new__(WebRadioProvider)
     provider.mass = MagicMock()
@@ -68,7 +61,7 @@ def _make_provider(*, fixed_content_length: bool = False) -> WebRadioProvider:
     provider.logger = MagicMock()
     station = _Station(
         slug="kitchen",
-        protocol=_make_player(provider, fixed_content_length=fixed_content_length),
+        protocol=_make_player(provider),
         url_path="/webradio/kitchen.mp3",
         unregister_route=lambda: None,
     )
@@ -733,7 +726,6 @@ async def _listen(
     provider: WebRadioProvider,
     request_line: str,
     *,
-    broadcast_ends: bool = True,
     chunks: list[bytes] | None = None,
     want_icy: bool = True,
 ) -> tuple[dict[str, str], bytes]:
@@ -742,14 +734,13 @@ async def _listen(
 
     :param provider: The provider serving the station.
     :param request_line: The first line of the radio's HTTP request.
-    :param broadcast_ends: Whether the broadcast ends after its chunks.
     :param chunks: The audio the station broadcasts, three full chunks by default.
     :param want_icy: Whether the radio asks for the titles of what plays.
     """
     station = provider._stations["kitchen"]
     subscriber = _Subscriber(queue=asyncio.Queue(), want_icy=want_icy)
     chunks = chunks or CHUNKS
-    for chunk in (*chunks, None) if broadcast_ends else chunks:
+    for chunk in (*chunks, None):
         subscriber.queue.put_nowait(chunk)
 
     async def handler(request: web.Request) -> web.StreamResponse:
@@ -850,35 +841,9 @@ async def test_metadata_stays_in_step_after_a_short_chunk() -> None:
     )
 
 
-async def test_http_11_listener_gets_chunked_by_default() -> None:
-    """Without a forced length an HTTP/1.1 listener gets chunked transfer encoding."""
+async def test_http_11_listener_gets_chunked() -> None:
+    """An HTTP/1.1 listener gets chunked transfer encoding."""
     headers, body = await _listen(_make_provider(), "GET /webradio/kitchen.mp3 HTTP/1.1")
 
     assert headers["transfer-encoding"] == "chunked"
     assert _dechunk(body) == _expected_body()
-
-
-async def test_forced_content_length_ends_the_response_when_it_runs_out() -> None:
-    """Once the forced length is used up the response ends instead of stalling."""
-    provider = _make_provider(fixed_content_length=True)
-
-    with patch(
-        "music_assistant.providers.webradio.provider.calculate_content_length",
-        return_value=CHUNK_SIZE + 1,
-    ):
-        _, body = await _listen(
-            provider, "GET /webradio/kitchen.mp3 HTTP/1.1", broadcast_ends=False
-        )
-
-    assert body == (CHUNKS[0] + METADATA)[: CHUNK_SIZE + 1]
-
-
-async def test_forced_content_length_keeps_the_stream_plain_for_http_11() -> None:
-    """A fixed content length gives an HTTP/1.1 radio a stream without chunks."""
-    provider = _make_provider(fixed_content_length=True)
-
-    headers, body = await _listen(provider, "GET /webradio/kitchen.mp3 HTTP/1.1")
-
-    assert "transfer-encoding" not in headers
-    assert int(headers["content-length"]) > len(body)
-    assert body == _expected_body()

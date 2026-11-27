@@ -21,15 +21,12 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_OUTPUT_CODEC,
-    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
     ICY_HEADERS,
 )
 from music_assistant.helpers.audio import (
-    calculate_content_length,
     format_icy_metadata_frame,
     get_bit_rate,
     get_mime_type,
@@ -715,18 +712,11 @@ class WebRadioProvider(PlayerProvider):
             headers["icy-metaint"] = str(_ICY_METADATA_INTERVAL)
 
         # Without a Content-Length an HTTP/1.1 listener gets chunked transfer encoding
-        # and an HTTP/1.0 one a plain stream until the connection closes. A listener
-        # that requires a fixed content length gets a (very high) one.
+        # and an HTTP/1.0 one a plain stream until the connection closes.
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        if station.protocol.get_config_value(
-            CONF_REQUIRES_FIXED_CONTENT_LENGTH, False, return_type=bool
-        ):
-            resp.content_length = calculate_content_length(output_format, 12 * 3600)
         # Closing the connection is what tells every kind of listener the broadcast ended.
         resp.force_close()
         await resp.prepare(request)
-        # A forced Content-Length runs out at some point on an endless broadcast.
-        bytes_left = resp.content_length
 
         self.logger.debug(
             "Listener subscribed: station=%s output=%s icy=%s",
@@ -756,12 +746,6 @@ class WebRadioProvider(PlayerProvider):
                     await resp.write(chunk)
                 except BrokenPipeError, ConnectionResetError, ConnectionError:
                     break
-
-                if bytes_left is not None:
-                    bytes_left -= len(chunk)
-                    if bytes_left <= 0:
-                        # End the response, so the listener reconnects for a new one.
-                        break
         finally:
             self.logger.debug("Listener unsubscribed: station=%s", station.slug)
 
@@ -903,7 +887,6 @@ class WebRadioPlayer(PlayerProtocol):
             CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
             # Keeps core's own ICY metadata setting out of the UI: a station always sends titles.
             CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-            CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
             ConfigEntry(
                 key=CONF_STREAM_URL_LABEL,
                 type=ConfigEntryType.LABEL,
