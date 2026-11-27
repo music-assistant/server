@@ -378,14 +378,18 @@ class SqueezelitePlayer(PlayerProtocol):
             },
         )
         queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
-        # live streams and announcements start on a smaller buffer (KB, tenths of a second) to cut
-        # latency; a short announcement would never fill the default 2 second output buffer
+        # live streams and announcements start on a smaller output buffer (tenths of a second)
+        # to cut latency; a short announcement would never fill the default 2 second one
         low_latency_stream = media.media_type in (
             MediaType.AUDIO_SOURCE,
             MediaType.RADIO,
             MediaType.ANNOUNCEMENT,
         )
-        stream_threshold, output_threshold = (64, 1) if low_latency_stream else (200, 20)
+        output_threshold = 1 if low_latency_stream else 20
+        # the stream buffer (KB) has to fill from the audio a stream hands over at once when
+        # it starts (REALTIME_BURST), also for a quiet passage in FLAC, or the player only
+        # starts seconds later
+        stream_threshold = 64
         await self.client.play_url(
             url=url,
             mime_type=mime_type,
