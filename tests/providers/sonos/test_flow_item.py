@@ -235,6 +235,55 @@ async def test_a_late_failure_of_the_replaced_stream_leaves_the_new_one_alone(
     assert player._attr_elapsed_time == 3.0
 
 
+@pytest.mark.parametrize("report", ["time_played", "playback_error"])
+async def test_a_failure_of_the_stream_restarts_an_unfinished_flow(
+    monkeypatch: pytest.MonkeyPatch, report: str
+) -> None:
+    """A speaker that fails on the stream stops, as on its own play after a pause in FLAC."""
+    player, _, _ = await _play_flow(monkeypatch, "lossless_compressed")
+    wire_id = cast("str", player.wire_item_id("flow"))
+    player._attr_current_media = PlayerMedia(uri=f"{FLOW_URL}.flac", queue_item_id="flow")
+    player.reported_playback_errors = deque(maxlen=16)
+    mass = cast("MagicMock", player.mass)
+    mass.create_task.reset_mock()
+
+    if report == "time_played":
+        request = MagicMock()
+        request.json = AsyncMock(
+            return_value={"items": [{**_error_report("final"), "id": wire_id}]}
+        )
+        await _make_cloud_queue()._handle_sonos_queue_time_played(player, request)
+    else:
+        mass.streams.base_url = BASE_URL
+        error = {
+            "errorCode": "ERROR_PLAYBACK_FAILED",
+            "reason": "ERROR_CORRUPT_FILE",
+            "itemId": wire_id,
+        }
+        player._on_playback_error(MagicMock(data=error))
+
+    queues = cast("Any", player.mass.player_queues)
+    queues._restart_lost_flow_stream.assert_called_once_with(
+        QUEUE_ID, SESSION_ID, only_while_playing=False, queue_item_id=None
+    )
+    # the one restart is all: the stream is no queue item with a source to release
+    mass.create_task.assert_called_once()
+
+
+async def test_a_failed_announcement_restarts_no_flow_under_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An announcement plays over the queue: its failure is not one of the stream."""
+    player, _, _ = await _play_flow(monkeypatch)
+    player._announcement_media = PlayerMedia(uri="announce.mp3", queue_item_id="announcement")
+    cast("Any", player.mass.player_queues).release_failed_item_source = MagicMock()
+
+    player.release_failed_item(cast("str", player.wire_item_id("announcement")))
+    await _read_window(player, "queueCompleted", player.wire_item_id("announcement"))
+
+    cast("Any", player.mass.player_queues)._restart_lost_flow_stream.assert_not_called()
+
+
 async def test_the_position_in_the_flow_item_is_the_position_in_the_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

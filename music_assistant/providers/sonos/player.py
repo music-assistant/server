@@ -1079,6 +1079,8 @@ class SonosPlayer(PlayerProtocol):
         """
         Hand the source of a queue item the speaker failed to play over to the next track.
 
+        A queue in flow mode has no next track on the speaker: its stream restarts instead.
+
         :param wire_item_id: The failed item's id as the speaker reports it.
         """
         if not (queue_id := self.cloud_queue_id):
@@ -1090,6 +1092,10 @@ class SonosPlayer(PlayerProtocol):
             self.logger.debug(
                 "Ignoring the failure of %s: the item has been reloaded since", wire_item_id
             )
+            return
+        if self._plays_flow_item_as(wire_item_id):
+            # a speaker that fails on the stream stops, as on its own play after a pause
+            self._restart_flow_stream()
             return
         # the speaker moves on to the next track by itself, while the failed track's
         # source may still be filling its buffer and holding the stream slot that
@@ -1114,18 +1120,16 @@ class SonosPlayer(PlayerProtocol):
         :param wire_item_id: The item it asks about, as the speaker reports it.
         """
         if (
-            (flow_media := self._flow_media) is None
-            or self._announcement_media is not None
-            or not (queue_id := self.cloud_queue_id)
-            or not wire_item_id
+            not wire_item_id
             or not self.from_current_load(wire_item_id)
+            or not self._plays_flow_item_as(wire_item_id)
+            or not (queue_id := self.cloud_queue_id)
         ):
             return
-        if reason == "queueCompleted" and flow_media.queue_session_id:
+        if reason == "queueCompleted":
             # the stream ended, was cut or stalled, and the speaker does not ask for it
-            # again: it pauses once it played what it holds. A flow that is not finished
-            # restarts where it plays now, a finished one ends by itself
-            self.mass.player_queues.restart_lost_flow_stream(queue_id, flow_media.queue_session_id)
+            # again: it pauses once it played what it holds
+            self._restart_flow_stream()
         elif reason in ("skipNext", "skipPrev"):
             # the speaker finds no other item to skip to: the queue takes the step
             queues = self.mass.player_queues
@@ -2307,6 +2311,18 @@ class SonosPlayer(PlayerProtocol):
         self._forget_queue()
         self._evicted_cloud_queue = (queue_id, time.monotonic())
         self.update_state()
+
+    def _plays_flow_item_as(self, wire_item_id: str) -> bool:
+        """Return whether an id the speaker reports is the flow stream of the loaded cloud queue."""
+        return self._flow_media is not None and self.bare_item_id(wire_item_id) == FLOW_ITEM_ID
+
+    def _restart_flow_stream(self) -> None:
+        """Restart the flow stream of the loaded cloud queue where it plays now."""
+        # a flow that is not finished restarts, within the limit the queue keeps for a
+        # stream its player lost; a finished one ends by itself
+        flow_media, queue_id = self._flow_media, self.cloud_queue_id
+        if flow_media is not None and queue_id and flow_media.queue_session_id:
+            self.mass.player_queues.restart_lost_flow_stream(queue_id, flow_media.queue_session_id)
 
     async def _route(self, media: PlayerMedia) -> SonosRoute:
         """Return the way the speaker gets media: out of its cloud queue or over its stream url."""
