@@ -143,6 +143,7 @@ class _Household:
         player._evicted_cloud_queue = None
         player._queue_session_id = "session1"
         player._hand_over_tasks = set()
+        player._stepping_out = False
         player.client = MagicMock()
         player.client.subscribe.side_effect = subscribe
         group = player.client.player.group

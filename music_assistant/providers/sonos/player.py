@@ -251,6 +251,9 @@ class SonosPlayer(PlayerProtocol):
         self._queue_session_id: str | None = None
         # hand-overs of a group the speakers moved outside MA, one per move
         self._hand_over_tasks: set[asyncio.Task[None]] = set()
+        # this speaker leaves the group it leads because Music Assistant asked it to, which
+        # then hands the queue of that group over itself
+        self._stepping_out = False
         # the members the running AirPlay group restore still has to bring back
         self._airplay_rejoin_members: set[str] = set()
         # the AirPlay session on the speaker is Music Assistant's own; the speaker keeps
@@ -289,6 +292,15 @@ class SonosPlayer(PlayerProtocol):
     def fetches_files(self) -> bool:
         """Return True: a speaker pauses, resumes and seeks by asking for a part of a track."""
         return True
+
+    @property
+    def can_hand_over_session(self) -> bool:
+        """Return whether the sync group this speaker leads plays on when the speaker leaves it."""
+        if not self.connected or not self.group_queue_id or not self.client.player.is_coordinator:
+            return False
+        # the member that takes the group over asks for the rest of the track it plays,
+        # which only a track that is served as a file answers
+        return self._plays_file(self.group_controller)
 
     @property
     def stops_on_pause(self) -> bool:
@@ -1223,6 +1235,19 @@ class SonosPlayer(PlayerProtocol):
         player_ids_to_remove = player_ids_to_remove or []
         # a member removed on purpose is not brought back by the AirPlay group restore
         self._airplay_rejoin_members.difference_update(player_ids_to_remove)
+        if (
+            not player_ids_to_add
+            and player_ids_to_remove == [self.protocol_id]
+            and self.can_hand_over_session
+        ):
+            # a sync group changes its leader: its members play on, led by one of them
+            await self._step_out_of_group()
+            return
+        if self.client.player.is_coordinator:
+            # a member this speaker leads already, as after it took over the group of a
+            # leader that stepped out
+            led = self.client.player.group_members
+            player_ids_to_add = [x for x in player_ids_to_add if x not in led]
         if player_ids_to_add or player_ids_to_remove:
             await self._modify_group_members(player_ids_to_add, player_ids_to_remove)
 
@@ -1770,8 +1795,11 @@ class SonosPlayer(PlayerProtocol):
         # Arc switching to TV), Sonos elects a member that carries on with a copy of what
         # played; as when the leader of a group is removed in MA, the queue follows it
         data = cast("GroupCoordinatorChanged", event.data)
+        if self._stepping_out:
+            # Music Assistant made this move, and hands the queue over itself
+            return
         if data["groupStatus"] != GroupStatus.MOVED or not (queue_id := self._moved_queue_id()):
-            # a group change Music Assistant made itself stops our queue first
+            # any other group change Music Assistant made itself stops our queue first
             return
         new_coordinator_id = data.get("playerId")
         if not new_coordinator_id or new_coordinator_id == self.protocol_id:
@@ -2377,6 +2405,81 @@ class SonosPlayer(PlayerProtocol):
             if (peer := self.mass.players.get_player_by_protocol(protocol_id)) is not None
             and (own := peer.own_protocol) is not None
         }
+
+    async def _step_out_of_group(self) -> None:
+        """
+        Leave the native group this speaker leads, which plays on led by one of its members.
+
+        What is kept for the cloud queue of the sync group it played goes to that member.
+        """
+        queue_id = self.group_queue_id
+        assert queue_id is not None  # for type checking
+        members = [
+            member
+            for member_id in self.client.player.group_members
+            if member_id != self.protocol_id
+            and isinstance(member := self.provider.get_protocol(member_id), SonosPlayer)
+            and member.connected
+        ]
+        self._stepping_out = True
+        try:
+            await self.client.player.leave_group()
+            # a speaker knows its new group at once, but holds its groups event back for seconds
+            await asyncio.gather(*(speaker._refresh_groups() for speaker in (self, *members)))
+            # Sonos chooses the member that coordinates the group from here on
+            moved_group = next(
+                (
+                    group
+                    for group in self.client.groups
+                    if any(member.protocol_id in group.player_ids for member in members)
+                ),
+                None,
+            )
+            new_coordinator = next(
+                (x for x in members if moved_group and x.protocol_id == moved_group.coordinator_id),
+                None,
+            )
+            if new_coordinator is None or not await self._wait_for_moved_group(
+                new_coordinator, queue_id, own_queue=False
+            ):
+                self.logger.warning(
+                    "%s left its group, but its queue could not be handed to the speaker that "
+                    "leads the group now",
+                    self.display_name,
+                )
+                return
+            self._hand_cloud_queue_to(new_coordinator)
+        finally:
+            self._stepping_out = False
+        for speaker in (self, *members):
+            speaker.on_player_event(None)
+
+    def _hand_cloud_queue_to(self, new_coordinator: SonosPlayer) -> None:
+        """
+        Move what is kept for the loaded cloud queue to the speaker that plays it on.
+
+        :param new_coordinator: The speaker that coordinates the former group of this speaker.
+        """
+        # without an await: a request of the speakers is answered from all of it or none of it
+        new_coordinator.cloud_queue_id = self.cloud_queue_id
+        new_coordinator.group_queue_id = self.group_queue_id
+        new_coordinator._loaded_session_id = self._loaded_session_id
+        new_coordinator.cloud_queue_version = self.cloud_queue_version
+        new_coordinator.cloud_queue_item_generation = self.cloud_queue_item_generation
+        new_coordinator._window_item_ids = self._window_item_ids
+        new_coordinator._served_bindings = self._served_bindings
+        new_coordinator._announcement_media = None
+        new_coordinator._evicted_cloud_queue = None
+        new_coordinator._flow_queue_id = None
+        # it plays a copy of the playback session, which its own connection does not hold
+        new_coordinator._queue_session_id = None
+        self._forget_queue()
+        self._loaded_session_id = None
+        self._queue_session_id = None
+        self._window_item_ids = {}
+        self._served_bindings = {}
+        # the ids of the load went with it: a late report on one is not about this speaker
+        self.cloud_queue_item_generation += 1
 
     async def _modify_group_members(
         self, player_ids_to_add: list[str], player_ids_to_remove: list[str]

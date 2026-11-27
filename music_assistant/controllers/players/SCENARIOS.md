@@ -2085,7 +2085,7 @@ Den are free again. With fake power control, Downstairs is still on after the st
 and Den. A play on Downstairs plays on from where the music stopped.
 
 - End-to-end: **possible with** three speakers that group on a protocol without a hand-over of the
-  playing leader, such as Sonos.
+  playing leader, such as Sonos in a track the speakers do not get as a file.
 - Proven by:
   - `test_group_stop.py::test_a_sync_group_that_is_stopped_between_two_leaders_stays_silent`
   - `test_group_stop.py::test_a_powered_sync_group_that_is_stopped_between_two_leaders_stays_on_and_silent`
