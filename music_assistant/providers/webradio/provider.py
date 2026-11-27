@@ -12,6 +12,7 @@ from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -21,10 +22,10 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-    CONF_OUTPUT_CODEC,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
     ICY_HEADERS,
+    PlaybackQuality,
 )
 from music_assistant.helpers.audio import (
     format_icy_metadata_frame,
@@ -36,7 +37,6 @@ from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
-    CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
     CONF_STATIONS,
     CONF_STREAM_URL_LABEL,
     PLAYER_ID_PREFIX,
@@ -254,16 +254,6 @@ class WebRadioProvider(PlayerProvider):
         station.pending_media = None
         station.pending_media_event.clear()
 
-    def refresh_station_route(self, slug: str) -> None:
-        """Re-register a station's HTTP route after its codec config changed."""
-        station = self._stations.get(slug)
-        if station is None or station.unregister_route is None:
-            return
-        if self._station_url_path(station) == station.url_path:
-            return
-        station.unregister_route()
-        self._register_route(station)
-
     # ---------------------------------------------------------------
     # Station / route lifecycle
     # ---------------------------------------------------------------
@@ -299,7 +289,7 @@ class WebRadioProvider(PlayerProvider):
         }
 
     def _station_url_path(self, station: _Station) -> str:
-        """Return the URL path a station is served on with its configured codec."""
+        """Return the URL path a station is served on."""
         return f"{URL_PATH_PREFIX}{station.slug}.{self._station_codec(station)}"
 
     def _register_route(self, station: _Station) -> None:
@@ -327,8 +317,8 @@ class WebRadioProvider(PlayerProvider):
             pass
 
     def _station_codec(self, station: _Station) -> str:
-        """Return the configured output codec extension for a station, e.g. ``"mp3"``."""
-        return station.protocol.get_config_value(CONF_OUTPUT_CODEC, "mp3", return_type=str)
+        """Return the output codec extension of a station, e.g. ``"mp3"``."""
+        return station.protocol.output_codec.value
 
     def _public_url(self, url_path: str) -> str:
         """Build the externally reachable HTTP URL for a station path."""
@@ -873,6 +863,18 @@ class WebRadioPlayer(PlayerProtocol):
         ]
 
     @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """Return the codec for each playback quality level a station can broadcast."""
+        # A listener can join MP3 mid-stream and it survives a producer restart. FLAC and
+        # WAV depend on a header at the start of the stream that a late listener never gets.
+        return {PlaybackQuality.COMPRESSED: ContentType.MP3}
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.COMPRESSED
+
+    @property
     def station_slug(self) -> str:
         """Return the URL-safe slug of this station."""
         return self._station_slug
@@ -884,7 +886,6 @@ class WebRadioPlayer(PlayerProtocol):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return player-level config entries."""
         return [
-            CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
             # Keeps core's own ICY metadata setting out of the UI: a station always sends titles.
             CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
             ConfigEntry(
@@ -893,11 +894,6 @@ class WebRadioPlayer(PlayerProtocol):
                 translation_params=[self._stream_url or "(unavailable)"],
             ),
         ]
-
-    async def on_config_updated(self) -> None:
-        """Refresh the published URL when the codec config changes."""
-        provider = cast("WebRadioProvider", self.provider)
-        provider.refresh_station_route(self._station_slug)
 
     async def on_attach(self, player: Player) -> None:
         """Start serving the station on its URL."""

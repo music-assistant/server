@@ -48,8 +48,6 @@ def _make_player(provider: WebRadioProvider | None = None) -> WebRadioPlayer:
     player._attr_elapsed_time_last_updated = 1.0
     player._attr_current_media = MagicMock()
     player.__dict__["update_state"] = MagicMock()
-    # every setting keeps the default the provider asks for
-    player.__dict__["get_config_value"] = lambda _key, default=None, **_: default
     return player
 
 
@@ -184,10 +182,6 @@ async def test_a_station_has_a_url_only_while_it_is_attached() -> None:
     unregister_route = MagicMock()
     streams = cast("MagicMock", provider.mass).streams
     streams.register_dynamic_route.return_value = unregister_route
-
-    # a config update of a station that is not attached leaves it without a URL
-    await station.protocol.on_config_updated()
-    streams.register_dynamic_route.assert_not_called()
 
     await station.protocol.on_attach(cast("Player", station.protocol.player))
 

@@ -6,6 +6,12 @@
     },
     "stream_url": {
       "label": "Stream URL: {0}"
+    },
+    "playback_quality": {
+      "disabled_reasons": {
+        "lossless_uncompressed": "A station always streams MP3, so any listener can tune in at any moment.",
+        "lossless_compressed": "A station always streams MP3, so any listener can tune in at any moment."
+      }
     }
   },
   "errors": {
