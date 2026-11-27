@@ -717,15 +717,15 @@ class AlexaPlayer(PlayerProtocol):
             timing["queueItemId"] = media.queue_item_id
         if media.duration:
             timing["durationMs"] = int(media.duration * 1000)
-        queue = self.mass.player_queues.get_active_queue(self._skill_player_id)
-        # The queue's elapsed time describes its current item, so only for that item.
-        if (
-            media.queue_item_id
-            and queue is not None
-            and queue.current_item is not None
-            and queue.current_item.queue_item_id == media.queue_item_id
-            and (elapsed := queue.corrected_elapsed_time) is not None
-        ):
+        # The media's own position: for a radio song with a duration it is the position in
+        # that song, not how long the station has played (which the queue's elapsed time is).
+        if media.elapsed_time is not None:
+            elapsed: float = media.elapsed_time
+            if (
+                self.playback_state == PlaybackState.PLAYING
+                and (corrected := media.corrected_elapsed_time) is not None
+            ):
+                elapsed = corrected
             timing["elapsedMs"] = int(elapsed * 1000)
         return timing
 
