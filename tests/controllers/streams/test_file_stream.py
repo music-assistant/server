@@ -27,6 +27,8 @@ from music_assistant.controllers.streams.file_stream import (
 from music_assistant.helpers.ffmpeg import get_ffmpeg_args
 
 FILE_SIZE = 1000
+# the addresses two players fetch a file from
+PLAYER_ADDRESS, OTHER_ADDRESS = "192.168.1.20", "192.168.1.21"
 PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16)
 WAV_FORMAT = AudioFormat(content_type=ContentType.WAV, sample_rate=44100, bit_depth=16)
 BYTES_PER_SECOND = 44100 * 4
@@ -430,8 +432,8 @@ def test_a_file_hands_out_thirty_seconds_of_head_start_six_per_encode() -> None:
 
     taken = []
     for _ in range(7):
-        taken.append(file.take_head_start())
-        file.head_start_handed_out()
+        taken.append(file.take_head_start(PLAYER_ADDRESS))
+        file.head_start_handed_out(PLAYER_ADDRESS)
 
     assert taken == [6, 6, 6, 6, 6, 0, 0]
 
@@ -440,12 +442,48 @@ def test_an_encode_that_hands_out_no_audio_leaves_its_head_start_to_the_next() -
     """The head start of an encode that handed out nothing goes to the encode after it."""
     file = _file()
     for _ in range(4):
-        file.take_head_start()
-        file.head_start_handed_out()
+        file.take_head_start(PLAYER_ADDRESS)
+        file.head_start_handed_out(PLAYER_ADDRESS)
 
-    assert [file.take_head_start() for _ in range(3)] == [6, 6, 6]
-    file.head_start_handed_out()
-    assert [file.take_head_start() for _ in range(2)] == [0, 0]
+    assert [file.take_head_start(PLAYER_ADDRESS) for _ in range(3)] == [6, 6, 6]
+    file.head_start_handed_out(PLAYER_ADDRESS)
+    assert [file.take_head_start(PLAYER_ADDRESS) for _ in range(2)] == [0, 0]
+
+
+def test_an_encode_that_ends_without_audio_gives_its_head_start_back() -> None:
+    """A player that drops its request before it gets any audio costs the file nothing."""
+    file = _file()
+    leaving = MagicMock(remote=OTHER_ADDRESS)
+    file.add_reader(leaving)
+    for _ in range(3):
+        file.take_head_start(OTHER_ADDRESS)
+    file.remove_reader(leaving)
+    file.remove_reader(leaving)
+
+    taken = []
+    for _ in range(6):
+        taken.append(file.take_head_start(PLAYER_ADDRESS))
+        file.head_start_handed_out(PLAYER_ADDRESS)
+    assert taken == [6, 6, 6, 6, 6, 0]
+
+
+def test_an_encode_keeps_its_head_start_while_another_address_takes_one() -> None:
+    """Two players that read a file at once each hold their own head start."""
+    file = _file()
+    assert file.take_head_start(PLAYER_ADDRESS) == 6
+    for _ in range(4):
+        other = MagicMock(remote=OTHER_ADDRESS)
+        file.add_reader(other)
+        assert file.take_head_start(OTHER_ADDRESS) == 6
+        file.remove_reader(other)
+    # the head start of the first player went out with its audio, after the other left
+    file.head_start_handed_out(PLAYER_ADDRESS)
+
+    taken = []
+    for _ in range(5):
+        taken.append(file.take_head_start(OTHER_ADDRESS))
+        file.head_start_handed_out(OTHER_ADDRESS)
+    assert taken == [6, 6, 6, 6, 0]
 
 
 def test_audio_that_ends_early_sets_the_real_size() -> None:
@@ -509,7 +547,7 @@ def test_a_file_that_a_player_reads_keeps_its_place() -> None:
     files = FileStreams()
     keys = [FileKey("s1", "q1", f"item{index}", 0) for index in range(4)]
     playing = _file()
-    playing.request = MagicMock()
+    playing.add_reader(MagicMock(remote=PLAYER_ADDRESS))
     files.add("player1", keys[0], playing)
     for key in keys[1:3]:
         files.add("player1", key, _file())

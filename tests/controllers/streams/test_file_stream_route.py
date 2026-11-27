@@ -44,6 +44,8 @@ SESSION_ID = "sess1"
 PLAYER_ID = "player1"
 ITEM_ID = "item1"
 BASE_URL = "http://192.168.1.10:8097"
+# the address of the player, and of a second speaker that asks for the same file
+PLAYER_ADDRESS, OTHER_ADDRESS = "192.168.1.20", "192.168.1.21"
 PCM_16 = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16)
 WAV_16 = AudioFormat(content_type=ContentType.WAV, sample_rate=44100, bit_depth=16)
 BYTES_PER_SECOND = 44100 * 4
@@ -87,12 +89,15 @@ async def _no_audio() -> AsyncGenerator[bytes]:
 class _Download:
     """One request of a player, which hangs up once it has the bytes it wants."""
 
-    def __init__(self, wanted: int | None = None, stall_at: int | None = None) -> None:
+    def __init__(
+        self, wanted: int | None = None, stall_at: int | None = None, address: str = PLAYER_ADDRESS
+    ) -> None:
         """
         Initialize the download.
 
         :param wanted: The bytes after which the player hangs up, None for all it gets.
         :param stall_at: The bytes after which the player stops reading until `resume` is set.
+        :param address: The address the request comes from.
         """
         self._wanted = wanted
         self._stall_at = stall_at
@@ -102,6 +107,7 @@ class _Download:
         self.transport.is_closing.return_value = False
         self.transport.abort.side_effect = self.hang_up
         self.protocol = Mock()
+        self.protocol.peername = (address, 49152)
         self.writer = Mock()
         self.writer.write_headers = AsyncMock()
         self.writer.write = AsyncMock(side_effect=self._write)
@@ -241,6 +247,7 @@ class _Rig:
         method: str = "GET",
         wanted: int | None = None,
         stall_at: int | None = None,
+        address: str = PLAYER_ADDRESS,
     ) -> tuple[web.Request, _Download]:
         """
         Build a request of the player for the track.
@@ -249,8 +256,9 @@ class _Rig:
         :param method: The method of the request.
         :param wanted: The bytes after which the player hangs up, None for all it gets.
         :param stall_at: The bytes after which the player stops reading for a while.
+        :param address: The address the request comes from.
         """
-        download = _Download(wanted, stall_at)
+        download = _Download(wanted, stall_at, address)
         request = make_mocked_request(
             method,
             f"/single/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.{self.fmt}",
@@ -281,6 +289,20 @@ class _Rig:
         request, download = self.request(byte_range, method=method, wanted=wanted)
         resp = await StreamsController.serve_queue_item_stream(self.ctrl, request)
         return resp, bytes(download.body)
+
+    async def fetch_from(
+        self, address: str, byte_range: str | None = None, *, wanted: int | None = None
+    ) -> bytes:
+        """
+        Let a player at another address fetch the track, or a part of it, and return the body.
+
+        :param address: The address the request comes from.
+        :param byte_range: The value of the Range header, if the request has one.
+        :param wanted: The bytes after which the player hangs up, None for all it gets.
+        """
+        request, download = self.request(byte_range, wanted=wanted, address=address)
+        await StreamsController.serve_queue_item_stream(self.ctrl, request)
+        return bytes(download.body)
 
     def _item_stream(
         self, queue_item: QueueItem, pcm_format: AudioFormat, seek_position_ms: int, **kwargs: Any
@@ -683,6 +705,29 @@ async def test_a_second_request_ends_the_encode_of_the_first(rig: _Rig) -> None:
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_speaker_that_asks_for_the_same_file_ends_no_encode_of_another(
+    rig: _Rig,
+) -> None:
+    """A speaker that leaves a group asks for its own part twice, and the new leader reads on."""
+    await rig.decode()
+    _, whole_file = await rig.fetch()
+    seek = 100 * KIB_16
+    leader_request, leader = rig.request(f"bytes={seek}-", stall_at=BYTES_PER_SECOND)
+    task = asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, leader_request))
+    await leader.stalled.wait()
+
+    for leaving_at in (seek + 10 * KIB_16, seek + 19 * KIB_16):
+        await rig.fetch_from(OTHER_ADDRESS, f"bytes={leaving_at}-", wanted=KIB_16)
+
+    leader.transport.abort.assert_not_called()
+    leader.resume.set()
+    resp = await task
+    assert bytes(leader.body) == whole_file[seek:]
+    assert resp.keep_alive
+    assert rig.ctrl._active_output_streams == 0
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
 async def test_the_start_of_a_file_is_answered_from_memory(rig: _Rig) -> None:
     """A player that asks for the start again and drops that request costs no encode."""
     await rig.decode()
@@ -858,6 +903,73 @@ async def test_a_change_of_leader_costs_one_head_start(rig: _Rig) -> None:
         await rig.fetch(seek, wanted=KIB_16)
 
     assert [_burst(pacing) for pacing in rig.pacing] == [6, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 1.5]
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_speaker_that_leaves_without_audio_costs_no_head_start(rig: _Rig) -> None:
+    """The two requests a speaker drops as it leaves a group give their head start back."""
+    await rig.decode()
+    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
+    started = asyncio.Event()
+    _hold_audio(rig, started)
+
+    leader_request, leader = rig.request(seek, wanted=KIB_16)
+    tasks = [
+        asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, leader_request))
+    ]
+    for _ in range(2):
+        await asyncio.sleep(0.01)
+        request, leaving = rig.request(seek, address=OTHER_ADDRESS)
+        leaving.hang_up()
+        tasks.append(
+            asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
+        )
+    await asyncio.sleep(0.01)
+    started.set()
+    await asyncio.gather(*tasks)
+    for _ in range(5):
+        await rig.fetch(seek, wanted=KIB_16)
+
+    assert len(leader.body) == KIB_16
+    assert [_burst(pacing) for pacing in rig.pacing] == [7.5] * 7 + [1.5]
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_two_speakers_that_read_a_file_at_once_share_its_head_start(rig: _Rig) -> None:
+    """Over the requests of two speakers that read beside each other a file hands out thirty seconds."""
+    await rig.decode()
+    seek = HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2
+    run_in = BYTES_PER_SECOND // 2 / BYTES_PER_SECOND
+
+    handed_out = 0.0
+    for _ in range(4):
+        started = asyncio.Event()
+        _hold_audio(rig, started)
+        downloads, tasks = [], []
+        # the second speaker drops a request and asks again, which ends only its own encode
+        for address, drops in (
+            (PLAYER_ADDRESS, False),
+            (OTHER_ADDRESS, True),
+            (OTHER_ADDRESS, False),
+        ):
+            request, download = rig.request(f"bytes={seek}-", wanted=KIB_16, address=address)
+            if drops:
+                download.hang_up()
+            downloads.append(download)
+            tasks.append(
+                asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
+            )
+            await asyncio.sleep(0.01)
+        started.set()
+        await asyncio.gather(*tasks)
+        assert [len(download.body) for download in downloads] == [KIB_16, 0, KIB_16]
+        handed_out += sum(
+            _burst(pacing) - 1 - run_in
+            for pacing, download in zip(rig.pacing[-3:], downloads, strict=True)
+            if download.body
+        )
+
+    assert handed_out == 30
 
 
 @pytest.mark.usefixtures("passthrough_encoder")

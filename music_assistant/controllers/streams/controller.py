@@ -2843,6 +2843,7 @@ class StreamsController(CoreController):
         assert queue_item.streamdetails is not None
         session_id = request.match_info["session_id"]
         pq_data = self.mass.player_queues.queue_data(queue_item.queue_id)
+        address = request.remote
         offset = part.start
         if memory := file.head(part):
             try:
@@ -2856,16 +2857,14 @@ class StreamsController(CoreController):
                 # a player asks for the start of a file again before it resumes or seeks,
                 # and leaves that request for the part it really wants. An encode is only
                 # worth starting for a player that stays and reads on
-                running = file.request
-                if await player_hangs_up(request) or file.request not in (running, None):
+                running = file.readers.get(address)
+                if await player_hangs_up(request) or file.readers.get(address) not in (
+                    running,
+                    None,
+                ):
                     return offset
 
-        # one encode at a time per file: a player that asks for another part has left the
-        # one it was reading. Aborted rather than closed, as a graceful close waits for
-        # the very send buffer the player stopped reading
-        if (running := file.request) is not None and (transport := running.transport) is not None:
-            transport.abort()
-        file.request = request
+        file.add_reader(request)
         self.logger.debug(
             "Serving %s as a file to %s from byte %s of %s",
             queue_item.name,
@@ -2890,10 +2889,10 @@ class StreamsController(CoreController):
                         break
                     # more audio than the file declared is cut off
                     data = chunk[: part.stop - offset]
-                    if file.request is request and is_connected(request):
+                    if file.readers.get(address) is request and is_connected(request):
                         # audio handed to a connection that is still open may reach the
                         # player, also when the write fails
-                        file.head_start_handed_out()
+                        file.head_start_handed_out(address)
                     try:
                         await resp.write(data)
                     except ConnectionError:
@@ -2916,8 +2915,7 @@ class StreamsController(CoreController):
             stream_failure = err
         finally:
             self._active_output_streams -= 1
-            if file.request is request:
-                file.request = None
+            file.remove_reader(request)
         if stream_failure is not None or queue_item.streamdetails.stream_error:
             self.logger.error(
                 "Error streaming QueueItem %s (%s) to %s: %s",
@@ -2972,7 +2970,7 @@ class StreamsController(CoreController):
             queue_item_id=queue_item.queue_item_id,
         )
         # the audio that is dropped comes on top of the head start, so it costs the player none
-        burst = file.take_head_start() + run_in / file.byte_rate
+        burst = file.take_head_start(request.remote) + run_in / file.byte_rate
         position = offset - run_in
         async with aclosing(
             get_ffmpeg_stream(

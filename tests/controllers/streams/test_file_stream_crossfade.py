@@ -49,6 +49,8 @@ from tests.controllers.streams.test_file_stream_route import (
     DITHER,
     HEADER_SIZE,
     KIB_16,
+    OTHER_ADDRESS,
+    PLAYER_ADDRESS,
     PLAYER_ID,
     QUEUE_ID,
     SESSION_ID,
@@ -255,6 +257,7 @@ class _Rig:
         method: str = "GET",
         wanted: int | None = None,
         stall_at: int | None = None,
+        address: str = PLAYER_ADDRESS,
     ) -> tuple[web.Request, _Download]:
         """
         Build a request of the player for a track.
@@ -264,8 +267,9 @@ class _Rig:
         :param method: The method of the request.
         :param wanted: The bytes after which the player hangs up, None for all it gets.
         :param stall_at: The bytes after which the player stops reading for a while.
+        :param address: The address the request comes from.
         """
-        download = _Download(wanted, stall_at)
+        download = _Download(wanted, stall_at, address)
         fmt = self.output_format.content_type.value
         request = make_mocked_request(
             method,
@@ -291,6 +295,7 @@ class _Rig:
         *,
         method: str = "GET",
         wanted: int | None = None,
+        address: str = PLAYER_ADDRESS,
     ) -> tuple[web.StreamResponse, bytes]:
         """
         Let the player fetch a track, or a part of it, and return the response and its body.
@@ -299,8 +304,11 @@ class _Rig:
         :param byte_range: The value of the Range header, if the request has one.
         :param method: The method of the request.
         :param wanted: The bytes after which the player hangs up, None for all it gets.
+        :param address: The address the request comes from.
         """
-        request, download = self.request(item_id, byte_range, method=method, wanted=wanted)
+        request, download = self.request(
+            item_id, byte_range, method=method, wanted=wanted, address=address
+        )
         resp = await StreamsController.serve_queue_item_stream(self.ctrl, request)
         return resp, bytes(download.body)
 
@@ -749,6 +757,26 @@ async def test_a_request_into_the_end_of_a_track_makes_the_whole_mix(rig: _Rig) 
     assert again == whole
     # the track was read from before the audio its mix is made from
     assert rig.passes == [None, (TRACK_SECONDS - WINDOW - 2) * 1000]
+
+
+async def test_a_request_from_another_address_ends_the_reader_of_a_mixed_track(
+    rig: _Rig,
+) -> None:
+    """A mixed track has one reader: a second speaker ends its encode, which asks again."""
+    playthrough = _Rig(_pair(PCM_16), output_format=WAV_16, pcm_format=PCM_16)
+    await playthrough.decode()
+    _, whole = await playthrough.fetch("a")
+    seek = rig.offset(5.5)
+
+    first_request, first = rig.request("a", stall_at=PCM_16.pcm_sample_size)
+    task = asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, first_request))
+    await first.stalled.wait()
+    _, body = await rig.fetch("a", f"bytes={seek}-", address=OTHER_ADDRESS)
+
+    first.transport.abort.assert_called_once()
+    first.resume.set()
+    await task
+    assert body == whole[seek:]
 
 
 async def test_a_pass_ends_with_the_request_that_drives_it(rig: _Rig) -> None:
