@@ -10,8 +10,8 @@
       }
     },
     "allow_crossfade_same_album": {
-      "label": "Allow crossfade between tracks from the same album",
-      "description": "Enabling this option allows for crossfading between tracks that are part of the same album."
+      "label": "Also crossfade within an album",
+      "description": "When off, the tracks of one album follow each other without a crossfade."
     },
     "stream_source_mode": {
       "label": "Which source plays",
@@ -46,7 +46,7 @@
       "description": "This IP address is communicated to players where to find this server.\nThe default \"auto\" automatically selects the server's primary IP address at startup.\nSet an explicit IP address if the auto-detected one cannot be reached by players on the local network (for example when running in Docker with bridged networking), otherwise audio streaming will not work."
     },
     "volume_normalization_radio": {
-      "label": "Volume normalization method for radio streams",
+      "label": "How to even out radio stations",
       "options": {
         "disabled": "Disabled",
         "dynamic": "Dynamic",
@@ -57,7 +57,7 @@
       }
     },
     "volume_normalization_tracks": {
-      "label": "Volume normalization method for tracks",
+      "label": "How to even out tracks",
       "options": {
         "disabled": "Disabled",
         "dynamic": "Dynamic",
@@ -68,10 +68,10 @@
       }
     },
     "volume_normalization_fixed_gain_radio": {
-      "label": "Fixed/fallback gain adjustment for radio streams"
+      "label": "Fixed gain for radio stations (dB)"
     },
     "volume_normalization_fixed_gain_tracks": {
-      "label": "Fixed/fallback gain adjustment for tracks"
+      "label": "Fixed gain for tracks (dB)"
     },
     "background_scan_concurrency": {
       "label": "Background analysis concurrency",

@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
+    ConfigEntryType,
     CrossfadeMode,
     ProviderFeature,
     ProviderSharing,
@@ -26,10 +27,14 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues.config import (
+    CATEGORY_AUTOPLAY,
     CATEGORY_CLICK_ACTIONS,
+    CATEGORY_CROSSFADE,
     CATEGORY_DEFAULT_ENQUEUE_OPTION,
     CATEGORY_ITEMS_TO_SELECT,
     CATEGORY_PLAYBACK,
+    CATEGORY_SMART_SHUFFLE,
+    CATEGORY_VOLUME_NORMALIZATION,
     core_config_entries,
     queue_config_entries,
 )
@@ -44,12 +49,19 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_CLICK_ACTION_RADIO,
     CONF_DEFAULT_CLICK_ACTION_TRACK,
     CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
+    CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
+    CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
+    CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
+    CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
     CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
+    CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
     CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
     CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
     CONF_PAUSE_TIMEOUT,
+    CONF_SMART_SHUFFLE_ARTIST_RECENCY,
+    CONF_SMART_SHUFFLE_DUPLICATE_GAP,
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
@@ -182,6 +194,54 @@ def test_core_config_entries_global_feature_defaults() -> None:
     assert pause_timeout.range == (30, 240)
     assert pause_timeout.category == CATEGORY_PLAYBACK
     assert pause_timeout.advanced
+
+
+def test_core_config_entries_section_order() -> None:
+    """The sections come in the order clients show them, with what a click does first."""
+    entries = core_config_entries(_mass(similar_tracks=True, smart_fades=True))
+    assert list(dict.fromkeys(entry.category for entry in entries)) == [
+        CATEGORY_CLICK_ACTIONS,
+        CATEGORY_DEFAULT_ENQUEUE_OPTION,
+        CATEGORY_ITEMS_TO_SELECT,
+        CATEGORY_SMART_SHUFFLE,
+        CATEGORY_AUTOPLAY,
+        CATEGORY_CROSSFADE,
+        CATEGORY_VOLUME_NORMALIZATION,
+        CATEGORY_PLAYBACK,
+    ]
+
+
+@pytest.mark.parametrize("per_queue", [False, True], ids=["global", "queue"])
+def test_config_entries_have_no_text_only_entries(per_queue: bool) -> None:
+    """Neither schema carries a text-only entry: each explanation is in a setting's help text."""
+    mass = _mass(similar_tracks=True, smart_fades=True)
+    entries = queue_config_entries(mass) if per_queue else core_config_entries(mass)
+    assert [entry.key for entry in entries if entry.type == ConfigEntryType.LABEL] == []
+
+
+def test_config_entries_fine_tuning_is_advanced() -> None:
+    """Fine-tuning only shows with the advanced settings; the main settings always show."""
+    mass = _mass(similar_tracks=True, smart_fades=True)
+    core = core_config_entries(mass)
+    assert {entry.key for entry in core if entry.advanced and not entry.hidden} == {
+        CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
+        CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
+        CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
+        CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
+        CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
+        CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
+        CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+        CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
+        CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
+        CONF_SMART_SHUFFLE_SONG_RECENCY,
+        CONF_SMART_SHUFFLE_ARTIST_RECENCY,
+        CONF_SMART_SHUFFLE_DUPLICATE_GAP,
+        CONF_PAUSE_TIMEOUT,
+    }
+    queue = queue_config_entries(mass)
+    assert {entry.key for entry in queue if entry.advanced} == {
+        CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES
+    }
 
 
 def test_queue_config_entries_offer_global_option() -> None:

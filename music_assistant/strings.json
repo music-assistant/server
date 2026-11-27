@@ -281,7 +281,7 @@
       "label": "This is an unofficial integration that is not affiliated with, supported by, or endorsed by the music service. It relies on interfaces that are not officially supported and may stop working at any time. Use of this provider may also be subject to the service's terms of use."
     },
     "volume_normalization_target": {
-      "label": "Target level for volume normalization",
+      "label": "Target loudness (LUFS)",
       "description": "Adjust average (perceived) loudness to this target level, default is -14 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
     },
     "zeroconf_interfaces": {
@@ -491,9 +491,9 @@
     "web_player": "Web Player",
     "playback": "Playback",
     "source_selection": "Source selection",
-    "items_to_select": "Items to select",
-    "default_enqueue_option": "Default enqueue option",
-    "click_actions": "Click actions",
+    "items_to_select": "What an artist or album plays",
+    "default_enqueue_option": "Pressing play",
+    "click_actions": "Clicking an item",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
     "volume_normalization": "Volume normalization",
