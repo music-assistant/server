@@ -340,6 +340,7 @@ class WiimPlayer(PlayerProtocol):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._ma_stream_uri = stream_url
+        self._invalidate_device_status()
         try:
             await self.device.async_play(uri=stream_url, metadata=didl_metadata)
         except WiimException as err:
@@ -347,7 +348,7 @@ class WiimPlayer(PlayerProtocol):
             self._ma_stream_uri = None
             self._handle_command_error("play_media", err)
             return
-        self._update_ma_state_from_sdk_cache()
+        self._update_ma_state_from_sdk_cache(preferred_source=self._queue_id)
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
@@ -396,6 +397,7 @@ class WiimPlayer(PlayerProtocol):
         self._attr_active_source = None
         self._attr_current_media = None
         self._ma_stream_uri = None
+        self._invalidate_device_status()
         try:
             await self.device.async_stop()
         except WiimException as err:
@@ -451,7 +453,8 @@ class WiimPlayer(PlayerProtocol):
         except WiimException as err:
             self._handle_command_error("select_source", err)
             return
-        self._update_ma_state_from_sdk_cache()
+        self._invalidate_device_status()
+        self._update_ma_state_from_sdk_cache(preferred_source=source)
 
     async def set_members(
         self,
@@ -626,11 +629,15 @@ class WiimPlayer(PlayerProtocol):
         if not create.cancelled() and create.exception() is None:
             self.mass.create_task(create.result().disconnect())
 
-    def _update_ma_state_from_sdk_cache(self, force_update: bool = False) -> None:
+    def _update_ma_state_from_sdk_cache(
+        self, force_update: bool = False, preferred_source: str | None = None
+    ) -> None:
         """
         Update MA state from SDK's cache/HTTP poll attributes.
 
         :param force_update: Recalculate the player state even when nothing reported changed.
+        :param preferred_source: The source a command just selected, for when the device state
+            still reports what it played before (our stream started, or an input was picked).
         """
         was_available = self._attr_available
         self._attr_available = self.native_available
@@ -668,20 +675,26 @@ class WiimPlayer(PlayerProtocol):
         # The queue is registered just after the player, so an early poll can precede it.
         queue_id = self._queue_id
         ma_queue = self.mass.player_queues.get(queue_id) if queue_id else None
-        self._attr_active_source = resolve_active_source(
-            play_mode=play_mode,
-            mode=self._device_status.get("mode"),
-            vendor=self._device_status.get("vendor"),
-            uri=device_uri,
-            own_hosts=self._own_stream_hosts,
-            own_stream_uri=bool(device_uri and device_uri == self._ma_stream_uri),
-            queue_id=queue_id,
-            queue_has_item=bool(ma_queue and ma_queue.current_item),
-        )
+        if preferred_source is not None:
+            # A command just told us what the device plays; the cached state lags behind it.
+            self._attr_active_source = preferred_source
+        else:
+            self._attr_active_source = resolve_active_source(
+                play_mode=play_mode,
+                mode=self._device_status.get("mode"),
+                vendor=self._device_status.get("vendor"),
+                uri=device_uri,
+                own_hosts=self._own_stream_hosts,
+                own_stream_uri=bool(device_uri and device_uri == self._ma_stream_uri),
+                queue_id=queue_id,
+                queue_has_item=bool(ma_queue and ma_queue.current_item),
+            )
 
         source_display_name: str | None = None
         if play_mode and play_mode in INPUT_MODE_SOURCES:
             source_display_name = INPUT_MODE_SOURCES[play_mode].name
+        elif input_mode := SOURCE_ID_TO_INPUT_MODE.get(self._attr_active_source or ""):
+            source_display_name = INPUT_MODE_SOURCES[input_mode].name
         elif passive_source := REPORTED_SOURCES.get(self._attr_active_source or ""):
             source_display_name = passive_source.name
 
@@ -958,6 +971,16 @@ class WiimPlayer(PlayerProtocol):
         if publish_ip := getattr(self.mass.streams, "publish_ip", None):
             hosts.add(str(publish_ip))
         return hosts
+
+    def _invalidate_device_status(self) -> None:
+        """
+        Drop the cached device status after a command that changes what the device plays.
+
+        The raw input mode is only refreshed on the poll, so a player that just moved from an
+        input to our own stream would keep reporting that input until the next refresh.
+        """
+        self._device_status = {}
+        self._device_status_last_update = 0.0
 
     async def _read_device_status(self) -> None:
         """Read the device's own status (input mode and stream vendor) from its HTTP API."""
