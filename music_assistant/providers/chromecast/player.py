@@ -173,6 +173,11 @@ class ChromecastPlayer(PlayerProtocol):
         self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
         self._attr_device_info.add_identifier(IdentifierType.CAST_UUID, str(self.cast_info.uuid))
 
+    @property
+    def fetches_files(self) -> bool:
+        """Return True: a receiver pauses, resumes and seeks by asking for a part of a track."""
+        return True
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         output_codec_entry = get_cast_output_codec_entry(self.cast_info.model_name)

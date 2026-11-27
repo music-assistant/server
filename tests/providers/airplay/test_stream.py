@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
@@ -69,6 +69,7 @@ def _make_player() -> MagicMock:
     player.protocol = StreamingProtocol.AIRPLAY2
     player.protocol_override = None
     player.volume_level = 40
+    player.native_start_volume = None
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"
     player.device_info.manufacturer = "Acme, Inc."
@@ -1317,7 +1318,8 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delivered_volume_command_arms_the_echo_grace() -> None:
+@pytest.mark.parametrize("command", ["VOLUME=40", "VOLUME_DB=-28.650000"])
+async def test_delivered_volume_command_arms_the_echo_grace(command: str) -> None:
     """
     A delivered volume command makes the player ignore the echo of it.
 
@@ -1329,7 +1331,7 @@ async def test_delivered_volume_command_arms_the_echo_grace() -> None:
     stream._cli_proc = _make_cli_proc()
 
     with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)):
-        assert await stream.send_cli_command("VOLUME=40") is True
+        assert await stream.send_cli_command(command) is True
 
     player.suppress_volume_reports.assert_called_once_with()
 
@@ -3011,6 +3013,80 @@ async def test_wait_for_connection_sends_volume_when_muted_without_ownership() -
         await stream.wait_for_connection()
 
     send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_the_native_level_read_before_connecting() -> None:
+    """
+    A device that sets a level of its own when a session starts gets its native level.
+
+    The level is the one read before the device was reached, not the one it jumped to while
+    the session was set up, and it goes out again 2 seconds later.
+    """
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = False
+    player.native_start_volume = 7
+    stream = AirPlayStream(player)
+    process = MagicMock(closed=False)
+
+    async def start_process() -> None:
+        # the device jumps to a level of its own as the session is set up
+        player.native_start_volume = 60
+
+    def consume_task(awaitable: Any) -> MagicMock:
+        awaitable.close()
+        return MagicMock()
+
+    process.start = AsyncMock(side_effect=start_process)
+    player.provider.mass.create_task.side_effect = consume_task
+    player.provider.mass.call_later = MagicMock()
+    with (
+        patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
+        patch("music_assistant.providers.airplay.stream.AsyncProcess", return_value=process),
+        patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.connect()
+        stream._connected.set()
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_once_with("VOLUME=7")
+    player.provider.mass.call_later.assert_called_once_with(
+        2, stream._resend_native_start_volume, 7, ANY
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("native_level", "commanded", "resent"),
+    [
+        (7, False, True),  # nothing changed
+        (60, False, True),  # the device set a level of its own after the first command
+        (25, True, False),  # a volume command went through Music Assistant meanwhile
+        (None, False, False),  # the player was muted meanwhile
+    ],
+)
+async def test_native_start_volume_goes_out_again_unless_overruled(
+    native_level: int | None, commanded: bool, resent: bool
+) -> None:
+    """The repeat corrects the device itself, but never undoes a volume set meanwhile."""
+    player = _make_player()
+    player.native_start_volume = native_level
+    player.volume_commanded_since = MagicMock(return_value=commanded)
+    stream = AirPlayStream(player)
+
+    with patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command:
+        await stream._resend_native_start_volume(7, 123.0)
+
+    if resent:
+        send_command.assert_awaited_once_with("VOLUME=7")
+    else:
+        send_command.assert_not_awaited()
+    if native_level is not None:
+        player.volume_commanded_since.assert_called_once_with(123.0)
 
 
 @pytest.mark.asyncio

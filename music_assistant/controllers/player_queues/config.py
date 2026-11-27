@@ -45,11 +45,9 @@ from music_assistant.controllers.player_queues.constants import (
     CLICK_ACTION_DEFAULT_VALUE,
     CLICK_ACTION_PLAY,
     CONF_AUTOPLAY_ENABLED,
-    CONF_AUTOPLAY_LABEL,
     CONF_AUTOPLAY_MODE,
     CONF_AUTOPLAY_PLAYLIST,
     CONF_CROSSFADE_ENABLED,
-    CONF_CROSSFADE_LABEL,
     CONF_DEFAULT_CLICK_ACTION_ALBUM,
     CONF_DEFAULT_CLICK_ACTION_ARTIST,
     CONF_DEFAULT_CLICK_ACTION_GENRE,
@@ -77,7 +75,6 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ARTIST_RECENCY,
     CONF_SMART_SHUFFLE_DUPLICATE_GAP,
     CONF_SMART_SHUFFLE_ENABLED,
-    CONF_SMART_SHUFFLE_LABEL,
     CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
     DEFAULT_AUTOPLAY_ENABLED,
@@ -128,8 +125,8 @@ def core_config_entries(mass: MusicAssistant) -> tuple[ConfigEntry, ...]:
     :param mass: The MusicAssistant instance (read for provider/smart-fades availability).
     """
     return (
-        *_enqueue_default_entries(),
         *_click_action_entries(),
+        *_enqueue_default_entries(),
         *_smart_shuffle_entries(per_queue=False),
         *_autoplay_entries(mass, None, per_queue=False),
         *_crossfade_entries(mass, per_queue=False),
@@ -172,6 +169,7 @@ def _onoff_entry(
     per_queue: bool,
     global_default: str,
     reload_on_change: bool = False,
+    advanced: bool = False,
 ) -> ConfigEntry:
     """
     Build an enabled/disabled select entry, adding the "global" option for the per-queue variant.
@@ -184,6 +182,7 @@ def _onoff_entry(
     :param reload_on_change: When True, changing the per-queue value restarts that queue's playback
         so the change applies immediately (a global change is left to apply on the next track, to
         avoid a disruptive reload of the whole queues core controller).
+    :param advanced: When True, the entry only shows with the advanced settings.
     """
     options = [ConfigValueOption(CONF_VALUE_ENABLED), ConfigValueOption(CONF_VALUE_DISABLED)]
     if per_queue:
@@ -195,11 +194,12 @@ def _onoff_entry(
         default_value=CONF_VALUE_GLOBAL if per_queue else global_default,
         category=category,
         requires_reload=per_queue and reload_on_change,
+        advanced=advanced,
     )
 
 
 def _enqueue_default_entries() -> list[ConfigEntry]:
-    """Per-media-type enqueue defaults: which tracks to select, and how to enqueue them."""
+    """Per-media-type enqueue defaults: how to enqueue them, and which tracks to select."""
     enqueue_options = [
         ConfigValueOption(QueueOption.PLAY.value),
         ConfigValueOption(QueueOption.REPLACE.value),
@@ -213,9 +213,30 @@ def _enqueue_default_entries() -> list[ConfigEntry]:
             options=enqueue_options,
             category=CATEGORY_DEFAULT_ENQUEUE_OPTION,
             hidden=hidden,
+            advanced=True,
         )
 
     return [
+        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_ARTIST, QueueOption.REPLACE.value),
+        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_ALBUM, QueueOption.REPLACE.value),
+        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_TRACK, QueueOption.PLAY.value),
+        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_GENRE, QueueOption.REPLACE.value),
+        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES, QueueOption.REPLACE.value),
+        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST, QueueOption.REPLACE.value),
+        _option_entry(
+            CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION, QueueOption.REPLACE.value, hidden=True
+        ),
+        _option_entry(
+            CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK, QueueOption.REPLACE.value, hidden=True
+        ),
+        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_PODCAST, QueueOption.REPLACE.value, hidden=True),
+        _option_entry(
+            CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE, QueueOption.REPLACE.value, hidden=True
+        ),
+        _option_entry(
+            CONF_DEFAULT_ENQUEUE_OPTION_SOUND_EFFECT, QueueOption.REPLACE.value, hidden=True
+        ),
+        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_FOLDER, QueueOption.REPLACE.value, hidden=True),
         ConfigEntry(
             key=CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
             type=ConfigEntryType.STRING,
@@ -227,6 +248,7 @@ def _enqueue_default_entries() -> list[ConfigEntry]:
                 ConfigValueOption("library_album_tracks"),
             ],
             category=CATEGORY_ITEMS_TO_SELECT,
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
@@ -248,27 +270,8 @@ def _enqueue_default_entries() -> list[ConfigEntry]:
                 ConfigValueOption("all_tracks"),
             ],
             category=CATEGORY_ITEMS_TO_SELECT,
+            advanced=True,
         ),
-        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_ARTIST, QueueOption.REPLACE.value),
-        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_ALBUM, QueueOption.REPLACE.value),
-        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_TRACK, QueueOption.PLAY.value),
-        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_GENRE, QueueOption.REPLACE.value),
-        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES, QueueOption.REPLACE.value),
-        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST, QueueOption.REPLACE.value),
-        _option_entry(
-            CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION, QueueOption.REPLACE.value, hidden=True
-        ),
-        _option_entry(
-            CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK, QueueOption.REPLACE.value, hidden=True
-        ),
-        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_PODCAST, QueueOption.REPLACE.value, hidden=True),
-        _option_entry(
-            CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE, QueueOption.REPLACE.value, hidden=True
-        ),
-        _option_entry(
-            CONF_DEFAULT_ENQUEUE_OPTION_SOUND_EFFECT, QueueOption.REPLACE.value, hidden=True
-        ),
-        _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_FOLDER, QueueOption.REPLACE.value, hidden=True),
     ]
 
 
@@ -318,11 +321,6 @@ def _click_action_entries() -> list[ConfigEntry]:
 def _smart_shuffle_entries(*, per_queue: bool) -> list[ConfigEntry]:
     """Smart-shuffle entries: the enabled toggle (per-queue overridable) + global-only tuning."""
     entries = [
-        ConfigEntry(
-            key=CONF_SMART_SHUFFLE_LABEL,
-            type=ConfigEntryType.LABEL,
-            category=CATEGORY_SMART_SHUFFLE,
-        ),
         _onoff_entry(
             CONF_SMART_SHUFFLE_ENABLED,
             CATEGORY_SMART_SHUFFLE,
@@ -334,6 +332,7 @@ def _smart_shuffle_entries(*, per_queue: bool) -> list[ConfigEntry]:
             CATEGORY_SMART_SHUFFLE,
             per_queue=per_queue,
             global_default=CONF_VALUE_DISABLED,
+            advanced=True,
         ),
     ]
     if per_queue:
@@ -346,11 +345,13 @@ def _smart_shuffle_entries(*, per_queue: bool) -> list[ConfigEntry]:
             CONF_SMART_SHUFFLE_SONG_RECENCY,
             SMART_SHUFFLE_SONG_RECENCY_OPTIONS,
             SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
+            advanced=True,
         ),
         _recency_entry(
             CONF_SMART_SHUFFLE_ARTIST_RECENCY,
             SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS,
             SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT,
+            advanced=True,
         ),
         _recency_entry(
             CONF_SMART_SHUFFLE_DUPLICATE_GAP,
@@ -395,13 +396,7 @@ def _autoplay_entries(
     ]
     if per_queue:
         mode_options.append(ConfigValueOption(CONF_VALUE_GLOBAL))
-    entries: list[ConfigEntry] = [
-        ConfigEntry(
-            key=CONF_AUTOPLAY_LABEL,
-            type=ConfigEntryType.LABEL,
-            category=CATEGORY_AUTOPLAY,
-        ),
-    ]
+    entries: list[ConfigEntry] = []
     if not per_queue:
         # global-only: the per-queue Autoplay toggle is a runtime command, not a config entry
         # so we only define the default here
@@ -449,13 +444,7 @@ def _crossfade_entries(mass: MusicAssistant, *, per_queue: bool) -> list[ConfigE
         if smart_fades_available
         else CrossfadeMode.STANDARD_CROSSFADE.value
     )
-    entries: list[ConfigEntry] = [
-        ConfigEntry(
-            key=CONF_CROSSFADE_LABEL,
-            type=ConfigEntryType.LABEL,
-            category=CATEGORY_CROSSFADE,
-        ),
-    ]
+    entries: list[ConfigEntry] = []
     if not per_queue:
         # global-only: the per-queue crossfade toggle is a runtime command, not a config entry
         entries.append(

@@ -106,6 +106,7 @@ from .constants import (
     GLOBAL_SEARCH_LIMIT,
     GLOBAL_SEARCH_TIMEOUT,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
+    PLAYLIST_ITEM_TYPES,
     SOLOIST_DATA_DIR_NAME,
 )
 from .helpers import get_spotify_token
@@ -843,10 +844,17 @@ class SpotifyProvider(MusicProvider):
         ]
 
     @use_cache(3600 * 3, allow_expired_cache=True)  # 3 hours
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Get playlist tracks."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, page: int = 0
+    ) -> list[Track | PodcastEpisode]:
+        """Get playlist tracks and podcast episodes."""
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
         uri = "me/tracks" if is_liked_songs else f"playlists/{prov_playlist_id}/items"
+        # Without additional_types Spotify returns an episode in a playlist as a track
+        # object carrying the episode id, which then 404s on the tracks endpoint.
+        page_kwargs: dict[str, Any] = (
+            {} if is_liked_songs else {"additional_types": PLAYLIST_ITEM_TYPES}
+        )
 
         # Liked songs are read with the same session as the library sync,
         # so both share their cached pages
@@ -882,6 +890,7 @@ class SpotifyProvider(MusicProvider):
                         limit=page_size,
                         offset=offset,
                         use_global_session=use_global,
+                        **page_kwargs,
                     )
                 break
             except MediaNotFoundError:
@@ -893,7 +902,7 @@ class SpotifyProvider(MusicProvider):
         if use_global and not known_global:
             await self._set_playlist_requires_global_token(prov_playlist_id)
 
-        result: list[Track] = []
+        result: list[Track | PodcastEpisode] = []
         total = spotify_result.get("total", 0)
         items = spotify_result.get("items", [])
         # playlists/{id}/items is transitioning from item["track"] to item["item"]
@@ -903,12 +912,16 @@ class SpotifyProvider(MusicProvider):
             # so we need to break when we've reached the total.
             if (offset + index) > total:
                 break
-            track_data = item and (item.get("item") or item.get("track"))
-            if not (track_data and track_data.get("id")):
+            item_data = item and (item.get("item") or item.get("track"))
+            if not (item_data and item_data.get("id")):
                 continue
-            track = parse_track(track_data, self)
-            track.position = offset + index
-            result.append(track)
+            playlist_item: Track | PodcastEpisode
+            if item_data.get("type") == "episode":
+                playlist_item = parse_podcast_episode(item_data, self)
+            else:
+                playlist_item = parse_track(item_data, self)
+            playlist_item.position = offset + index
+            result.append(playlist_item)
         return result
 
     @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
@@ -1005,12 +1018,15 @@ class SpotifyProvider(MusicProvider):
         track_uris = []
         for pos in positions_to_remove:
             uri = f"playlists/{prov_playlist_id}/items"
-            spotify_result = await self._get_data(uri, limit=1, offset=pos - 1)
+            spotify_result = await self._get_data(
+                uri, limit=1, offset=pos - 1, additional_types=PLAYLIST_ITEM_TYPES
+            )
             for item in spotify_result["items"]:
-                track_data = item and (item.get("item") or item.get("track"))
-                if not (track_data and track_data.get("id")):
+                item_data = item and (item.get("item") or item.get("track"))
+                if not (item_data and item_data.get("id")):
                     continue
-                track_uris.append({"uri": f"spotify:track:{track_data['id']}"})
+                item_type = "episode" if item_data.get("type") == "episode" else "track"
+                track_uris.append({"uri": f"spotify:{item_type}:{item_data['id']}"})
         data = {"items": track_uris}
         await self._delete_data(f"playlists/{prov_playlist_id}/items", data=data)
 

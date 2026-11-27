@@ -153,7 +153,8 @@ class _FakeApi:
         self.info_or_none = SimpleNamespace(
             supported_pair_methods=_offer(methods),
             unpaired_access=SimpleNamespace(enabled=unpaired_access),
-            source_support=None,
+            # An older source without line_sense, so the flow has no autostart step.
+            source_support=SimpleNamespace(features=None),
         )
         self.connection_security: Any = SimpleNamespace(psk_category=psk_category)
         self.active_roles = active_roles

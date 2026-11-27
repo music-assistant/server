@@ -8,12 +8,9 @@
       "label": "Enable Autoplay by default",
       "description": "Each queue's player controls can still turn it on or off individually."
     },
-    "autoplay_label": {
-      "label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist, regardless of this setting."
-    },
     "autoplay_mode": {
       "label": "Autoplay source",
-      "description": "How Autoplay picks new tracks once your queue runs out.",
+      "description": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Choose here which tracks it adds; turn Autoplay on or off from the player controls.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist.",
       "options": {
         "auto": "Automatic — similar tracks, falling back to your library",
         "similar": "Similar to what you played",
@@ -39,16 +36,13 @@
       "label": "Enable crossfade by default",
       "description": "Each queue's player controls can still turn it on or off individually."
     },
-    "crossfade_label": {
-      "label": "Crossfade overlaps the end of each track with the start of the next so playback flows without gaps or abrupt cuts — handy for parties, mixes and continuous listening. Turn crossfade on or off per queue from the player controls; choose the crossfade mode below (on more powerful systems a 'Smart crossfade' option picks a transition that suits each pair of tracks, such as a beatmatched blend or a long fade over a quiet ending)."
-    },
     "crossfade_duration": {
-      "label": "Standard crossfade duration",
-      "description": "Duration in seconds for the standard crossfade between tracks."
+      "label": "Standard crossfade duration (seconds)",
+      "description": "How long the standard crossfade overlaps the end of one track with the start of the next."
     },
     "crossfade_mode": {
       "label": "Crossfade mode",
-      "description": "The crossfade type to use when crossfade is enabled. Smart crossfade picks a transition that suits each pair of tracks and needs the smart fades analysis provider on a capable system; it falls back to standard when unavailable.",
+      "description": "Crossfade overlaps the end of each track with the start of the next, so playback flows without gaps or abrupt cuts. Choose the type of crossfade here; turn crossfade on or off from the player controls.\n\nSmart crossfade picks a transition that suits each pair of tracks, such as a beatmatched blend or a long fade over a quiet ending. It needs the smart fades analysis provider on a capable system and falls back to standard when unavailable.",
       "options": {
         "standard_crossfade": "Standard crossfade",
         "smart_crossfade": "Smart crossfade",
@@ -61,12 +55,9 @@
         "smart_crossfade": "Not available on this server: smart crossfade needs the smart fades analysis provider and a larger audio buffer (balanced or higher)."
       }
     },
-    "smart_shuffle_label": {
-      "label": "Smart shuffle adds a bit of intelligence to shuffle: instead of pure random, it pushes songs and artists you've heard recently toward the back and spreads things out, so a playlist you keep re-adding stops repeating the same tracks.\n\nNOTE: Smart shuffle is always active when you're playing a dynamic playlist, regardless of this setting."
-    },
     "smart_shuffle_enabled": {
       "label": "Smart shuffle",
-      "description": "When enabled, the shuffle button uses smart shuffle (recency-aware and well-spaced) instead of a plain random shuffle.\n\nNOTE: Smart shuffle is always active when you're playing a dynamic playlist, regardless of this setting.",
+      "description": "When enabled, the shuffle button uses smart shuffle instead of a plain random shuffle: it pushes songs and artists you've heard recently toward the back and spreads things out, so a playlist you keep re-adding stops repeating the same tracks.\n\nNOTE: Smart shuffle is always active when you're playing a dynamic playlist, regardless of this setting.",
       "options": {
         "enabled": "Enabled",
         "disabled": "Disabled",
@@ -131,8 +122,8 @@
       }
     },
     "volume_normalization": {
-      "label": "Volume normalization (EBU-R128 based)",
-      "description": "Even out the perceived loudness across tracks using the EBU-R128 standard, without affecting dynamic range.",
+      "label": "Volume normalization",
+      "description": "Uses the EBU-R128 loudness standard to match the perceived loudness of tracks, without affecting their dynamic range.",
       "options": {
         "enabled": "Enabled",
         "disabled": "Disabled",
@@ -147,16 +138,16 @@
       "description": "How long a player may stay paused before Music Assistant stops it to free the audio it holds. Once stopped, the player shows as idle, and pressing play still continues where you paused. Not every player can stay paused for long."
     },
     "default_enqueue_select_artist": {
-      "label": "Items to select when you play a (in-library) artist.",
+      "label": "Tracks to play for an artist",
       "options": {
         "top_tracks": "Artist top tracks only",
-        "library_tracks": "In-library tracks for the artist only",
+        "library_tracks": "Only the artist's tracks in your library",
         "prefer_library": "Prefer library, fall back to top tracks",
         "library_album_tracks": "All tracks of the artist's albums in your library"
       }
     },
     "default_enqueue_order_artist": {
-      "label": "Order to play an artist in.",
+      "label": "Order to play an artist in",
       "description": "With an album order, an artist plays its albums in your library, each as it plays on its own. Singles are left out. Top tracks, or an artist without albums in your library, play shuffled tracks.",
       "options": {
         "shuffled_tracks": "Shuffled tracks",
@@ -165,58 +156,53 @@
       }
     },
     "default_enqueue_select_album": {
-      "label": "Items to select when you play a (in-library) album.",
+      "label": "Tracks to play for an album",
       "options": {
-        "library_tracks": "Only in-library tracks",
-        "all_tracks": "All tracks for album on (streaming) provider"
+        "library_tracks": "Only tracks in your library",
+        "all_tracks": "All tracks of the album"
       }
     },
     "default_enqueue_option_artist": {
-      "label": "Default enqueue option for Artist item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
+      "label": "Pressing play on an artist",
       "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
+        "play": "Keep the queue",
+        "replace": "Replace the queue"
       }
     },
     "default_enqueue_option_album": {
-      "label": "Default enqueue option for Album item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
+      "label": "Pressing play on an album",
       "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
+        "play": "Keep the queue",
+        "replace": "Replace the queue"
       }
     },
     "default_enqueue_option_track": {
-      "label": "Default enqueue option for Track item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
+      "label": "Pressing play on a track",
       "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
+        "play": "Keep the queue",
+        "replace": "Replace the queue"
       }
     },
     "default_enqueue_option_genre": {
-      "label": "Default enqueue option for Genre item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
+      "label": "Pressing play on a genre",
       "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
+        "play": "Keep the queue",
+        "replace": "Replace the queue"
       }
     },
     "default_enqueue_option_live_sources": {
-      "label": "Default enqueue option for Radio and Live Input item(s).",
-      "description": "Default enqueue action for live, infinite streams — radio stations and audio sources (Spotify Connect, AirPlay receiver, etc.).",
+      "label": "Pressing play on a radio station or live source",
+      "description": "A live source is an input such as Spotify Connect or an AirPlay receiver.",
       "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
+        "play": "Keep the queue",
+        "replace": "Replace the queue"
       }
     },
     "default_enqueue_option_playlist": {
-      "label": "Default enqueue option for Playlist item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
+      "label": "Pressing play on a playlist",
       "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
+        "play": "Keep the queue",
+        "replace": "Replace the queue"
       }
     },
     "default_enqueue_option_audiobook": {
@@ -248,55 +234,49 @@
       }
     },
     "default_click_action_artist": {
-      "label": "What clicking an artist does.",
-      "description": "Choose whether clicking an artist opens it or starts playing it.",
+      "label": "Clicking an artist",
       "options": {
         "browse": "Open it",
         "play": "Play it"
       }
     },
     "default_click_action_album": {
-      "label": "What clicking an album does.",
-      "description": "Choose whether clicking an album opens it or starts playing it.",
+      "label": "Clicking an album",
       "options": {
         "browse": "Open it",
         "play": "Play it"
       }
     },
     "default_click_action_track": {
-      "label": "What clicking a track does.",
-      "description": "Choose whether clicking a track opens it or starts playing it.",
+      "label": "Clicking a track",
       "options": {
         "browse": "Open it",
         "play": "Play it"
       }
     },
     "default_click_action_genre": {
-      "label": "What clicking a genre does.",
-      "description": "Choose whether clicking a genre opens it or starts playing it.",
+      "label": "Clicking a genre",
       "options": {
         "browse": "Open it",
         "play": "Play it"
       }
     },
     "default_click_action_radio": {
-      "label": "What clicking a radio does.",
-      "description": "Choose whether clicking a radio opens it or starts playing it.",
+      "label": "Clicking a radio station",
       "options": {
         "browse": "Open it",
         "play": "Play it"
       }
     },
     "default_click_action_playlist": {
-      "label": "What clicking a playlist does.",
-      "description": "Choose whether clicking a playlist opens it or starts playing it.",
+      "label": "Clicking a playlist",
       "options": {
         "browse": "Open it",
         "play": "Play it"
       }
     },
     "default_play_action_album_track": {
-      "label": "What playing a track from an album does.",
+      "label": "Playing a track from an album",
       "description": "Choose whether the album continues after the track you picked, or only that track is played.",
       "options": {
         "play_from_here": "Play from this track onwards",
@@ -304,7 +284,7 @@
       }
     },
     "default_play_action_playlist_track": {
-      "label": "What playing a track from a playlist does.",
+      "label": "Playing a track from a playlist",
       "description": "Choose whether the playlist continues after the track you picked, or only that track is played.",
       "options": {
         "play_from_here": "Play from this track onwards",

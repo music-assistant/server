@@ -39,6 +39,11 @@ _CONTROL_FEATURES = [
     (CONF_MUTE_CONTROL, PlayerFeature.VOLUME_MUTE),
 ]
 _ALL_FEATURES = {feature for _conf_key, feature in _CONTROL_FEATURES}
+# the control selects an audio protocol can take as well
+_AUDIO_CONTROL_FEATURES = [
+    (CONF_VOLUME_CONTROL, PlayerFeature.VOLUME_SET),
+    (CONF_MUTE_CONTROL, PlayerFeature.VOLUME_MUTE),
+]
 
 
 def _entries_by_key(
@@ -133,27 +138,31 @@ async def test_default_is_never_a_disabled_option(
     assert entry.default_value == PLAYER_CONTROL_NONE
 
 
-@pytest.mark.parametrize(
-    ("conf_key", "feature"),
-    [
-        (CONF_VOLUME_CONTROL, PlayerFeature.VOLUME_SET),
-        (CONF_MUTE_CONTROL, PlayerFeature.VOLUME_MUTE),
-    ],
-)
-async def test_auto_is_the_default_next_to_a_native_control(
+@pytest.mark.parametrize(("conf_key", "feature"), _AUDIO_CONTROL_FEATURES)
+async def test_native_is_the_default_next_to_auto(
     mass_minimal: MusicAssistant, conf_key: str, feature: PlayerFeature
 ) -> None:
-    """With an audio protocol that can take the control, the default shows what applies: auto."""
+    """With an audio protocol that can take the control, native stays the default, auto follows."""
     entry = _entries_by_key(mass_minimal, {feature}, {feature})[conf_key]
 
-    assert entry.default_value == PLAYER_CONTROL_PROTOCOL
+    assert entry.default_value == PLAYER_CONTROL_NATIVE
     assert [option.value for option in entry.options][:2] == [
-        PLAYER_CONTROL_PROTOCOL,
         PLAYER_CONTROL_NATIVE,
+        PLAYER_CONTROL_PROTOCOL,
     ]
-    # native stays selectable, and now differs from the default, so a save stores it
-    native = next(option for option in entry.options if option.value == PLAYER_CONTROL_NATIVE)
-    assert native.disabled is False
+    # auto is selectable, and differs from the default, so a save stores it
+    auto = next(option for option in entry.options if option.value == PLAYER_CONTROL_PROTOCOL)
+    assert auto.disabled is False
+
+
+@pytest.mark.parametrize(("conf_key", "feature"), _AUDIO_CONTROL_FEATURES)
+async def test_auto_is_the_default_without_a_native_control(
+    mass_minimal: MusicAssistant, conf_key: str, feature: PlayerFeature
+) -> None:
+    """Without a native control, auto is the default when an audio protocol can take it."""
+    entry = _entries_by_key(mass_minimal, set(), {feature})[conf_key]
+
+    assert entry.default_value == PLAYER_CONTROL_PROTOCOL
 
 
 async def test_fake_mute_offered_when_volume_provided_by_protocol_player(

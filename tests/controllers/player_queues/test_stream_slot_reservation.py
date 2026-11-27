@@ -29,6 +29,7 @@ from music_assistant_models.streamdetails import StreamDetails
 import music_assistant.controllers.streams.audio as audio_mod
 import music_assistant.models.music_provider as music_provider_mod
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from music_assistant.helpers.provider_access import PlaybackSources
 from music_assistant.models.music_provider import (
     ProviderStreamHeldError,
     ProviderStreamLimitError,
@@ -69,7 +70,9 @@ async def rig(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncGenerator[SlotRig]:
     """Build the rig with every music source open to the queue's playback."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
+    monkeypatch.setattr(
+        audio_mod, "playback_sources", AsyncMock(return_value=PlaybackSources(None, []))
+    )
     rig = SlotRig(getattr(request, "param", SingleStreamProvider))
     rig.mass.providers = [rig.provider]
     yield rig
@@ -670,6 +673,7 @@ async def test_a_stream_kept_for_a_queue_is_free_at_once_when_the_queue_is_pause
         name="Queue A",
         available=True,
         playback_state=PlaybackState.PAUSED,
+        fake_paused=False,
         corrected_elapsed_time=1.0,
         group_members=[],
     )
@@ -1265,7 +1269,7 @@ async def test_a_track_another_queue_prepares_waits_while_a_stream_is_kept(rig: 
             reason="prepare_next",
             capacity_wait_timeout=BRIEF_WAIT,
             allow_provider_match=False,
-            stop_paused_queues=False,
+            take_over_slots=False,
         )
 
     assert not isinstance(refusal.value, ProviderStreamHeldError)

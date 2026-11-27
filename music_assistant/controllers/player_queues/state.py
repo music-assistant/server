@@ -102,6 +102,9 @@ class PlayerQueueData:
     # session_id whose flow stream ended because the queue ran out of items, as opposed
     # to ending early to restart on a format change or a live item
     flow_queue_exhausted: str | None = None
+    # session_id whose fully streamed flow the player started over from 0 s: its position
+    # reports no longer move the queue
+    flow_started_over: str | None = None
     # session_id whose lost flow stream the queue restarted, and when (monotonic) it restarted
     # lost flow streams, for the rate limit
     flow_restarted_session_id: str | None = None
@@ -244,9 +247,15 @@ class PlayerQueueData:
         items: list[QueueItem] = []
         for item_data in items_data:
             try:
-                items.append(QueueItem.from_cache(item_data))
+                # items cached before they carried their user played for the queue's owner
+                cached_without_user = "userid" not in item_data
+                item = QueueItem.from_cache(item_data)
             except Exception as err:  # noqa: BLE001 - one unreadable item must not drop the queue
                 LOGGER.warning("Skipping unreadable queue item for %s: %s", queue.queue_id, err)
+                continue
+            if cached_without_user:
+                item.userid = state_data.get("userid")
+            items.append(item)
         # keep the wire-facing count consistent with the items actually restored (some may have been
         # skipped above), so refill / "running low" logic reads the right number
         queue.items = len(items)

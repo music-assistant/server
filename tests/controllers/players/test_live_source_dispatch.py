@@ -7,6 +7,7 @@ its own items. This replaces the queue-delegation tests, which covered the same
 forwarding while a live source was a queue item.
 """
 
+import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,8 +28,10 @@ from music_assistant_models.media_items import AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player import PlayerSoundMode, PlayerSource
 
+from music_assistant.controllers.player_queues.constants import SKIP_END_MARGIN
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
+from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider
 from tests.common import MockProtocol, MockProvider, attach_mock
 
@@ -235,6 +238,82 @@ async def test_repeat_reaches_the_live_source_before_the_queue() -> None:
     controller.mass.player_queues.set_repeat.assert_not_awaited()
 
 
+def _skip_controller(
+    source: AudioSource, elapsed: float | None, duration: int | None = None
+) -> tuple[Any, MagicMock]:
+    """Build a controller whose player plays the live source at the given position."""
+    controller, provider = _controller(source)
+    player = controller.get_player(PLAYER_ID)
+    player.corrected_elapsed_time = elapsed
+    player.current_media = (
+        None if duration is None else PlayerMedia(uri="spotify:track:1", duration=duration)
+    )
+    return controller, provider
+
+
+async def test_a_skip_reaches_the_live_source_as_a_seek_from_where_it_plays() -> None:
+    """A live source is what is playing, so it seeks and the queue does not skip."""
+    controller, provider = _skip_controller(_source(can_seek=True), elapsed=30.6, duration=200)
+    controller.get_active_queue = MagicMock(return_value=MagicMock())
+    controller.mass.player_queues.skip = AsyncMock()
+
+    await controller.cmd_skip(PLAYER_ID, 15)
+
+    provider.on_source_control.assert_awaited_once_with("main", SourceControl.SEEK, 45)
+    controller.mass.player_queues.skip.assert_not_awaited()
+
+
+async def test_a_skip_back_past_the_start_lands_on_the_start() -> None:
+    """Skipping back further than the source has played seeks to its start."""
+    controller, provider = _skip_controller(_source(can_seek=True), elapsed=5, duration=200)
+
+    await controller.cmd_skip(PLAYER_ID, -10)
+
+    provider.on_source_control.assert_awaited_once_with("main", SourceControl.SEEK, 0)
+
+
+async def test_a_skip_forward_past_the_end_stops_short_of_it() -> None:
+    """A skip never lands on the end of media with a known duration, so it ends on its own."""
+    controller, provider = _skip_controller(_source(can_seek=True), elapsed=190, duration=200)
+
+    await controller.cmd_skip(PLAYER_ID, 30)
+
+    provider.on_source_control.assert_awaited_once_with(
+        "main", SourceControl.SEEK, 200 - SKIP_END_MARGIN
+    )
+
+
+async def test_a_skip_in_media_of_unknown_length_is_not_held_back() -> None:
+    """Without a duration there is no end to stay clear of."""
+    controller, provider = _skip_controller(_source(can_seek=True), elapsed=190)
+
+    await controller.cmd_skip(PLAYER_ID, 30)
+
+    provider.on_source_control.assert_awaited_once_with("main", SourceControl.SEEK, 220)
+
+
+async def test_a_skip_without_a_known_position_is_refused() -> None:
+    """A skip has nowhere to count from while the position is unknown, so nothing seeks."""
+    controller, provider = _skip_controller(_source(can_seek=True), elapsed=None, duration=200)
+
+    with pytest.raises(PlayerCommandFailed) as error:
+        await controller.cmd_skip(PLAYER_ID, 30)
+
+    assert error.value.translation_key == "source_control_unsupported"
+    provider.on_source_control.assert_not_awaited()
+
+
+async def test_a_skip_in_a_source_that_cannot_seek_is_refused_like_a_seek() -> None:
+    """A source that does not seek refuses a skip in the same words as a seek."""
+    controller, provider = _skip_controller(_source(can_seek=False), elapsed=30, duration=200)
+
+    with pytest.raises(PlayerCommandFailed, match="does not support this action") as error:
+        await controller.cmd_skip(PLAYER_ID, 15)
+
+    assert error.value.translation_key == "source_control_unsupported"
+    provider.on_source_control.assert_not_awaited()
+
+
 async def test_a_source_with_no_control_surface_refuses_cleanly() -> None:
     """
     A source that implements no controls at all is a refusal, not a server error.
@@ -275,6 +354,10 @@ class _NativeSourceProtocol(MockProtocol):
         super().__init__(*args, **kwargs)
         self.shuffle_calls: list[bool] = []
         self.repeat_calls: list[RepeatMode] = []
+        self.seek_calls: list[int] = []
+
+    async def seek(self, position: int) -> None:
+        self.seek_calls.append(position)
 
     async def set_shuffle(self, shuffle_enabled: bool) -> None:
         self.shuffle_calls.append(shuffle_enabled)
@@ -421,6 +504,21 @@ async def test_a_device_that_can_not_seek_says_so() -> None:
 
     assert error.value.translation_key == "player_cannot_seek"
     assert error.value.translation_args == ["Player 1"]
+
+
+async def test_a_skip_in_a_device_native_source_seeks_the_device_from_where_it_plays() -> None:
+    """A source the device runs itself has no session, so the device seeks."""
+    controller, protocol = _native_source_controller()
+    protocol._attr_source_list = [PlayerSource(id=NATIVE_SOURCE_ID, name="Spotify", can_seek=True)]
+    protocol._attr_supported_features.add(PlayerFeature.SEEK)
+    protocol._attr_current_media = PlayerMedia(uri="spotify:track:1", duration=200)
+    protocol._attr_elapsed_time = 30
+    protocol._attr_elapsed_time_last_updated = time.time()
+    controller.get_player(PLAYER_ID).update_state(signal_event=False)  # type: ignore[union-attr]
+
+    await controller.cmd_skip(PLAYER_ID, 15)
+
+    assert protocol.seek_calls == [45]
 
 
 @pytest.mark.parametrize(

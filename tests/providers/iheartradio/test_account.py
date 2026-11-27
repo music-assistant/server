@@ -47,8 +47,12 @@ from music_assistant.providers.iheartradio.constants import (
     PATH_PODCAST_EPISODES,
     PATH_PODCAST_FOLLOW_ITEM,
     PATH_PODCAST_FOLLOWS,
+    PATH_RECS_ARTISTS,
+    PATH_RECS_LIVE,
     PATH_SEARCH,
     PATH_SESSION,
+    REC_ARTIST_RADIO,
+    REC_LIVE_RADIO,
 )
 from music_assistant.providers.iheartradio.provider import IHeartRadioProvider
 
@@ -148,6 +152,7 @@ async def test_guest_session_without_credentials(
         CONF_SESSION_USERNAME: "",
     }
     assert ProviderFeature.LIBRARY_RADIOS not in provider.supported_features
+    assert ProviderFeature.RECOMMENDATIONS not in provider.supported_features
 
 
 async def test_stored_session_is_reused(provider: IHeartRadioProvider, api: FakeApi) -> None:
@@ -166,6 +171,7 @@ async def test_stored_session_is_reused(provider: IHeartRadioProvider, api: Fake
     assert [(method, path) for method, path, _ in api.requests] == [("HEAD", PATH_SESSION)]
     assert _auth(provider).is_account
     assert ProviderFeature.LIBRARY_PODCASTS_EDIT in provider.supported_features
+    assert ProviderFeature.RECOMMENDATIONS in provider.supported_features
 
 
 async def test_account_login_when_stored_session_is_stale(
@@ -618,3 +624,29 @@ async def test_progress_is_reused_until_it_is_saved(
         await provider.on_played(MediaType.PODCAST_EPISODE, EPISODE_ITEM_ID, False, 0, Mock())
         await provider.get_resume_position(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
         assert [path for path, _ in api.calls] == [EPISODE_METADATA_PATH] * 2
+
+
+async def test_recommendation_rows_hold_the_account_recommendations(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """The rows list the recommended artist radios and live stations, skipping broken entries."""
+    api.responses[PATH_RECS_ARTISTS] = {
+        "tiles": [{"item": {"id": 83301, "artistName": "AC/DC"}}, {"item": "broken"}, {}]
+    }
+    api.responses[PATH_RECS_LIVE] = {"tiles": [{"item": STATION}]}
+    rows = await provider.get_recommendations()
+    assert [row.item_id for row in rows] == [REC_ARTIST_RADIO, REC_LIVE_RADIO]
+    artists = await provider.get_recommendation_items(REC_ARTIST_RADIO)
+    assert [(item.item_id, item.name) for item in artists] == [("artist:83301", "AC/DC Radio")]
+    stations = await provider.get_recommendation_items(REC_LIVE_RADIO)
+    assert [item.item_id for item in stations] == [STATION_ID]
+    assert await provider.get_recommendation_items("unknown") == []
+
+
+async def test_broken_recommendation_list_is_not_passed_as_empty(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A recommendation answer without its list raises, so it is not cached as an empty row."""
+    api.responses[PATH_RECS_LIVE] = {"error": "unexpected"}
+    with pytest.raises(InvalidDataError):
+        await provider.get_recommendation_items(REC_LIVE_RADIO)

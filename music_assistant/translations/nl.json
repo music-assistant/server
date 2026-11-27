@@ -151,7 +151,7 @@
   "common.config_entries.min_volume.label": "Minimale volume",
   "common.config_entries.mute_control.label": "Dempingsregeling",
   "common.config_entries.mute_control.options.fake": "Virtuele dempingsregeling",
-  "common.config_entries.mute_control.options.follow_protocol": "Automatische selectie (op basis van actieve- en voorkeursprotocol)",
+  "common.config_entries.mute_control.options.follow_protocol": "Volg protocol",
   "common.config_entries.mute_control.options.native": "Native dempingsregeling",
   "common.config_entries.mute_control.options.none": "Geen",
   "common.config_entries.output_channels.description": "Je kunt deze speler configureren om alleen het linker- of rechterkanaal af te spelen, bijvoorbeeld om een stereopaar met 2 spelers te maken.",
@@ -219,7 +219,7 @@
   "common.config_entries.unofficial_provider_note.label": "Dit is een onofficiële integratie die geen banden heeft met, niet ondersteund wordt door en niet goedgekeurd is door de muziekdienst. Het maakt gebruik van interfaces die officieel niet ondersteund worden, en kan op elk moment stoppen te werken. Het gebruik hiervan kan ook onderworpen zijn aan de gebruiksvoorwaarden van de dienst.",
   "common.config_entries.username.label": "Gebruikersnaam",
   "common.config_entries.volume_control.label": "Volumeregeling",
-  "common.config_entries.volume_control.options.follow_protocol": "Automatische selectie (op basis van actieve- en voorkeursprotocol)",
+  "common.config_entries.volume_control.options.follow_protocol": "Volg protocol",
   "common.config_entries.volume_control.options.native": "Native volumeregeling",
   "common.config_entries.volume_control.options.none": "Geen",
   "common.config_entries.volume_normalization.description": "Schakel volumenormalisatie in op basis van de EBU-R128-standaard zonder het dynamisch bereik te beïnvloeden",
@@ -3966,5 +3966,7 @@
   "provider.lifx_entertainment.config_entries.transition_ms.label": "Overgang (ms)",
   "provider.lifx_entertainment.setup_flow.select_lights.title": "Selecteer je verlichting",
   "provider.lifx_entertainment.setup_flow.user.description": "Music Assistant doorzoekt je netwerk naar LIFX-verlichting.",
-  "provider.lifx_entertainment.setup_flow.user.title": "Vind je LIFX-verlichting"
+  "provider.lifx_entertainment.setup_flow.user.title": "Vind je LIFX-verlichting",
+  "common.config_entries.mute_control.description": "Native dempingsregeling gebruikt de eigen regeling van de speler, ook als die via een ander protocol zoals AirPlay afspeelt. Volg protocol dempt via het protocol dat afspeelt.",
+  "common.config_entries.volume_control.description": "Native volumeregeling gebruikt de eigen regeling van de speler, ook als die via een ander protocol zoals AirPlay afspeelt. Volg protocol regelt het volume via het protocol dat afspeelt, dat een andere schaal kan gebruiken."
 }

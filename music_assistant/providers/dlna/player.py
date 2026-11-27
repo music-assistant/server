@@ -19,7 +19,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
-from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -111,8 +111,17 @@ class DLNAPlayer(PlayerProtocol):
 
     @property
     def fetches_files(self) -> bool:
-        """Return if the renderer is built around files, which its user tells."""
-        return self.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False, return_type=bool)
+        """Return if the renderer is built around files."""
+        return True
+
+    @property
+    def stops_on_pause(self) -> bool:
+        """Return whether a pause stops the renderer, as its user set it to."""
+        return (
+            self.device is not None
+            and self.device.can_stop
+            and self.get_config_value("replace_pause_with_stop", return_type=bool)
+        )
 
     def set_available(self, available: bool) -> None:
         """Set the availability of the player."""
@@ -332,9 +341,7 @@ class DLNAPlayer(PlayerProtocol):
         """Send PAUSE command to given player."""
         assert self.device is not None  # for type checking
 
-        replace_pause_with_stop = self.get_config_value("replace_pause_with_stop", return_type=bool)
-
-        if replace_pause_with_stop and self.device.can_stop:
+        if self.stops_on_pause:
             await self.stop()
             return
 
@@ -374,6 +381,12 @@ class DLNAPlayer(PlayerProtocol):
         """Send SEEK command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_seek_rel_time(timedelta(seconds=position))
+        self._schedule_state_refresh()
+
+    def on_file_requested_again(self) -> None:
+        """Read the state back after the renderer resumed or seeked by itself."""
+        # a renderer need not send an event for that, which would leave the old position on
+        # display until the next regular poll
         self._schedule_state_refresh()
 
     @catch_request_errors
@@ -526,9 +539,15 @@ class DLNAPlayer(PlayerProtocol):
             return
         poll_first = False
         if service.service_id == "urn:upnp-org:serviceId:AVTransport":
+            current_uri = self._attr_current_media.uri if self._attr_current_media else ""
             for state_variable in state_variables:
-                # Force a state refresh when player begins or pauses playback
-                # to update the position info.
+                # Force a state refresh when player begins or pauses playback, or moves on
+                # to another track by itself, to update the position info.
+                # A device may repeat the uri of the playing track in every event.
+                if state_variable.name == "CurrentTrackURI" and (
+                    (state_variable.value or "") != current_uri
+                ):
+                    poll_first = True
                 if state_variable.name == "TransportState" and state_variable.value in (
                     TransportState.PLAYING,
                     TransportState.PAUSED_PLAYBACK,

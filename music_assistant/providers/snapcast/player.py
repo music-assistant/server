@@ -98,6 +98,11 @@ class SnapCastPlayer(PlayerProtocol):
         return True
 
     @property
+    def can_hand_over_session(self) -> bool:
+        """Return True: the Snapcast group plays on for its members when its leader leaves."""
+        return True
+
+    @property
     def synced_to(self) -> str | None:
         """Return the id of the protocol this player is synced to (sync leader)."""
         grp_name = self.snap_group_name

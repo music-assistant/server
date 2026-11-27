@@ -7,9 +7,6 @@
     "replace_pause_with_stop": {
       "label": "Replace Pause with Stop",
       "description": "Forces Music Assistant to stop playback instead of pausing. Enable for some legacy streamers which are unable to pause/resume playback when streaming uPnP/DLNA."
-    },
-    "requires_fixed_content_length": {
-      "description": "Enable this if the player needs to know the length of a track: it stops or loops during playback, or its own pause and seek do not work. With WAV as output codec and flow mode and crossfade disabled, a track is then sent as a file the player can pause, resume and seek in by itself. Most players play fine without it."
     }
   },
   "manifest": {

@@ -397,6 +397,17 @@ AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
 # an echo that arrives after the next level was already sent would otherwise be
 # read as the user turning the knob and written straight back to the device.
 AIRPLAY_VOLUME_ECHO_GRACE_S: Final[float] = 2.0
+# Providers of the native protocol of devices that can set a level of their own when an
+# AirPlay session starts without one (a WiiM Mini jumps to 60%, a Bose SoundTouch to
+# 100%). While that native protocol owns the volume, a session to such a device starts
+# at its native level. Only devices whose AirPlay scale is their native scale are
+# listed: one with another scale needs its level converted first. Any other device gets
+# no start volume and keeps the level it has. Only a protocol with the native role
+# counts: a device such a provider only controls (a generic LinkPlay device of the wiim
+# provider) is not known to set a level of its own.
+AIRPLAY_NATIVE_START_VOLUME_PROVIDERS: Final[frozenset[str]] = frozenset(
+    {"wiim", "bose_soundtouch"}
+)
 
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16

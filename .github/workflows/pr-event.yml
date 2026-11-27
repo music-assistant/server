@@ -1,0 +1,31 @@
+name: PR event
+
+# Carries no data and has no permissions. Workflows that need to act on pull
+# requests from forks listen for this one through workflow_run, then read the
+# pull request from the API with their own token. The run name holds the event
+# action and, for a label change, the label, so a listener can pick the events
+# it handles. A pull request controls its own copy of this file, so a listener
+# never trusts the run name for anything else.
+run-name: ${{ github.event.action }} ${{ github.event.label.name }}
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+      - ready_for_review
+      - labeled
+      - unlabeled
+
+permissions: {}
+
+jobs:
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Nothing to do
+        run: "true"

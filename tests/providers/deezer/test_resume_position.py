@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -14,6 +14,7 @@ from music_assistant_models.media_items import ItemMapping, PodcastEpisode
 from music_assistant.providers.deezer.media import DeezerMediaManager
 from music_assistant.providers.deezer.provider import DeezerProvider
 from music_assistant.providers.deezer.streaming import DeezerStreamingManager
+from tests.common import use_real_create_task
 
 
 def _bookmarks(*nodes: SimpleNamespace) -> SimpleNamespace:
@@ -37,9 +38,14 @@ def _bookmark(episode_id: str, bookmarked_at: str) -> SimpleNamespace:
 
 @pytest.fixture
 def gql(provider: DeezerProvider) -> AsyncMock:
-    """Stub the GraphQL client and wire up a real streaming manager."""
+    """Stub the GraphQL client and the cache, and wire up real media and streaming managers."""
     client = AsyncMock()
     provider.gql_client = client
+    # a cold cache, so the bookmarks are always fetched
+    provider.mass.cache = AsyncMock()
+    provider.mass.cache.get_with_freshness.return_value = (None, False, False)
+    use_real_create_task(provider.mass)
+    provider.media_manager = DeezerMediaManager(provider)
     provider.streaming_manager = DeezerStreamingManager(provider)
     return client
 
@@ -119,6 +125,42 @@ async def test_listed_episodes_carry_the_bookmark_time(
     assert [
         (ep.item_id, ep.resume_position_ms, ep.resume_position_timestamp) for ep in episodes
     ] == [("100", 30000, datetime(2025, 7, 10, tzinfo=UTC)), ("200", 0, None)]
+
+
+async def test_bookmarks_are_fetched_once_per_pass(
+    provider: DeezerProvider, gql: AsyncMock
+) -> None:
+    """Listing podcasts back to back shares the bookmarks, and a save asks again."""
+    stored: dict[str, Any] = {}
+
+    async def get_with_freshness(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        return (stored[key], True, True) if key in stored else (None, False, False)
+
+    async def store(key: str, data: Any, **_kwargs: Any) -> None:
+        stored[key] = data
+
+    async def drop(key: str, **_kwargs: Any) -> None:
+        stored.pop(key, None)
+
+    gql.get_podcast_episode_bookmarks.return_value = _bookmarks(_bookmark("100", "2025-07-10"))
+    media_manager = provider.media_manager
+    media_manager._fetch_podcast_episodes = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _podcast_id: [_episode("100")]
+    )
+    cache = provider.mass.cache
+    with (
+        patch.object(cache, "get_with_freshness", get_with_freshness),
+        patch.object(cache, "set", store),
+        patch.object(cache, "delete", drop),
+    ):
+        _ = [ep async for ep in media_manager.get_podcast_episodes("podcast_1")]
+        _ = [ep async for ep in media_manager.get_podcast_episodes("podcast_2")]
+        await provider.get_resume_position("100", MediaType.PODCAST_EPISODE)
+        assert gql.get_podcast_episode_bookmarks.await_count == 1
+
+        await provider.on_played(MediaType.PODCAST_EPISODE, "100", False, 60, _episode("100"))
+        _ = [ep async for ep in media_manager.get_podcast_episodes("podcast_1")]
+        assert gql.get_podcast_episode_bookmarks.await_count == 2
 
 
 def _episode(item_id: str, **resume: Any) -> PodcastEpisode:

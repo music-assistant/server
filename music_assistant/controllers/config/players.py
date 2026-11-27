@@ -1417,14 +1417,14 @@ class PlayerConfigMixin:
                 disabled=PlayerFeature.VOLUME_MUTE not in own_features,
             )
         ]
-        # "auto" is what applies while nothing is stored: the protocol that renders owns the
-        # level. It comes first, so it is the default, also next to a native control.
+        # "follow protocol" hands the control to the protocol that renders. It comes after
+        # "native", so it is only the default for a player without a native control.
         for protocol in player.audio_protocols:
             if not protocol.available_for_playback:
                 continue
             if protocol.supports_feature(PlayerFeature.VOLUME_SET):
                 if auto_option not in volume_options:
-                    volume_options.insert(0, auto_option)
+                    volume_options.append(auto_option)
                 if not has_native_volume_control and protocol.provider.domain in (
                     "chromecast",
                     "dlna",
@@ -1436,7 +1436,7 @@ class PlayerConfigMixin:
                     )
             if protocol.supports_feature(PlayerFeature.VOLUME_MUTE):
                 if auto_option not in mute_options:
-                    mute_options.insert(0, auto_option)
+                    mute_options.append(auto_option)
                 if not has_native_volume_control and protocol.provider.domain in (
                     "chromecast",
                     "dlna",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from music_assistant_models.media_items import ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
@@ -10,6 +10,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.helpers.provider_access import PlaybackSources
 
 QUEUE_ID = "q1"
 LOADER = "music_assistant.controllers.player_queues.queue_loader"
@@ -49,7 +50,10 @@ async def _similar_tracks(queued: Track, similar: list[Track]) -> list[Track]:
     radio_prov.get_dynamic_tracks = AsyncMock(return_value=similar)
     ctrl.mass = MagicMock()
     ctrl.mass.get_provider.return_value = radio_prov
-    with patch(f"{LOADER}.playback_sources", AsyncMock(return_value=(None, None))):
+    with (
+        patch(f"{LOADER}.resolve_playback_user", AsyncMock(return_value=None)),
+        patch(f"{LOADER}.playback_sources_for", Mock(return_value=PlaybackSources(None, []))),
+    ):
         return await ctrl._get_similar_tracks(QUEUE_ID, is_initial=True)
 
 

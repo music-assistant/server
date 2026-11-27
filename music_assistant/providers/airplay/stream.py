@@ -211,6 +211,9 @@ class AirPlayStream:
         # Whether the stream awaits its first state report since connecting or the last
         # START. A receiver can echo a play command for that start before it arrives.
         self.start_pending: bool = False
+        # The native level the session starts at, read when connecting (None when the
+        # device keeps its own level, see AirPlayPlayer.native_start_volume).
+        self._native_start_volume: int | None = None
         # Receiver storm guard state: last-honored monotonic time per remote
         # transport command, plus a counter of suppressed repeats.
         self._remote_command_last: dict[str, float] = {}
@@ -351,6 +354,9 @@ class AirPlayStream:
         # Covers the echo a receiver sends before START, e.g. while the group awaits
         # its members' clock readiness.
         self.start_pending = True
+        # Read before the receiver is reached: a device that sets a level of its own when
+        # a session starts may have reported it by the time the session is connected.
+        self._native_start_volume = self.player.native_start_volume
         args = await self._build_cli_args(use_shared_ptp)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.protocol_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
@@ -412,16 +418,24 @@ class AirPlayStream:
         # connect, so its delivery continues on a background task.
         await self._send_current_metadata(defer_artwork_followup=True)
         # An AirPlay volume command writes the receiver's own volume and persists there
-        # after the session ends, so it is only sent when nothing else owns this output's
-        # volume: otherwise the device keeps playing at the level its own app or remote is
-        # set to. A latched mute would start the stream silent, so it does travel along.
-        # A device whose audio is not heard (the Apple TV of a set) gets neither.
+        # after the session ends, so the level of this output is only sent when nothing
+        # else owns its volume: otherwise the device keeps playing at the level its own app
+        # or remote is set to. A latched mute would start the stream silent, so it does
+        # travel along. A device whose audio is not heard (the Apple TV of a set) gets
+        # neither.
         if self.player.renders_audio and (self.player.owns_volume or self.player.volume_muted):
             # Repeat after 2 seconds because some players ignore the first volume command
             # (https://github.com/music-assistant/support/issues/3330). The repeat reads
             # the level when it fires, so it never replays a value that changed since.
             await self._send_current_volume()
             self.mass.call_later(2, self._send_current_volume)
+        elif self.player.renders_audio and (level := self._native_start_volume) is not None:
+            # A device that sets a level of its own when a session starts without one is
+            # handed the native level it had before connecting. The repeat also corrects a
+            # level the device only sets after this first command, but never undoes a
+            # volume command given through Music Assistant meanwhile.
+            await self.send_cli_command(f"VOLUME={level}")
+            self.mass.call_later(2, self._resend_native_start_volume, level, time.monotonic())
         # settle the position and any artwork that missed the bundle budget
         # on top of the identity push above
         self.player.on_player_media_updated()
@@ -1914,6 +1928,19 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
 
+    async def _resend_native_start_volume(self, level: int, sent_at: float) -> None:
+        """
+        Send the native start volume again, unless it no longer applies or was overruled.
+
+        It is overruled by a volume command given through Music Assistant since it was sent.
+
+        :param level: The native level the session started at.
+        :param sent_at: When that level was first sent, as a time.monotonic() timestamp.
+        """
+        if self.player.native_start_volume is None or self.player.volume_commanded_since(sent_at):
+            return
+        await self.send_cli_command(f"VOLUME={level}")
+
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
         self._stopping = True
@@ -1967,7 +1994,7 @@ class AirPlayStream:
         command_delivered = await self.commands_pipe.write(command.encode("utf-8"))
         if command_delivered:
             self.player.last_command_sent = time.time()
-            if command.startswith("VOLUME="):
+            if command.startswith(("VOLUME=", "VOLUME_DB=")):
                 # the receiver echoes every level it is handed back over DACP
                 self.player.suppress_volume_reports()
         return command_delivered

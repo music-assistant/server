@@ -79,7 +79,7 @@ def test_the_realtime_pacing_is_the_measured_one() -> None:
         "-readrate",
         "1.0",
         "-readrate_initial_burst",
-        "10",
+        "6",
         "-readrate_catchup",
         "2",
     ]

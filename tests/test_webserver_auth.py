@@ -996,17 +996,20 @@ async def test_delete_user_releases_its_music_sources(auth_manager: Authenticati
         "owner": None,
         "sharing": "members",
         "shared_users": [],
+        "shared_playback": "without_own",
     }
     # which leaves a private source visible to nobody until an admin sets its access
     assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/qobuz--private/access") == {
         "owner": None,
         "sharing": "private",
         "shared_users": [],
+        "shared_playback": "without_own",
     }
     assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/tidal--shared/access") == {
         "owner": admin.user_id,
         "sharing": "selected",
         "shared_users": [admin.user_id],
+        "shared_playback": "without_own",
     }
     assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/jellyfin--household/access") is None
 

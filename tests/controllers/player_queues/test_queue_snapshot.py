@@ -253,6 +253,7 @@ async def test_restore_keeps_its_position_when_the_stopped_player_reports_late()
             )
         ),
         playback_state=PlaybackState.PLAYING,
+        fake_paused=False,
         corrected_elapsed_time=6.0,
     )
     ctrl._update_current_index_from_player(queue, player)

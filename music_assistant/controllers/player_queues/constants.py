@@ -70,11 +70,9 @@ PLAY_ACTION_PLAY_FROM_HERE = "play_from_here"
 PLAY_ACTION_PLAY_TRACK = "play_track"
 PLAY_ACTION_TRACK_DEFAULT_VALUE = PLAY_ACTION_PLAY_FROM_HERE
 
-CONF_AUTOPLAY_LABEL = "autoplay_label"
 CONF_AUTOPLAY_MODE = "autoplay_mode"
 CONF_AUTOPLAY_PLAYLIST = "autoplay_playlist"
 CONF_AUTOPLAY_ENABLED = "autoplay_enabled"
-CONF_CROSSFADE_LABEL = "crossfade_label"
 CONF_CROSSFADE_ENABLED = "crossfade_enabled"
 
 # global defaults the per-queue autoplay/crossfade toggles follow when not overridden
@@ -88,7 +86,6 @@ CONF_PAUSE_TIMEOUT = "pause_timeout"
 DEFAULT_PAUSE_TIMEOUT = 30
 PAUSE_TIMEOUT_RANGE = (30, BUFFER_INACTIVITY_TIMEOUT - 60)
 
-CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
 CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES = "smart_shuffle_optimize_smart_fades"
 CONF_SMART_SHUFFLE_SONG_RECENCY = "smart_shuffle_song_recency"
@@ -194,6 +191,10 @@ PLAYED_TO_END_MARGIN = 2
 # A player counts as having played a fully streamed flow stream session once its position is
 # this close to the end of it: position reports are not exact down to the last audio frame.
 FLOW_PLAYED_OUT_MARGIN = 0.5
+
+# Seconds: a fully streamed flow session reported this close to its start, on another item than
+# the queue's, is the player playing it again (Sonos reports 0 s, then fails about 3 s later).
+FLOW_STARTED_OVER_POSITION = 5
 
 # Longest wait, in seconds, for a player to go idle once its flow stream ran out of items. It
 # keeps playing the audio it buffered, which a held-open stream lets it do for up to the maximum

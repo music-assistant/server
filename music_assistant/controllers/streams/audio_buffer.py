@@ -79,6 +79,17 @@ CancelCallback = Callable[[], None]
 BUFFER_READY_TIMEOUT: Final[int] = 15
 
 
+def read_position_ms(seek_position_ms: int, exact_seek: bool) -> int:
+    """
+    Return the position a buffer is read from for a stream that seeks into it.
+
+    :param seek_position_ms: The position the stream asks for in milliseconds.
+    :param exact_seek: Preserve millisecond precision instead of quantizing to 100 ms.
+    """
+    # align regular user seeks to 100ms steps to avoid rounding issues
+    return seek_position_ms if exact_seek else (seek_position_ms // 100) * 100
+
+
 class AudioBufferEOF(Exception):
     """Exception raised when the audio buffer reaches end-of-file."""
 
@@ -340,9 +351,7 @@ class AudioBuffer:
         :param seek_position_ms: Starting position in milliseconds.
         :param exact_seek: Preserve millisecond precision instead of quantizing to 100 ms.
         """
-        if not exact_seek:
-            # align regular user seeks to 100ms steps to avoid rounding issues
-            seek_position_ms = (seek_position_ms // 100) * 100
+        seek_position_ms = read_position_ms(seek_position_ms, exact_seek)
         chunk_number = seek_position_ms // 1000
         # handle fractional seek: trim leading samples from the first chunk
         fractional_ms = seek_position_ms % 1000

@@ -15,6 +15,7 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderSharing,
     ProviderType,
+    SharedPlayback,
     StreamType,
 )
 from music_assistant_models.errors import (
@@ -43,6 +44,9 @@ FALLBACK_INSTANCE = "service--fallback"
 ITEM_ID = "item-1"
 USER_ID = "listener"
 OTHER_USER_ID = "housemate"
+# a capacity budget no test outlasts, however slow the machine: what a test sees is
+# decided by its mocks, and nothing in it waits for a source for real
+AMPLE_BUDGET = 60.0
 
 
 def _mapping(instance: str, quality: ContentType = ContentType.MP3) -> ProviderMapping:
@@ -77,6 +81,7 @@ def _queue_item(*mappings: ProviderMapping) -> QueueItem:
         provider_mappings=set(mappings),
     )
     return QueueItem(
+        userid=USER_ID,
         queue_id="queue-1",
         queue_item_id="queue-item-1",
         name="Effect",
@@ -142,10 +147,10 @@ def _mass(
         mass.providers = list(providers.values())
         mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
-    mass.player_queues.has_paused_stream_slot_holder.return_value = False
+    mass.player_queues.has_stream_slot_to_take_over.return_value = False
     mass.player_queues.refuse_held_stream_slot.return_value = None
+    mass.webserver.auth.get_user = AsyncMock(return_value=None)
     if access is not None:
-        mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
         mass.webserver.auth.get_user = AsyncMock(
             return_value=User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
         )
@@ -170,7 +175,9 @@ async def test_reselects_another_mapping_after_a_capacity_failure(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert queue_item.streamdetails is fallback_details
@@ -192,7 +199,9 @@ async def test_falls_back_to_a_compatible_instance_of_the_same_mapping(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert queue_item.streamdetails is not None
@@ -287,7 +296,9 @@ async def test_a_shared_account_stands_in_without_an_own_account_of_the_service(
         AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer]),
     )
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert queue_item.streamdetails is not None
@@ -295,13 +306,125 @@ async def test_a_shared_account_stands_in_without_an_own_account_of_the_service(
     shared.get_stream_details.assert_awaited_once_with(ITEM_ID, MediaType.SOUND_EFFECT)
 
 
+async def test_an_account_set_to_step_in_serves_once_the_own_one_is_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A busy own account hands the play to an account shared to step in for it."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE, ContentType.FLAC))
+    own = _music_provider(BUSY_INSTANCE, has_slot=False)
+    stand_in = _music_provider(FALLBACK_INSTANCE, has_slot=True)
+    audio = StreamsAudio(
+        _mass(
+            {BUSY_INSTANCE: own, FALLBACK_INSTANCE: stand_in},
+            access={
+                BUSY_INSTANCE: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.PRIVATE),
+                FALLBACK_INSTANCE: ProviderAccess(
+                    owner=OTHER_USER_ID,
+                    sharing=ProviderSharing.EVERYONE,
+                    shared_playback=SharedPlayback.WHEN_BUSY,
+                ),
+            },
+        )
+    )
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    monkeypatch.setattr(
+        AudioBuffer,
+        "get_buffer",
+        AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer]),
+    )
+
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
+
+    assert result is expected_buffer
+    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails.provider == FALLBACK_INSTANCE
+    # the own account was tried first, while it still looked free
+    own.get_stream_details.assert_awaited_once()
+
+
+async def test_an_account_set_to_step_in_never_goes_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neither the copy the listing pinned nor a better copy puts it ahead of the own one."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.MP3), _mapping(FALLBACK_INSTANCE, ContentType.FLAC)
+    )
+    queue_item.origin = MagicMock(provider_instance=FALLBACK_INSTANCE, item_id=ITEM_ID)
+    own = _music_provider(BUSY_INSTANCE, has_slot=True)
+    stand_in = _music_provider(FALLBACK_INSTANCE, has_slot=True)
+    audio = StreamsAudio(
+        _mass(
+            {BUSY_INSTANCE: own, FALLBACK_INSTANCE: stand_in},
+            access={
+                BUSY_INSTANCE: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.PRIVATE),
+                FALLBACK_INSTANCE: ProviderAccess(
+                    owner=OTHER_USER_ID,
+                    sharing=ProviderSharing.EVERYONE,
+                    shared_playback=SharedPlayback.WHEN_BUSY,
+                ),
+            },
+        )
+    )
+    monkeypatch.setattr(AudioBuffer, "get_buffer", AsyncMock(return_value=MagicMock()))
+
+    await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET)
+
+    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails.provider == BUSY_INSTANCE
+    stand_in.get_stream_details.assert_not_awaited()
+
+
+async def test_the_owner_takes_the_account_back_rather_than_play_from_a_stand_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queue that borrows the owner's account gives it up, though an account to step in is free."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE, ContentType.FLAC))
+    own = _music_provider(BUSY_INSTANCE, has_slot=False)
+    stand_in = _music_provider(FALLBACK_INSTANCE, has_slot=True)
+    mass = _mass(
+        {BUSY_INSTANCE: own, FALLBACK_INSTANCE: stand_in},
+        access={
+            BUSY_INSTANCE: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.EVERYONE),
+            FALLBACK_INSTANCE: ProviderAccess(
+                owner=OTHER_USER_ID,
+                sharing=ProviderSharing.EVERYONE,
+                shared_playback=SharedPlayback.WHEN_BUSY,
+            ),
+        },
+    )
+    mass.player_queues.has_stream_slot_to_take_over.return_value = True
+    mass.player_queues.take_over_stream_slot = AsyncMock(return_value=True)
+    audio = StreamsAudio(mass)
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
+
+    assert result is expected_buffer
+    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails.provider == BUSY_INSTANCE
+    mass.player_queues.take_over_stream_slot.assert_awaited_once_with(
+        BUSY_INSTANCE, queue_item.queue_id
+    )
+    # the attempt that found the slot taken was a probe, the wait went to the freed slot
+    waits = [call.kwargs["source_wait_timeout"] for call in get_buffer.await_args_list]
+    assert waits[0] == 0
+    assert waits[1] > 0
+    stand_in.get_stream_details.assert_not_awaited()
+
+
 def _single_source_audio() -> tuple[StreamsAudio, MagicMock, QueueItem]:
     """Build a playback of an item one saturated provider serves, next to a paused queue."""
     queue_item = _queue_item(_mapping(BUSY_INSTANCE, ContentType.FLAC))
     queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
     mass = _mass({BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False)})
-    mass.player_queues.has_paused_stream_slot_holder.return_value = True
-    mass.player_queues.release_paused_stream_slot = AsyncMock(return_value=True)
+    mass.player_queues.has_stream_slot_to_take_over.return_value = True
+    mass.player_queues.take_over_stream_slot = AsyncMock(return_value=True)
     return StreamsAudio(mass), mass, queue_item
 
 
@@ -315,10 +438,12 @@ async def test_a_paused_queue_hands_over_the_slot_an_attempt_found_taken(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
-    mass.player_queues.release_paused_stream_slot.assert_awaited_once_with(
+    mass.player_queues.take_over_stream_slot.assert_awaited_once_with(
         BUSY_INSTANCE, queue_item.queue_id
     )
     waits = [call.kwargs["source_wait_timeout"] for call in get_buffer.await_args_list]
@@ -337,10 +462,12 @@ async def test_an_attempt_that_needs_no_new_slot_leaves_a_paused_queue_alone(
     reused_buffer = MagicMock(spec=AudioBuffer)
     monkeypatch.setattr(AudioBuffer, "get_buffer", AsyncMock(return_value=reused_buffer))
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is reused_buffer
-    mass.player_queues.release_paused_stream_slot.assert_not_awaited()
+    mass.player_queues.take_over_stream_slot.assert_not_awaited()
 
 
 async def test_a_paused_queue_that_resumed_leaves_the_budget_to_other_sources(
@@ -353,8 +480,8 @@ async def test_a_paused_queue_that_resumed_leaves_the_budget_to_other_sources(
     )
     queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
     mass = _mass()
-    mass.player_queues.has_paused_stream_slot_holder.return_value = True
-    mass.player_queues.release_paused_stream_slot = AsyncMock(return_value=False)
+    mass.player_queues.has_stream_slot_to_take_over.return_value = True
+    mass.player_queues.take_over_stream_slot = AsyncMock(return_value=False)
     audio = StreamsAudio(mass)
     fallback_details = _streamdetails(FALLBACK_INSTANCE)
     audio.get_stream_details = AsyncMock(return_value=fallback_details)  # type: ignore[method-assign]
@@ -362,7 +489,9 @@ async def test_a_paused_queue_that_resumed_leaves_the_budget_to_other_sources(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert queue_item.streamdetails is fallback_details
@@ -378,7 +507,7 @@ async def test_a_handover_that_hangs_ends_within_the_capacity_budget(
         await asyncio.Event().wait()
         return True
 
-    mass.player_queues.release_paused_stream_slot = AsyncMock(side_effect=_never_stops)
+    mass.player_queues.take_over_stream_slot = AsyncMock(side_effect=_never_stops)
     monkeypatch.setattr(
         AudioBuffer, "get_buffer", AsyncMock(side_effect=_limit_error(BUSY_INSTANCE))
     )
@@ -402,12 +531,12 @@ async def test_a_speculative_preparation_never_stops_a_paused_queue(
         await audio.get_audio_buffer(
             queue_item,
             reason="prepare_next",
-            capacity_wait_timeout=1,
-            stop_paused_queues=False,
+            capacity_wait_timeout=AMPLE_BUDGET,
+            take_over_slots=False,
         )
 
-    mass.player_queues.has_paused_stream_slot_holder.assert_not_called()
-    mass.player_queues.release_paused_stream_slot.assert_not_awaited()
+    mass.player_queues.has_stream_slot_to_take_over.assert_not_called()
+    mass.player_queues.take_over_stream_slot.assert_not_awaited()
     assert get_buffer.await_args is not None
     assert get_buffer.await_args.kwargs["source_wait_timeout"] > 0
 
@@ -436,7 +565,9 @@ async def test_all_candidates_busy_ends_in_one_blocking_pass_on_the_best_one(
     )
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert get_buffer.await_count == 3
@@ -470,7 +601,9 @@ async def test_a_held_account_still_lets_another_account_play_the_item(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert queue_item.streamdetails is not None
@@ -499,7 +632,9 @@ async def test_every_account_held_is_refused_instead_of_the_blocking_pass(
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
     with pytest.raises(ProviderStreamHeldError) as exc_info:
-        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+        await audio.get_audio_buffer(
+            queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+        )
 
     # both candidates were probed; the blocking wait on the best one was never spent
     waits = [call.kwargs["source_wait_timeout"] for call in get_buffer.await_args_list]
@@ -553,8 +688,10 @@ async def test_capacity_reselection_is_shared_by_concurrent_waiters(
     monkeypatch.setattr(AudioBuffer, "get_buffer", _get_buffer)
 
     results = await asyncio.gather(
-        audio.get_audio_buffer(queue_item, reason="prepare_next", capacity_wait_timeout=1),
-        audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1),
+        audio.get_audio_buffer(
+            queue_item, reason="prepare_next", capacity_wait_timeout=AMPLE_BUDGET
+        ),
+        audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET),
     )
 
     assert results[0] is fallback_buffer
@@ -594,7 +731,9 @@ async def test_a_failed_reselection_spends_the_budget_on_the_blocked_provider(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     # the capacity budget is spent on the blocked provider instead of being abandoned
     assert result is expected_buffer
@@ -631,7 +770,9 @@ async def test_a_broken_alternate_falls_back_to_the_capacity_blocked_source(
     )
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert get_buffer.await_count == 3
@@ -670,7 +811,9 @@ async def test_the_final_pass_surfaces_the_blocked_sources_own_error(
     )
 
     with pytest.raises(AudioError, match="preferred source is broken"):
-        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+        await audio.get_audio_buffer(
+            queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+        )
 
     assert queue_item.streamdetails is busy_details
 
@@ -699,7 +842,9 @@ async def test_a_provider_backing_off_in_the_final_pass_surfaces_its_error(
     )
 
     with pytest.raises(RetriesExhausted) as exc_info:
-        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+        await audio.get_audio_buffer(
+            queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+        )
 
     assert exc_info.value is back_off
     assert queue_item.streamdetails is fallback_details
@@ -732,7 +877,9 @@ async def test_streamdetails_survive_an_unexpected_reselection_failure(
     )
 
     with pytest.raises(type(reselection_error)):
-        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+        await audio.get_audio_buffer(
+            queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+        )
 
     # a None here crashes the flow stream's end-of-track bookkeeping
     assert queue_item.streamdetails is busy_details
@@ -822,7 +969,7 @@ async def test_a_consumer_that_left_gets_no_source_opened(
     get_buffer.assert_not_awaited()
     # the item keeps its details, and no paused queue is stopped on its behalf
     assert queue_item.streamdetails is details
-    mass.player_queues.has_paused_stream_slot_holder.assert_not_called()
+    mass.player_queues.has_stream_slot_to_take_over.assert_not_called()
 
 
 async def test_a_consumer_leaving_between_attempts_ends_the_reselection(
@@ -844,7 +991,7 @@ async def test_a_consumer_leaving_between_attempts_ends_the_reselection(
     result = await audio.get_audio_buffer(
         queue_item,
         reason="streaming",
-        capacity_wait_timeout=1,
+        capacity_wait_timeout=AMPLE_BUDGET,
         consumer_connected=lambda: next(connected),
     )
 

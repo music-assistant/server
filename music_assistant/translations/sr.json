@@ -151,7 +151,7 @@
   "common.config_entries.min_volume.label": "Минимална јачина звука",
   "common.config_entries.mute_control.label": "Контрола утишавања звука",
   "common.config_entries.mute_control.options.fake": "Симулирана контрола утишавања звука",
-  "common.config_entries.mute_control.options.follow_protocol": "Аутоматски избор (на основу активног\/жељеног протокола)",
+  "common.config_entries.mute_control.options.follow_protocol": "Прати протокол",
   "common.config_entries.mute_control.options.native": "Изворна контрола утишавања звука",
   "common.config_entries.mute_control.options.none": "Ниједна",
   "common.config_entries.output_channels.description": "Можете да конфигуришете овај плејер да репродукује само леви или десни канал, на пример да направите стерео пар са 2 плејера.",
@@ -219,7 +219,7 @@
   "common.config_entries.unofficial_provider_note.label": "Ово је незванична интеграција која није повезана са стриминг сервисом, нити је подржана или одобрена од стране истог. Ослања се на интерфејсе који нису званично подржани и могу престати са радом у било ком тренутку. Коришћење овог сервиса такође може подлегати условима коришћења те платформе.",
   "common.config_entries.username.label": "Корисничко име",
   "common.config_entries.volume_control.label": "Контрола јачине звука",
-  "common.config_entries.volume_control.options.follow_protocol": "Аутоматски избор (на основу активног\/жељеног протокола)",
+  "common.config_entries.volume_control.options.follow_protocol": "Прати протокол",
   "common.config_entries.volume_control.options.native": "Изворна контрола јачине звука",
   "common.config_entries.volume_control.options.none": "Ниједна",
   "common.config_entries.volume_normalization.description": "Омогућите нормализацију јачине звука на основу стандарда „EBU-R128“ без утицаја на динамички опсег",
@@ -943,5 +943,7 @@
   "core.streams.config_entries.publish_ip.description": "Ова „IP“ адреса се шаље плејерима како би знали где да пронађу овај сервер.\nУверите се да плејери у локалној мрежи могу да приступе овој „IP“ адреси, иначе стримовање звука неће радити.",
   "core.streams.config_entries.publish_ip.label": "Објављена „IP“ адреса",
   "common.config_entries.scrobble_players.description": "Бележите скробове само за изабране плејере. Оставите празно да бисте скроловали за све плејере.",
-  "common.config_entries.scrobble_players.label": "Скроловање за плејере"
+  "common.config_entries.scrobble_players.label": "Скроловање за плејере",
+  "common.config_entries.mute_control.description": "Изворна контрола утишавања звука користи сопствену контролу плејера, и када репродукује преко другог протокола као што је AirPlay. Опција „Прати протокол“ утишава звук преко протокола који репродукује.",
+  "common.config_entries.volume_control.description": "Изворна контрола јачине звука користи сопствену контролу плејера, и када репродукује преко другог протокола као што је AirPlay. Опција „Прати протокол“ подешава јачину звука преко протокола који репродукује, а он може да користи другачију скалу."
 }

@@ -142,15 +142,37 @@ class ProviderLoader:
         purge_provider_modules(domain)
 
     async def dev_providers(self) -> dict[str, ProviderManifest]:
-        """Return the manifests of the providers of the dev folder that may load, by provider folder."""
-        if (location := self.mass.dev_providers_path) is None:
+        """Return the manifests of the providers of the dev folders that may load, by provider folder."""
+        locations = self.mass.dev_providers_paths
+        if not locations:
             return {}
         if not self.mass.dev_mode:
             self.logger.warning(
-                "Not loading the providers in %s: the server does not run in dev mode", location
+                "Not loading the providers in %s: the server does not run in dev mode",
+                ", ".join(repr(location) for location in locations),
             )
             return {}
-        providers = await self._read_dev_providers(location)
+        self.logger.debug(
+            "Scanning %d dev provider folder(s): %s", len(locations), ", ".join(locations)
+        )
+        providers: dict[str, ProviderManifest] = {}
+        # first-listed directory wins on a domain collision across directories;
+        # the loser is logged with the path that shadows it, so the user can tell
+        # which checkout is being used.
+        loaded_at: dict[str, str] = {}
+        for location in locations:
+            for path, manifest in (await self._read_dev_providers(location)).items():
+                if manifest.domain in loaded_at:
+                    self.logger.warning(
+                        "Not loading the provider in %s: a provider with domain %s "
+                        "is already loaded from %s",
+                        path,
+                        manifest.domain,
+                        loaded_at[manifest.domain],
+                    )
+                    continue
+                loaded_at[manifest.domain] = path
+                providers[path] = manifest
         self.dev_folders = {manifest.domain: path for path, manifest in providers.items()}
         return providers
 

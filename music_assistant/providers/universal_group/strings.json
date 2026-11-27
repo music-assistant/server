@@ -22,7 +22,7 @@
     }
   },
   "manifest": {
-    "description": "Create universal groups to group speakers of different protocols/ecosystems to play the same audio (but not in sync)."
+    "description": "Create a group of speakers of different protocols or ecosystems that play the same audio, but not in sync."
   },
   "errors": {
     "group_not_dynamic": "Group {0} does not allow dynamically adding or removing members.",

@@ -45,6 +45,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.constants import (
+    FLOW_STARTED_OVER_POSITION,
     PLAYED_TO_END_MARGIN,
     SLEEP_TIMER_NATURAL_END_MARGIN,
 )
@@ -110,9 +111,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         Returns True if the update was successful, False if the caller should return early.
         """
         queue_id = queue.queue_id
-        if queue.active and queue.state in (
-            PlaybackState.PLAYING,
-            PlaybackState.PAUSED,
+        if (
+            queue.active
+            and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            # a player that stopped for its pause reports nothing of the queue anymore
+            and not player.fake_paused
         ):
             # NOTE: If the queue is not playing (yet) we will not update the current index
             # to ensure we keep the previously known current index
@@ -120,7 +123,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # flow mode active, the player is playing one long stream
                 # so we need to calculate the current index and elapsed time
                 # (already returned in media-time)
-                current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+                current_index, elapsed_time = self._get_flow_position(queue, player)
             elif item_id := self._parse_player_current_item_id(queue_id, player):
                 # normal mode, the player itself will report the current item
                 elapsed_time = player.corrected_elapsed_time or 0
@@ -451,6 +454,36 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             return queue.current_index, queue.elapsed_time
         return queue_index, track_time
 
+    def _get_flow_position(self, queue: PlayerQueue, player: Player) -> tuple[int | None, float]:
+        """Return the queue index and elapsed time the player's flow stream position maps to."""
+        current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+        if self._flow_started_over(queue, player, current_index):
+            return queue.current_index, queue.elapsed_time
+        return current_index, elapsed_time
+
+    def _flow_started_over(
+        self, queue: PlayerQueue, player: Player, reported_index: int | None
+    ) -> bool:
+        """Return whether the player plays its fully streamed flow again, sticky per session."""
+        queue_data = self._queue_data[queue.queue_id]
+        session_id = queue_data.session_id
+        if session_id is None or queue_data.flow_buffer_completed != session_id:
+            return False
+        if queue_data.flow_started_over == session_id:
+            return True
+        if (
+            player.corrected_elapsed_time or 0
+        ) >= FLOW_STARTED_OVER_POSITION or reported_index == queue.current_index:
+            return False
+        # a player that treats the flow stream as a radio station plays it again from 0 s
+        # once it ran out, before its request for more of it fails
+        self.logger.debug(
+            "%s started the flow stream over after it ended, keeping the queue where it was",
+            queue.display_name,
+        )
+        queue_data.flow_started_over = session_id
+        return True
+
     @staticmethod
     def _position_is_reliable(player: Player) -> bool:
         """Return if the player's elapsed time is its real position."""
@@ -664,7 +697,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     if dynamic_tracks:
                         queue_items = [
                             build_queue_item(
-                                queue.queue_id, x, origin=origin_for(dynamic_source, x)
+                                queue.queue_id,
+                                x,
+                                userid=queue_data.userid,
+                                origin=origin_for(dynamic_source, x),
                             )
                             for x in dynamic_tracks
                             if x.available
@@ -993,7 +1029,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     fully_played=fully_played,
                     seconds_played=seconds_played,
                     is_playing=is_playing,
-                    userid=queue_data.userid,
+                    userid=item_to_report.userid,
                     queue_id=queue.queue_id,
                     user_initiated=self._is_user_initiated_play(queue_data, media_item),
                     playback_speed=float(
@@ -1010,7 +1046,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             if fully_played and not is_playing:
                 if credit_album := self._claim_album_credit(queue_data, item_to_report):
                     self.mass.create_task(
-                        self._mark_album_played(credit_album, media_item, queue_data)
+                        self._mark_album_played(
+                            credit_album, media_item, queue_data, item_to_report.userid
+                        )
                     )
 
         album: Album | ItemMapping | None = getattr(media_item, "album", None)
@@ -1046,7 +1084,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             seconds_played=seconds_played,
             fully_played=fully_played,
             is_playing=is_playing,
-            userid=queue_data.userid,
+            userid=item_to_report.userid,
             player_id=queue.queue_id,
         )
         if record_play:
@@ -1135,7 +1173,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         )
 
     async def _mark_album_played(
-        self, album: Album | ItemMapping, track: MediaItemType, queue_data: PlayerQueueData
+        self,
+        album: Album | ItemMapping,
+        track: MediaItemType,
+        queue_data: PlayerQueueData,
+        userid: str | None,
     ) -> None:
         """Mark an album played, skipping artists already credited via its track."""
         self.logger.debug(
@@ -1144,7 +1186,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         skip = await self.mass.music.resolve_library_artist_ids(getattr(track, "artists", []))
         await self.mass.music.mark_item_played(
             album,
-            userid=queue_data.userid,
+            userid=userid,
             queue_id=queue_data.queue.queue_id,
             user_initiated=True,
             skip_artist_ids=list(skip),

@@ -81,7 +81,7 @@ async def test_dev_provider_loads(tmp_path: Path, location: Path) -> None:
         assert mass.config.get(f"{CONF_PROVIDERS}/dev_one/last_error") is None
         assert "load_provider_dev_one" not in mass._tracked_timers
         mass.dev_mode = True
-        mass.dev_providers_path = str(location)
+        mass.dev_providers_paths = (str(location),)
 
         with patch.object(mass, "signal_event", wraps=mass.signal_event) as signal_event:
             await mass.community_catalog.start()
@@ -104,7 +104,7 @@ async def test_ignored_outside_dev_mode(
     """Outside dev mode the folder is only warned about."""
     _write_provider(location, "dev_one")
     mass.dev_mode = False
-    mass.dev_providers_path = str(location)
+    mass.dev_providers_paths = (str(location),)
 
     with patch.object(dependencies, "check_output", AsyncMock(return_value=(0, b""))) as uv:
         await _start(mass, caplog)
@@ -135,7 +135,7 @@ async def test_folder_layouts(
     """A provider loads under its domain from each folder the community catalog accepts."""
     _write_provider(location, "dev_one", folder=folder, requirements=[REQUIREMENT])
     mass.dev_mode = True
-    mass.dev_providers_path = str(location)
+    mass.dev_providers_paths = (str(location),)
 
     await _start(mass, caplog)
 
@@ -170,7 +170,7 @@ async def test_refused_provider(
     _write_provider(location, "dev_one")
     _write_provider(location, domain, folder=folder, requirements=[REQUIREMENT])
     mass.dev_mode = True
-    mass.dev_providers_path = str(location)
+    mass.dev_providers_paths = (str(location),)
 
     with patch.object(
         CommunityDependencies, "resolve", autospec=True, side_effect=CommunityDependencies.resolve
@@ -197,7 +197,7 @@ async def test_provider_with_refused_requirements(
     _write_provider(location, "dev_one", requirements=[REQUIREMENT])
     _write_provider(location, "dev_two", requirements=["--find-links /tmp"])
     mass.dev_mode = True
-    mass.dev_providers_path = str(location)
+    mass.dev_providers_paths = (str(location),)
 
     await _start(mass, caplog)
 
@@ -226,6 +226,51 @@ async def test_dev_mode_in_server_info(mass: MusicAssistant, dev_mode: bool) -> 
     mass.dev_mode = dev_mode
 
     assert mass.get_server_info().dev_mode is dev_mode
+
+
+async def test_multiple_dev_dirs_load(
+    tmp_path: Path, location: Path, mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Providers in several dev folders all load; each folder scanned under its own root."""
+    other = tmp_path / "other_dev_providers"
+    other.mkdir()
+    _write_provider(location, "dev_one", requirements=[REQUIREMENT])
+    _write_provider(other, "dev_two", requirements=[REQUIREMENT])
+    mass.dev_mode = True
+    mass.dev_providers_paths = (str(location), str(other))
+
+    await _start(mass, caplog)
+
+    assert not _warnings(mass, caplog)
+    assert mass.get_provider_manifest("dev_one").tier == ProviderTier.COMMUNITY
+    assert mass.get_provider_manifest("dev_two").tier == ProviderTier.COMMUNITY
+
+
+async def test_first_dev_dir_wins_on_domain_collision(
+    tmp_path: Path, location: Path, mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When two dev folders ship the same domain, the first-passed folder wins."""
+    other = tmp_path / "other_dev_providers"
+    other.mkdir()
+    _write_provider(location, "dev_one", requirements=[REQUIREMENT])
+    _write_provider(other, "dev_one", requirements=[REQUIREMENT])
+    mass.dev_mode = True
+    mass.dev_providers_paths = (str(location), str(other))
+
+    await _start(mass, caplog)
+
+    # the loaded provider is the one from the first-passed folder
+    manifest = mass.get_provider_manifest("dev_one")
+    assert manifest.tier == ProviderTier.COMMUNITY
+    await load_provider_module(manifest)
+    module = sys.modules[f"{providers_package.__name__}.dev_one"]
+    assert module.__file__ == str(location / "dev_one" / "__init__.py")
+    # the shadowed folder is warned about, naming both paths and the shared domain
+    warnings = _warnings(mass, caplog)
+    assert len(warnings) == 1
+    assert str(other / "dev_one") in warnings[0]
+    assert str(location / "dev_one") in warnings[0]
+    assert "dev_one" in warnings[0]
 
 
 def _write_provider(

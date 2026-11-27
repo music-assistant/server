@@ -17,6 +17,7 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.constants import CONF_PAUSE_TIMEOUT
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players.controller import PlayerController
 from music_assistant.models.player import Player
@@ -45,7 +46,11 @@ OUR_SESSION = "session-ours"
 def _mass() -> MagicMock:
     """Return a mocked mass with the real players controller and a bare queues controller."""
     mass = mock_player_mass()
-    mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
+    mass.config.get_raw_core_config_value = MagicMock(
+        side_effect=lambda _domain, key, default=None: (
+            default if key == CONF_PAUSE_TIMEOUT else "GLOBAL"
+        )
+    )
     mass.streams.get_announcement_duration = AsyncMock(return_value=3)
     # a speaker as it comes gets no track as a file
     mass.streams.serves_as_file = MagicMock(return_value=False)
@@ -111,6 +116,8 @@ def _speaker(
     player.connected = True
     player._attr_available = True
     player._attr_powered = True
+    # the load the item ids in _report were served under
+    player.cloud_queue_item_generation = 1
     owner = Player(
         mass,
         player_id,
@@ -530,7 +537,10 @@ async def test_play_after_we_stopped_our_queue_resumes_it(
 
     await mass.players.cmd_play(SPEAKER_PLAYER)
 
-    assert _player(player).playback_state == PlaybackState.IDLE
+    # a pause shows until the queue plays on or the pause timeout passes
+    assert _player(player).playback_state == (
+        PlaybackState.PAUSED if command == "cmd_pause" else PlaybackState.IDLE
+    )
     assert _player(player).active_source == SPEAKER_PLAYER
     assert queue.active is True
     # the pause, next, previous and seek commands go to the same queue

@@ -159,6 +159,11 @@ class MusicCastPlayer(PlayerProtocol):
         return True
 
     @property
+    def stops_on_pause(self) -> bool:
+        """Return whether a pause stops the zone, which it does while it plays from MA."""
+        return self.upnp_update_helper is not None and self.upnp_update_helper.controlled_by_mass
+
+    @property
     def avt(self) -> AVTransport:
         """UPnP AVTransport of the physical device."""
         host = format_ip_for_url(self.physical_device.device.device.ip)
@@ -828,7 +833,7 @@ class MusicCastPlayer(PlayerProtocol):
 
     async def pause(self) -> None:
         """Pause command."""
-        if self.upnp_update_helper is not None and self.upnp_update_helper.controlled_by_mass:
+        if self.stops_on_pause:
             # if we are controlled by MA, i.e. upnp, send a stop, since
             # pause appears to be unreliable/ not working
             await self.avt.stop()

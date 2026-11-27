@@ -151,7 +151,7 @@
   "common.config_entries.min_volume.label": "Minimális hangerő",
   "common.config_entries.mute_control.label": "Némítás vezérlése",
   "common.config_entries.mute_control.options.fake": "Szimulált némítás",
-  "common.config_entries.mute_control.options.follow_protocol": "Automatikus kiválasztás (az aktív\/preferált protokoll alapján)",
+  "common.config_entries.mute_control.options.follow_protocol": "Protokoll követése",
   "common.config_entries.mute_control.options.native": "Natív némítás",
   "common.config_entries.mute_control.options.none": "Nincs",
   "common.config_entries.output_channels.description": "Beállíthatja ezt a lejátszót úgy, hogy csak a bal vagy a jobb csatornát játssza le, például sztereó pár létrehozásához 2 lejátszóval.",
@@ -219,7 +219,7 @@
   "common.config_entries.unofficial_provider_note.label": "Ez egy nem hivatalos integráció, amely nem áll kapcsolatban a zenei szolgáltatással, azt nem támogatja, és nem is hagyja jóvá. Nem hivatalosan támogatott felületekre támaszkodik, és bármikor leállhat. Ennek a szolgáltatónak a használatára a szolgáltatás felhasználási feltételei is vonatkozhatnak.",
   "common.config_entries.username.label": "Felhasználónév",
   "common.config_entries.volume_control.label": "Hangerőszabályzás",
-  "common.config_entries.volume_control.options.follow_protocol": "Automatikus választás (az aktív\/preferált protokoll alapján)",
+  "common.config_entries.volume_control.options.follow_protocol": "Protokoll követése",
   "common.config_entries.volume_control.options.native": "Natív hangerőszabályzás",
   "common.config_entries.volume_control.options.none": "Nincs",
   "common.config_entries.volume_normalization.description": "Engedélyezi a hangerő-normalizálást az EBU-R128 szabvány alapján a dinamikatartomány befolyásolása nélkül",
@@ -4201,5 +4201,7 @@
   "provider.airplay.config_entries.homepods_only.label": "Lejátszás csak HomePodokon",
   "provider.airplay.player_options.homepods_only.name": "Lejátszás csak HomePodokon",
   "provider.airplay.setup_flow.homepods_only_offer.description": "Az Apple TV megjeleníti a lejátszott tartalmat, és a távirányítója vezérli a zenét, amihez párosítani kell a képernyőjén megjelenő kóddal. Kapcsolja be ezt a lehetőséget, ha csak a HomePodokon szeretne lejátszani, párosítás nélkül. Ezt később a lejátszó beállításaiban módosíthatja.",
-  "provider.airplay.setup_flow.homepods_only_offer.title": "Lejátszás csak HomePodokon?"
+  "provider.airplay.setup_flow.homepods_only_offer.title": "Lejátszás csak HomePodokon?",
+  "common.config_entries.mute_control.description": "A natív némítás a lejátszó saját vezérlését használja, akkor is, ha az egy másik protokollon, például AirPlay-en keresztül játszik le. A „Protokoll követése” beállításnál a lejátszást végző protokoll némít.",
+  "common.config_entries.volume_control.description": "A natív hangerőszabályzás a lejátszó saját szabályzóját használja, akkor is, ha az egy másik protokollon, például AirPlay-en keresztül játszik le. A „Protokoll követése” beállításnál a lejátszást végző protokoll állítja a hangerőt, amely eltérő skálát használhat."
 }
