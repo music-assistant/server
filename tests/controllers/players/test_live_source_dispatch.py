@@ -292,6 +292,17 @@ async def test_a_skip_in_media_of_unknown_length_is_not_held_back() -> None:
     provider.on_source_control.assert_awaited_once_with("main", SourceControl.SEEK, 220)
 
 
+async def test_a_skip_without_a_known_position_is_refused() -> None:
+    """A skip has nowhere to count from while the position is unknown, so nothing seeks."""
+    controller, provider = _skip_controller(_source(can_seek=True), elapsed=None, duration=200)
+
+    with pytest.raises(PlayerCommandFailed) as error:
+        await controller.cmd_skip(PLAYER_ID, 30)
+
+    assert error.value.translation_key == "source_control_unsupported"
+    provider.on_source_control.assert_not_awaited()
+
+
 async def test_a_skip_in_a_source_that_cannot_seek_is_refused_like_a_seek() -> None:
     """A source that does not seek refuses a skip in the same words as a seek."""
     controller, provider = _skip_controller(_source(can_seek=False), elapsed=30, duration=200)

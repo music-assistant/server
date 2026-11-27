@@ -228,6 +228,7 @@ class PlaybackMixin(_PlayerControllerBase):
 
         Moves the playback position within the item that plays, whatever plays on the
         player. A forward skip stops short of the end of an item with a known duration.
+        Quick repeated skips add up into a single jump only while the player plays its queue.
 
         :param player_id: player_id of the player to handle the command.
         :param seconds: number of seconds to skip in the current item, negative to skip back.
@@ -238,7 +239,15 @@ class PlaybackMixin(_PlayerControllerBase):
         ):
             await self.mass.player_queues.skip(active_queue.queue_id, seconds)
             return
-        target = max(0.0, (player.corrected_elapsed_time or 0) + seconds)
+        if (position := player.corrected_elapsed_time) is None:
+            msg = f"Player {player.name} does not report the position of what it plays"
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_control_unsupported",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
+        target = max(0.0, position + seconds)
         if player.current_media and (duration := player.current_media.duration):
             target = min(target, max(0.0, duration - SKIP_END_MARGIN))
         await self.cmd_seek(player.player_id, int(target))

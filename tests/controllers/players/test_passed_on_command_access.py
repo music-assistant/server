@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import time
 from collections.abc import AsyncIterator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
@@ -173,6 +174,9 @@ class _Setup:
                     AsyncMock(side_effect=self._recorder(player, protocol, method)),
                 )
         owner_protocol._attr_playback_state = PlaybackState.PAUSED
+        # a skip counts from the position the device reports
+        owner_protocol._attr_elapsed_time = 60
+        owner_protocol._attr_elapsed_time_last_updated = time.time()
         owner_protocol._attr_active_source = OWNER[kind] if source == "queue" else "line_in"
         owner.set_sleep_timer(SleepTimerMode.DURATION, SLEEP_TIMER)
         self.mass.player_queues = self._queue_controller(OWNER[kind] if source == "queue" else None)
