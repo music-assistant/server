@@ -256,22 +256,16 @@ class FileStream:
         """
         Let an encode of the file run for a request, which ends the one of its address.
 
-        A request from another address is another player, which reads beside it, except
-        for a file with a mix: that has one reader, and any request ends the one before it.
+        A request from another address is another player, which reads beside it.
 
         :param request: The request the encode runs for.
         """
         # a player that asks for another part has left the one it was reading. Aborted
         # rather than closed, as a graceful close waits for the very send buffer the player
         # stopped reading
-        running = [self.readers.get(request.remote)]
-        if self.mix is not None:
-            # a second reader takes the pass of the first over and ends its body short,
-            # which a player takes for the end of the track: an abort makes it ask again
-            running = list(self.readers.values())
-        for reader in running:
-            if reader is not None and (transport := reader.transport) is not None:
-                transport.abort()
+        running = self.readers.get(request.remote)
+        if running is not None and (transport := running.transport) is not None:
+            transport.abort()
         self.readers[request.remote] = request
 
     def remove_reader(self, request: web.Request) -> None:
