@@ -171,6 +171,7 @@ def _report(
     group: SonosGroup,
     container: dict[str, Any],
     state: SonosPlayBackState = SonosPlayBackState.PLAYBACK_STATE_PLAYING,
+    item_id: str = "abc@1",
 ) -> None:
     """Let the speaker report what its group plays, through the library's event handlers."""
     group._handle_playback_status_update(
@@ -187,7 +188,7 @@ def _report(
     group._handle_metadata_status_update(
         cast(
             "MetadataStatus",
-            {"container": container, "currentItem": {"id": "abc@1", "track": {"name": "Shout"}}},
+            {"container": container, "currentItem": {"id": item_id, "track": {"name": "Shout"}}},
         )
     )
 
@@ -568,7 +569,12 @@ async def test_a_speaker_paused_in_a_file_reads_as_paused_and_plays_on() -> None
     mass.player_queues.resume = resume
 
     # paused on the speaker itself, in the Sonos app or by Music Assistant
-    _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
+    _report(
+        group,
+        _cloud_queue_container(),
+        SonosPlayBackState.PLAYBACK_STATE_PAUSED,
+        player.wire_item_id("abc") or "",
+    )
     queue = _update(mass, player)
 
     assert _player(player).playback_state == PlaybackState.PAUSED
@@ -613,7 +619,12 @@ async def test_a_stop_ends_a_pause_in_a_file_without_a_report_of_the_speaker() -
     mass = _mass()
     player = _speaker(mass)
     group = await _play_a_file(mass, player)
-    _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
+    _report(
+        group,
+        _cloud_queue_container(),
+        SonosPlayBackState.PLAYBACK_STATE_PAUSED,
+        player.wire_item_id("abc") or "",
+    )
     _update(mass, player)
     assert _player(player).playback_state == PlaybackState.PAUSED
 

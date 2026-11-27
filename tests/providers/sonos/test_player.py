@@ -1851,6 +1851,7 @@ def _speaker_to_pause(
         pytest.param("abc@7", None, set(), False, id="item not served as a file"),
         pytest.param("abc@3", None, {"abc"}, False, id="status item of another load"),
         pytest.param("abc", None, {"abc"}, False, id="status item without a generation"),
+        pytest.param("abc@6", "abc@6", {"abc"}, False, id="load in flight"),
     ],
 )
 async def test_pause_follows_the_item_the_playback_status_names(

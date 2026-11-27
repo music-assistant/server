@@ -1985,7 +1985,8 @@ class SonosPlayer(PlayerProtocol):
         if not wire_item_id or "@" not in wire_item_id or not self.from_current_load(wire_item_id):
             current_item = group.playback_metadata.get("currentItem")
             wire_item_id = current_item.get("id") if current_item else None
-        if not wire_item_id:
+        # while a load is in flight both still describe the load it replaces
+        if not wire_item_id or not self.from_current_load(wire_item_id):
             return False
         return self.is_served_as_file(self.served_item_id(wire_item_id))
 
