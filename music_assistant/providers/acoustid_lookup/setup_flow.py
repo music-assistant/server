@@ -21,7 +21,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
-from music_assistant.providers.acoustid_lookup.link import LinkState, link_status, request_link
+from music_assistant.providers.acoustid_lookup.auth import LinkState, link_status, request_link
 from music_assistant.providers.acoustid_lookup.provider import CONF_USER_KEY
 
 if TYPE_CHECKING:

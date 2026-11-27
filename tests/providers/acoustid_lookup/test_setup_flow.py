@@ -20,7 +20,7 @@ from music_assistant.models.setup_flow import (
     StepExpiredError,
 )
 from music_assistant.providers.acoustid_lookup import setup_flow as acoustid_flow
-from music_assistant.providers.acoustid_lookup.link import LinkRequest, LinkState
+from music_assistant.providers.acoustid_lookup.auth import LinkRequest, LinkState
 from music_assistant.providers.acoustid_lookup.provider import CONF_USER_KEY
 from music_assistant.providers.acoustid_lookup.setup_flow import CONF_CONNECT, CONF_RECONNECT
 

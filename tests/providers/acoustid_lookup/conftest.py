@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from music_assistant.providers.acoustid_lookup.link import THROTTLER
+from music_assistant.providers.acoustid_lookup.auth import THROTTLER
 
 
 @pytest.fixture(autouse=True)

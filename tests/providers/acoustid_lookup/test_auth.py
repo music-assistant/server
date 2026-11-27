@@ -16,8 +16,8 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.helpers.throttle_retry import MAX_RETRY_AFTER
-from music_assistant.providers.acoustid_lookup import link as acoustid_link
-from music_assistant.providers.acoustid_lookup.link import (
+from music_assistant.providers.acoustid_lookup import auth as acoustid_auth
+from music_assistant.providers.acoustid_lookup.auth import (
     ACOUSTID_LINK_STATUS_URL,
     ACOUSTID_REQUEST_LINK_URL,
     LinkState,
@@ -43,8 +43,8 @@ LINK_REPLY = {
 @pytest.fixture(autouse=True)
 def _fixed_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the application key and the current time."""
-    monkeypatch.setattr(acoustid_link, "app_var", lambda _key: "APPKEY")
-    monkeypatch.setattr(acoustid_link, "utc", lambda: NOW)
+    monkeypatch.setattr(acoustid_auth, "app_var", lambda _key: "APPKEY")
+    monkeypatch.setattr(acoustid_auth, "utc", lambda: NOW)
 
 
 def _http_session(
@@ -256,14 +256,14 @@ async def test_nothing_is_sent_while_acoustid_asked_to_wait(
     http_session.request.assert_not_called()
     assert 0 < raised.value.backoff_time <= wait
     # once the wait is over the request goes out again
-    acoustid_link.THROTTLER._cooldown_until = 0.0
+    acoustid_auth.THROTTLER._cooldown_until = 0.0
     assert await link_status(http_session, "USERKEY") is LinkState.APPROVED
     http_session.request.assert_called_once()
 
 
 def test_lookups_share_the_wait_with_the_account_requests() -> None:
     """A wait AcoustID asks for on a lookup holds the account requests back too."""
-    assert AcoustidLookupProvider.throttler is acoustid_link.THROTTLER
+    assert AcoustidLookupProvider.throttler is acoustid_auth.THROTTLER
 
 
 async def test_request_link_leaves_out_what_acoustid_rejects_in_a_device_name() -> None:
