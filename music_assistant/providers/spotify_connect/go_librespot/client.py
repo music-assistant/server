@@ -60,15 +60,6 @@ class GoLibrespotClient:
             await asyncio.sleep(0.25)
         return False
 
-    async def get_status(self) -> dict[str, Any] | None:
-        """
-        Fetch the current player status.
-
-        :return: The status payload, or None when there is no active session
-            (the daemon answers ``204 No Content`` in that case).
-        """
-        return await self._request("GET", "/status")
-
     async def resume(self) -> None:
         """Resume playback on the active session."""
         await self._request("POST", "/player/resume")
@@ -150,27 +141,20 @@ class GoLibrespotClient:
 
     async def _request(
         self, method: str, path: str, json_body: dict[str, Any] | None = None
-    ) -> dict[str, Any] | None:
+    ) -> None:
         """
         Issue a request to the daemon's REST API.
 
         :param method: HTTP method.
         :param path: API path (e.g. ``/player/resume``).
         :param json_body: Optional JSON request body.
-        :return: Parsed JSON response, or None when the daemon has no active session
-            (``204 No Content``) or returns no body.
         :raises ClientError: When the daemon answers with an error status.
         """
         async with self.mass.http_session.request(
             method, f"{self.base_url}{path}", json=json_body, timeout=ClientTimeout(total=10)
         ) as resp:
-            # 204 = the daemon has no active Spotify session; surface as "no data"
-            # rather than an error so callers can treat it as a no-op.
+            # 204 = the daemon has no active Spotify session; the request is a no-op.
             if resp.status == HTTPStatus.NO_CONTENT:
                 self.logger.debug("go-librespot has no active session for %s %s", method, path)
-                return None
+                return
             resp.raise_for_status()
-            if resp.content_type == "application/json":
-                data: dict[str, Any] = await resp.json()
-                return data
-            return None
