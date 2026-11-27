@@ -427,14 +427,24 @@ async def test_play_next_on_a_paused_queue_plays_right_after_the_paused_track(
     assert playing.elapsed_time == pytest.approx(PLAYED_SECONDS, abs=1)
 
 
-async def _paused_sync_group(scenario: Scenario) -> tuple[FakeProtocol, list[str], str]:
+async def _paused_sync_group(
+    scenario: Scenario, stops_on_pause: bool = False
+) -> tuple[FakeProtocol, list[str], str]:
     """
     Pause the queue of the sync group of the Kitchen and Office speakers, which can not pause.
 
     Return the Kitchen speaker, which leads the group, the ids of both players and that of the
     group.
+
+    :param stops_on_pause: The Kitchen speaker has a pause, but one that would stop it.
     """
     (kitchen, _), player_ids = await _speakers(scenario, "Kitchen", "Office")
+    if stops_on_pause:
+        await scenario.report(
+            kitchen,
+            supported_features={*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS},
+            stops_on_pause=True,
+        )
     group_id = await _group(scenario, "sync_group", *player_ids)
     await scenario.play(group_id)
     await scenario.advance(PLAYED_SECONDS)
@@ -446,9 +456,16 @@ async def _paused_sync_group(scenario: Scenario) -> tuple[FakeProtocol, list[str
     return kitchen, player_ids, group_id
 
 
-async def test_a_paused_sync_group_keeps_its_speakers(scenario: Scenario) -> None:
-    """The speakers are silent and paused, and the group holds them past its idle grace."""
-    kitchen, player_ids, group_id = await _paused_sync_group(scenario)
+@pytest.mark.parametrize("stops_on_pause", [False, True], ids=["no pause", "pause that stops"])
+async def test_a_paused_sync_group_keeps_its_speakers(
+    scenario: Scenario, stops_on_pause: bool
+) -> None:
+    """
+    The speakers are silent and paused, and the group holds them past its idle grace.
+
+    :param stops_on_pause: The leading speaker has a pause, but one that would stop it.
+    """
+    kitchen, player_ids, group_id = await _paused_sync_group(scenario, stops_on_pause)
 
     await scenario.advance(IDLE_GRACE_SECONDS + 5)
 
@@ -461,11 +478,16 @@ async def test_a_paused_sync_group_keeps_its_speakers(scenario: Scenario) -> Non
         assert _state(scenario, player_id).active_group == group_id
 
 
+@pytest.mark.parametrize("stops_on_pause", [False, True], ids=["no pause", "pause that stops"])
 async def test_play_on_a_paused_sync_group_plays_on_with_the_same_speakers(
-    scenario: Scenario,
+    scenario: Scenario, stops_on_pause: bool
 ) -> None:
-    """Play plays the queue of the group on, without grouping its speakers again."""
-    kitchen, player_ids, group_id = await _paused_sync_group(scenario)
+    """
+    Play plays the queue of the group on, without grouping its speakers again.
+
+    :param stops_on_pause: The leading speaker has a pause, but one that would stop it.
+    """
+    kitchen, player_ids, group_id = await _paused_sync_group(scenario, stops_on_pause)
     await scenario.advance(IDLE_GRACE_SECONDS + 5)
     kitchen.commands.clear()
 

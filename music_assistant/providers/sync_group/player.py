@@ -215,6 +215,12 @@ class SyncGroupPlayer(PlayerProtocol):
         return [(44100, 16), (48000, 16)]
 
     @property
+    def stops_on_pause(self) -> bool:
+        """Return whether a pause would stop the leader, which can not resume what it plays."""
+        session = self._active_session_protocol()
+        return session is not None and session.stops_on_pause
+
+    @property
     def active_source(self) -> str | None:
         """Return the active source id of the current media (if any)."""
         # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player

@@ -236,6 +236,9 @@ This mirrors how a typical AVR or stereo system behaves: turn it on, it's an act
 5. play_media plays on with the same members; a stop or the pause timeout stops the group as any stop
 ```
 
+The group's queue pauses the same way when its leader has no pause of its own, or one that would
+stop it: the group reports `stops_on_pause` from the protocol of its session.
+
 ### Stopping Playback
 
 ```

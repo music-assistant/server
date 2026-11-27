@@ -2795,7 +2795,8 @@ its queue and is paused. Its leader is stopped, and the group and both speakers 
 never idle in between. The group keeps its speakers, also past the idle grace in which a group
 that plays nothing lets them go, and play plays the queue on with the same speakers without
 grouping them again. At the pause timeout or on a stop the group and its speakers are idle and
-free again, and the queue keeps its place.
+free again, and the queue keeps its place. The same holds for a group whose leader has a pause of
+its own that would stop it (PAUSE-22).
 
 - End-to-end: **possible with** a sync group in the lab of speakers without a pause of their own.
 - Proven by:
