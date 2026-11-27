@@ -14,6 +14,7 @@ from fullykiosk.exceptions import FullyKioskError
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     IdentifierType,
     PlaybackState,
     PlayerFeature,
@@ -21,11 +22,11 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import (
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_AAC,
     CONF_PASSWORD,
     CONF_SSL_FINGERPRINT,
     CONF_USE_SSL,
     CONF_VERIFY_SSL,
+    PlaybackQuality,
 )
 from music_assistant.models.player import DeviceInfo, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -104,6 +105,22 @@ class FullyKioskPlayer(PlayerProtocol):
         """Return if the player requires flow mode."""
         return True
 
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """Return the codec for each playback quality level the player can play."""
+        # Fully Kiosk aborts a long lived MP3 stream after roughly 8m45s and re-requests
+        # the url, so radio and long queues never play through. AAC is not affected.
+        return {
+            PlaybackQuality.LOSSLESS_UNCOMPRESSED: ContentType.WAV,
+            PlaybackQuality.LOSSLESS_COMPRESSED: ContentType.FLAC,
+            PlaybackQuality.COMPRESSED: ContentType.AAC,
+        }
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.COMPRESSED
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
@@ -125,9 +142,6 @@ class FullyKioskPlayer(PlayerProtocol):
                 required=False,
                 advanced=True,
             ),
-            # Fully Kiosk aborts a long lived MP3 stream after roughly 8m45s and re-requests
-            # the url, so radio and long queues never play through. AAC is not affected.
-            CONF_ENTRY_OUTPUT_CODEC_DEFAULT_AAC,
         ]
 
     async def on_config_updated(self) -> None:

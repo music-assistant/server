@@ -9,17 +9,21 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ContentType,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3
+from music_assistant.constants import PlaybackQuality
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
-
     from .provider import MSXBridgeProvider
 
 
@@ -88,9 +92,18 @@ class MSXPlayer(PlayerProtocol):
         """Return poll interval in seconds."""
         return 5 if self.playback_state == PlaybackState.PLAYING else 30
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
-        """Return per-player config entries — codec is configurable per TV."""
-        return [CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3]
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """Return the codec for each playback quality level the TV can play."""
+        return {
+            PlaybackQuality.LOSSLESS_COMPRESSED: ContentType.FLAC,
+            PlaybackQuality.COMPRESSED: ContentType.MP3,
+        }
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.COMPRESSED
 
     async def on_detach(self) -> None:
         """Report the TV idle until it plays again; stop it when its player is disabled."""

@@ -13,7 +13,7 @@ import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, IdentifierType, ProtocolRole
 
-from music_assistant.constants import CONF_OUTPUT_CODEC
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.hass_players.constants import CONF_PLAYERS
 from music_assistant.providers.hass_players.provider import HomeAssistantPlayerProvider
@@ -287,14 +287,16 @@ async def test_an_entity_taken_out_of_the_config_is_removed(
 async def test_a_setting_of_a_new_player_is_its_entity_s(
     scenario: Scenario, provider: HomeAssistantPlayerProvider
 ) -> None:
-    """The codec of a player with a minted id is stored for its entity and read back."""
+    """The playback quality of a player with a minted id is stored for its entity and read back."""
     player_id = _player(provider, BEDROOM).player_id
 
-    await scenario.configure_player(player_id, **{CONF_OUTPUT_CODEC: "flac"})
+    await scenario.configure_player(player_id, **{CONF_PLAYBACK_QUALITY: "lossless_compressed"})
 
     protocol = cast("HomeAssistantPlayer", provider.get_protocol(BEDROOM))
-    assert protocol.get_config_value(CONF_OUTPUT_CODEC) == "flac"
-    assert CONF_OUTPUT_CODEC not in (scenario.mass.config.get(f"players/{player_id}/values") or {})
+    assert protocol.get_config_value(CONF_PLAYBACK_QUALITY) == "lossless_compressed"
+    assert CONF_PLAYBACK_QUALITY not in (
+        scenario.mass.config.get(f"players/{player_id}/values") or {}
+    )
 
 
 def _entity_of_receiver(entity_id: str, registry_id: str) -> dict[str, Any]:

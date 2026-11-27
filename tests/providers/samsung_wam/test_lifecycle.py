@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import IdentifierType, ProtocolRole
 
-from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, CONF_OUTPUT_CODEC
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.samsung_wam.features.discovery.handler import DiscoveryHandler
 from music_assistant.providers.samsung_wam.features.grouping.coordinator import (
@@ -113,14 +113,16 @@ async def test_a_new_speaker_keeps_its_settings_on_its_own_record(scenario: Scen
     assert protocol.player is not None
     player_id = protocol.player.player_id
 
-    # the output codec defaults to FLAC
-    await scenario.mass.config.save_protocol_config(MAC_ADDRESS, {CONF_OUTPUT_CODEC: "mp3"})
+    # the playback quality defaults to lossless compressed
+    await scenario.mass.config.save_protocol_config(
+        MAC_ADDRESS, {CONF_PLAYBACK_QUALITY: "compressed"}
+    )
     await scenario.mass.players.unregister(MAC_ADDRESS)
     await scenario.mass.players.register(protocol)
     await scenario.settle()
 
-    assert protocol.get_config_value(CONF_OUTPUT_CODEC) == "mp3"
-    assert scenario.mass.config.get_player_value(player_id, CONF_OUTPUT_CODEC) is None
+    assert protocol.get_config_value(CONF_PLAYBACK_QUALITY) == "compressed"
+    assert scenario.mass.config.get_player_value(player_id, CONF_PLAYBACK_QUALITY) is None
 
 
 async def test_a_speaker_the_server_does_not_want_is_disconnected() -> None:
