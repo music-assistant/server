@@ -92,6 +92,7 @@ def _member(state: PlaybackState, elapsed: float, *, synced_to: str | None = Non
         name="Member",
         available=True,
         playback_state=state,
+        fake_paused=False,
         corrected_elapsed_time=elapsed,
         group_members=[],
         active_source=source,

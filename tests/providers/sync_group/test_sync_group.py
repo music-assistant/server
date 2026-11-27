@@ -309,6 +309,28 @@ def test_the_group_is_a_virtual_protocol() -> None:
     assert sgp.player.own_protocol is sgp
 
 
+@pytest.mark.parametrize(("active_output", "stops"), [("sonos", True), ("airplay", False)])
+def test_the_group_stops_on_pause_as_the_protocol_of_its_session(
+    active_output: str, stops: bool
+) -> None:
+    """
+    The group would stop for a pause when the protocol its leader plays on would.
+
+    :param active_output: Domain of the output the leader plays on.
+    :param stops: Whether the group then stops on a pause.
+    """
+    mass = _make_mock_mass()
+    sgp = _make_sync_group(mass)
+    leader = _make_member(mass, "leader", "sonos", audio=["airplay"], active_output=active_output)
+    _protocol(leader, "sonos")._attr_stops_on_pause = True
+    sgp.sync_leader = leader
+
+    assert sgp.stops_on_pause is stops
+
+    sgp.sync_leader = None
+    assert sgp.stops_on_pause is False
+
+
 class TestProtocolAwareLeaderSelection:
     """Test that leader selection prefers protocol continuity."""
 

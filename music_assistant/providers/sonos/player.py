@@ -288,6 +288,26 @@ class SonosPlayer(PlayerProtocol):
         return True
 
     @property
+    def stops_on_pause(self) -> bool:
+        """Return whether a pause would stop the speaker, which can not resume what it plays."""
+        if not self.connected or self.client.player.is_passive:
+            return False
+        if (group := self.client.player.group) is None:
+            return False
+        active_source = self.player.active_source if self.player is not None else None
+        if (
+            active_source
+            and self.mass.player_queues.get(active_source)
+            and not self._plays_file(group)
+        ):
+            # Sonos resumes a paused track by asking for the rest of it, which only a track
+            # served as a file answers: any other queue item starts over and is skipped,
+            # so we stop the player instead.
+            # https://github.com/music-assistant/support/issues/3758
+            return True
+        return not group.playback_actions.can_pause
+
+    @property
     def group_controller(self) -> SonosGroup:
         """Get the group controller, raising if unavailable."""
         if self.client.player.group is None:
@@ -639,19 +659,7 @@ class SonosPlayer(PlayerProtocol):
         if self.client.player.is_passive:
             self.logger.debug("Ignore PAUSE command: Player is synced to another player.")
             return
-        active_source = self.player.active_source if self.player is not None else None
-        if (
-            active_source
-            and self.mass.player_queues.get(active_source)
-            and not self._plays_file(self.group_controller)
-        ):
-            # Sonos resumes a paused track by asking for the rest of it, which only a track
-            # served as a file answers: any other queue item starts over and is skipped,
-            # so we stop the player instead.
-            # https://github.com/music-assistant/support/issues/3758
-            await self.stop()
-            return
-        if not self.group_controller.playback_actions.can_pause:
+        if self.stops_on_pause:
             await self.stop()
             return
         await self.group_controller.pause()

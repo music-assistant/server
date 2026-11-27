@@ -44,7 +44,9 @@ def _controller() -> tuple[PlayerQueuesController, PlayerQueue]:
 def _player(uri: str) -> Player:
     """Build a player whose rendering protocol reports the given stream URL."""
     protocol = SimpleNamespace(current_media=PlayerMedia(uri=uri))
-    player = SimpleNamespace(resolve_output_protocol=lambda: protocol, corrected_elapsed_time=21.0)
+    player = SimpleNamespace(
+        resolve_output_protocol=lambda: protocol, corrected_elapsed_time=21.0, fake_paused=False
+    )
     return cast("Player", player)
 
 

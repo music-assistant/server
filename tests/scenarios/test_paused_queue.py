@@ -173,7 +173,11 @@ def _slow_music_source(scenario: Scenario) -> Iterator[None]:
 async def test_a_pause_on_a_player_that_can_not_pause_is_not_the_end_of_its_queue(
     scenario: Scenario,
 ) -> None:
-    """A queue paused on its last track stays where it was paused, however long it is paused."""
+    """
+    A queue paused on its last track stays where it was paused, however long it is paused.
+
+    It shows as paused until the pause timeout, and as idle from then on.
+    """
     speaker, player_id = await _speaker(scenario, can_pause=False)
     await _play_in_flow_mode(scenario, speaker, player_id)
     await scenario.advance(PLAYED_SECONDS)
@@ -183,16 +187,22 @@ async def test_a_pause_on_a_player_that_can_not_pause_is_not_the_end_of_its_queu
     paused = _position(scenario, player_id)
     assert paused.elapsed_time == pytest.approx(PLAYED_SECONDS, abs=1)
     assert paused == Position(
-        state=PlaybackState.IDLE,
+        state=PlaybackState.PAUSED,
         ended=False,
         current_index=0,
         uri=TEST_TRACK_URI,
         elapsed_time=paused.elapsed_time,
         resume_pos=PLAYED_SECONDS,
     )
-    for seconds in (SETTLE_SECONDS, 1, 60):
+    for seconds in (SETTLE_SECONDS, 1):
         await scenario.advance(seconds)
         assert _position(scenario, player_id) == paused
+    # the pause timeout is 30 s
+    await scenario.advance(30 - SETTLE_SECONDS)
+    stopped = paused._replace(state=PlaybackState.IDLE)
+    assert _position(scenario, player_id) == stopped
+    await scenario.advance(60)
+    assert _position(scenario, player_id) == stopped
 
 
 @pytest.mark.parametrize("paused_seconds", [4.5, 5.0, 5.5, 40.0])

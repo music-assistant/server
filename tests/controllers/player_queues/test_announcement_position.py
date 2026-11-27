@@ -68,6 +68,7 @@ def _player(*, state: PlaybackState = PlaybackState.PLAYING, announcement: bool 
     player.type = PlayerType.PLAYER
     player.playback_state = state
     player.active_source = QUEUE_ID
+    player.fake_paused = False
     player.corrected_elapsed_time = 0.0
     player.group_members = []
     player.offline_by_power_control = False

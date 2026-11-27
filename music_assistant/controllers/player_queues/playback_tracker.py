@@ -111,9 +111,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         Returns True if the update was successful, False if the caller should return early.
         """
         queue_id = queue.queue_id
-        if queue.active and queue.state in (
-            PlaybackState.PLAYING,
-            PlaybackState.PAUSED,
+        if (
+            queue.active
+            and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            # a player that stopped for its pause reports nothing of the queue anymore
+            and not player.fake_paused
         ):
             # NOTE: If the queue is not playing (yet) we will not update the current index
             # to ensure we keep the previously known current index

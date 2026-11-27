@@ -202,12 +202,13 @@ streamed) to its end, is taken for ended 5 seconds later, unless it plays again 
 refilled from its dynamic source when it has one, and marked as ended otherwise. A pause or a
 stop is never that end. A queue whose playback a command halted (`halted_by_command`: set by a
 pause and by the common stop handler) keeps its place until it plays again, also when the
-command left its player idle (a player without a pause of its own is stopped, and a paused player
-is stopped once the pause timeout passes). Only the stop of a sleep timer that waited for the
-end of an item or a chapter ends the queue, at that point; a timer that runs out mid-track stops
-the queue like any other stop. The flag is cleared when the queue is seen playing, when its
-paused player is told to play on or when a play action starts a stream session, taken back by a
-pause or a stop that fails, and reset when the queue is cleared or marked as ended.
+command left its player idle (a player without a pause of its own is stopped, and shows as paused
+until the pause timeout, and a paused player is stopped once the pause timeout passes). Only the
+stop of a sleep timer that waited for the end of an item or a chapter ends the queue, at that
+point; a timer that runs out mid-track stops the queue like any other stop. The flag is cleared
+when the queue is seen playing, when its paused player is told to play on or when a play action
+starts a stream session, taken back by a pause or a stop that fails, and reset when the queue is
+cleared or marked as ended.
 
 That check runs in a task of its own, holds no lock, and belongs to the playback that went idle:
 it remembers the stream session the queue was last seen playing. After every wait (each of its
@@ -318,6 +319,10 @@ itself while it plays the queue's stream, not for another source paused on the p
 watcher leaves the queue alone while a command still waits for players to start up before it
 acts on the player of the queue, and counts again from the end of that wait: only then can a
 pause outlast the buffer.
+A queue on a player without a pause of its own ends its session at the pause instead. The player
+shows as paused (`Player.fake_paused`) until the pause timeout of the player controller ends
+that, the queue keeps the position of the pause meanwhile, whatever the stopped player reports,
+and play starts it again from there.
 When playback on another queue finds no free provider stream slot and one of those buffers holds
 one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
 source stream. Preparing the next track ahead of time never stops a paused queue. A player that

@@ -272,7 +272,8 @@ async def test_a_queue_halted_in_a_new_playback_is_not_ended_for_the_one_before(
 
     halted = _position(scenario, player_id)
     assert halted == Position(
-        state=PlaybackState.IDLE,
+        # a pause shows until the pause timeout
+        state=PlaybackState.PAUSED if halt == "pause" else PlaybackState.IDLE,
         ended=False,
         current_index=0,
         uri=TEST_TRACK_URI,
@@ -281,6 +282,9 @@ async def test_a_queue_halted_in_a_new_playback_is_not_ended_for_the_one_before(
     )
     await scenario.advance(SETTLE_SECONDS + 2)
     assert _position(scenario, player_id) == halted
+    # the pause timeout is 30 s
+    await scenario.advance(30)
+    assert _position(scenario, player_id) == halted._replace(state=PlaybackState.IDLE)
 
 
 @pytest.mark.parametrize("dynamic", [False, True], ids=["plain", "dynamic source"])
@@ -356,7 +360,7 @@ async def test_a_queue_paused_while_its_dynamic_source_is_fetched_stays_paused(
     await _pause_by_stop(scenario, speaker, player_id)
     paused = _position(scenario, player_id)
     assert (paused.state, paused.ended, paused.resume_pos) == (
-        PlaybackState.IDLE,
+        PlaybackState.PAUSED,
         False,
         PLAYED_SECONDS,
     )
