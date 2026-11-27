@@ -1732,6 +1732,160 @@ class TestLeaderLost:
         assert sgp.sync_leader is members["a"]
 
 
+class TestLeaderLeftByItself:
+    """Test what becomes of the group when the leader of its live session left it by itself."""
+
+    @staticmethod
+    def _playing_group(
+        *, dynamic: bool = True
+    ) -> tuple[MagicMock, SyncGroupPlayer, dict[str, Player]]:
+        """
+        Return a playing group of three whose leader left: its last member holds the session.
+
+        :param dynamic: Whether the members of the group can change.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass, dynamic=dynamic, members=["a", "b", "c"])
+        members = {
+            name: _make_member(mass, name, "sonos", playback_state=PlaybackState.PLAYING)
+            for name in ("a", "b", "c")
+        }
+        for member in members.values():
+            _protocol(member, "sonos").set_members = AsyncMock()  # type: ignore[method-assign]
+        # the speakers moved the session themselves: the last member leads the other one
+        _protocol(members["c"], "sonos")._attr_group_members = ["sonos_c", "sonos_b"]
+        members["c"].state.group_members = UniqueList(["c", "b"])
+        members["c"].state.can_group_with = {"a", "b"}
+        sgp.sync_leader = members["a"]
+        sgp._attr_group_members = list(members)
+        sgp._attr_static_group_members = [] if dynamic else list(members)
+        sgp._update_attributes()
+        return mass, sgp, members
+
+    @pytest.mark.parametrize("dynamic", [True, False])
+    async def test_the_member_that_holds_the_session_leads_without_a_step_out(
+        self, dynamic: bool
+    ) -> None:
+        """
+        The group follows the member, and only a group with fixed members keeps the leader.
+
+        :param dynamic: Whether the members of the group can change.
+        """
+        mass, sgp, members = self._playing_group(dynamic=dynamic)
+        left, holder = _protocol(members["a"], "sonos"), _protocol(members["c"], "sonos")
+
+        assert await sgp.on_session_moved(left, holder)
+
+        assert sgp.sync_leader is members["c"]
+        assert sgp._attr_group_members == (["c", "b"] if dynamic else ["c", "a", "b"])
+        assert sgp._attr_playback_state == PlaybackState.PLAYING
+        # the leader left already, and is not put back into the session it left
+        _member_changes(left).assert_not_awaited()
+        _member_changes(holder).assert_awaited_once_with(player_ids_to_add=["sonos_b"])
+        mass.players._handle_cmd_stop.assert_not_awaited()
+        mass.players._activate_output_protocol.assert_awaited_once_with(members["c"], "sonos_c")
+        mass.players.schedule_active_output_protocol_clear.assert_called_once_with(members["a"])
+
+    @pytest.mark.parametrize("dynamic", [True, False])
+    async def test_the_group_never_reads_idle_while_it_follows_the_member(
+        self, dynamic: bool
+    ) -> None:
+        """
+        The leader that left reads as idle only once the group reads what the member does.
+
+        :param dynamic: Whether the members of the group can change.
+        """
+        mass, sgp, members = self._playing_group(dynamic=dynamic)
+        reported: list[PlaybackState | None] = []
+
+        async def _activate(player: Player, _protocol_id: str) -> None:
+            # a member reports while the group changes its leader
+            sgp.on_group_member_updated(player, {})
+            reported.append(sgp._attr_playback_state)
+
+        mass.players._activate_output_protocol.side_effect = _activate
+
+        assert await sgp.on_session_moved(
+            _protocol(members["a"], "sonos"), _protocol(members["c"], "sonos")
+        )
+        members["a"]._state = replace(members["a"]._state, playback_state=PlaybackState.IDLE)
+        sgp.on_group_member_updated(members["a"], {})
+        reported.append(sgp._attr_playback_state)
+
+        assert reported == [PlaybackState.PLAYING, PlaybackState.PLAYING]
+        assert sgp._idle_grace_task is None
+
+    async def test_a_group_with_fixed_members_brings_the_leader_back_after_the_debounce(
+        self,
+    ) -> None:
+        """The leader that left is a member that is missing, as one that does not lead."""
+        mass, sgp, members = self._playing_group(dynamic=False)
+
+        assert await sgp.on_session_moved(
+            _protocol(members["a"], "sonos"), _protocol(members["c"], "sonos")
+        )
+        mass.call_later.assert_not_called()
+        members["a"]._state = replace(members["a"]._state, playback_state=PlaybackState.IDLE)
+        sgp.on_group_member_updated(members["a"], {})
+
+        assert sgp._missing_members(members["c"]) == ["a"]
+        mass.call_later.assert_called_once_with(
+            REFORM_DEBOUNCE_SECONDS,
+            sgp._rejoin_members,
+            task_id="sync_group_rejoin_syncgroup_test",
+        )
+
+    async def test_a_dynamic_group_does_not_bring_the_leader_back(self) -> None:
+        """The leader that left is no member of the group anymore."""
+        mass, sgp, members = self._playing_group()
+
+        assert await sgp.on_session_moved(
+            _protocol(members["a"], "sonos"), _protocol(members["c"], "sonos")
+        )
+        members["a"]._state = replace(members["a"]._state, playback_state=PlaybackState.IDLE)
+        sgp.on_group_member_updated(members["a"], {})
+
+        assert not sgp.counts_in("a")
+        mass.call_later.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "case", ["no member", "not the leader of the session", "the leader itself", "not formed"]
+    )
+    async def test_a_session_the_group_can_not_follow_is_left_as_it_is(self, case: str) -> None:
+        """
+        The group only follows a member of its own that took over from its leader.
+
+        :param case: What does not fit.
+        """
+        mass, sgp, members = self._playing_group()
+        left, holder = _protocol(members["a"], "sonos"), _protocol(members["c"], "sonos")
+        if case == "no member":
+            holder = _protocol(_make_member(mass, "stranger", "sonos"), "sonos")
+        elif case == "not the leader of the session":
+            left = _protocol(members["b"], "sonos")
+        elif case == "the leader itself":
+            holder = left
+        else:
+            sgp.sync_leader = None
+        leader = sgp.sync_leader
+
+        assert not await sgp.on_session_moved(left, holder)
+
+        assert sgp.sync_leader is leader
+        assert sgp._attr_group_members == ["a", "b", "c"]
+        mass.players._activate_output_protocol.assert_not_awaited()
+        mass.players.schedule_active_output_protocol_clear.assert_not_called()
+
+
+async def test_a_protocol_does_not_follow_a_session_that_moved_by_default() -> None:
+    """A protocol that is no group player has no session of its own to follow."""
+    mass = _make_mock_mass()
+    left = _protocol(_make_member(mass, "a", "sonos"), "sonos")
+    holder = _protocol(_make_member(mass, "b", "sonos"), "sonos")
+
+    assert await left.on_session_moved(left, holder) is False
+
+
 class TestPowerLifecycle:
     """Test that power(True/False) drives the group's form/dissolve lifecycle."""
 

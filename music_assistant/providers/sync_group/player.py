@@ -861,6 +861,47 @@ class SyncGroupPlayer(PlayerProtocol):
         self.mass.players.schedule_active_output_protocol_clear(sync_leader)
         return True
 
+    async def on_session_moved(self, leader: PlayerProtocol, holder: PlayerProtocol) -> bool:
+        """
+        Handle callback when the leader of the session of this group player left it by itself.
+
+        A dynamic group loses the player of that leader, a group with fixed members keeps
+        it as a member.
+
+        :param leader: The protocol that led the session.
+        :param holder: The protocol of the member that holds the session now.
+        :return: Whether the group follows that member.
+        """
+        old_leader, new_leader = self.sync_leader, holder.player
+        if (
+            old_leader is None
+            or new_leader is None
+            or new_leader is old_leader
+            or self._active_session_protocol() is not leader
+            or new_leader.player_id not in self._attr_group_members
+        ):
+            return False
+        self.logger.info(
+            "Dynamic leader switch: %s left group %s by itself, remaining members keep "
+            "playing, led by %s",
+            old_leader.name,
+            self.display_name,
+            new_leader.name,
+        )
+        if self.is_dynamic and old_leader.player_id in self._attr_group_members:
+            self._attr_group_members.remove(old_leader.player_id)
+        domain = leader.provider.domain
+        target = await self._lead_session(new_leader, domain)
+        # the members the holder leads already; the leader that left is not one of them
+        remaining_ids = self._session_member_ids(new_leader, domain, [old_leader.player_id])
+        if remaining_ids and target is not None:
+            await target.set_members(player_ids_to_add=remaining_ids)
+        # it plays nothing anymore, so its own protocol is its output again
+        self.mass.players.schedule_active_output_protocol_clear(old_leader)
+        self._update_attributes()
+        self.update_state()
+        return True
+
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
         self._cancel_idle_grace_timer()

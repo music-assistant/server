@@ -1354,6 +1354,20 @@ class PlayerProtocol(ABC):
         # optional callback for group players that can hand their session over
         return False
 
+    async def on_session_moved(self, leader: PlayerProtocol, holder: PlayerProtocol) -> bool:
+        """
+        Handle callback when the leader of the session of this group player left it by itself.
+
+        The session plays on, held by one of its members. Runs under the playback lock of
+        the group player.
+
+        :param leader: The protocol that led the session.
+        :param holder: The protocol of the member that holds the session now.
+        :return: Whether the group follows that member.
+        """
+        # optional callback for group players that can follow a session that changed hands
+        return False
+
     def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:  # noqa: B027
         """
         Handle callback when a stream request addressed by queue position was served.
