@@ -27,6 +27,12 @@ from tests.controllers.streams.test_crossfade_transition import (
     _install_item_streams as _install_flow_item_streams,
 )
 from tests.controllers.streams.test_crossfade_transition import _queue_item as _flow_item
+from tests.controllers.streams.test_file_stream_crossfade import (
+    _Rig,
+    passthrough_encoder,  # noqa: F401
+    rig,  # noqa: F401
+)
+from tests.controllers.streams.test_file_stream_route import PLAYER_ID
 from tests.controllers.streams.test_item_voice_over import (
     CLIP_MARKER,
     _declared_track,
@@ -155,6 +161,72 @@ async def test_an_item_stream_plays_its_tail_out_when_the_player_lacks_the_next_
     assert "queue-1" not in audio._crossfade_pending
     # asked about the item the fade would have played into
     assert protocol.has_received_next_item.call_args.args[0].queue_item_id == "item-2"
+
+
+@pytest.mark.parametrize("new_leader_holds_it", [True, False])
+async def test_the_boundary_asks_the_player_that_renders_the_stream_by_then(
+    monkeypatch: pytest.MonkeyPatch, new_leader_holds_it: bool
+) -> None:
+    """A group that changed its leader while the track played is mixed for its new leader."""
+    first = _track("item-1", "First")
+    first.streamdetails.duration = TRACK_SECONDS
+    second = _declared_track()
+    audio, mass = _item_audio(monkeypatch, next_item=second, load_next=[second, QueueEmpty])
+    _install_item_streams(monkeypatch, audio)
+    build = cast("MagicMock", audio.smart_fades_mixer.build)
+    build.side_effect = None
+    build.return_value = SimpleNamespace(
+        timing_info=SimpleNamespace(
+            fadein_trimmed_duration=0.0,
+            crossfade_duration=float(STANDARD_CROSSFADE_DURATION),
+            pre_crossfade_duration=0.0,
+            post_crossfade_duration=0.0,
+        )
+    )
+    # the leader that left holds nothing of the queue anymore, or still everything
+    old_leader = MagicMock(protocol_id="old-leader")
+    old_leader.name = "Old leader"
+    old_leader.has_received_next_item.return_value = not new_leader_holds_it
+    new_leader = MagicMock(protocol_id="new-leader")
+    new_leader.has_received_next_item.return_value = new_leader_holds_it
+    protocols = {"old-leader": old_leader, "new-leader": new_leader}
+    mass.players.get_protocol.side_effect = protocols.get
+    leaders = {"group-1": old_leader}
+    mass.players.get_output_protocol.side_effect = leaders.get
+    stream = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", old_leader),
+        cast("Any", first),
+        TEST_PCM_FORMAT,
+        crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=STANDARD_CROSSFADE_DURATION,
+        session_id="session-1",
+        player_id="group-1",
+    )
+
+    # the track plays, and then the group changes its leader
+    output = bytearray(await anext(stream))
+    build.assert_not_awaited()
+    leaders["group-1"] = new_leader
+    output += await _drain(stream)
+
+    assert build.await_count == int(new_leader_holds_it)
+    new_leader.has_received_next_item.assert_called_once()
+    old_leader.has_received_next_item.assert_not_called()
+    select_pcm_format = cast("MagicMock", audio.select_pcm_format)
+    assert select_pcm_format.await_args.kwargs["player"] is new_leader
+    if new_leader_holds_it:
+        await audio._crossfade_handover.pop("queue-1").close()
+    else:
+        assert bytes(output) == bytes([CLIP_MARKER]) * TRACK_SECONDS * SAMPLE_SIZE
+
+
+async def test_the_stream_of_a_file_is_told_the_id_the_file_is_fetched_under(
+    rig: _Rig,  # noqa: F811
+) -> None:
+    """A file outlives a change of leader, so its stream gets the id that names the group."""
+    await rig.fetch("a")
+
+    assert rig.streams.call_args.kwargs["player_id"] == PLAYER_ID
 
 
 async def test_a_declared_overlap_plays_whole_when_the_player_lacks_its_track(

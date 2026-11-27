@@ -1331,6 +1331,7 @@ class StreamsController(CoreController):
                     standard_crossfade_duration=standard_crossfade_duration,
                     session_id=session_id,
                     consumer_connected=_player_connected,
+                    player_id=player_id,
                 )
             else:
                 # no crossfade, just a regular single item stream
@@ -2131,6 +2132,7 @@ class StreamsController(CoreController):
                         CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
                     ),
                     session_id=queue_session_id,
+                    player_id=player_id,
                 )
             else:
                 inner_stream = self.audio.get_queue_item_stream(
@@ -2768,6 +2770,7 @@ class StreamsController(CoreController):
                         crossfade_mode=mix_mode,
                         standard_crossfade_duration=standard_crossfade_duration,
                         session_id=session_id,
+                        player_id=url_player_id,
                     ),
                     partial(
                         self.audio.get_queue_item_stream,

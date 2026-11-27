@@ -2381,6 +2381,7 @@ class StreamsAudio:
         consumer_connected: Callable[[], bool] | None = None,
         start_ms: int | None = None,
         marks: ItemStreamMarks | None = None,
+        player_id: str | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Return one queue item with a crossfade into the next item.
@@ -2401,6 +2402,9 @@ class StreamsAudio:
             item, reports none and stores no duration.
         :param marks: Takes the points where the fade into the item ends and where the
             held tail of the item starts.
+        :param player_id: The id the stream was asked for under. The fade into the next item
+            is made for the player that renders under that id by then, such as the new
+            leader of a group.
         """
         queue = self.mass.player_queues.get(queue_item.queue_id)
         if not queue:
@@ -2694,15 +2698,19 @@ class StreamsAudio:
                 fade_in_playback_speed = cast(
                     "float", next_queue_item.extra_attributes.get("playback_speed", 1.0)
                 )
+                # the next item plays on the player that renders by now
+                renderer = (
+                    self.mass.players.get_output_protocol(player_id) if player_id else None
+                ) or player
                 next_pcm = await self.select_pcm_format(
-                    player=player,
+                    player=renderer,
                     streamdetails=next_queue_item.streamdetails,
                     crossfade_enabled=True,
                 )
                 crossfade_allowed = self.crossfade_allowed(
                     queue_item,
                     crossfade_mode=crossfade_mode,
-                    protocol_id=player.protocol_id,
+                    protocol_id=renderer.protocol_id,
                     flow_mode=False,
                     next_queue_item=next_queue_item,
                     sample_rate=pcm_format.sample_rate,
