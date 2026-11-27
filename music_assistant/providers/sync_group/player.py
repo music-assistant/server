@@ -214,6 +214,10 @@ class SyncGroupPlayer(PlayerProtocol):
             return session.get_supported_sample_rates()
         return [(44100, 16), (48000, 16)]
 
+    def resolve_output_protocol(self) -> PlayerProtocol:
+        """Return the protocol of the sync leader that plays the stream, else the group itself."""
+        return self._active_session_protocol() or self
+
     @property
     def stops_on_pause(self) -> bool:
         """Return whether a pause would stop the leader, which can not resume what it plays."""

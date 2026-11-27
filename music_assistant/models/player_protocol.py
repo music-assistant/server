@@ -287,6 +287,16 @@ class PlayerProtocol(ABC):
         and must return quickly.
         """
 
+    def resolve_output_protocol(self) -> PlayerProtocol:
+        """
+        Return the protocol that renders the audio of a stream asked for under this protocol's id.
+
+        That is this protocol itself. Override this for a protocol whose streams another
+        protocol renders, such as a group whose leader plays its stream: the output format,
+        DSP and stream callbacks are then those of that protocol.
+        """
+        return self
+
     @property
     def device_info(self) -> DeviceInfo:
         """

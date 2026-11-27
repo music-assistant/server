@@ -471,6 +471,33 @@ async def test_a_head_or_refused_request_again_is_no_resume_or_seek(rig: _Rig) -
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_file_asked_under_a_group_id_outlives_a_change_of_its_leader(rig: _Rig) -> None:
+    """
+    The file a url of a group names stays the same when another leader renders it.
+
+    The url names the group; the protocol of its leader renders the file and gets the callbacks.
+    """
+    await rig.decode()
+    _play(rig, rig.queue_item)
+    old_leader = MagicMock(protocol_id="old_leader", group_members=[], fetches_files=True)
+    new_leader = MagicMock(protocol_id="new_leader", group_members=[], fetches_files=True)
+    rig.ctrl.mass.players.get_output_protocol.return_value = old_leader
+    resp, whole_file = await rig.fetch()
+
+    rig.ctrl.mass.players.get_output_protocol.return_value = new_leader
+    again, start = await rig.fetch("bytes=0-", wanted=KIB_16)
+    await asyncio.sleep(0)
+
+    assert again.headers["Content-Range"] == f"bytes 0-{len(whole_file) - 1}/{resp.content_length}"
+    assert start == whole_file[:KIB_16]
+    assert rig.encodes == 1
+    assert rig.ctrl.audio.get_player_output_plan.call_args.kwargs["protocol_id"] == "old_leader"
+    assert list(rig.ctrl._file_streams._files) == [PLAYER_ID]
+    old_leader.on_file_requested_again.assert_not_called()
+    new_leader.on_file_requested_again.assert_called_once_with()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
 async def test_a_player_that_does_not_fetch_files_keeps_its_stream(rig: _Rig) -> None:
     """Without the property a range is not answered, and no length or part is announced."""
     await rig.decode()

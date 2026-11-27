@@ -249,14 +249,17 @@ class _PlayerControllerBase(CoreController):
         minted can be the id of one of its protocols, which this returns also while another
         of its protocols renders.
 
+        A protocol whose streams another protocol renders, such as a group whose leader plays
+        its stream, answers with that protocol (`PlayerProtocol.resolve_output_protocol`), so
+        a stream asked for under the id of a group follows a change of its leader.
+
         :param protocol_or_player_id: ID of an attached protocol, else of a player or one
             of the legacy ids of a player.
         """
-        if protocol := self._protocols.get(protocol_or_player_id):
-            return protocol
-        if player := self.get_player(protocol_or_player_id):
-            return player.resolve_output_protocol()
-        return None
+        protocol = self._protocols.get(protocol_or_player_id)
+        if protocol is None and (player := self.get_player(protocol_or_player_id)):
+            protocol = player.resolve_output_protocol()
+        return protocol.resolve_output_protocol() if protocol else None
 
     def get_player_by_protocol(self, protocol_or_player_id: str) -> Player | None:
         """

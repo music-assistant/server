@@ -351,7 +351,7 @@ class FileStreams:
         """
         Return the file a player fetches a track as, if it exists.
 
-        :param player_id: The player that fetches the file.
+        :param player_id: The id the player fetches the file under.
         :param key: The track and the playback it belongs to.
         """
         files = self._files.get(player_id, {})
@@ -371,7 +371,7 @@ class FileStreams:
         """
         Add the file a player fetches a track as, in place of the oldest it has too many.
 
-        :param player_id: The player that fetches the file.
+        :param player_id: The id the player fetches the file under.
         :param key: The track and the playback it belongs to.
         :param file: The file.
         """
