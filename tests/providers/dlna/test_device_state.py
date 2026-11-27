@@ -7,13 +7,15 @@ import inspect
 import time
 from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
+from types import MethodType
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from async_upnp_client.profiles.dlna import TransportState
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 
+from music_assistant.mass import MusicAssistant
 from music_assistant.providers.dlna.player import DLNAPlayer
 from tests.common import MockProvider
 
@@ -677,6 +679,54 @@ async def test_transport_command_reads_the_new_state_back(
     assert player.current_media is not None
     assert player.current_media.title == "New Title"
     assert player.elapsed_time == 83.0
+
+
+async def test_a_seek_on_the_device_reads_the_new_position_back() -> None:
+    """A renderer that asks for its file again after a seek of its own reports where it is."""
+    device = _mock_device(media_position=26)
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll with the position the seek on the device went to."""
+        device.media_position = 60
+        device.media_position_updated_at = datetime.now(UTC)
+
+    device.async_update = _async_update
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    scheduled: list[tuple[float, Any]] = []
+
+    def _call_later(delay: float, target: Any, *_args: Any, **_kwargs: Any) -> None:
+        # the base player also schedules synchronous media callbacks, which are not polls
+        if inspect.iscoroutinefunction(target):
+            scheduled.append((delay, target))
+
+    player.mass.call_later = _call_later  # type: ignore[method-assign,assignment]
+
+    player.on_file_requested_again()
+    assert scheduled
+    for delay, target in scheduled:
+        assert delay < player.poll_interval
+        await target()
+
+    assert player.elapsed_time == 60.0
+
+
+async def test_the_requests_of_one_seek_read_the_state_back_once() -> None:
+    """The requests a renderer sends for one seek give one pair of refreshes."""
+    player = _player(_mock_device())
+    mass = player.mass
+    mass.loop = asyncio.get_running_loop()
+    mass._tracked_timers = {}
+    mass.call_later = MethodType(MusicAssistant.call_later, mass)  # type: ignore[method-assign]
+    create_task = mass.create_task = MagicMock()  # type: ignore[method-assign]
+    player._refresh_state = AsyncMock()  # type: ignore[method-assign]
+
+    with patch("music_assistant.providers.dlna.player.COMMAND_REFRESH_DELAYS", (0.01, 0.02)):
+        for _ in range(3):
+            player.on_file_requested_again()
+        await asyncio.sleep(0.05)
+
+    assert create_task.call_count == 2
 
 
 async def test_pending_refresh_does_not_reconnect_an_unloaded_player() -> None:

@@ -413,6 +413,63 @@ async def test_a_head_request_gets_the_length_without_opening_the_track(
     rig.ctrl.audio.claim_item.assert_not_called()
 
 
+def _play(rig: _Rig, queue_item: QueueItem) -> None:
+    """
+    Let the queue of the rig play the given item, and run what the stream hands to the loop.
+
+    :param rig: The rig.
+    :param queue_item: The item the queue plays now.
+    """
+    rig.queue_data.queue.current_item = queue_item
+    rig.ctrl.mass.loop = asyncio.get_running_loop()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+@pytest.mark.parametrize("byte_range", [None, f"bytes={100 * KIB_16}-", "bytes=-128"])
+async def test_a_player_that_asks_again_for_the_file_it_plays_is_heard(
+    rig: _Rig, byte_range: str | None
+) -> None:
+    """A player that comes back for the file of the item it plays has resumed or seeked."""
+    await rig.decode()
+    _play(rig, rig.queue_item)
+
+    await rig.fetch()
+    await asyncio.sleep(0)
+    rig.player.on_file_requested_again.assert_not_called()
+
+    await rig.fetch(byte_range)
+    await asyncio.sleep(0)
+    rig.player.on_file_requested_again.assert_called_once_with()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_file_fetched_ahead_again_is_no_resume_or_seek(rig: _Rig) -> None:
+    """A player that asks again for the file of the next item does not resume or seek."""
+    await rig.decode()
+    _play(rig, QueueItem(queue_id=QUEUE_ID, queue_item_id="item0", name="item0", duration=60))
+
+    await rig.fetch()
+    await rig.fetch("bytes=-128")
+    await asyncio.sleep(0)
+
+    rig.player.on_file_requested_again.assert_not_called()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_head_or_refused_request_again_is_no_resume_or_seek(rig: _Rig) -> None:
+    """A HEAD request and a part past the end that gets a 416 do not count as a request again."""
+    await rig.decode()
+    _play(rig, rig.queue_item)
+    await rig.fetch()
+
+    await rig.fetch(f"bytes={100 * KIB_16}-", method="HEAD")
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable):
+        await rig.fetch(f"bytes={HEADER_SIZE + len(rig.pcm)}-")
+    await asyncio.sleep(0)
+
+    rig.player.on_file_requested_again.assert_not_called()
+
+
 @pytest.mark.usefixtures("passthrough_encoder")
 async def test_a_player_that_does_not_fetch_files_keeps_its_stream(rig: _Rig) -> None:
     """Without the property a range is not answered, and no length or part is announced."""

@@ -376,6 +376,12 @@ class DLNAPlayer(PlayerProtocol):
         await self.device.async_seek_rel_time(timedelta(seconds=position))
         self._schedule_state_refresh()
 
+    def on_file_requested_again(self) -> None:
+        """Read the state back after the renderer resumed or seeked by itself."""
+        # a renderer need not send an event for that, which would leave the old position on
+        # display until the next regular poll
+        self._schedule_state_refresh()
+
     @catch_request_errors
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""

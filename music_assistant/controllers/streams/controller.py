@@ -2746,7 +2746,9 @@ class StreamsController(CoreController):
         session_id = request.match_info["session_id"]
         start_position = int(queue_item.streamdetails.seek_position)
         key = FileKey(session_id, queue.queue_id, queue_item.queue_item_id, start_position)
-        if (file := self._file_streams.get(player.protocol_id, key)) is None:
+        file = self._file_streams.get(player.protocol_id, key)
+        requested_again = file is not None
+        if file is None:
             frames = declared_frames(queue_item, output_format.sample_rate)
             end_ms = start_position * 1000 + -(-frames * 1000 // output_format.sample_rate)
             # what a mix is made from at most; a declared length can be a second too long
@@ -2802,6 +2804,13 @@ class StreamsController(CoreController):
         await resp.prepare(request)
         if request.method != "GET":
             return resp
+        if (
+            requested_again
+            and queue.current_item is not None
+            and queue.current_item.queue_item_id == queue_item.queue_item_id
+        ):
+            # a player fetches the next track ahead, which is no resume or seek
+            self.mass.loop.call_soon(player.on_file_requested_again)
 
         self._update_audio_processing_context(
             queue=queue,
