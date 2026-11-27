@@ -615,7 +615,13 @@ class SpotifyConnectProvider(PluginProvider):
         if daemon is None:
             return
         if not daemon.playing and not daemon.spotify_session_active:
-            raise self._not_active_error(daemon)
+            if action != SourceControl.PLAY or not daemon.last_context_uri:
+                raise self._not_active_error(daemon)
+            # The session ended while the player kept this source (a backend restart or a lost
+            # connection): take playback back; the 'playing' event that follows restarts the stream.
+            self.logger.info("Taking Spotify playback back to Music Assistant")
+            await daemon.backend.play(daemon.last_context_uri, skip_to_uri=daemon.last_track_uri)
+            return
         try:
             if action == SourceControl.PLAY:
                 await daemon.backend.resume()
