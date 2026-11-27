@@ -568,8 +568,9 @@ own local preferences. The config keys and their default values live in `constan
 
 Separately, the controller exposes **per-queue** config entries (via `get_queue_config_entries`,
 surfaced by the Config Controller) grouped into categories: *autoplay* (the refill mode and, for
-playlist mode, the playlist) and *crossfade* (mode and duration), plus volume normalization. Each
-group is introduced by a label entry. These are read back per queue when refilling or streaming.
+playlist mode, the playlist) and *crossfade* (mode and duration), plus volume normalization. The
+help text of each group's first setting explains the feature. These are read back per queue when
+refilling or streaming.
 
 ## Future Direction
 

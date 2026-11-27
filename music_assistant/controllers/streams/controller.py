@@ -649,6 +649,7 @@ class StreamsController(CoreController):
                 default_value=DEFAULT_VOLUME_NORMALIZATION_MODE,
                 options=_volume_normalization_preference_options(),
                 category="volume_normalization",
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_TRACKS,
@@ -656,6 +657,7 @@ class StreamsController(CoreController):
                 default_value=DEFAULT_VOLUME_NORMALIZATION_MODE,
                 options=_volume_normalization_preference_options(),
                 category="volume_normalization",
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
@@ -663,6 +665,7 @@ class StreamsController(CoreController):
                 range=(-20, 10),
                 default_value=-6,
                 category="volume_normalization",
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -670,6 +673,7 @@ class StreamsController(CoreController):
                 range=(-20, 10),
                 default_value=-6,
                 category="volume_normalization",
+                advanced=True,
             ),
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
             ConfigEntry(
@@ -677,6 +681,7 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
                 category="crossfade",
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_STREAM_SOURCE_MODE,
