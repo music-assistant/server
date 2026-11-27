@@ -265,6 +265,16 @@ class PlayerProtocol(ABC):
         """
         return True
 
+    def on_file_requested_again(self) -> None:  # noqa: B027
+        """
+        Handle the player asking again for the file of the track it plays.
+
+        A player that fetches files does so when it resumes or seeks by itself, see
+        `fetches_files`. Override this for a player that does not report its new position by
+        itself, to read its state back from the device. It is called on the event loop
+        and must return quickly.
+        """
+
     @property
     def device_info(self) -> DeviceInfo:
         """
