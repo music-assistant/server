@@ -2890,6 +2890,10 @@ class StreamsController(CoreController):
                         break
                     # more audio than the file declared is cut off
                     data = chunk[: part.stop - offset]
+                    if file.request is request and is_connected(request):
+                        # audio handed to a connection that is still open may reach the
+                        # player, also when the write fails
+                        file.head_start_handed_out()
                     try:
                         await resp.write(data)
                     except ConnectionError:
