@@ -3830,3 +3830,20 @@ async def test_a_resync_on_a_short_lead_does_not_wait() -> None:
         ),
     ):
         assert await session._wait_for_live_anchor() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("members", [1, 2], ids=["one_speaker", "group"])
+async def test_a_resync_without_a_receiver_queue_does_not_wait(members: int) -> None:
+    """The lead every warm start has is not waited out (RAOP reports no queue)."""
+    session, _ = _live_session()
+    del session._wait_for_live_anchor
+    if members == 2:
+        second = MagicMock(protocol_id="second", protocol=StreamingProtocol.RAOP, sync_offset_ms=0)
+        second.stream = _stream_defaults(MagicMock(running=True, connected=True))
+        session.sync_clients.append(second)
+
+    with patch(
+        "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+    ):
+        assert await session._wait_for_live_anchor() == 0

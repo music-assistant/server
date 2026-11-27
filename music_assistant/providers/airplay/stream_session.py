@@ -45,7 +45,8 @@ from .constants import (
 from .helpers import cli_clock_time, get_final_output_format
 from .stream import AirPlayStream
 
-# A re-anchor further than this beyond the warm lead waits and drops the audio fed meanwhile.
+# A re-anchor further than this beyond the lead of a warm start waits and drops the audio
+# fed meanwhile.
 LIVE_ANCHOR_SLACK_MS = 300
 
 if TYPE_CHECKING:
@@ -1730,8 +1731,15 @@ class AirPlayStreamSession:
             (p.stream.warm_lead_ms for p in self.sync_clients if p.stream is not None),
             default=0,
         )
+        # every warm start has this lead, also where the receivers queue less (or nothing: RAOP)
+        start_lead_ms = (
+            AIRPLAY_START_LEAD_MS
+            if len(self._audible_clients) == 1
+            else AIRPLAY_GROUP_START_LEAD_MS
+        )
         now_ms = int(cli_clock_time(self.mass.timeline_clock) * 1000)
-        excess_ms = self._anchor_start_unix_ms(warm=True) - now_ms - warm_lead_ms
+        anchor_ms = self._anchor_start_unix_ms(warm=True)
+        excess_ms = anchor_ms - now_ms - max(warm_lead_ms, start_lead_ms)
         if excess_ms <= LIVE_ANCHOR_SLACK_MS:
             return 0
         await asyncio.sleep(excess_ms / 1000)
