@@ -1978,8 +1978,14 @@ class SonosPlayer(PlayerProtocol):
 
         :param group: The group, as this player's connection reports it.
         """
-        current_item = group.playback_metadata.get("currentItem")
-        if not current_item or not (wire_item_id := current_item.get("id")):
+        # the status names the item right after a load or a change of track, the metadata only
+        # seconds later; a status id without the generation of our current load is no item of
+        # ours (another source or server, or a replaced load), so the metadata decides then
+        wire_item_id = group.playback_item_id
+        if not wire_item_id or "@" not in wire_item_id or not self.from_current_load(wire_item_id):
+            current_item = group.playback_metadata.get("currentItem")
+            wire_item_id = current_item.get("id") if current_item else None
+        if not wire_item_id:
             return False
         return self.is_served_as_file(self.served_item_id(wire_item_id))
 
