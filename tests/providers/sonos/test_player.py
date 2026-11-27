@@ -1803,6 +1803,94 @@ async def test_pause_pauses_a_speaker_only_in_a_track_it_gets_as_a_file(
         group.pause.assert_not_awaited()
 
 
+def _speaker_to_pause(
+    status_item_id: str | None, metadata_item_id: str | None, file_item_ids: set[str]
+) -> tuple[SonosPlayer, MagicMock]:
+    """
+    Return a speaker playing our cloud queue of load generation 7, and its group.
+
+    :param status_item_id: The item the group's playback status names.
+    :param metadata_item_id: The item the group's playback metadata names.
+    :param file_item_ids: The queue items served to the speaker as a file.
+    """
+    player, mass, client = _connected_player()
+    client.player.is_passive = False
+    group = client.player.group
+    group.stop = AsyncMock()
+    group.pause = AsyncMock()
+    group.playback_actions.can_pause = True
+    group.playback_item_id = status_item_id
+    group.playback_metadata = (
+        {"currentItem": {"id": metadata_item_id, "track": {"name": "Shout"}}}
+        if metadata_item_id
+        else {}
+    )
+    player._player = MagicMock(spec=Player)
+    player._player.active_source = "pl0123456789ab"
+    player._player.stop_called = False
+    player.cloud_queue_id = "pl0123456789ab"
+    player.cloud_queue_item_generation = 7
+    player._config = MagicMock()
+    player._config.get_value.return_value = "lossless_uncompressed"
+    mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: MagicMock(
+        queue_item_id=item_id
+    )
+    mass.streams.serves_as_file.side_effect = lambda _player, queue_item, _codec: (
+        queue_item.queue_item_id in file_item_ids
+    )
+    return player, group
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_item_id", "metadata_item_id", "file_item_ids", "pauses"),
+    [
+        pytest.param("abc@7", None, {"abc"}, True, id="right after a load"),
+        pytest.param("def@7", "abc@7", {"def"}, True, id="right after a change of track"),
+        pytest.param(None, "abc@7", {"abc"}, True, id="status names no item"),
+        pytest.param("abc@7", None, set(), False, id="item not served as a file"),
+        pytest.param("abc@3", None, {"abc"}, False, id="status item of another load"),
+        pytest.param("abc", None, {"abc"}, False, id="status item without a generation"),
+        pytest.param("abc@6", "abc@6", {"abc"}, False, id="load in flight"),
+    ],
+)
+async def test_pause_follows_the_item_the_playback_status_names(
+    status_item_id: str | None, metadata_item_id: str | None, file_item_ids: set[str], pauses: bool
+) -> None:
+    """
+    Test a pause reads the item the speaker plays from its status, before the metadata names it.
+
+    :param status_item_id: The item the group's playback status names.
+    :param metadata_item_id: The item the group's playback metadata names.
+    :param file_item_ids: The queue items served to the speaker as a file.
+    :param pauses: Whether the speaker is paused rather than stopped.
+    """
+    player, group = _speaker_to_pause(status_item_id, metadata_item_id, file_item_ids)
+
+    await player.pause()
+
+    if pauses:
+        group.pause.assert_awaited_once()
+        group.stop.assert_not_awaited()
+    else:
+        group.stop.assert_awaited_once()
+        group.pause.assert_not_awaited()
+
+
+def test_a_pause_reported_right_after_a_change_of_track_reads_as_paused() -> None:
+    """Test a pause in a new track served as a file is a pause while the metadata names the old one."""
+    player, group = _speaker_to_pause("def@7", "abc@7", {"def"})
+    client = cast("MagicMock", player.client)
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    _report_playing_our_queue(group, "abc@7")
+    group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
+
+    player.update_attributes()
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+
+
 def test_a_speaker_fetches_files() -> None:
     """Test a speaker asks for a track as a file, where the stream server has one."""
     player, _ = _make_player()
