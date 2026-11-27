@@ -832,9 +832,9 @@ class SonosPlayer(PlayerProtocol):
             self._queue_session_id = None
             self._flow_queue_id = None
             self.cloud_queue_id = media.source_id
-            self.group_queue_id = (
-                media.source_id if self._leads_group_queue(media.source_id) else None
-            )
+            self.group_queue_id = None
+            if self._leads_group_queue(media.source_id):
+                self._claim_group_queue(media.source_id)
 
             def _load_starts(_sonos_session_id: str) -> None:
                 self._loaded_session_id = media.queue_session_id
@@ -2058,6 +2058,14 @@ class SonosPlayer(PlayerProtocol):
             return False
         owner = player.resolve_output_protocol()
         return owner is not None and owner is not self and owner.resolve_output_protocol() is self
+
+    def _claim_group_queue(self, queue_id: str) -> None:
+        """Serve the queue of a group this speaker leads, as the only speaker that does."""
+        # a leader that dropped off the network could not be stopped, and still names the group
+        for speaker in self.provider.protocols:
+            if isinstance(speaker, SonosPlayer) and speaker.group_queue_id == queue_id:
+                speaker.group_queue_id = None
+        self.group_queue_id = queue_id
 
     def _queue_url_id(self) -> str:
         """Return the id the loaded cloud queue and its stream urls are served under."""

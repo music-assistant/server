@@ -48,6 +48,7 @@ def _make_speaker() -> tuple[SonosPlayer, dict[str, MagicMock]]:
     :return: The speaker, and the players by id the queues belong to.
     """
     speaker, _ = _make_player([_make_queue_item(f"track{i}") for i in range(3)])
+    speaker._provider = MagicMock(protocols=[speaker])
     players: dict[str, MagicMock] = {OWN_PLAYER_ID: _player_of(speaker)}
     mass = cast("MagicMock", speaker.mass)
     mass.players.get_player = MagicMock(side_effect=players.get)
@@ -233,6 +234,27 @@ async def test_a_position_report_under_the_group_path_reaches_the_queue(
     assert response.status == 204
     cast("MagicMock", leader.update_elapsed_time).assert_called_once_with(5.0)
     cast("MagicMock", other.update_elapsed_time).assert_not_called()
+
+
+async def test_a_group_path_is_answered_by_the_speaker_that_loaded_its_queue_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test a new leader takes the group's queue over from one that could not be stopped."""
+    lost, _ = _make_speaker()
+    lost.group_queue_id = QUEUE_ID
+    lost.cloud_queue_version = 2.0
+    leader, players = _make_speaker()
+    leader._protocol_id = "sonos_leader"
+    speakers = [lost, leader]
+    leader._provider = MagicMock(protocols=speakers)
+    monkeypatch.setattr(SonosPlayerProvider, "protocols", property(lambda _self: speakers))
+
+    await _lead_the_group(leader, players)
+
+    assert [speaker.group_queue_id for speaker in speakers] == [None, QUEUE_ID]
+    response = await _make_cloud_queue().handle_request(_request(QUEUE_ID, "version"))
+    assert json.loads(response.text or "{}")["queueVersion"] == str(leader.cloud_queue_version)
+    assert leader.cloud_queue_version != lost.cloud_queue_version
 
 
 async def test_a_group_path_no_speaker_serves_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
