@@ -362,7 +362,7 @@ class _Household:
         _set_playback_quality(speaker, playback_quality)
         streams = cast("MagicMock", speaker.mass).streams
         streams.resolve_stream_url = AsyncMock(
-            side_effect=lambda url_id, _media, queue_index: f"{url_id}/{queue_index}"
+            side_effect=lambda url_id, _media, queue_index=None: f"{url_id}/{queue_index}"
         )
         self.mass.streams = streams
         self.mass.player_queues = streams.mass.player_queues = self.queues
@@ -550,6 +550,19 @@ async def test_a_leader_that_steps_out_hands_its_cloud_queue_to_the_new_coordina
     assert kept["served_bindings"]
     assert _kept(home.kitchen) == CLEAN
     assert home.study.cloud_queue_id is None
+
+
+async def test_the_new_coordinator_forgets_a_flow_stream_it_played_itself(
+    home: _Household,
+) -> None:
+    """Test a speaker that takes a group over answers with the group's queue, not its own stream."""
+    home.bathroom._flow_media = PlayerMedia(uri="http://ma/flow/own.wav", queue_item_id="flow")
+
+    await _step_out(home)
+
+    assert home.bathroom.plays_flow_item is False
+    window = await home.bathroom.build_cloud_queue_window(f"track0@{GENERATION}")
+    assert window.items[0].queue_item_id == "track0"
 
 
 async def test_the_speakers_report_what_they_play_once_the_leader_stepped_out(

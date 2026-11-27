@@ -1293,8 +1293,8 @@ class SonosPlayer(PlayerProtocol):
             self.protocol_id,
             [x.title for x in window.items],
         )
-        window.includes_end |= ends_before_flow
-        return window
+        # the cloud queue ends where a flow stream follows
+        return replace(window, includes_end=True) if ends_before_flow else window
 
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
@@ -2751,6 +2751,7 @@ class SonosPlayer(PlayerProtocol):
         new_coordinator._announcement_media = None
         new_coordinator._evicted_cloud_queue = None
         new_coordinator._flow_queue_id = None
+        new_coordinator._flow_media = None
         # it plays a copy of the playback session, which its own connection does not hold
         new_coordinator._queue_session_id = None
         # it reports what this speaker did until its own connection has read the group
