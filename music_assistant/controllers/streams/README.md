@@ -218,7 +218,7 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 
 An HTTP stream declares no `Content-Length`: it ends when its audio does. Two traits of a player's protocol change that, and neither is a user setting:
 
-- A player that is built around files (`PlayerProtocol.fetches_files`: Sonos speakers and DLNA renderers) gets a track as a file with its real length, see below.
+- A player that is built around files (`PlayerProtocol.fetches_files`: Sonos speakers, DLNA renderers and Cast devices) gets a track as a file with its real length, see below.
 - A player that stops or loops the audio without a length (`PlayerProtocol.requires_content_length`: Bluesound, Samsung WAM and Yandex Station) gets one on every stream that is not a file. A single item declares an estimate from its duration (`get_content_length`). The flow stream, a live source and an item without a duration declare 12 hours of audio, and the stream of a universal group 4 GiB: a length they never reach. An announcement is rendered in full and sent with its real length.
 
 ### A Track as a File
