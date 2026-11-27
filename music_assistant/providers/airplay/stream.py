@@ -220,7 +220,7 @@ class AirPlayStream:
         # transport command, plus a counter of suppressed repeats.
         self._remote_command_last: dict[str, float] = {}
         self._remote_commands_suppressed: int = 0
-        # the last remote seek honored: its target and monotonic time
+        # the last remote seek reported: its target and monotonic time
         self._remote_seek_last: tuple[str, float] = ("", 0.0)
         # Set when the binary reports the first audio bytes of the current
         # start cycle arriving on its stdin ([STATUS] audio). Together with
@@ -1470,12 +1470,13 @@ class AirPlayStream:
             self.player.logger.warning("Ignoring a remote seek without a position")
             return
         # MediaRemote re-sends an unfulfilled command at ~10 Hz (see the storm guard
-        # in _parse_remote_event); a repeat of the same target is not a new scrub
+        # in _parse_remote_event); a repeat of the same target is not a new scrub,
+        # for as long as the repeats keep coming
         now = time.monotonic()
         last_target, last_at = self._remote_seek_last
+        self._remote_seek_last = (position_ms, now)
         if position_ms == last_target and now - last_at < AIRPLAY_REMOTE_SEEK_REPEAT_SECONDS:
             return
-        self._remote_seek_last = (position_ms, now)
         prov = cast("AirPlayProvider", self.prov)
         prov.handle_remote_command(self.player, AirPlayRemoteCommand.SEEK, int(position_ms))
 

@@ -36,7 +36,8 @@ class AirPlayRemoteCommand(StrEnum):
 # How long a scrub on the receiver must settle before its seek is sent on: a
 # drag can report several positions, and only the last one matters.
 AIRPLAY_REMOTE_SEEK_SETTLE_SECONDS: Final[float] = 0.1
-# A receiver re-sending the same seek target within this window is a repeat, not a new scrub.
+# A receiver re-sending the same seek target this soon after it last sent it is a repeat,
+# not a new scrub.
 AIRPLAY_REMOTE_SEEK_REPEAT_SECONDS: Final[float] = 0.5
 
 

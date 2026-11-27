@@ -862,6 +862,25 @@ def test_a_repeated_remote_seek_is_dispatched_once() -> None:
     ]
 
 
+def test_a_remote_seek_that_keeps_repeating_is_dispatched_once() -> None:
+    """A receiver that keeps re-sending a seek target is ignored until it stops."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    # five reports 0.3 s apart, then the same target once more after a pause
+    with patch(
+        "music_assistant.providers.airplay.stream.time.monotonic",
+        side_effect=[10.0, 10.3, 10.6, 10.9, 11.2, 12.0],
+    ):
+        for _ in range(6):
+            stream._parse_remote_event("[EVENT] remote command=seek position_ms=83250")
+
+    assert player.provider.handle_remote_command.call_args_list == [
+        call(player, AirPlayRemoteCommand.SEEK, 83250),
+        call(player, AirPlayRemoteCommand.SEEK, 83250),
+    ]
+
+
 def test_command_pipe_paths_are_unique_per_stream() -> None:
     """A stopped stream cannot remove a replacement stream's command pipe."""
     player = _make_player()
