@@ -928,6 +928,103 @@ async def test_two_speakers_read_a_mixed_track_beside_each_other(
     assert rig.mixes.await_count == 2
 
 
+THIRD_ADDRESS = "192.168.1.22"
+
+
+async def test_a_speaker_that_asks_for_a_part_that_was_not_sent_takes_a_mixed_track_over(
+    middle: tuple[_Rig, bytes],
+) -> None:
+    """A request past what the file has sent ends the one that drives the pass, and runs its own."""
+    rig, whole = middle
+    start = rig.offset(8.7)
+    first_request, first = rig.request("b", stall_at=rig.offset(1))
+    first_task = _serve(rig, first_request)
+    await first.stalled.wait()
+
+    _, body = await rig.fetch("b", f"bytes={start}-", address=OTHER_ADDRESS)
+
+    first.transport.abort.assert_called_once()
+    first.resume.set()
+    await first_task
+    assert body == whole[start:]
+    assert rig.passes[2:] == [PASS_FROM_MS]
+    assert rig.ctrl._active_output_streams == 0
+
+
+async def test_a_speaker_takes_a_mixed_track_over_while_the_fade_into_it_is_made(
+    middle: tuple[_Rig, bytes],
+) -> None:
+    """The fade into the track is kept for the request that takes it over, which runs its own pass."""
+    rig, whole = middle
+    made = asyncio.Event()
+    handover = rig.audio._crossfade_handover[QUEUE_ID]
+    fade = handover.stream
+    assert fade is not None
+
+    async def _held() -> AsyncGenerator[bytes]:
+        async with aclosing(fade):
+            await made.wait()
+            async for chunk in fade:
+                yield chunk
+
+    handover.stream = _held()
+    start = rig.offset(5)
+    first_request, first = rig.request("b")
+    first_task = _serve(rig, first_request)
+    await asyncio.sleep(0.01)
+    second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await asyncio.sleep(0.01)
+
+    first.transport.abort.assert_called_once()
+    made.set()
+    await asyncio.wait_for(asyncio.gather(first_task, second_task), 2)
+    assert bytes(second.body) == whole[start:]
+    assert rig.passes[2:] == [6000]
+    assert rig.mixes.await_count == 2
+
+
+@pytest.mark.parametrize("phase", ["a pass that no speaker drives", "the mix into the next track"])
+async def test_a_speaker_takes_a_mixed_track_over_while_its_end_is_made(
+    middle: tuple[_Rig, bytes], phase: str
+) -> None:
+    """The end that is being made for speakers that are ended is the end of the one that took over."""
+    rig, whole = middle
+    held = asyncio.Event()
+    if phase == "a pass that no speaker drives":
+        # two speakers wait for the pass that reads the last seconds of the track
+        _hold_track(rig, PASS_FROM_MS, held)
+        stands_at, waits_at = 1.0, PASS_ONLY
+    else:
+        # two speakers wait for the track after it, at the end of what they have
+        _hold_next_track(rig, held)
+        stands_at, waits_at = END, END
+    first_request, first = rig.request("b", stall_at=rig.offset(stands_at))
+    first_task = _serve(rig, first_request)
+    await _until(lambda: first.stalled.is_set() or len(first.body) == rig.offset(END))
+    begin = rig.offset(1)
+    second_request, second = rig.request("b", f"bytes={begin}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await _until(lambda: len(second.body) == rig.offset(waits_at) - begin)
+    await asyncio.sleep(0.05)
+
+    start = rig.offset(END + 2)
+    third_request, third = rig.request("b", f"bytes={start}-", address=THIRD_ADDRESS)
+    third_task = _serve(rig, third_request)
+    await asyncio.sleep(0.05)
+    first.transport.abort.assert_called_once()
+    second.transport.abort.assert_called_once()
+    first.resume.set()
+    held.set()
+    await asyncio.wait_for(asyncio.gather(first_task, second_task, third_task), 2)
+
+    assert bytes(third.body) == whole[start:]
+    # no pass of its own: the one that ran made the end for it
+    assert len(rig.passes) == (3 if phase == "a pass that no speaker drives" else 2)
+    assert rig.mixes.await_count == 2
+    assert rig.ctrl._active_output_streams == 0
+
+
 async def test_two_speakers_wait_for_the_fade_into_a_track(middle: tuple[_Rig, bytes]) -> None:
     """The fade into a track is made once, for every speaker that asks for its start."""
     rig, whole = middle

@@ -426,6 +426,97 @@ def test_the_start_that_is_kept_ends_at_one_megabyte() -> None:
     assert head.endswith(b"a" + b"b" * 56)
 
 
+@pytest.mark.parametrize(
+    ("asked", "reads_beside"), [(100, True), (150, True), (200, True), (99, False), (201, False)]
+)
+def test_a_player_reads_beside_another_one_from_what_the_file_has_sent(
+    asked: int, reads_beside: bool
+) -> None:
+    """A request from another address for a part that was not sent takes the file over."""
+    file = _file()
+    reading = MagicMock(remote=PLAYER_ADDRESS)
+    file.add_reader(reading, 100)
+    file.sent_up_to(200)
+
+    other = MagicMock(remote=OTHER_ADDRESS)
+    file.add_reader(other, asked)
+
+    assert reading.transport.abort.called is not reads_beside
+    other.transport.abort.assert_not_called()
+
+
+def test_what_a_file_has_sent_starts_again_where_a_request_takes_it_over() -> None:
+    """After a player seeks, the part it read before is no place to read beside it."""
+    file = _file()
+    file.add_reader(MagicMock(remote=PLAYER_ADDRESS), 100)
+    file.sent_up_to(200)
+    seeking = MagicMock(remote=PLAYER_ADDRESS)
+    file.add_reader(seeking, 5000)
+    file.sent_up_to(6000)
+
+    file.add_reader(MagicMock(remote=OTHER_ADDRESS), 150)
+
+    seeking.transport.abort.assert_called_once()
+
+
+def test_a_player_that_a_take_over_ended_takes_the_file_back_with_what_it_had_sent() -> None:
+    """A request in what a file had sent before a take-over goes on from that, and ends the rest."""
+    third_address = "192.168.1.22"
+    file = _file()
+    file.add_reader(MagicMock(remote=PLAYER_ADDRESS), 100)
+    file.sent_up_to(200)
+    took_over = MagicMock(remote=OTHER_ADDRESS)
+    file.add_reader(took_over, 5000)
+    file.sent_up_to(6000)
+
+    back = MagicMock(remote=PLAYER_ADDRESS)
+    file.add_reader(back, 200)
+    # another player reads beside it, in what was sent before the take-over
+    file.add_reader(MagicMock(remote=third_address), 150)
+
+    took_over.transport.abort.assert_called_once()
+    back.transport.abort.assert_not_called()
+    # what the take-over had sent is kept in turn, for the player that is ended now
+    again = MagicMock(remote=OTHER_ADDRESS)
+    file.add_reader(again, 5500)
+    back.transport.abort.assert_called_once()
+    file.add_reader(MagicMock(remote=third_address), 5900)
+    again.transport.abort.assert_not_called()
+
+
+def test_a_file_keeps_only_what_it_had_sent_before_the_last_take_over() -> None:
+    """What was sent two take-overs ago is sent no more: a request there starts again."""
+    file = _file()
+    file.add_reader(MagicMock(remote=PLAYER_ADDRESS), 100)
+    file.sent_up_to(200)
+    file.add_reader(MagicMock(remote=OTHER_ADDRESS), 5000)
+    file.add_reader(MagicMock(remote="192.168.1.22"), 9000)
+
+    returned = MagicMock(remote=PLAYER_ADDRESS)
+    file.add_reader(returned, 150)
+    file.add_reader(MagicMock(remote=OTHER_ADDRESS), 190)
+
+    returned.transport.abort.assert_called_once()
+
+
+def test_a_player_that_asks_again_in_what_was_sent_ends_only_its_own_encode() -> None:
+    """A player that reads behind the others moves nothing, and asks again without ending them."""
+    file = _file()
+    reading, other = MagicMock(remote=PLAYER_ADDRESS), MagicMock(remote=OTHER_ADDRESS)
+    file.add_reader(reading, 100)
+    file.sent_up_to(500)
+    file.add_reader(other, 100)
+    file.sent_up_to(150)
+
+    # for the last byte the file has sent, which the player that read behind never got to
+    again = MagicMock(remote=OTHER_ADDRESS)
+    file.add_reader(again, 500)
+
+    other.transport.abort.assert_called_once()
+    reading.transport.abort.assert_not_called()
+    assert file.readers == {PLAYER_ADDRESS: reading, OTHER_ADDRESS: again}
+
+
 def test_a_file_hands_out_thirty_seconds_of_head_start_six_per_encode() -> None:
     """The first five encodes of a file that hand out audio get six seconds, the ones after none."""
     file = _file()
@@ -454,7 +545,7 @@ def test_an_encode_that_ends_without_audio_gives_its_head_start_back() -> None:
     """A player that drops its request before it gets any audio costs the file nothing."""
     file = _file()
     leaving = MagicMock(remote=OTHER_ADDRESS)
-    file.add_reader(leaving)
+    file.add_reader(leaving, 0)
     for _ in range(3):
         file.take_head_start(OTHER_ADDRESS)
     file.remove_reader(leaving)
@@ -473,7 +564,7 @@ def test_an_encode_keeps_its_head_start_while_another_address_takes_one() -> Non
     assert file.take_head_start(PLAYER_ADDRESS) == 6
     for _ in range(4):
         other = MagicMock(remote=OTHER_ADDRESS)
-        file.add_reader(other)
+        file.add_reader(other, 0)
         assert file.take_head_start(OTHER_ADDRESS) == 6
         file.remove_reader(other)
     # the head start of the first player went out with its audio, after the other left
@@ -547,7 +638,7 @@ def test_a_file_that_a_player_reads_keeps_its_place() -> None:
     files = FileStreams()
     keys = [FileKey("s1", "q1", f"item{index}", 0) for index in range(4)]
     playing = _file()
-    playing.add_reader(MagicMock(remote=PLAYER_ADDRESS))
+    playing.add_reader(MagicMock(remote=PLAYER_ADDRESS), 0)
     files.add("player1", keys[0], playing)
     for key in keys[1:3]:
         files.add("player1", key, _file())

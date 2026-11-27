@@ -223,6 +223,11 @@ class FileStream:
         self._head_start_held: dict[str | None, int] = {}
         # the request an encode of this file runs for, by the address it comes from
         self.readers: dict[str | None, web.Request] = {}
+        # the offsets the file has sent in one go since a request last took it over: from
+        # where that request started up to the furthest byte handed to a player since
+        self._sent: range | None = None
+        # what it had sent when that request took it over
+        self._sent_before: range | None = None
         # the stream the file is cut from, for a track that is mixed with its neighbours
         self.mix: MixedTrack | None = None
 
@@ -252,21 +257,46 @@ class FileStream:
         if offset == len(self._head) < HEAD_SIZE:
             self._head += data[: HEAD_SIZE - offset]
 
-    def add_reader(self, request: web.Request) -> None:
+    def add_reader(self, request: web.Request, offset: int) -> None:
         """
         Let an encode of the file run for a request, which ends the one of its address.
 
-        A request from another address is another player, which reads beside it.
+        A request from another address is another player. It reads beside the encodes that
+        run when its part starts in what the file has sent since a request last took it
+        over: it gets audio that left before, and then runs along. A request for any other
+        part takes the file over, which ends every encode that runs. When that part starts
+        in what the file had sent before the last take-over, it goes on from that.
 
         :param request: The request the encode runs for.
+        :param offset: Offset in the file of the first byte the encode delivers.
         """
+        # audio that was not sent yet only leaves through the encodes that read on from what
+        # was, at playback pace: no two addresses read different parts of a track at once.
+        # See the usage policy
+        takes_over = self._sent is None or offset not in self._sent
+        if takes_over and self._sent_before is not None and offset in self._sent_before:
+            # a player that a take-over ended asks again for where it was. One of the two
+            # counts as sent at a time, so the pace holds
+            self._sent, self._sent_before = self._sent_before, self._sent
+        elif takes_over:
+            self._sent, self._sent_before = range(offset, offset + 1), self._sent
         # a player that asks for another part has left the one it was reading. Aborted
         # rather than closed, as a graceful close waits for the very send buffer the player
         # stopped reading
-        running = self.readers.get(request.remote)
-        if running is not None and (transport := running.transport) is not None:
-            transport.abort()
+        for address, running in self.readers.items():
+            if (takes_over or address == request.remote) and running.transport is not None:
+                running.transport.abort()
         self.readers[request.remote] = request
+
+    def sent_up_to(self, offset: int) -> None:
+        """
+        Take note of how far an encode that runs has got.
+
+        :param offset: Offset in the file up to where its bytes were handed to its player.
+        """
+        assert self._sent is not None
+        # a player asks again for the byte after the last one it got
+        self._sent = range(self._sent.start, max(self._sent.stop, offset + 1))
 
     def remove_reader(self, request: web.Request) -> None:
         """
