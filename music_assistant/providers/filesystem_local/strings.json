@@ -34,19 +34,19 @@
     },
     "library_sync_tracks": {
       "label": "Import tracks/files into the Music Assistant library",
-      "description": "Define how/if you want to import tracks/files from the filesystem into the Music Assistant Library. \nWhen not importing into the library, they can still be manually browsed using the Browse feature. \n\nPlease note that by adding a Track into the Music Assistant library, the track artists and album will always be imported as well."
+      "description": "Define how/if you want to import tracks/files from the filesystem into the Music Assistant library. \nWhen not importing into the library, they can still be manually browsed using the Browse feature. \n\nPlease note that by adding a track into the Music Assistant library, the track artists and album will always be imported as well."
     },
     "library_sync_playlists": {
       "label": "Import playlists (m3u files) into the Music Assistant library",
-      "description": "Define how/if you want to import playlists (m3u files) from the filesystem into the Music Assistant Library. \nWhen not importing into the library, they can still be manually browsed using the Browse feature."
+      "description": "Define how/if you want to import playlists (m3u files) from the filesystem into the Music Assistant library. \nWhen not importing into the library, they can still be manually browsed using the Browse feature."
     },
     "library_sync_podcasts": {
-      "label": "Import Podcasts(files) into the Music Assistant library",
-      "description": "Define how/if you want to import Podcasts(files) from the filesystem into the Music Assistant Library. \nWhen not importing into the library, they can still be manually browsed using the Browse feature."
+      "label": "Import podcast files into the Music Assistant library",
+      "description": "Define how/if you want to import podcast files from the filesystem into the Music Assistant library. \nWhen not importing into the library, they can still be manually browsed using the Browse feature."
     },
     "library_sync_audiobooks": {
-      "label": "Import Audiobooks(files) into the Music Assistant library",
-      "description": "Define how/if you want to import Audiobooks(files) from the filesystem into the Music Assistant Library. \nWhen not importing into the library, they can still be manually browsed using the Browse feature."
+      "label": "Import audiobook files into the Music Assistant library",
+      "description": "Define how/if you want to import audiobook files from the filesystem into the Music Assistant library. \nWhen not importing into the library, they can still be manually browsed using the Browse feature."
     }
   },
   "manifest": {

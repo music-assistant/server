@@ -3,7 +3,7 @@
   "domain": "builtin",
   "stage": "stable",
   "name": "Music Assistant",
-  "description": "Built-in/generic provider that handles generic URLs and playlists.",
+  "description": "Plays the tracks and radio stations you add by URL, keeps the playlists you create in Music Assistant and offers built-in playlists such as Infinite Mix.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/builtin/",

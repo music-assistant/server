@@ -58,7 +58,7 @@ BUILTIN_PLAYLISTS_ENTRIES = [
         type=ConfigEntryType.BOOLEAN,
         label=name,
         default_value=True,
-        category="generic",
+        category="builtin_playlists",
     )
     for key, name in BUILTIN_PLAYLISTS.items()
 ]
