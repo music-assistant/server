@@ -1096,6 +1096,40 @@ class TestDynamicLeaderSwitch:
             player_ids_to_add=["sonos_study"]
         )
         _member_changes(_protocol(study, "sonos")).assert_not_awaited()
+        # the member that leads plays on its own protocol, the one that was picked does not
+        mass.players._activate_output_protocol.assert_awaited_with(bathroom, "sonos_bathroom")
+        mass.players.schedule_active_output_protocol_clear.assert_any_call(study)
+
+    @pytest.mark.parametrize("active_output", [None, "sonos"])
+    async def test_a_member_that_takes_over_as_leader_plays_on_the_protocol_of_the_session(
+        self, active_output: str | None
+    ) -> None:
+        """
+        The output of the new leader is marked active, as that of a leader that was played on.
+
+        A member that follows its leader on its own protocol has no active output, and a
+        command that needs one, such as a pause, would stop it instead.
+
+        :param active_output: Domain of the output the new leader has as its active one.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        old_leader = _make_member(mass, "old_leader", "sonos", active_output="sonos")
+        member = _make_member(mass, "member", "sonos", active_output=active_output)
+        session = _protocol(old_leader, "sonos")
+        session._attr_group_members = ["sonos_old_leader", "sonos_member"]
+        session.set_members = AsyncMock()  # type: ignore[method-assign]
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "member"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader is member
+        if active_output is None:
+            mass.players._activate_output_protocol.assert_awaited_once_with(member, "sonos_member")
+        else:
+            mass.players._activate_output_protocol.assert_not_awaited()
 
     @pytest.mark.parametrize("domain", HANDOVER_DOMAINS)
     async def test_dynamic_leader_switch_keeps_the_member_it_picked(self, domain: str) -> None:
@@ -1842,6 +1876,45 @@ def _controller_with_a_sync_group(
         player.refresh_state(signal_event=False)
     group.update_state = MagicMock()  # type: ignore[method-assign,misc]
     return players, group, leader, member
+
+
+class TestPauseAfterAChangeOfLeader:
+    """A group whose leader was changed while it played is paused, not stopped."""
+
+    async def test_a_pause_reaches_the_member_that_took_over_as_leader(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pause of the group goes to the protocol of its new leader as a pause."""
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+        group_id = _group_id(group)
+        queue = PlayerQueue(
+            queue_id=group_id, active=True, display_name="Test Group", available=True, items=3
+        )
+        cast("MagicMock", players.mass).player_queues.get = MagicMock(
+            side_effect=lambda queue_id: queue if queue_id == group_id else None
+        )
+        monkeypatch.setattr(players, "get_player_audio_source", lambda _player_id: None)
+        for player in (leader, member):
+            protocol = _protocol(player, "sonos")
+            protocol._attr_supported_features = {*MEMBER_FEATURES, PlayerFeature.PAUSE}
+            protocol._attr_playback_state = PlaybackState.PLAYING
+            for command in ("set_members", "pause", "stop"):
+                setattr(protocol, command, AsyncMock())
+        session = _protocol(leader, "sonos")
+        session._attr_group_members = ["sonos_L", "sonos_B"]
+        leader.set_active_output_protocol("native")
+        group.sync_leader = leader
+
+        await group._dynamic_leader_switch("L")
+        group._update_attributes()
+        for refreshed in (group.player, leader, member):
+            assert refreshed is not None
+            refreshed.refresh_state(signal_event=False)
+        await players._handle_cmd_pause(group_id)
+
+        assert group.sync_leader is member
+        cast("AsyncMock", _protocol(member, "sonos").pause).assert_awaited_once()
+        cast("AsyncMock", _protocol(member, "sonos").stop).assert_not_awaited()
 
 
 class TestFormationAndACommandOnItsLeader:

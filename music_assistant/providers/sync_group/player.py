@@ -1747,6 +1747,8 @@ class SyncGroupPlayer(PlayerProtocol):
                     self.display_name,
                     new_leader.name,
                 )
+                # the member that was picked plays nothing itself
+                self.mass.players.schedule_active_output_protocol_clear(new_leader)
                 new_leader = holder
                 new_target = await self._lead_session(holder, session_domain)
                 remaining_protocol_ids = self._session_member_ids(
@@ -1924,8 +1926,12 @@ class SyncGroupPlayer(PlayerProtocol):
             *[x for x in self._attr_group_members if x != leader.player_id],
         ]
         target = self._resolve_session_target(leader, domain)
-        if target is not None and leader.resolve_output_protocol() is not target:
-            # a member that was put back into the session does not have it as its output
+        if target is not None and (
+            leader.active_output_protocol is None or leader.resolve_output_protocol() is not target
+        ):
+            # a member that was put back into the session does not have it as its output, and
+            # neither does one that followed its leader on its own protocol: without an
+            # active output, a pause of the group would stop it
             await self.mass.players._activate_output_protocol(leader, target.protocol_id)
         return target
 
