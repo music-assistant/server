@@ -28,6 +28,7 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
+    PlaybackQuality,
 )
 from music_assistant.controllers.streams.constants import REALTIME_BURST
 from music_assistant.providers.squeezelite.constants import (
@@ -67,6 +68,13 @@ async def test_squeezelite_prefers_wav_for_live_sources_by_default() -> None:
     assert (
         entry.default_value == CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED.default_value
     )
+
+
+def test_a_player_defaults_to_lossless_uncompressed() -> None:
+    """A player the user picked no playback quality for is streamed lossless, uncompressed."""
+    player = SqueezelitePlayer.__new__(SqueezelitePlayer)
+
+    assert player.default_playback_quality is PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
 
 def _player_with_mocked_mass() -> tuple[SqueezelitePlayer, MagicMock]:

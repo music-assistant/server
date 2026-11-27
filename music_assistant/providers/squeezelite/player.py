@@ -26,6 +26,7 @@ from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_ENTRY_SYNC_ADJUST,
     VERBOSE_LOG_LEVEL,
+    PlaybackQuality,
 )
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.models.player import DeviceInfo, PlayerMedia
@@ -120,6 +121,11 @@ class SqueezelitePlayer(PlayerProtocol):
             if sr <= max_sr
             for bd in (16, 24)
         ]
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
