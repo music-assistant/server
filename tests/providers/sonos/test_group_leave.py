@@ -107,6 +107,7 @@ class _Household:
         player._attr_name = player_id
         player.connected = True
         player._airplay_rejoin_members = set()
+        player._stepping_out = False
         player.client = self._client(player_id)
         player.update_attributes = MagicMock()  # type: ignore[method-assign]
         player.update_state = MagicMock()  # type: ignore[method-assign, misc]

@@ -187,6 +187,8 @@ class _Household:
         player._airplay_rejoin_members = set()
         player.cloud_queue_id = None
         player.group_queue_id = None
+        player._stepping_out = False
+        player._taken_over_item_id = None
         player._flow_queue_id = None
         player.client = self._client(player_id)
         player.update_attributes = MagicMock()  # type: ignore[method-assign]
