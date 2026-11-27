@@ -434,6 +434,7 @@ class AlexaPlayer(PlayerProtocol):
             "artist": media.artist,
             "album": media.album,
             "imageUrl": media.image_url,
+            **self._track_timing(media),
         }
 
         async with self._skill_request_lock:
@@ -506,7 +507,9 @@ class AlexaPlayer(PlayerProtocol):
             else:
                 return
 
-            meta_checksum = f"{stream_url}-{album}-{artist}-{title}-{image_url}"
+            meta_checksum = (
+                f"{stream_url}-{album}-{artist}-{title}-{image_url}-{media.queue_item_id}"
+            )
             if meta_checksum == self._last_meta_checksum:
                 return
 
@@ -516,6 +519,9 @@ class AlexaPlayer(PlayerProtocol):
                 "artist": artist,
                 "album": album,
                 "imageUrl": image_url,
+                # Lets a skill driving several Echos update the right one.
+                "playerId": self._skill_player_id,
+                **self._track_timing(media),
             }
 
             await api_request(
@@ -697,6 +703,31 @@ class AlexaPlayer(PlayerProtocol):
         self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
         self._attr_volume_level = volume
         self.update_state()
+
+    def _track_timing(self, media: PlayerMedia) -> dict[str, Any]:
+        """
+        Return the queue item, duration and elapsed time of the media, for the skill to show.
+
+        :param media: The media the skill is told about.
+        """
+        # In flow mode the Echo plays one endless stream: the skill can't read a track's
+        # duration or position from it, so MA tells it.
+        timing: dict[str, Any] = {}
+        if media.queue_item_id:
+            timing["queueItemId"] = media.queue_item_id
+        if media.duration:
+            timing["durationMs"] = int(media.duration * 1000)
+        queue = self.mass.player_queues.get_active_queue(self._skill_player_id)
+        # The queue's elapsed time describes its current item, so only for that item.
+        if (
+            media.queue_item_id
+            and queue is not None
+            and queue.current_item is not None
+            and queue.current_item.queue_item_id == media.queue_item_id
+            and (elapsed := queue.corrected_elapsed_time) is not None
+        ):
+            timing["elapsedMs"] = int(elapsed * 1000)
+        return timing
 
     @property
     def _skill_player_id(self) -> str:
