@@ -1262,12 +1262,11 @@ class StreamsController(CoreController):
                 if queue_item.media_type != MediaType.TRACK
                 else DLNA_CONTENT_FEATURES
             )
-            # a radio or live item carries its titles in the stream for a player that asks
+            # a radio or live item carries its titles in the stream for a player that shows them
             icy = (
-                self._icy_framing(
-                    request, player_id, lambda: queue_item, by_default=player.shows_stream_titles
-                )
-                if queue_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
+                self._icy_framing(request, lambda: queue_item, full=False)
+                if player.shows_stream_titles
+                and queue_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
                 else None
             )
             headers = {
@@ -1755,9 +1754,18 @@ class StreamsController(CoreController):
             ),
         )
         # work out ICY metadata support
+        icy_preference = self.mass.config.get_protocol_value(
+            player_id,
+            CONF_ENTRY_ENABLE_ICY_METADATA.key,
+            CONF_ENTRY_ENABLE_ICY_METADATA.default_value,
+        )
         # use current item here and not buffered item, otherwise
         # the icy metadata will be too much ahead
-        icy = self._icy_framing(request, player_id, lambda: queue.current_item)
+        icy = (
+            self._icy_framing(request, lambda: queue.current_item, full=icy_preference == "full")
+            if icy_preference != "disabled"
+            else None
+        )
 
         # prepare request, add some DLNA/UPNP compatible headers.
         # icy-name (in DEFAULT_STREAM_HEADERS) is always present so players have a
@@ -3142,31 +3150,20 @@ class StreamsController(CoreController):
     def _icy_framing(
         self,
         request: web.Request,
-        player_id: str,
         current_item: Callable[[], QueueItem | None],
         *,
-        by_default: bool = False,
+        full: bool,
     ) -> _IcyFraming | None:
         """
-        Return the ICY framing of a stream, None for a stream that carries no metadata.
-
-        A stream carries it when the player asks for it and its ICY setting is not disabled.
+        Return the ICY framing of a stream, None when the player does not ask for metadata.
 
         :param request: The stream request.
-        :param player_id: The (protocol) player the stream is for.
         :param current_item: Returns the item the stream plays at the moment it is called.
-        :param by_default: Whether the stream carries it with the ICY setting disabled too.
+        :param full: Whether to add the image of the item.
         """
-        icy_preference = self.mass.config.get_protocol_value(
-            player_id,
-            CONF_ENTRY_ENABLE_ICY_METADATA.key,
-            CONF_ENTRY_ENABLE_ICY_METADATA.default_value,
-        )
         if request.headers.get("Icy-MetaData", "") != "1":
             return None
-        if icy_preference == "disabled" and not by_default:
-            return None
-        return _IcyFraming(self.audio_analysis, current_item, full=icy_preference == "full")
+        return _IcyFraming(self.audio_analysis, current_item, full=full)
 
     def _get_flow_start_item(self, queue: PlayerQueue, queue_item_id: str) -> QueueItem | None:
         """

@@ -1,9 +1,9 @@
 """
-Tests for the titles a single item stream carries for a player that asks for them.
+Tests for the titles a single item stream carries for a player that shows them.
 
 A radio station or live source is one stream without an end, so a player can only learn
-what plays from metadata inside the stream (ICY), as it does for a queue in flow mode.
-The ICY setting of the player switches it on, and so does a player that shows such titles.
+what plays from metadata inside the stream (ICY). A player kind that shows such titles gets
+them; the ICY setting of a player only applies to a queue in flow mode.
 """
 
 from __future__ import annotations
@@ -97,20 +97,13 @@ async def _serve_item(
 
 
 @pytest.mark.parametrize("media_type", [MediaType.RADIO, MediaType.AUDIO_SOURCE])
-@pytest.mark.parametrize(
-    ("icy_setting", "shows_stream_titles"),
-    [("basic", False), ("disabled", True)],
-    ids=["by_the_setting", "by_the_player"],
-)
-async def test_an_item_without_an_end_carries_its_titles_for_a_player_that_asks(
-    monkeypatch: pytest.MonkeyPatch,
-    media_type: MediaType,
-    icy_setting: str,
-    shows_stream_titles: bool,
+@pytest.mark.parametrize("icy_setting", ["disabled", "full"])
+async def test_an_item_without_an_end_carries_its_titles_for_a_player_that_shows_them(
+    monkeypatch: pytest.MonkeyPatch, media_type: MediaType, icy_setting: str
 ) -> None:
-    """The title of what the item plays is framed into its stream at the announced interval."""
+    """The title of what the item plays is framed in, without the image, whatever the setting."""
     response = await _serve_item(
-        monkeypatch, media_type, icy_setting=icy_setting, shows_stream_titles=shows_stream_titles
+        monkeypatch, media_type, icy_setting=icy_setting, shows_stream_titles=True
     )
 
     assert response.headers["icy-metaint"] == str(BASIC_INTERVAL)
@@ -121,25 +114,15 @@ async def test_an_item_without_an_end_carries_its_titles_for_a_player_that_asks(
     assert response.body == AUDIO[:BASIC_INTERVAL] + block + AUDIO[BASIC_INTERVAL:]
 
 
-async def test_the_profile_with_the_image_is_only_picked_by_the_setting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A player that shows titles gets the image too once its setting asks for it."""
-    response = await _serve_item(
-        monkeypatch, MediaType.RADIO, icy_setting="full", shows_stream_titles=True
-    )
-
-    assert response.headers["icy-metaint"] == str(FULL_INTERVAL)
-
-
 @pytest.mark.parametrize(
     ("media_type", "icy_setting", "shows_stream_titles", "asks_for_metadata"),
     [
         (MediaType.TRACK, "basic", True, True),
-        (MediaType.RADIO, "disabled", False, True),
+        (MediaType.RADIO, "basic", False, True),
+        (MediaType.RADIO, "full", False, True),
         (MediaType.RADIO, "basic", True, False),
     ],
-    ids=["a_track", "setting_disabled", "player_does_not_ask"],
+    ids=["a_track", "setting_basic", "setting_full", "player_does_not_ask"],
 )
 async def test_a_stream_without_titles_is_the_audio_alone(
     monkeypatch: pytest.MonkeyPatch,
@@ -148,7 +131,7 @@ async def test_a_stream_without_titles_is_the_audio_alone(
     shows_stream_titles: bool,
     asks_for_metadata: bool,
 ) -> None:
-    """A track, a player with neither the setting nor the titles and one that does not ask."""
+    """A track, a player that shows no titles (whatever its setting) and one that does not ask."""
     response = await _serve_item(
         monkeypatch,
         media_type,
@@ -162,9 +145,15 @@ async def test_a_stream_without_titles_is_the_audio_alone(
 
 
 @pytest.mark.parametrize("shows_stream_titles", [True, False])
-@pytest.mark.parametrize("icy_setting", ["disabled", "basic"])
+@pytest.mark.parametrize(
+    ("icy_setting", "interval"),
+    [("disabled", None), ("basic", BASIC_INTERVAL), ("full", FULL_INTERVAL)],
+)
 async def test_a_flow_stream_follows_the_setting_alone(
-    monkeypatch: pytest.MonkeyPatch, icy_setting: str, shows_stream_titles: bool
+    monkeypatch: pytest.MonkeyPatch,
+    icy_setting: str,
+    interval: int | None,
+    shows_stream_titles: bool,
 ) -> None:
     """A queue in flow mode carries titles by the ICY setting, whatever the player shows."""
     controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
@@ -174,22 +163,23 @@ async def test_a_flow_stream_follows_the_setting_alone(
     protocol = controller.mass.players.get_output_protocol.return_value
     protocol.shows_stream_titles = shows_stream_titles
     request.headers = {"Icy-MetaData": "1"}
-    written = b""
 
     async def _encoded_audio(**_kwargs: Any) -> AsyncGenerator[bytes]:
         yield AUDIO
 
-    async def _record(_self: Any, chunk: bytes) -> None:
-        nonlocal written
-        written += chunk
-
     monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _encoded_audio)
-    monkeypatch.setattr(_FakeStreamResponse, "write", _record)
+    monkeypatch.setattr(
+        controller_mod,
+        "web",
+        SimpleNamespace(StreamResponse=_RecordingStreamResponse, HTTPNotFound=web.HTTPNotFound),
+    )
 
-    await controller.serve_queue_flow_stream(request)
+    response = await controller.serve_queue_flow_stream(request)
 
-    if icy_setting == "disabled":
-        assert written == AUDIO
-    else:
+    assert response.headers.get("icy-metaint") == (str(interval) if interval else None)
+    if interval == BASIC_INTERVAL:
         block = bytes([2]) + b"StreamTitle='Track';".ljust(32, b"\x00")
-        assert written == AUDIO[:BASIC_INTERVAL] + block + AUDIO[BASIC_INTERVAL:]
+        assert response.body == AUDIO[:BASIC_INTERVAL] + block + AUDIO[BASIC_INTERVAL:]
+    else:
+        # the interval of the profile with the image lies past this audio
+        assert response.body == AUDIO

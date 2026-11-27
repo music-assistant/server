@@ -279,8 +279,8 @@ class PlayerProtocol(ABC):
         Return if the player shows the titles sent inside the stream of a radio or live item.
 
         Such a player gets them (as ICY metadata) in the stream of a radio station or live
-        source whenever it asks for them, also with its ICY metadata setting disabled. A
-        queue in flow mode follows that setting alone.
+        source whenever it asks for them. The ICY metadata setting plays no part in that:
+        it only applies to a queue in flow mode.
         """
         return False
 
