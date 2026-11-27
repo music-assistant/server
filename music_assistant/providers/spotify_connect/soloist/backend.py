@@ -954,7 +954,7 @@ class SoloistBackend(SpotifyConnectBackend):
             return self._make_event(BackendEventType.METADATA, metadata=_entity_metadata(data.item))
         if isinstance(data, SoloistPositionSync):
             return self._make_event(
-                BackendEventType.POSITION, position=data.position.position_ms // 1000
+                BackendEventType.POSITION, position=data.position.position_ms / 1000
             )
         if isinstance(data, SoloistErrorMessage):
             return self._make_event(BackendEventType.ERROR, error=data.message)

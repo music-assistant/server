@@ -630,7 +630,7 @@ async def test_track_changed_without_item_is_other() -> None:
 
 
 async def test_position_sync_maps_to_seconds() -> None:
-    """A position_sync event carries the position in whole seconds."""
+    """A position_sync event carries the position in seconds, to the millisecond."""
     backend, events = _make_backend()
 
     await backend._handle_event(
@@ -643,7 +643,7 @@ async def test_position_sync_maps_to_seconds() -> None:
     )
 
     assert events[0].type is BackendEventType.POSITION
-    assert events[0].position == 45
+    assert events[0].position == 45.999
 
 
 async def test_queue_changed_maps_entries() -> None:
