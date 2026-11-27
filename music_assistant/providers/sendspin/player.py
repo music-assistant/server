@@ -515,6 +515,11 @@ class SendspinBasePlayer(PlayerProtocol):
         self._attr_session_only = False
 
     @property
+    def can_hand_over_session(self) -> bool:
+        """Return True: the Sendspin group plays on for its members when its leader leaves."""
+        return True
+
+    @property
     def needs_setup(self) -> bool:
         """
         Whether the device is encrypted but not yet usable for playback.

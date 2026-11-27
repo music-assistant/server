@@ -529,6 +529,21 @@ class PlayerProtocol(ABC):
         return self.group_members
 
     @property
+    def can_hand_over_session(self) -> bool:
+        """
+        Return whether the sync session this player leads plays on when it leaves the session.
+
+        A sync group then changes its leader without a stop and without a restart: it calls
+        `set_members` with only this player's own id in `player_ids_to_remove`, which must
+        keep the session playing for its members, and then `set_members` with the remaining
+        members in `player_ids_to_add` on a member the session still feeds (see
+        `live_session_members`), which leads the session from then on. Without it, the group
+        stops the session and forms it anew around another leader, with a short gap.
+        The answer may depend on what the player plays at the moment it is asked.
+        """
+        return False
+
+    @property
     def can_group_with(self) -> set[str]:
         """
         Return the id's of players this player can group with.
