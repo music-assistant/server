@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from music_assistant_models.enums import AlbumType, RepeatMode
 from music_assistant_models.media_items import (
@@ -208,11 +210,20 @@ def test_from_cache_legacy_without_toggle_overrides_yields_none() -> None:
     assert restored.crossfade_override is None
 
 
-def test_from_cache_keeps_settings_when_item_unreadable() -> None:
+@pytest.mark.parametrize(
+    "unreadable_item",
+    [
+        pytest.param({"sort_index": 0}, id="missing required fields"),
+        pytest.param(None, id="not a dict"),
+    ],
+)
+def test_from_cache_keeps_settings_when_item_unreadable(
+    unreadable_item: Any,
+) -> None:
     """One unreadable queue item is skipped without losing the other items or the settings."""
     queue = _queue(shuffle_enabled=True, crossfade_enabled=True)
     data = PlayerQueueData(queue=queue, items=[QueueItem.from_media_item("q1", _track("t1"))])
-    items_data = [*data.items_to_cache(), {"sort_index": 0}]  # 2nd entry misses required fields
+    items_data = [*data.items_to_cache(), unreadable_item]
 
     restored = PlayerQueueData.from_cache(data.to_cache(), items_data)
 
@@ -287,6 +298,28 @@ def test_from_cache_reads_legacy_flat_layout() -> None:
         item.uri for item in data.enqueued_media_items
     ]
     assert restored.userid == "user-1"
+
+
+@pytest.mark.parametrize(
+    ("cached_user", "expected_userid"),
+    [
+        pytest.param({"userid": None}, None, id="anonymous item stays anonymous"),
+        pytest.param({"userid": "user-2"}, "user-2", id="item keeps its own user"),
+        pytest.param({}, "user-1", id="item cached without a user plays for the owner"),
+    ],
+)
+def test_cache_restores_the_user_of_each_item(
+    cached_user: dict[str, str | None], expected_userid: str | None
+) -> None:
+    """Items keep their user; ones cached before items carried a user get the queue's owner."""
+    data = _data_with_dynamic_source()
+    items_data = data.items_to_cache()
+    del items_data[0]["userid"]
+    items_data[0].update(cached_user)
+
+    restored = PlayerQueueData.from_cache(data.to_cache(), items_data)
+
+    assert restored.items[0].userid == expected_userid
 
 
 def test_cache_significant_ignores_playback_progress() -> None:

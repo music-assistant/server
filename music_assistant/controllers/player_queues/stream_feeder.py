@@ -643,7 +643,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         """
         Return whether the current item of a queue can stream from another source right away.
 
-        Only the sources the queue's playback user may use count.
+        Only the sources the user of that item may use count.
 
         :param queue_id: The queue whose current item to check.
         :param provider_instance: The provider instance to leave out.
@@ -651,7 +651,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         queue_item = self._queue_data[queue_id].queue.current_item
         if queue_item is None or queue_item.media_item is None:
             return False
-        sources = await playback_sources(self.mass, queue_id)
+        sources = await playback_sources(self.mass, queue_item)
         return any(
             not isinstance(provider, MusicProvider) or provider.has_available_stream_slot
             for _mapping, provider in self.mass.streams.audio.get_stream_candidates(

@@ -1614,6 +1614,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._queue_data[target_queue_id].credited_albums = set(
                 self._queue_data[source_queue_id].credited_albums
             )
+            self._queue_data[target_queue_id].userid = self._queue_data[source_queue_id].userid
             target_queue.resume_pos = source_resume_pos
             target_queue.elapsed_time = source_resume_pos
             target_queue.elapsed_time_last_updated = time.time()
@@ -3738,7 +3739,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             ):
                 stored_speed = await self.mass.music.get_playback_speed(
                     cast("Audiobook | PodcastEpisode", queue_item.media_item),
-                    userid=queue_data.userid,
+                    userid=queue_item.userid,
                 )
                 if stored_speed != 1.0:
                     queue_item.extra_attributes["playback_speed"] = stored_speed

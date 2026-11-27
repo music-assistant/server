@@ -42,7 +42,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.provider_access import resolve_playback_user
+from music_assistant.helpers.provider_access import resolve_queue_item_user
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -584,13 +584,14 @@ class PlaybackMixin(_PlayerControllerBase):
         """
         player = self._get_player_with_redirect(player_id)
         mass_queue = self.get_active_queue(player)
-        # a favorite set from a player belongs to the user the playback is for; a service
-        # account (such as the Home Assistant integration) acts for that user as well
+        # a favorite set from a player belongs to the user the current item plays for; a
+        # service account (such as the Home Assistant integration) acts for that user as well
         session_user = get_current_user()
         if (
             (session_user is None or session_user.role == UserRole.SERVICE)
             and mass_queue
-            and (playback_user := await resolve_playback_user(self.mass, mass_queue.queue_id))
+            and mass_queue.current_item
+            and (playback_user := await resolve_queue_item_user(self.mass, mass_queue.current_item))
         ):
             set_current_user(playback_user)
         # guard for player with no active source

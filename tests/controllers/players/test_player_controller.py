@@ -4628,7 +4628,7 @@ class TestAddCurrentlyPlayingToFavorites:
 
         :param mock_mass: The mocked MusicAssistant instance.
         :param session_user: The user the command is called as.
-        :param playback_user: The user the queue plays for.
+        :param playback_user: The user the current item plays for.
         :param expected: The user the favorite must be recorded for.
         """
         controller = _controller(mock_mass)
@@ -4650,7 +4650,7 @@ class TestAddCurrentlyPlayingToFavorites:
                 patch.object(controller, "get_active_queue", return_value=queue),
                 patch.object(
                     players_playback,
-                    "resolve_playback_user",
+                    "resolve_queue_item_user",
                     AsyncMock(return_value=playback_user),
                 ),
             ):
@@ -4689,7 +4689,7 @@ class TestAddCurrentlyPlayingToFavorites:
 
         with (
             patch.object(controller, "get_active_queue", return_value=queue),
-            patch.object(players_playback, "resolve_playback_user", AsyncMock(return_value=None)),
+            patch.object(players_playback, "resolve_queue_item_user", AsyncMock(return_value=None)),
             pytest.raises(PlayerCommandFailed) as error,
         ):
             await controller.add_currently_playing_to_favorites("player1")
@@ -4934,7 +4934,7 @@ class TestAddCurrentlyPlayingToFavoritesResolution:
         with (
             patch.object(controller, "_get_player_with_redirect", return_value=player),
             patch.object(controller, "get_active_queue", return_value=queue),
-            patch.object(players_playback, "resolve_playback_user", AsyncMock(return_value=None)),
+            patch.object(players_playback, "resolve_queue_item_user", AsyncMock(return_value=None)),
         ):
             await controller.add_currently_playing_to_favorites("player1")
 

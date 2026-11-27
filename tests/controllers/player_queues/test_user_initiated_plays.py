@@ -58,7 +58,7 @@ def test_directly_enqueued_track_is_user_initiated() -> None:
 
 
 async def test_mark_album_played_is_user_initiated() -> None:
-    """Crediting an album play records it as a user-initiated play."""
+    """Crediting an album play records it as a user-initiated play of the track's user."""
     tracker = PlayerQueuesController.__new__(PlayerQueuesController)
     tracker.logger = Mock()
     mark = AsyncMock()
@@ -74,11 +74,12 @@ async def test_mark_album_played_is_user_initiated() -> None:
         album_type=AlbumType.ALBUM,
     )
     track = Track(item_id="t1", provider="library", name="T", provider_mappings=set())
-    data = cast("PlayerQueueData", Mock(userid="u1", queue=Mock(queue_id="q1")))
+    data = cast("PlayerQueueData", Mock(userid="owner", queue=Mock(queue_id="q1")))
 
-    await tracker._mark_album_played(album, track, data)
+    await tracker._mark_album_played(album, track, data, "u1")
 
     assert mark.call_args.kwargs["user_initiated"] is True
+    assert mark.call_args.kwargs["userid"] == "u1"
 
 
 def _resolver() -> tuple[MediaResolver, Mock]:

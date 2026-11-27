@@ -101,7 +101,7 @@ def _make_queue_item() -> MagicMock:
     streamdetails.queue_id = "queue_1"
     streamdetails.target_loudness = TARGET_LOUDNESS
     streamdetails.loudness = None
-    queue_item = MagicMock()
+    queue_item = MagicMock(userid=None)
     queue_item.media_type = MediaType.TRACK
     queue_item.streamdetails = streamdetails
     queue_item.name = "Track B"

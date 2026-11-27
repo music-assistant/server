@@ -695,7 +695,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     if dynamic_tracks:
                         queue_items = [
                             build_queue_item(
-                                queue.queue_id, x, origin=origin_for(dynamic_source, x)
+                                queue.queue_id,
+                                x,
+                                userid=queue_data.userid,
+                                origin=origin_for(dynamic_source, x),
                             )
                             for x in dynamic_tracks
                             if x.available
@@ -1024,7 +1027,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     fully_played=fully_played,
                     seconds_played=seconds_played,
                     is_playing=is_playing,
-                    userid=queue_data.userid,
+                    userid=item_to_report.userid,
                     queue_id=queue.queue_id,
                     user_initiated=self._is_user_initiated_play(queue_data, media_item),
                     playback_speed=float(
@@ -1041,7 +1044,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             if fully_played and not is_playing:
                 if credit_album := self._claim_album_credit(queue_data, item_to_report):
                     self.mass.create_task(
-                        self._mark_album_played(credit_album, media_item, queue_data)
+                        self._mark_album_played(
+                            credit_album, media_item, queue_data, item_to_report.userid
+                        )
                     )
 
         album: Album | ItemMapping | None = getattr(media_item, "album", None)
@@ -1077,7 +1082,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             seconds_played=seconds_played,
             fully_played=fully_played,
             is_playing=is_playing,
-            userid=queue_data.userid,
+            userid=item_to_report.userid,
             player_id=queue.queue_id,
         )
         if record_play:
@@ -1166,7 +1171,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         )
 
     async def _mark_album_played(
-        self, album: Album | ItemMapping, track: MediaItemType, queue_data: PlayerQueueData
+        self,
+        album: Album | ItemMapping,
+        track: MediaItemType,
+        queue_data: PlayerQueueData,
+        userid: str | None,
     ) -> None:
         """Mark an album played, skipping artists already credited via its track."""
         self.logger.debug(
@@ -1175,7 +1184,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         skip = await self.mass.music.resolve_library_artist_ids(getattr(track, "artists", []))
         await self.mass.music.mark_item_played(
             album,
-            userid=queue_data.userid,
+            userid=userid,
             queue_id=queue_data.queue.queue_id,
             user_initiated=True,
             skip_artist_ids=list(skip),
