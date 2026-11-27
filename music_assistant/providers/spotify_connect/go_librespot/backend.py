@@ -407,7 +407,14 @@ class GoLibrespotBackend(SpotifyConnectBackend):
             self._session_active = True
         elif event_type == "inactive":
             self._session_active = False
-        await self._event_callback(self._translate_event(event_type, data))
+        event = self._translate_event(event_type, data)
+        if event.type is BackendEventType.CONNECTION_LOST:
+            # go-librespot gave up reconnecting and logs in again by itself, without an 'inactive'
+            self.logger.warning(
+                "Spotify Connect background daemon lost its connection to Spotify [%s]", self.name
+            )
+            self._session_active = False
+        await self._event_callback(event)
 
     async def _discard_audio(self) -> None:
         """Read and drop the daemon's audio until it exits."""
@@ -475,5 +482,15 @@ class GoLibrespotBackend(SpotifyConnectBackend):
                 context_uri=context_uri,
                 track_uri=track_uri,
                 volume=int(int(data["value"]) / int(max_value) * 100),
+            )
+        if event_type == "playback_error":
+            # stage 'session': the daemon lost its Spotify session for good
+            if data.get("stage") == "session":
+                return BackendEvent(BackendEventType.CONNECTION_LOST)
+            return BackendEvent(
+                BackendEventType.ERROR,
+                context_uri=context_uri,
+                track_uri=track_uri,
+                error=data.get("message"),
             )
         return BackendEvent(BackendEventType.OTHER, context_uri=context_uri, track_uri=track_uri)

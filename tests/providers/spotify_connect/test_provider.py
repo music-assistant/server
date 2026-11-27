@@ -141,6 +141,29 @@ async def test_go_librespot_reports_an_active_session_once(
     assert [call.args[0].type for call in event_callback.await_args_list] == expected
 
 
+async def test_go_librespot_reports_a_new_session_after_losing_one() -> None:
+    """After the daemon lost its Spotify session, the next playback is a new session."""
+    backend = object.__new__(GoLibrespotBackend)
+    backend.logger = MagicMock()
+    backend.name = "Spotify Test"
+    backend._session_active = False
+    backend._event_callback = event_callback = AsyncMock()
+
+    await backend._handle_event("active", {})
+    await backend._handle_event("playing", {})
+    await backend._handle_event("playback_error", {"stage": "session", "kind": "network"})
+    await backend._handle_event("playing", {})
+
+    assert [call.args[0].type for call in event_callback.await_args_list] == [
+        BackendEventType.SESSION_ACTIVE,
+        BackendEventType.PLAYING,
+        BackendEventType.CONNECTION_LOST,
+        BackendEventType.SESSION_ACTIVE,
+        BackendEventType.PLAYING,
+    ]
+    backend.logger.warning.assert_called_once()
+
+
 async def test_daemon_runner_reselects_api_port_when_taken(tmp_path: Path) -> None:
     """An API port taken while the daemon was down is replaced before (re)starting."""
     backend = object.__new__(GoLibrespotBackend)

@@ -690,6 +690,52 @@ async def test_source_control_commands_dispatch_to_backend() -> None:
     ]
 
 
+async def test_play_after_a_lost_session_takes_playback_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Play on a source whose session ended replays the last context on the player kept."""
+    monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0.01)
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        active_player_id="queue1",
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+        last_context_uri="spotify:playlist:ctx",
+        last_track_uri="spotify:track:tr",
+    )
+    _player_with_volume(mass, 25)
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.CONNECTION_LOST))
+    # the stream ends without audio, the player keeps the source
+    await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess1")
+
+    with pytest.raises(AudioError, match="not the active Spotify playback device"):
+        await provider.on_source_control(_PLAYER_ID, SourceControl.PAUSE)
+    await provider.on_source_control(_PLAYER_ID, SourceControl.PLAY)
+    assert backend.calls == [("play", ("spotify:playlist:ctx", "spotify:track:tr"))]
+
+    # the backend reports the new session and its playback, which restarts the stream
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.SESSION_ACTIVE))
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    task = daemon.pending_play_media_task
+    assert task is not None
+    await task
+    mass.player_queues.play_media.assert_called_once_with("queue1", _SOURCE_URI)
+
+
+async def test_play_without_session_or_last_context_is_refused() -> None:
+    """Play without an active session or a context to take back points to the Spotify app."""
+    backend = FakeBackend()
+    provider, _daemon, _mass = _make_provider(backend)
+
+    with pytest.raises(AudioError, match="not the active Spotify playback device"):
+        await provider.on_source_control(_PLAYER_ID, SourceControl.PLAY)
+
+    assert backend.calls == []
+
+
 async def test_on_volume_change_pushes_deduped_volume_to_backend() -> None:
     """on_volume_change pushes new volumes to the backend and skips unchanged ones."""
     backend = FakeBackend()
@@ -1255,6 +1301,35 @@ def test_translate_event_volume_without_value_is_other() -> None:
     event = _make_backend()._translate_event("volume", {"max": 100})
     assert event.type is BackendEventType.OTHER
     assert event.volume is None
+
+
+@pytest.mark.parametrize("stage", ["load", "playback"])
+def test_translate_event_maps_playback_error_to_error(stage: str) -> None:
+    """A failed track load or output carries the daemon's message as a backend error."""
+    message = "failed creating stream for spotify:track:t1: media is restricted"
+    event = _make_backend()._translate_event(
+        "playback_error",
+        {
+            "context_uri": "spotify:playlist:ctx",
+            "uri": "spotify:track:t1",
+            "stage": stage,
+            "kind": "restricted",
+            "unplayable": True,
+            "message": message,
+        },
+    )
+    assert event.type is BackendEventType.ERROR
+    assert event.error == message
+    assert event.track_uri == "spotify:track:t1"
+
+
+def test_translate_event_maps_lost_session_to_connection_lost() -> None:
+    """A playback error for a session the daemon gave up on reports the connection as lost."""
+    event = _make_backend()._translate_event(
+        "playback_error",
+        {"stage": "session", "kind": "network", "message": "lost the connection to Spotify"},
+    )
+    assert event.type is BackendEventType.CONNECTION_LOST
 
 
 @pytest.mark.parametrize(
