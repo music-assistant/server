@@ -83,6 +83,9 @@ LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
 # removed player HTTP profile config key, only referenced by its migrations
 LEGACY_HTTP_PROFILE_KEY = "http_profile"
 
+# removed player fixed content length config key, only referenced by its migration
+LEGACY_FIXED_CONTENT_LENGTH_KEY = "requires_fixed_content_length"
+
 # domains of the removed builtin providers, whose stored configs nothing can load anymore
 RETIRED_BUILTIN_PROVIDER_DOMAINS = ("builtin_player", "universal_player", "sendspin_source")
 
@@ -557,7 +560,7 @@ PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
 }
 
 
-async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
+async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
 
@@ -706,6 +709,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # into the one in use. It reads the split tree, so it runs after the split.
     # TODO: remove after 2.13 release
     if _migrate_sendspin_one_output(data):
+        changed = True
+
+    # Drop the stored value of the removed fixed content length setting from every player
+    # and protocol.
+    # TODO: remove after 2.13 release
+    if _migrate_drop_fixed_content_length(data):
         changed = True
 
     return changed
@@ -1262,10 +1271,34 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
 
 def _migrate_drop_http_profile(data: dict[str, Any]) -> bool:
     """Drop the stored value of the removed HTTP profile setting from every player and protocol."""
+    changed = _drop_player_setting(data, LEGACY_HTTP_PROFILE_KEY)
+    if changed:
+        LOGGER.info("Dropped the removed HTTP profile from the player configuration(s)")
+    return changed
+
+
+def _migrate_drop_fixed_content_length(data: dict[str, Any]) -> bool:
+    """Drop the stored value of the removed fixed content length setting from every player."""
+    changed = _drop_player_setting(data, LEGACY_FIXED_CONTENT_LENGTH_KEY)
+    if changed:
+        LOGGER.info(
+            "Dropped the removed fixed content length setting from the player configuration(s)"
+        )
+    return changed
+
+
+def _drop_player_setting(data: dict[str, Any], setting_key: str) -> bool:
+    """
+    Drop the stored value of a removed setting from every player and protocol record.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param setting_key: The config key of the removed setting.
+    :return: Whether a value was dropped.
+    """
     # a player record can hold a copy of a protocol's value under a prefixed key: a parent
     # player stored one for a linked protocol player, and the split keeps the values of a
     # universal player on its player record
-    protocol_key_suffix = f"{CONF_PROTOCOL_KEY_SPLITTER}{LEGACY_HTTP_PROFILE_KEY}"
+    protocol_key_suffix = f"{CONF_PROTOCOL_KEY_SPLITTER}{setting_key}"
     changed = False
     for tree in (CONF_PLAYERS, CONF_PLAYER_PROTOCOLS):
         records = data.get(tree)
@@ -1278,14 +1311,10 @@ def _migrate_drop_http_profile(data: dict[str, Any]) -> bool:
             if not isinstance(values, dict):
                 continue
             for key in [
-                key
-                for key in values
-                if key == LEGACY_HTTP_PROFILE_KEY or key.endswith(protocol_key_suffix)
+                key for key in values if key == setting_key or key.endswith(protocol_key_suffix)
             ]:
                 del values[key]
                 changed = True
-    if changed:
-        LOGGER.info("Dropped the removed HTTP profile from the player configuration(s)")
     return changed
 
 

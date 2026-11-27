@@ -85,7 +85,8 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.provider_access import (
-    playback_sources,
+    playback_sources_for,
+    playback_user_or_stand_in,
     resolve_playback_user,
     resolve_playback_user_or_stand_in,
 )
@@ -135,8 +136,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             raise MediaNotFoundError(f"Item {queue_item.uri} is not available")
         queue_id = queue_item.queue_id
         # as for its stream details: whoever has the item loaded is not necessarily the
-        # user the queue plays for
-        user = await resolve_playback_user_or_stand_in(self.mass, queue_id)
+        # user the item plays for
+        user = await resolve_playback_user_or_stand_in(self.mass, queue_item)
         external_track = queue_item.media_item
         if external_track is None or external_track.provider != EXTERNAL_ID_PROVIDER:
             # another load of the item found its track in the meantime
@@ -187,7 +188,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # mechanical clear: the shuffle state for this batch was already settled by the caller.
             # Replace is exempt: it swaps the whole queue below without ever emptying it.
             self._clear(queue_id, skip_stop=True)
-        if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        player = self.mass.players.get_player(queue_id)
+        # a player that stopped for its pause holds nothing of the queue anymore: the queue
+        # plays on from its current item
+        if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED) and not (
+            player and player.fake_paused
+        ):
             boundary_index = committed_index(queue)
             cur_index = boundary_index if boundary_index is not None else 0
         else:
@@ -425,8 +431,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # Youtube Music has poor thumbs by default, so we always fetch the full item
                     # this also catches the case where they have an unavailable item in a listing
                     # like the stream details that follow, the details are fetched for the
-                    # queue's playback, whoever has the item loaded
-                    playback_user = await resolve_playback_user_or_stand_in(self.mass, queue_id)
+                    # item's playback, whoever has the item loaded
+                    playback_user = await resolve_playback_user_or_stand_in(self.mass, queue_item)
                     try:
                         with user_auth_context(playback_user):
                             fetched_item = await self.mass.music.get_item_by_uri(queue_item.uri)
@@ -708,7 +714,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         unplayed = max(len(queue_data.items) - played, 0)
         headroom = max(MANAGED_POOL_MAX - unplayed, 0)
         queue_items = [
-            build_queue_item(queue_id, x) for x in pool_tracks[:headroom] if can_be_enqueued(x)
+            build_queue_item(queue_id, x, userid=queue_data.userid)
+            for x in pool_tracks[:headroom]
+            if can_be_enqueued(x)
         ]
         if not queue_items:
             return
@@ -734,16 +742,19 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         last_item = queue_data.items[-1]
         if last_item.media_type in AUTOPLAY_EXCLUDED_MEDIA_TYPES:
             return
-        # Restore the queue owner's user context so their music sources, library access and
-        # resume positions are respected during this background refill, mirroring
-        # _fill_dynamic_tracks.
+        # Restore the user context so their music sources, library access and resume positions
+        # are respected during this background refill, mirroring _fill_dynamic_tracks. The next
+        # episode/book continues for whoever the one it follows plays for, music for the owner.
+        refill_userid = (
+            last_item.userid
+            if last_item.media_type in AUTOPLAY_SERIES_MEDIA_TYPES
+            else queue_data.userid
+        )
         playback_user = (
-            await self.mass.webserver.auth.get_user(queue_data.userid)
-            if queue_data.userid
-            else None
+            await self.mass.webserver.auth.get_user(refill_userid) if refill_userid else None
         )
         set_current_user(playback_user)
-        # the refill runs as the owner, not as a user the scheduling call impersonated
+        # the refill runs as that user, not as a user the scheduling call impersonated
         set_impersonated_user(None)
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the user context was restored
@@ -771,11 +782,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         try:
             if isinstance(media_item, PodcastEpisode):
                 next_item = await self._media_resolver.get_next_podcast_episode(
-                    media_item, userid=queue_data.userid
+                    media_item, userid=last_item.userid
                 )
             elif isinstance(media_item, Audiobook):
                 next_item = await self._media_resolver.get_next_audiobook(
-                    media_item, userid=queue_data.userid
+                    media_item, userid=last_item.userid
                 )
             else:
                 return
@@ -799,7 +810,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         await self.load(
             queue_id,
-            [build_queue_item(queue_id, next_item)],
+            [build_queue_item(queue_id, next_item, userid=last_item.userid)],
             insert_at_index=len(queue_data.items) + 1,
         )
 
@@ -857,7 +868,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             [track for track in tracks if isinstance(track, Track)], snapshot, windows
         )
         tracks = await without_disliked_tracks(self.mass, queue_data.userid, tracks)
-        queue_items = [build_queue_item(queue_id, x) for x in tracks if x.available]
+        queue_items = [
+            build_queue_item(queue_id, x, userid=queue_data.userid) for x in tracks if x.available
+        ]
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
             return
@@ -902,7 +915,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 )
                 continue
             queue_items = [
-                build_queue_item(queue_id, track, origin=origin_for(artist, track, pin=False))
+                build_queue_item(
+                    queue_id,
+                    track,
+                    userid=queue_data.userid,
+                    origin=origin_for(artist, track, pin=False),
+                )
                 for track in tracks
                 if can_be_enqueued(track)
             ]
@@ -1027,6 +1045,41 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             QueueOption.NEXT,
                         )
 
+                    # the user picked this exact track to play next, so it must be inserted literally
+                    plays_next_track = (
+                        option == QueueOption.NEXT and media_item.media_type == MediaType.TRACK
+                    )
+                    # the pool builds the tracks of a source for the queue's owner, which an add
+                    # onto someone else's queue leaves in place
+                    if (
+                        (
+                            is_dynamic_source(media_item)
+                            or (already_dynamic and not plays_next_track)
+                        )
+                        and option in (QueueOption.ADD, QueueOption.NEXT)
+                        and not isinstance(media_item, BrowseFolder)
+                        and queue_data.userid != playback_userid
+                        and not self._starts_afresh(queue_data, option)
+                    ):
+                        owner = await resolve_playback_user(self.mass, queue_id)
+                        self.mass.music.check_item_playable_for_user(media_item, owner)
+                        if is_dynamic_source(media_item):
+                            # a dynamic source can rest on more than its own provider (a radio
+                            # on its seed), so the owner must be able to fetch it as well
+                            try:
+                                with user_auth_context(playback_user_or_stand_in(owner)):
+                                    await self.mass.music.get_item(
+                                        media_item.media_type,
+                                        media_item.item_id,
+                                        media_item.provider,
+                                        allow_update_metadata=False,
+                                    )
+                            except (MediaNotFoundError, ProviderUnavailableError) as err:
+                                msg = f"{media_item.uri} is not available for the queue owner"
+                                raise MediaNotFoundError(
+                                    msg, translation_key="media_not_available_for_user"
+                                ) from err
+
                     # like the shuffle state below, the first item that resolves decides for the batch
                     if not first_item_resolved:
                         first_item_resolved = True
@@ -1096,10 +1149,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             queue_id, option, batch_shuffle
                         )
 
-                    # the user picked this exact track to play next, so it must be inserted literally
-                    plays_next_track = (
-                        option == QueueOption.NEXT and media_item.media_type == MediaType.TRACK
-                    )
                     # collect media_items to play
                     if is_dynamic_source(media_item):
                         # a dynamic playlist/station supplies its own tracks on demand; just mark it
@@ -1205,8 +1254,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # but only after the queue's sources and shuffle have been settled above
             raise last_item_error
 
-        # something the caller asked for made it through, so the queue plays for them now
-        queue_data.userid = playback_userid
+        # something the caller asked for made it through: replacing what the queue plays (or
+        # starting it afresh, as anything but ADD does on an ended queue) makes it theirs,
+        # adding to someone else's queue does not
+        if replace_sources or self._starts_afresh(queue_data, option):
+            queue_data.userid = playback_userid
 
         if queue.is_dynamic:
             if replace_sources or new_sources:
@@ -1215,7 +1267,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # content as materialized TRACKS seed(s), dynamic playlists as DYNAMIC seed(s).
                 # Only rebuilt when this enqueue changed the sources, so a play-next insert
                 # leaves the tail untouched.
-                await self._enter_dynamic_mode(queue_id, option)
+                owner = (
+                    playback_user
+                    if queue_data.userid == playback_userid
+                    else await resolve_playback_user(self.mass, queue_id)
+                )
+                # the pool is built for the queue's owner, who may not be the one adding
+                with user_auth_context(playback_user_or_stand_in(owner)):
+                    await self._enter_dynamic_mode(queue_id, option)
             # only explicit play-next tracks are inserted literally; container expansions are
             # already in the pool via their source
             media_items = play_next_items
@@ -1226,7 +1285,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # only add valid/available items
         queue_items: list[QueueItem] = [
             build_queue_item(
-                queue_id, cast("PlayableMediaItemType", resolved.item), origin=resolved.origin
+                queue_id,
+                cast("PlayableMediaItemType", resolved.item),
+                userid=playback_userid,
+                origin=resolved.origin,
             )
             for resolved in media_items
             if can_be_enqueued(resolved.item)
@@ -1345,6 +1407,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             config_key = f"default_enqueue_option_{media_type.value}"
         return QueueOption(self.get_config_value(config_key, return_type=str))
 
+    @staticmethod
+    def _starts_afresh(queue_data: PlayerQueueData, option: QueueOption | None) -> bool:
+        """Return whether an enqueue starts the queue afresh, as anything but ADD does once it ended."""
+        return not queue_data.items or (queue_data.queue.ended and option != QueueOption.ADD)
+
     async def _enter_dynamic_mode(self, queue_id: str, option: QueueOption | None) -> None:
         """
         (Re)build a queue's upcoming tail into a single bounded managed pool over all its sources.
@@ -1416,7 +1483,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if track not in held and held_songs.isdisjoint(song_keys(track))
                 ]
             queue_items = [
-                build_queue_item(queue_id, track) for track in pool_tracks if can_be_enqueued(track)
+                build_queue_item(queue_id, track, userid=queue_data.userid)
+                for track in pool_tracks
+                if can_be_enqueued(track)
             ]
             if not queue_items:
                 raise MediaNotFoundError(
@@ -1501,7 +1570,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
 
         # Steer provider selection to the playback user's own music sources
-        allowed, preferred = await playback_sources(self.mass, queue_id)
+        allowed, preferred, _ = playback_sources_for(
+            self.mass, await resolve_playback_user(self.mass, queue_id)
+        )
 
         # Some providers have very deterministic similar-track algorithms for a single track
         # seed. When continuing from a single track on a refill, seed from the play history

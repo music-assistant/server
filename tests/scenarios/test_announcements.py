@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
 
 from .test_group_power_on import _announce
 from .test_grouping import _fixed_group_without_a_member, _player_id, _speakers, _state, _stop
+from .test_paused_queue import PLAYED_SECONDS, _play_in_flow_mode, _speaker
 
 if TYPE_CHECKING:
     from .harness import FakeProtocol, Scenario
@@ -76,3 +78,31 @@ async def test_an_announcement_to_a_member_that_dropped_off_leaves_its_group_pla
     await scenario.idle()
     assert _state(scenario, office_id).synced_to == _player_id(scenario, kitchen)
     await _stop(scenario, group_id)
+
+
+async def test_a_queue_paused_before_an_announcement_plays_on_from_its_pause(
+    scenario: Scenario,
+) -> None:
+    """After the announcement the paused queue follows its idle player and resumes where it was."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+    await scenario.mass.players.cmd_pause(player_id)
+    await scenario.advance(1)
+
+    await _announce(scenario, player_id, None, [speaker])
+    await scenario.advance(1)
+
+    queue = scenario.queue(player_id)
+    assert queue is not None
+    assert queue.state == PlaybackState.IDLE
+    assert queue.resume_pos == PLAYED_SECONDS
+    speaker.commands.clear()
+    await scenario.mass.players.cmd_play(player_id)
+    await scenario.settle()
+    # the speaker has no stream to unpause, so the queue starts it again at its pause
+    assert [x[0] for x in speaker.commands if x[0] in ("play", "play_media")] == ["play_media"]
+    queue = scenario.queue(player_id)
+    assert queue is not None
+    assert queue.state == PlaybackState.PLAYING
+    assert queue.elapsed_time == pytest.approx(PLAYED_SECONDS, abs=1)

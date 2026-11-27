@@ -645,17 +645,17 @@ controller does that.
 
 A command that starts a group player waits for the members that are switched off at their power
 control: a play, a resume, a play of an item or of media on its queue, a play or a power on of
-the group player, a selection of a source that plays, a next, a previous or a seek on a group
-player that does not play, a play on a member that goes to its group, and a queue transfer that
-plays on it. Before it takes any lock it powers those members on and waits until they have started
-up, all at once and each for its own start-up time (`_power_on_members`). Then it runs as it
+the group player, a selection of a source that plays, a next, a previous, a seek or a skip on a
+group player that does not play, a play on a member that goes to its group, and a queue transfer
+that plays on it. Before it takes any lock it powers those members on and waits until they have
+started up, all at once and each for its own start-up time (`_power_on_members`). Then it runs as it
 does for a group whose members are on, so the group starts once, on all of them. `cmd_set_members`
 does the same for the players it adds to a leader or a group. The user who sends the command
 needs access to the group player (or the leader), not to each member.
 
-A group player does not play, for a next, a previous or a seek, when its queue does not read as
-playing at the moment the command arrives (`PlayerQueue.state`). A next and a previous still
-return at once: the move to the other item, which they put off for a second, waits for the
+A group player does not play, for a next, a previous, a seek or a skip, when its queue does not
+read as playing at the moment the command arrives (`PlayerQueue.state`). A next and a previous
+still return at once: the move to the other item, which they put off for a second, waits for the
 members. Further presses meanwhile join that wait, so the group starts once, with the last item,
 and a wait that is called off ends that move without an error. A start that arrives before that
 move has played takes its place (`_drop_pending_step`): the move is dropped while its wait goes
@@ -688,10 +688,10 @@ the stop that frees a stream slot for another queue.
 
 Only such a command switches a member on; nothing does because a state changed. A play on a group
 player that plays already is ignored, as on any player, and switches nothing on. Neither does a
-next, a previous or a seek on a group player that plays, nor a selection of a queue as its source,
-which starts nothing. Every other command that starts the group waits for its members also while
-the group plays, and what it plays goes on meanwhile. What a command runs under the lock of the
-group leaves the members as they are, and so does playback that the server continues by itself
+next, a previous, a seek or a skip on a group player that plays, nor a selection of a queue as its
+source, which starts nothing. Every other command that starts the group waits for its members also
+while the group plays, and what it plays goes on meanwhile. What a command runs under the lock of
+the group leaves the members as they are, and so does playback that the server continues by itself
 (`without_member_power_on`): the next items of a queue that played out and a restart of what plays
 for a changed setting. An announcement to a group switches no member on either, also not when it
 resumes the group afterwards: it plays on the members that are on. An announcement to one
@@ -727,7 +727,12 @@ and still waits for another one, holds that off.
   has the player silenced (`PlayerProtocol.hold`) and shown as paused with `pause_audio_source`,
   and plays on by selecting the source again. This fake pause (`Player.fake_paused`) is the
   player's: it shows over an idle output and ends when the player plays again, is stopped, loses
-  the source, or after the pause timeout of the queues. The session outlives it. A source carries
+  the source, or after the pause timeout of the queues. The members of a group and the players
+  synced to a leader show the fake pause of their group or leader, and a sync group keeps its
+  members meanwhile. The session outlives it. The same fake pause shows the pause of the player's
+  own queue on a player that can not pause, or whose output would stop for it
+  (`PlayerProtocol.stops_on_pause`): the queue is stopped with its session, the output silenced
+  with `hold`, and play starts the queue again from where it was paused. A source carries
   its own name and the player it belongs to; `get_audio_source_name` composes the name for where it
   is shown: the name alone on that player, with the player's name after it elsewhere. An input a
   speaker offers from another speaker of its system, such as the line-in of another Sonos speaker,

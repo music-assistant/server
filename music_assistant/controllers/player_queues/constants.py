@@ -195,6 +195,10 @@ PLAYED_TO_END_MARGIN = 2
 # this close to the end of it: position reports are not exact down to the last audio frame.
 FLOW_PLAYED_OUT_MARGIN = 0.5
 
+# Seconds: a fully streamed flow session reported this close to its start, on another item than
+# the queue's, is the player playing it again (Sonos reports 0 s, then fails about 3 s later).
+FLOW_STARTED_OVER_POSITION = 5
+
 # Longest wait, in seconds, for a player to go idle once its flow stream ran out of items. It
 # keeps playing the audio it buffered, which a held-open stream lets it do for up to the maximum
 # lead-out; the extra minute covers its idle report after the connection closes.

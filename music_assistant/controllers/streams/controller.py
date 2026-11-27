@@ -12,9 +12,8 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
-from copy import copy
 from dataclasses import dataclass
-from functools import wraps
+from functools import partial, wraps
 from ipaddress import ip_address
 from math import ceil
 from typing import TYPE_CHECKING, Any, cast
@@ -33,6 +32,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlayerFeature,
     ProviderType,
+    RepeatMode,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import (
@@ -61,7 +61,6 @@ from music_assistant.constants import (
     CONF_PLAYER_QUEUES,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PUBLISH_IP,
-    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -111,6 +110,8 @@ from music_assistant.controllers.streams.constants import (
     output_pacing_args,
 )
 from music_assistant.controllers.streams.file_stream import (
+    FILE_CODECS,
+    MAX_MIXED_FILES_PER_PLAYER,
     FileKey,
     FileStream,
     FileStreams,
@@ -123,6 +124,8 @@ from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
     LiveAnnouncementManager,
 )
+from music_assistant.controllers.streams.mixed_track import SMART_FADE_STRETCH, MixedTrack
+from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.stream_sources import StreamSourceMode, UpgradeQuality
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
@@ -986,18 +989,24 @@ class StreamsController(CoreController):
         """
         if not (
             player.fetches_files
-            and output_codec == ContentType.WAV
+            and output_codec in FILE_CODECS
             and queue_item.media_type == MediaType.TRACK
             and queue_item.duration
             and queue_item.extra_attributes.get("playback_speed", 1.0) == 1.0
             and (queue := self.mass.player_queues.get(queue_item.queue_id))
         ):
             return False
-        # a stream that fades or mixes is more than the track, and is made only once
-        if (
+        # an overlay is mixed into the stream as it plays, and is made only once
+        if overlay_mixed_in(queue, queue_item, flow_mode=False):
+            return False
+        # a track that comes around again while its file is kept would get that file again,
+        # with the mixes of the play before in it
+        returns_soon = queue.repeat_mode == RepeatMode.ONE or (
+            queue.repeat_mode == RepeatMode.ALL and queue.items <= MAX_MIXED_FILES_PER_PLAYER
+        )
+        if returns_soon and (
             self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
             or self.audio.fade_into_pending(queue.queue_id, queue_item.queue_item_id)
-            or overlay_mixed_in(queue, queue_item, flow_mode=False)
         ):
             return False
         streamdetails = queue_item.streamdetails
@@ -1263,18 +1272,25 @@ class StreamsController(CoreController):
 
             if self.serves_as_file(player, queue_item, output_format.content_type):
                 return await self._serve_file(
-                    request, queue, queue_item, player, pcm_format, output_format, headers
+                    request,
+                    queue,
+                    queue_item,
+                    player,
+                    pcm_format,
+                    output_format,
+                    headers,
+                    crossfade_mode
+                    if crossfade_mode != CrossfadeMode.DISABLED or fade_in_pending
+                    else None,
+                    standard_crossfade_duration,
                 )
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
-            fixed_content_length = player.get_config_value(
-                CONF_REQUIRES_FIXED_CONTENT_LENGTH, False
-            )
-            if fixed_content_length and not queue_item.duration:
+            if player.requires_content_length and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
-            elif fixed_content_length and queue_item.duration:
+            elif player.requires_content_length and queue_item.duration:
                 # estimate content length based on effective duration
                 # account for seek position (e.g., crossfade from previous track)
                 seek_pos = queue_item.streamdetails.seek_position if queue_item.streamdetails else 0
@@ -1754,8 +1770,7 @@ class StreamsController(CoreController):
             headers["icy-metaint"] = str(icy_meta_interval)
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        fixed_content_length = player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False)
-        if fixed_content_length:
+        if player.requires_content_length:
             # just set an insane high content length to make sure the player keeps playing
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
 
@@ -1890,7 +1905,7 @@ class StreamsController(CoreController):
 
         if not self.mass.player_queues.flow_stream_finished(queue_id):
             self._watch_lost_stream(request, queue_data, session_id, player)
-        if not client_disconnected and fixed_content_length:
+        if not client_disconnected and player.requires_content_length:
             await self._finish_flow_stream(request, resp, queue_id, session_id, player)
 
         return resp
@@ -1910,9 +1925,7 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        fixed_content_length = self._announcement_requires_fixed_content_length(
-            player_id, announce_data
-        )
+        fixed_content_length = self._announcement_requires_content_length(player_id, announce_data)
 
         # return early if this is not a GET request:
         # players often probe the url with a HEAD request before fetching it and
@@ -2408,7 +2421,7 @@ class StreamsController(CoreController):
             headers=_audio_source_headers(source_name, output_format.output_format_str),
         )
         resp.content_type = get_mime_type(output_format.output_format_str)
-        if player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False):
+        if player.requires_content_length:
             # a live source has no length, so advertise one it will never reach
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
         await resp.prepare(request)
@@ -2704,6 +2717,8 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         output_format: AudioFormat,
         headers: dict[str, str],
+        mix_mode: CrossfadeMode | None,
+        standard_crossfade_duration: int,
     ) -> web.StreamResponse:
         """
         Answer a request for a queue item that is served as a file.
@@ -2715,41 +2730,80 @@ class StreamsController(CoreController):
         :param pcm_format: PCM format a new file reads its audio in.
         :param output_format: Format of a new file.
         :param headers: The headers of a stream response for this item.
+        :param mix_mode: How the stream of a new file mixes its end into the next item, or
+            None for a stream that is only the track; DISABLED only plays the fade the
+            item before mixed into this one.
+        :param standard_crossfade_duration: Configured standard crossfade duration.
         """
         assert queue_item.streamdetails is not None
         session_id = request.match_info["session_id"]
-        key = FileKey(
-            session_id,
-            queue.queue_id,
-            queue_item.queue_item_id,
-            int(queue_item.streamdetails.seek_position),
-        )
-        if (file := self._file_streams.get(player.protocol_id, key)) is None:
-            file = FileStream(
-                pcm_format, output_format, declared_frames(queue_item, output_format.sample_rate)
-            )
+        start_position = int(queue_item.streamdetails.seek_position)
+        key = FileKey(session_id, queue.queue_id, queue_item.queue_item_id, start_position)
+        file = self._file_streams.get(player.protocol_id, key)
+        requested_again = file is not None
+        if file is None:
+            frames = declared_frames(queue_item, output_format.sample_rate)
+            end_ms = start_position * 1000 + -(-frames * 1000 // output_format.sample_rate)
+            # what a mix is made from at most; a declared length can be a second too long
+            tail_ms = end_ms - (standard_crossfade_duration + 1) * 1000
+            if mix_mode == CrossfadeMode.SMART_CROSSFADE:
+                tail_ms = end_ms - (SMART_CROSSFADE_DURATION + 1) * 1000
+                frames += SMART_FADE_STRETCH * output_format.sample_rate
+                end_ms += SMART_FADE_STRETCH * 1000
+            file = FileStream(pcm_format, output_format, frames)
+            if mix_mode is not None:
+                file.mix = MixedTrack(
+                    pcm_format,
+                    end_ms,
+                    tail_ms,
+                    partial(
+                        self.audio.get_queue_item_stream_with_smartfade,
+                        player=player,
+                        queue_item=queue_item,
+                        pcm_format=pcm_format,
+                        crossfade_mode=mix_mode,
+                        standard_crossfade_duration=standard_crossfade_duration,
+                        session_id=session_id,
+                    ),
+                    partial(
+                        self.audio.get_queue_item_stream,
+                        queue_item=queue_item,
+                        pcm_format=pcm_format,
+                        session_id=session_id,
+                    ),
+                )
             self._file_streams.add(player.protocol_id, key, file)
+        if file.mix is not None and (max_size := file.mix.max_size) is not None:
+            # what the mixes left of the track is known before a request reaches its end
+            file.end_at(file.offset_of(max_size))
 
         headers = {
             **headers,
             "Accept-Ranges": "bytes",
             "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_FILE,
         }
-        part = parse_range(request.headers.get("Range"), file.size)
+        range_header = request.headers.get("Range")
+        size = file.size_for(range_header)
+        part = parse_range(range_header, size)
         if part is None:
-            part = range(file.size)
+            part = range(size)
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         elif part:
-            headers["Content-Range"] = f"bytes {part.start}-{part.stop - 1}/{file.size}"
+            headers["Content-Range"] = f"bytes {part.start}-{part.stop - 1}/{size}"
             resp = web.StreamResponse(status=206, headers=headers)
         else:
-            raise web.HTTPRequestRangeNotSatisfiable(
-                headers={"Content-Range": f"bytes */{file.size}"}
-            )
+            raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{size}"})
         resp.content_length = len(part)
         await resp.prepare(request)
         if request.method != "GET":
             return resp
+        if (
+            requested_again
+            and queue.current_item is not None
+            and queue.current_item.queue_item_id == queue_item.queue_item_id
+        ):
+            # a player fetches the next track ahead, which is no resume or seek
+            self.mass.loop.call_soon(player.on_file_requested_again)
 
         self._update_audio_processing_context(
             queue=queue,
@@ -2819,6 +2873,7 @@ class StreamsController(CoreController):
             file.size,
         )
         stream_failure: AudioError | None = None
+        loaded = False
         self._active_output_streams += 1
         try:
             async with aclosing(
@@ -2841,10 +2896,12 @@ class StreamsController(CoreController):
                         break
                     file.keep(offset, data)
                     offset += len(data)
-                    if not file.loaded:
-                        file.loaded = True
+                    if not loaded:
+                        loaded = True
                         # inform the queue that the track is now loaded in the buffer
-                        # so for example the next track can be enqueued
+                        # so for example the next track can be enqueued. Told for every
+                        # part that is encoded: a player that seeks, or that plays the
+                        # track again, needs its next track handed over again
                         self.mass.player_queues.track_loaded_in_buffer(
                             queue_item.queue_id, queue_item.queue_item_id
                         )
@@ -2887,15 +2944,19 @@ class StreamsController(CoreController):
         """
         assert queue_item.streamdetails is not None
         session_id = request.match_info["session_id"]
-        second, run_in = file.encode_start(offset)
-        audio_input = self.audio.get_queue_item_stream(
-            queue_item=queue_item,
-            pcm_format=file.pcm_format,
-            seek_position=int(queue_item.streamdetails.seek_position) + second,
-            session_id=session_id,
-            exact_seek=True,
-            consumer_connected=lambda: is_connected(request),
-        )
+        start_ms, run_in = file.encode_start(offset)
+        if file.mix is not None:
+            audio_input = file.mix.read(
+                start_ms * file.pcm_format.pcm_sample_size // 1000, lambda: is_connected(request)
+            )
+        else:
+            audio_input = self.audio.get_queue_item_stream(
+                queue_item=queue_item,
+                pcm_format=file.pcm_format,
+                seek_position_ms=int(queue_item.streamdetails.seek_position) * 1000 + start_ms,
+                session_id=session_id,
+                consumer_connected=lambda: is_connected(request),
+            )
         output_plan = self.audio.get_player_output_plan(
             protocol_id=player.protocol_id,
             input_format=file.pcm_format,
@@ -2905,9 +2966,6 @@ class StreamsController(CoreController):
             session_id=session_id,
             queue_item_id=queue_item.queue_item_id,
         )
-        # ffmpeg only delivers the samples: the header is the file's own
-        samples_format = copy(file.output_format)
-        samples_format.content_type = ContentType.from_bit_depth(samples_format.bit_depth)
         # the audio that is dropped comes on top of the head start, so it costs the player none
         burst = file.take_head_start() + run_in / file.byte_rate
         position = offset - run_in
@@ -2915,9 +2973,10 @@ class StreamsController(CoreController):
             get_ffmpeg_stream(
                 audio_input=audio_input,
                 input_format=file.pcm_format,
-                output_format=samples_format,
+                output_format=file.encode_format,
                 filter_params=output_plan.filter_params,
                 extra_input_args=output_pacing_args(burst=burst),
+                extra_output_args=file.encoder_args,
             )
         ) as encoded:
             async for chunk in encoded:
@@ -2927,14 +2986,12 @@ class StreamsController(CoreController):
                     offset = position
         # an encode also ends when its audio is taken away or its player has gone, so only
         # a source that was read out for a player that stayed tells where the file ends
-        buffer = queue_item.streamdetails.buffer
-        if (
-            is_connected(request)
-            and buffer is not None
-            and buffer.eof
-            and not buffer.has_error
-            and position < file.size
-        ):
+        if file.mix is not None:
+            read_out = file.mix.size is not None
+        else:
+            buffer = queue_item.streamdetails.buffer
+            read_out = buffer is not None and buffer.eof and not buffer.has_error
+        if is_connected(request) and read_out and position < file.size:
             self.logger.debug(
                 "%s ends at byte %s of the %s its file declared",
                 queue_item.name,
@@ -3070,15 +3127,15 @@ class StreamsController(CoreController):
             volume_normalization_enabled=provider.delivers_normalized_audio(session.streamdetails),
         )
 
-    def _announcement_requires_fixed_content_length(
+    def _announcement_requires_content_length(
         self, player_id: str, announce_data: AnnounceData
     ) -> bool:
         """
         Return whether an announcement stream must be served with a fixed content length.
 
         Announcement urls are registered under the id of the player, but the stream
-        may be fetched by one of its protocols; the setting is the one of the protocol
-        that performs the fetch.
+        may be fetched by one of its protocols; the protocol that performs the fetch
+        tells whether it needs one.
         """
         announce_player = None
         if announce_player_id := announce_data.get("announce_player_id"):
@@ -3087,7 +3144,7 @@ class StreamsController(CoreController):
             announce_player = player.resolve_output_protocol()
         if announce_player is None:
             return False
-        return announce_player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False)
+        return announce_player.requires_content_length
 
     def _get_flow_start_item(self, queue: PlayerQueue, queue_item_id: str) -> QueueItem | None:
         """

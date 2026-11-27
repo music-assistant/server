@@ -13,7 +13,13 @@ import numpy as np
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer, make_mocked_request
-from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    RepeatMode,
+    StreamType,
+)
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
@@ -23,11 +29,15 @@ from music_assistant.constants import DLNA_CONTENT_FEATURES, DLNA_CONTENT_FEATUR
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.controller import StreamsController
-from music_assistant.controllers.streams.file_stream import FileStreams
-from music_assistant.helpers.ffmpeg import check_ffmpeg_version
+from music_assistant.controllers.streams.file_stream import (
+    FileStreams,
+    mp3_frame_count,
+    mp3_frame_offset,
+)
+from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Iterator
+    from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 
 QUEUE_ID = "q1"
 SESSION_ID = "sess1"
@@ -39,6 +49,11 @@ WAV_16 = AudioFormat(content_type=ContentType.WAV, sample_rate=44100, bit_depth=
 BYTES_PER_SECOND = 44100 * 4
 HEADER_SIZE = 44
 KIB_16 = 16384
+MP3_44K = AudioFormat(content_type=ContentType.MP3, sample_rate=44100, bit_depth=16)
+MP3_48K = AudioFormat(content_type=ContentType.MP3, sample_rate=48000, bit_depth=16)
+MP3_BYTES_PER_SECOND = 40000
+# the 49 frames an encode of an MP3 at 44.1 kHz can start on every time: their bytes and time
+MP3_BLOCK_SIZE, MP3_BLOCK_MS = 51200, 1280
 
 
 def _tone(seconds: float, pcm_format: AudioFormat = PCM_16) -> bytes:
@@ -142,6 +157,7 @@ class _Rig:
         """
         self.pcm = pcm
         self.pcm_format = pcm_format
+        self.fmt = output_format.content_type.value
         self.buffer = AudioBuffer(pcm_format)
         self.queue_item = QueueItem(
             queue_id=QUEUE_ID, queue_item_id=ITEM_ID, name=ITEM_ID, duration=duration
@@ -159,7 +175,9 @@ class _Rig:
         self.queue_item.streamdetails.seek_position = seek_position
         self.queue_item.streamdetails.buffer = self.buffer
         self.queue_data = PlayerQueueData(
-            queue=MagicMock(queue_id=QUEUE_ID, display_name="Queue"),
+            queue=MagicMock(
+                queue_id=QUEUE_ID, display_name="Queue", repeat_mode=RepeatMode.OFF, items=3
+            ),
             items=[self.queue_item],
             session_id=SESSION_ID,
         )
@@ -179,6 +197,7 @@ class _Rig:
         for name in (
             "serves_as_file",
             "stream_url_serves_as_file",
+            "_select_item_crossfade_mode",
             "_serve_file",
             "_send_file_part",
             "_encode_file",
@@ -234,14 +253,14 @@ class _Rig:
         download = _Download(wanted, stall_at)
         request = make_mocked_request(
             method,
-            f"/single/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.wav",
+            f"/single/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.{self.fmt}",
             headers={"Range": byte_range} if byte_range else None,
             match_info={
                 "session_id": SESSION_ID,
                 "queue_id": QUEUE_ID,
                 "queue_item_id": ITEM_ID,
                 "player_id": PLAYER_ID,
-                "fmt": "wav",
+                "fmt": self.fmt,
             },
             writer=download.writer,
             protocol=download.protocol,
@@ -264,16 +283,14 @@ class _Rig:
         return resp, bytes(download.body)
 
     def _item_stream(
-        self, queue_item: QueueItem, pcm_format: AudioFormat, seek_position: float, **kwargs: Any
+        self, queue_item: QueueItem, pcm_format: AudioFormat, seek_position_ms: int, **kwargs: Any
     ) -> AsyncGenerator[bytes]:
         assert queue_item is self.queue_item
         if not kwargs["consumer_connected"]():
             # nothing is read for a player that has gone, and that is no failure
             return _no_audio()
         return self.buffer.get_stream(
-            output_format=pcm_format,
-            seek_position_ms=int(seek_position * 1000),
-            exact_seek=kwargs["exact_seek"],
+            output_format=pcm_format, seek_position_ms=seek_position_ms, exact_seek=True
         )
 
 
@@ -359,8 +376,6 @@ async def test_a_range_request_gets_that_part_of_the_file(
     assert resp.headers["Accept-Ranges"] == "bytes"
     assert resp.content_length == last - first + 1
     assert body == whole_file[first : last + 1]
-    # the player was told once that it loads the track
-    rig.ctrl.mass.player_queues.track_loaded_in_buffer.assert_called_once()
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
@@ -398,12 +413,69 @@ async def test_a_head_request_gets_the_length_without_opening_the_track(
     rig.ctrl.audio.claim_item.assert_not_called()
 
 
+def _play(rig: _Rig, queue_item: QueueItem) -> None:
+    """
+    Let the queue of the rig play the given item, and run what the stream hands to the loop.
+
+    :param rig: The rig.
+    :param queue_item: The item the queue plays now.
+    """
+    rig.queue_data.queue.current_item = queue_item
+    rig.ctrl.mass.loop = asyncio.get_running_loop()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+@pytest.mark.parametrize("byte_range", [None, f"bytes={100 * KIB_16}-", "bytes=-128"])
+async def test_a_player_that_asks_again_for_the_file_it_plays_is_heard(
+    rig: _Rig, byte_range: str | None
+) -> None:
+    """A player that comes back for the file of the item it plays has resumed or seeked."""
+    await rig.decode()
+    _play(rig, rig.queue_item)
+
+    await rig.fetch()
+    await asyncio.sleep(0)
+    rig.player.on_file_requested_again.assert_not_called()
+
+    await rig.fetch(byte_range)
+    await asyncio.sleep(0)
+    rig.player.on_file_requested_again.assert_called_once_with()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_file_fetched_ahead_again_is_no_resume_or_seek(rig: _Rig) -> None:
+    """A player that asks again for the file of the next item does not resume or seek."""
+    await rig.decode()
+    _play(rig, QueueItem(queue_id=QUEUE_ID, queue_item_id="item0", name="item0", duration=60))
+
+    await rig.fetch()
+    await rig.fetch("bytes=-128")
+    await asyncio.sleep(0)
+
+    rig.player.on_file_requested_again.assert_not_called()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_head_or_refused_request_again_is_no_resume_or_seek(rig: _Rig) -> None:
+    """A HEAD request and a part past the end that gets a 416 do not count as a request again."""
+    await rig.decode()
+    _play(rig, rig.queue_item)
+    await rig.fetch()
+
+    await rig.fetch(f"bytes={100 * KIB_16}-", method="HEAD")
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable):
+        await rig.fetch(f"bytes={HEADER_SIZE + len(rig.pcm)}-")
+    await asyncio.sleep(0)
+
+    rig.player.on_file_requested_again.assert_not_called()
+
+
 @pytest.mark.usefixtures("passthrough_encoder")
 async def test_a_player_that_does_not_fetch_files_keeps_its_stream(rig: _Rig) -> None:
     """Without the property a range is not answered, and no length or part is announced."""
     await rig.decode()
     rig.player.fetches_files = False
-    rig.player.get_config_value.return_value = False
+    rig.player.requires_content_length = False
 
     resp, _ = await rig.fetch("bytes=100000-", method="HEAD")
 
@@ -602,6 +674,25 @@ async def test_the_start_of_a_file_is_answered_from_memory(rig: _Rig) -> None:
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
+async def test_the_queue_is_told_of_every_part_that_is_encoded(rig: _Rig) -> None:
+    """A player that seeks or plays a track again gets its next track handed over again."""
+    await rig.decode()
+    loaded = rig.ctrl.mass.player_queues.track_loaded_in_buffer
+    await rig.fetch()
+    assert loaded.call_count == 1
+
+    # the start again, dropped at once: nothing is encoded for it
+    await rig.fetch(wanted=KIB_16)
+    assert loaded.call_count == 1
+
+    await rig.fetch(f"bytes={100 * KIB_16}-")
+    await rig.fetch()
+
+    assert loaded.call_count == 3
+    loaded.assert_called_with(QUEUE_ID, ITEM_ID)
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
 async def test_a_player_that_reads_on_past_the_start_gets_an_encode(rig: _Rig) -> None:
     """What memory does not hold is encoded for a player that stays."""
     await rig.decode()
@@ -672,11 +763,11 @@ async def test_every_encode_is_paced_with_a_head_start_out_of_the_files_budget(r
     seek = HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2
 
     await rig.fetch(wanted=KIB_16)
-    for _ in range(3):
+    for _ in range(6):
         await rig.fetch(f"bytes={seek}-", wanted=KIB_16)
 
     # an encode starts a whole second before its part: 1.5 s that the player never gets
-    assert [_burst(pacing) for pacing in rig.pacing] == [10, 11.5, 11.5, 1.5]
+    assert [_burst(pacing) for pacing in rig.pacing] == [6, 7.5, 7.5, 7.5, 7.5, 1.5, 1.5]
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
@@ -688,8 +779,7 @@ async def test_an_encode_reads_the_track_a_second_before_its_part(rig: _Rig) -> 
     await rig.fetch(f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + 100}-", wanted=KIB_16)
 
     stream = rig.ctrl.audio.get_queue_item_stream.call_args.kwargs
-    assert stream["seek_position"] == 3 + 5
-    assert stream["exact_seek"] is True
+    assert stream["seek_position_ms"] == (3 + 5) * 1000
     assert stream["session_id"] == SESSION_ID
 
 
@@ -709,6 +799,21 @@ async def test_a_stream_ends_when_its_session_is_no_longer_current(rig: _Rig) ->
     assert not resp.keep_alive
 
 
+def _repeat(rig: _Rig, repeat_mode: RepeatMode, *, crossfade: bool, items: int = 1) -> None:
+    """
+    Let the queue of a rig repeat.
+
+    :param rig: The rig.
+    :param repeat_mode: What the queue repeats.
+    :param crossfade: Whether the queue fades its tracks into each other.
+    :param items: The number of items of the queue.
+    """
+    queue = rig.queue_data.queue
+    queue.repeat_mode, queue.items = repeat_mode, items
+    if crossfade:
+        rig.ctrl.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+
+
 @pytest.mark.parametrize(
     ("change", "served_as_file"),
     [
@@ -718,19 +823,25 @@ async def test_a_stream_ends_when_its_session_is_no_longer_current(rig: _Rig) ->
         (lambda rig: setattr(rig.queue_item.streamdetails, "media_type", MediaType.RADIO), False),
         (lambda rig: rig.queue_item.extra_attributes.update(playback_speed=1.25), False),
         (lambda rig: rig.queue_item.extra_attributes.update(playback_speed=1.0), True),
+        # a track that is mixed with its neighbours is a file as well
         (
             lambda rig: setattr(
                 rig.ctrl.get_crossfade_mode, "return_value", CrossfadeMode.STANDARD_CROSSFADE
             ),
-            False,
+            True,
         ),
         (
             lambda rig: setattr(
                 rig.ctrl.get_crossfade_mode, "return_value", CrossfadeMode.SMART_CROSSFADE
             ),
-            False,
+            True,
         ),
-        (lambda rig: setattr(rig.ctrl.audio.fade_into_pending, "return_value", True), False),
+        (lambda rig: setattr(rig.ctrl.audio.fade_into_pending, "return_value", True), True),
+        # a track that repeats is a file, unless the play before it left its mixes in that file
+        (lambda rig: _repeat(rig, RepeatMode.ONE, crossfade=False), True),
+        (lambda rig: _repeat(rig, RepeatMode.ONE, crossfade=True), False),
+        (lambda rig: _repeat(rig, RepeatMode.ALL, crossfade=True, items=2), False),
+        (lambda rig: _repeat(rig, RepeatMode.ALL, crossfade=True, items=3), True),
         (lambda rig: setattr(rig.queue_item.streamdetails, "fade_in", True), False),
         (lambda rig: setattr(rig.queue_item.streamdetails, "tail_overlap", Mock()), False),
         (lambda rig: setattr(rig.queue_item.streamdetails, "allow_seek", False), False),
@@ -748,6 +859,10 @@ async def test_a_stream_ends_when_its_session_is_no_longer_current(rig: _Rig) ->
         "crossfade",
         "smart-fade",
         "fade-into-the-item-pending",
+        "repeat-one",
+        "repeat-one-with-crossfade",
+        "repeat-of-two-with-crossfade",
+        "repeat-of-three-with-crossfade",
         "fade-in",
         "voice-over",
         "not-seekable",
@@ -756,16 +871,27 @@ async def test_a_stream_ends_when_its_session_is_no_longer_current(rig: _Rig) ->
     ],
 )
 def test_what_is_served_as_a_file(rig: _Rig, change: Any, served_as_file: bool) -> None:
-    """Only a plain track at normal speed, as nothing is mixed into it, is served as a file."""
+    """Only a track at normal speed, without a fade-in or a voice-over, is served as a file."""
     change(rig)
 
     assert rig.ctrl.serves_as_file(rig.player, rig.queue_item, ContentType.WAV) is served_as_file
 
 
-@pytest.mark.parametrize("codec", [ContentType.FLAC, ContentType.MP3, ContentType.PCM_S16LE])
-def test_only_wav_is_served_as_a_file(rig: _Rig, codec: ContentType) -> None:
+@pytest.mark.parametrize(
+    ("codec", "served_as_file"),
+    [
+        (ContentType.WAV, True),
+        (ContentType.MP3, True),
+        (ContentType.FLAC, False),
+        (ContentType.AAC, False),
+        (ContentType.PCM_S16LE, False),
+    ],
+)
+def test_only_wav_and_mp3_are_served_as_a_file(
+    rig: _Rig, codec: ContentType, served_as_file: bool
+) -> None:
     """A codec whose size is not known up front keeps today's stream."""
-    assert not rig.ctrl.serves_as_file(rig.player, rig.queue_item, codec)
+    assert rig.ctrl.serves_as_file(rig.player, rig.queue_item, codec) is served_as_file
 
 
 def test_a_track_without_stream_details_can_be_served_as_a_file(rig: _Rig) -> None:
@@ -780,6 +906,7 @@ def test_a_track_without_stream_details_can_be_served_as_a_file(rig: _Rig) -> No
     ("url", "served_as_file"),
     [
         (f"{BASE_URL}/single/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.wav", True),
+        (f"{BASE_URL}/single/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.mp3", True),
         (f"{BASE_URL}/single/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.flac", False),
         (f"{BASE_URL}/flow/{SESSION_ID}/{QUEUE_ID}/{ITEM_ID}/{PLAYER_ID}.wav", False),
         (f"{BASE_URL}/single/{SESSION_ID}/{QUEUE_ID}/pos/3/{PLAYER_ID}.wav", True),
@@ -789,6 +916,7 @@ def test_a_track_without_stream_details_can_be_served_as_a_file(rig: _Rig) -> No
     ],
     ids=[
         "single-wav",
+        "single-mp3",
         "single-flac",
         "flow",
         "queue-position",
@@ -961,3 +1089,307 @@ async def test_parts_fetched_like_a_sonos_join_into_one_download(case: str) -> N
         return
     difference = np.abs(_samples(joined[HEADER_SIZE:]) - _samples(download[HEADER_SIZE:]))
     assert difference.max() <= tolerance
+
+
+@pytest.fixture
+async def unpaced_encoder() -> AsyncIterator[list[list[str]]]:
+    """
+    Encode for real, as fast as the audio comes: at its pace a test lasts as long as its track.
+
+    Yields the pacing arguments of every encode that was started.
+    """
+    await check_ffmpeg_version()
+    pacing: list[list[str]] = []
+
+    async def _unpaced(*, extra_input_args: list[str], **kwargs: Any) -> AsyncGenerator[bytes]:
+        pacing.append(extra_input_args)
+        async with aclosing(get_ffmpeg_stream(**kwargs)) as encoded:
+            async for chunk in encoded:
+                yield chunk
+
+    with (
+        patch("music_assistant.controllers.streams.controller.get_ffmpeg_stream", _unpaced),
+        patch("music_assistant.controllers.streams.file_stream.PROBE_GRACE", 0.05),
+    ):
+        yield pacing
+
+
+async def _encode_mp3(pcm: bytes, pcm_format: AudioFormat = PCM_16) -> bytes:
+    """
+    Encode audio to MP3 in one go, with the encoder of a track that is served as a file.
+
+    :param pcm: The audio.
+    :param pcm_format: Format of the audio.
+    """
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-loglevel",
+        "error",
+        *("-f", pcm_format.content_type.value, "-ar", str(pcm_format.sample_rate), "-ac", "2"),
+        *("-i", "-", "-f", "mp3", "-b:a", "320k"),
+        *("-write_xing", "0", "-id3v2_version", "0", "-reservoir", "0", "-"),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    encoded, _ = await process.communicate(pcm)
+    assert process.returncode == 0
+    return encoded
+
+
+def _mp3_frames(mp3: bytes, sample_rate: int) -> list[int]:
+    """
+    Return where every frame of an MP3 starts, as the frames themselves tell.
+
+    :param mp3: An MP3 that is frames of 320 kbit/s from its first byte to its last.
+    :param sample_rate: Sample rate of the MP3.
+    """
+    offsets: list[int] = []
+    offset = 0
+    while offset < len(mp3):
+        header = mp3[offset : offset + 3]
+        # MPEG-1 layer 3 at 320 kbit/s
+        assert header[0] == 0xFF
+        assert header[1] & 0xFE == 0xFA
+        assert header[2] >> 4 == 14
+        offsets.append(offset)
+        # a frame says itself whether it is padded with a byte
+        offset += 144 * 320000 // sample_rate + (header[2] >> 1 & 1)
+    assert offset == len(mp3)
+    return offsets
+
+
+@pytest.mark.usefixtures("unpaced_encoder")
+@pytest.mark.parametrize(
+    ("pcm_format", "output_format", "samples"),
+    [
+        (PCM_16, MP3_44K, 460 * 1152),
+        # audio that only just starts a frame gets that frame, and the one the encoder ends with
+        (PCM_16, MP3_44K, 460 * 1152 + 20),
+        (PCM_16, MP3_44K, 460 * 1152 + 600),
+        (
+            AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16),
+            MP3_48K,
+            500 * 1152 + 20,
+        ),
+    ],
+    ids=["whole-frames", "just-past-a-frame", "half-a-frame", "48k"],
+)
+async def test_an_mp3_file_declares_the_size_it_is_encoded_to(
+    pcm_format: AudioFormat, output_format: AudioFormat, samples: int
+) -> None:
+    """The size of an MP3 is known up front: its frames at a constant bit rate, and no more."""
+    rate = output_format.sample_rate
+    rig = _Rig(
+        _tone(13, pcm_format)[: samples * 4],
+        duration=samples // rate,
+        pcm_format=pcm_format,
+        output_format=output_format,
+    )
+    await rig.decode()
+    encoded = await _encode_mp3(rig.pcm, pcm_format)
+
+    head, _ = await rig.fetch(method="HEAD")
+    resp, body = await rig.fetch()
+
+    assert resp.status == 200
+    assert head.content_length == resp.content_length == len(encoded)
+    assert body == encoded
+    assert resp.keep_alive
+    assert resp.headers["Content-Type"].startswith("audio/mpeg")
+    assert resp.headers["Accept-Ranges"] == "bytes"
+    assert resp.headers["contentFeatures.dlna.org"] == DLNA_CONTENT_FEATURES_FILE
+    # no tag and no Xing header in front: every frame is one of the audio, where it should be
+    frames = _mp3_frames(body, rate)
+    assert len(frames) == mp3_frame_count(samples)
+    assert frames == [mp3_frame_offset(frame, rate) for frame in range(len(frames))]
+    assert b"Xing" not in body[: frames[1]]
+    assert b"Info" not in body[: frames[1]]
+
+
+async def test_a_part_from_the_middle_of_an_mp3(unpaced_encoder: list[list[str]]) -> None:
+    """A part is the output of an encode that starts on a block of frames before it."""
+    rig = _Rig(_tone(12), duration=12, output_format=MP3_44K, seek_position=3)
+    await rig.decode()
+    encoded = await _encode_mp3(rig.pcm[3 * BYTES_PER_SECOND :])
+    # in frame 287: the block that starts on frame 245 leaves it more than a second
+    first, last = 300001, 349999
+
+    resp, body = await rig.fetch(f"bytes={first}-{last}")
+
+    assert resp.status == 206
+    assert resp.headers["Content-Range"] == f"bytes {first}-{last}/{len(encoded)}"
+    assert resp.content_length == last - first + 1
+    assert body == encoded[first : last + 1]
+    stream = rig.ctrl.audio.get_queue_item_stream.call_args.kwargs
+    assert stream["seek_position_ms"] == 3000 + 5 * MP3_BLOCK_MS
+    # the output that is dropped costs the player none of its head start
+    dropped = (first - 5 * MP3_BLOCK_SIZE) / MP3_BYTES_PER_SECOND
+    assert [_burst(pacing) for pacing in unpaced_encoder] == [pytest.approx(6 + dropped, abs=0.001)]
+    rig.ctrl.mass.player_queues.track_loaded_in_buffer.assert_called_once_with(QUEUE_ID, ITEM_ID)
+
+
+@pytest.mark.parametrize(
+    ("byte_range", "length"),
+    [("bytes={tail}-", 128), ("bytes=-128", 128), ("bytes={near_end}-{end}", 50)],
+    ids=["from-the-tag", "last-bytes", "inside-the-tag"],
+)
+async def test_the_last_bytes_of_an_mp3_are_answered_without_its_audio(
+    unpaced_encoder: list[list[str]], byte_range: str, length: int
+) -> None:
+    """A renderer looks for a tag at the end of an MP3 before it plays or seeks."""
+    rig = _Rig(_tone(12), duration=12, output_format=MP3_44K)
+    # nothing of the track is decoded yet, so the file declares the duration plus a second
+    size = mp3_frame_offset(mp3_frame_count(13 * 44100), 44100)
+
+    resp, body = await rig.fetch(
+        byte_range.format(tail=size - 128, near_end=size - 100, end=size - 51)
+    )
+
+    assert resp.status == 206
+    assert resp.headers["Content-Range"].endswith(f"/{size}")
+    assert resp.content_length == len(body) == length
+    assert body == bytes(length)
+    assert rig.encodes == 0
+    assert unpaced_encoder == []
+    rig.ctrl.mass.player_queues.track_loaded_in_buffer.assert_not_called()
+
+
+@pytest.mark.usefixtures("unpaced_encoder")
+async def test_an_mp3_that_ends_short_of_its_declared_length() -> None:
+    """The body ends with the last frame of the audio, and from then on the file has that size."""
+    rig = _Rig(_tone(11.6), duration=12, output_format=MP3_44K)
+    # not decoded to its end yet, so the file declares the duration plus a second
+    await rig.decode(finished=False)
+    declared = mp3_frame_offset(mp3_frame_count(13 * 44100), 44100)
+    encoded = await _encode_mp3(rig.pcm)
+    real = len(encoded)
+
+    head, _ = await rig.fetch(method="HEAD")
+    await rig.buffer._set_eof()
+    resp, body = await rig.fetch()
+
+    assert head.content_length == resp.content_length == declared
+    assert body == encoded
+    # no silence was added, so the connection is closed on the missing rest
+    assert not resp.keep_alive
+
+    for start in (real, declared - 1):
+        with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as refusal:
+            await rig.fetch(f"bytes={start}-")
+        assert refusal.value.headers["Content-Range"] == f"bytes */{real}"
+    resp, _ = await rig.fetch(method="HEAD")
+    assert resp.content_length == real
+
+
+@pytest.mark.usefixtures("unpaced_encoder")
+async def test_a_look_for_a_tag_at_the_end_of_the_size_an_mp3_declared() -> None:
+    """A renderer that got the declared size with the start looks for a tag at its end."""
+    rig = _Rig(_tone(11.6), duration=12, output_format=MP3_44K)
+    # not decoded to its end yet, so the file declares the duration plus a second
+    await rig.decode(finished=False)
+    declared = mp3_frame_offset(mp3_frame_count(13 * 44100), 44100)
+    head, _ = await rig.fetch(method="HEAD")
+    await rig.buffer._set_eof()
+    _, body = await rig.fetch()
+    encodes = rig.encodes
+
+    resp, tag = await rig.fetch(f"bytes={declared - 128}-")
+
+    assert head.content_length == declared
+    assert len(body) < declared
+    assert resp.status == 206
+    assert resp.headers["Content-Range"] == f"bytes {declared - 128}-{declared - 1}/{declared}"
+    assert tag == bytes(128)
+    assert rig.encodes == encodes
+
+
+@pytest.mark.usefixtures("unpaced_encoder")
+async def test_a_part_past_the_real_end_of_an_mp3_finds_that_end() -> None:
+    """An encode that starts further on ends on the same last frame as one from the start."""
+    rig = _Rig(_tone(11.6), duration=12, output_format=MP3_44K)
+    await rig.decode(finished=False)
+    await rig.fetch(method="HEAD")
+    await rig.buffer._set_eof()
+    encoded = await _encode_mp3(rig.pcm)
+    real = len(encoded)
+
+    _, tail = await rig.fetch(f"bytes={real - 30000}-")
+    assert tail == encoded[-30000:]
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as refusal:
+        await rig.fetch(f"bytes={real}-")
+    assert refusal.value.headers["Content-Range"] == f"bytes */{real}"
+
+    # a player that asked for a part the audio never reaches
+    late = _Rig(rig.pcm, duration=12, output_format=MP3_44K)
+    await late.decode(finished=False)
+    await late.fetch(method="HEAD")
+    await late.buffer._set_eof()
+    _, nothing = await late.fetch(f"bytes={real + 20000}-")
+    assert nothing == b""
+    head, _ = await late.fetch(method="HEAD")
+    assert head.content_length == real
+
+
+MP3_JOIN_CASES = {
+    # nothing between the track and the encoder
+    "source-format": (PCM_16, MP3_44K, ()),
+    # audio of more than 16 bit goes to the encoder as it is: brought down to 16 bit first
+    # it would get dither, which differs from one encode to the next
+    "24-bit": (
+        AudioFormat(content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=24),
+        MP3_48K,
+        ("volume=-6dB",),
+    ),
+    # a resampler in front of the encoder: an encode starts on a frame of both sample rates
+    "resampled": (
+        AudioFormat(content_type=ContentType.PCM_S24LE, sample_rate=88200, bit_depth=24),
+        MP3_48K,
+        (),
+    ),
+}
+
+
+@pytest.mark.usefixtures("unpaced_encoder")
+@pytest.mark.parametrize("case", MP3_JOIN_CASES)
+async def test_parts_of_an_mp3_join_into_one_download(case: str) -> None:
+    """
+    The same offset gives the same bytes in an MP3, whichever request it comes from.
+
+    Every part comes from an encoder that started by itself, on a block of frames a second
+    or more before the part, and its frames are those of the file fetched in one go.
+    """
+    pcm_format, output_format, filter_params = MP3_JOIN_CASES[case]
+    # a length that is no whole number of seconds, as tracks have
+    pcm = _tone(20.37, pcm_format)
+    kept, ahead = 8 * KIB_16, 30 * KIB_16
+
+    async def _rig() -> _Rig:
+        rig = _Rig(
+            pcm,
+            duration=20,
+            pcm_format=pcm_format,
+            output_format=output_format,
+            filter_params=filter_params,
+        )
+        await rig.decode()
+        return rig
+
+    resp, download = await (await _rig()).fetch()
+    assert resp.content_length == len(download)
+    assert resp.keep_alive
+    assert kept < ahead < len(download)
+
+    # a Sonos keeps the start, fetches a part for a seek ahead, and asks to go on where
+    # its start ends
+    sonos = await _rig()
+    _, start = await sonos.fetch(wanted=kept)
+    _, seek_ahead = await sonos.fetch(f"bytes={ahead}-")
+    _, between = await sonos.fetch(f"bytes={kept}-", wanted=ahead - kept)
+    assert sonos.encodes == 3
+    assert start + between + seek_ahead == download
+
+    # a WiiM asks for the byte it seeks to, wherever in a frame that is
+    wiim = await _rig()
+    for offset in (100001, 3 * len(download) // 4, len(download) - 5000):
+        _, part = await wiim.fetch(f"bytes={offset}-")
+        assert part == download[offset:]

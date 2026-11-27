@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import fields, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
@@ -30,12 +32,13 @@ from music_assistant.helpers.uri import canonical_provider_url, discogs_id_from_
 from music_assistant.helpers.util import parse_optional_bool
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
     from collections.abc import Set as AbstractSet
 
     from music_assistant_models.enums import MediaType
 
     from music_assistant.controllers.music.media.base import AudiobookSyncDetails
+    from music_assistant.helpers.database import DatabaseConnection
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.providers.musicbrainz.models import MusicBrainzRecording
@@ -43,6 +46,10 @@ if TYPE_CHECKING:
 # the trigram tokenizer of the FTS5 search index cannot match
 # search terms shorter than 3 characters
 MIN_FTS_TERM_LENGTH: Final[int] = 3
+
+_GENRE_LOOKUP_TABLE: Final[str] = "temp.genre_lookup"
+# the TEMP table is shared by everything on the library connection, so one user at a time
+_genre_lookup_lock = asyncio.Lock()
 
 
 class ResumePoint(NamedTuple):
@@ -123,22 +130,43 @@ def search_name_match_clause(
     )
 
 
-def genre_lookup_cte(raw_name_to_genres: Mapping[str, Sequence[int]]) -> tuple[str, dict[str, str]]:
+@asynccontextmanager
+async def genre_lookup_table(
+    database: DatabaseConnection, raw_name_to_genres: Mapping[str, Sequence[int]]
+) -> AsyncGenerator[str]:
     """
-    Return a ``genre_lookup(raw_name, genre_id)`` CTE and the query params it binds.
+    Hold the ``(raw_name, genre_id)`` pairs in an indexed TEMP table and yield its name.
 
-    Raw names are lowercased so they can be joined on ``LOWER(TRIM(g.value))``.
+    Raw names are lowercased so they can be joined on ``LOWER(TRIM(g.value))``. Only one scope
+    holds the table at a time, so scopes must not be nested; the table is emptied on exit.
 
+    :param database: The library database connection to hold the table on.
     :param raw_name_to_genres: The genre ids each raw genre name resolves to.
     """
     # one JSON param instead of a param per pair keeps huge libraries under SQLite's variable limit
     pairs = [[name, gid] for name, gids in raw_name_to_genres.items() for gid in gids]
-    cte = (
-        "WITH genre_lookup(raw_name, genre_id) AS ("
-        "SELECT LOWER(json_extract(value, '$[0]')), json_extract(value, '$[1]') "
-        "FROM json_each(:genre_lookup))"
-    )
-    return cte, {"genre_lookup": json_dumps(pairs)}
+    async with _genre_lookup_lock:
+        # a TEMP table because SQLite does not index a json_each CTE and would scan it
+        # for every genre value of every row
+        await database.execute(
+            f"CREATE TEMP TABLE IF NOT EXISTS {_GENRE_LOOKUP_TABLE}("
+            "raw_name TEXT NOT NULL, genre_id INTEGER NOT NULL, "
+            "PRIMARY KEY(raw_name, genre_id)) WITHOUT ROWID"
+        )
+        try:
+            # names that only differ in case lower to the same pair
+            await database.execute(
+                f"INSERT OR IGNORE INTO {_GENRE_LOOKUP_TABLE}(raw_name, genre_id) "
+                "SELECT LOWER(json_extract(value, '$[0]')), json_extract(value, '$[1]') "
+                "FROM json_each(:pairs)",
+                {"pairs": json_dumps(pairs)},
+            )
+            yield _GENRE_LOOKUP_TABLE
+        finally:
+            # emptied instead of dropped: a DROP fails while another statement on the
+            # shared connection is still in progress
+            await database.execute(f"DELETE FROM {_GENRE_LOOKUP_TABLE}")
+            await database.commit()
 
 
 def sort_search_result[SortItemT: MediaItemType | ItemMapping](

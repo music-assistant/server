@@ -19,9 +19,11 @@ from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.controllers.player_queues.constants import DEFAULT_PAUSE_TIMEOUT
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.sync_group.constants import IDLE_GRACE_SECONDS
 
 from .harness import DEFAULT_FEATURES, FakeProtocol, Scenario
 from .test_group_power_on import _announce
+from .test_grouping import _group
 
 if TYPE_CHECKING:
     from music_assistant_models.player import Player as PlayerState
@@ -649,3 +651,156 @@ async def test_a_speaker_that_can_be_held_keeps_its_connection(
     await scenario.advance(DEFAULT_PAUSE_TIMEOUT)
     assert _names(speaker) == ["stop"]
     assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+
+
+async def _paused_sync_group(
+    scenario: Scenario, live_source: LiveSource
+) -> tuple[FakeProtocol, list[str], str]:
+    """
+    Pause the live source on the sync group of the Kitchen and Office speakers.
+
+    Return the Kitchen speaker, which leads the group, the ids of both players and that of the
+    group.
+    """
+    (kitchen, _), player_ids = await _speakers(scenario, "Kitchen", "Office")
+    group_id = await _group(scenario, "sync_group", *player_ids)
+    await live_source.play(group_id)
+    assert _state(scenario, player_ids[1]).synced_to == player_ids[0]
+    kitchen.commands.clear()
+    scenario.clear_events()
+    await live_source.pause(group_id)
+    return kitchen, player_ids, group_id
+
+
+def _grouping_commands(speaker: FakeProtocol) -> list[tuple[Any, ...]]:
+    """Return the grouping commands a speaker got, in order."""
+    return [x for x in speaker.commands if x[0] == "set_members"]
+
+
+async def test_a_paused_sync_group_keeps_its_speakers(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """The speakers are silent and paused, and the group holds them past its idle grace."""
+    kitchen, player_ids, group_id = await _paused_sync_group(scenario, live_source)
+
+    await scenario.advance(IDLE_GRACE_SECONDS + 5)
+
+    assert _names(kitchen) == ["stop"]
+    assert _grouping_commands(kitchen) == []
+    for player_id in (group_id, *player_ids):
+        assert _state(scenario, player_id).playback_state == PlaybackState.PAUSED
+        assert PlaybackState.IDLE not in _seen_states(scenario, player_id)
+    for player_id in player_ids:
+        assert _state(scenario, player_id).active_group == group_id
+
+
+async def test_play_on_a_paused_sync_group_plays_on_with_the_same_speakers(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """Play resumes the source on the group, which does not group its speakers again."""
+    kitchen, player_ids, group_id = await _paused_sync_group(scenario, live_source)
+    await scenario.advance(IDLE_GRACE_SECONDS + 5)
+    kitchen.commands.clear()
+
+    await scenario.mass.players.cmd_play(group_id)
+    live_source.provider.on_source_control.assert_awaited_once_with(SOURCE_ID, SourceControl.PLAY)
+    await live_source.play(group_id)
+    await scenario.advance(5)
+
+    assert _names(kitchen) == ["play_media"]
+    assert _grouping_commands(kitchen) == []
+    for player_id in (group_id, *player_ids):
+        assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
+        assert PlaybackState.IDLE not in _seen_states(scenario, player_id)
+
+
+@pytest.mark.parametrize("taken_out", ["leader", "member"])
+async def test_a_speaker_taken_out_of_a_paused_sync_group_is_free_at_once(
+    scenario: Scenario, live_source: LiveSource, taken_out: str
+) -> None:
+    """
+    A speaker that leaves the paused group is idle and free within a second.
+
+    :param taken_out: Which speaker leaves: Kitchen, which leads the group, or Office.
+    """
+    _, player_ids, group_id = await _paused_sync_group(scenario, live_source)
+    await scenario.advance(5)
+    player_id = player_ids[0] if taken_out == "leader" else player_ids[1]
+
+    task = await scenario.command(scenario.mass.players.cmd_ungroup(player_id))
+    await scenario.advance(1)
+
+    assert task.done()
+    await task
+    state = _state(scenario, player_id)
+    assert state.playback_state == PlaybackState.IDLE
+    assert state.active_group is None
+    await scenario.mass.players.cmd_stop(group_id)
+    await scenario.advance(5)
+
+
+async def test_a_paused_sync_group_lets_its_speakers_go_at_the_pause_timeout(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """At the pause timeout the speakers are free and idle, and the group keeps the source."""
+    _, player_ids, group_id = await _paused_sync_group(scenario, live_source)
+
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT - 1)
+    assert _state(scenario, group_id).playback_state == PlaybackState.PAUSED
+    await scenario.advance(2)
+
+    state = _state(scenario, group_id)
+    assert state.playback_state == PlaybackState.IDLE
+    assert state.active_source == SOURCE_URI
+    for player_id in player_ids:
+        assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+        assert _state(scenario, player_id).active_group is None
+    live_source.provider.on_source_released.assert_not_awaited()
+
+
+@pytest.mark.parametrize("stopped", ["group", "speaker"])
+async def test_a_stop_of_a_paused_sync_group_lets_the_source_go(
+    scenario: Scenario, live_source: LiveSource, stopped: str
+) -> None:
+    """
+    A stop of the group or of one of its speakers frees the speakers and ends the source.
+
+    :param stopped: What the user stops.
+    """
+    _, player_ids, group_id = await _paused_sync_group(scenario, live_source)
+    await scenario.advance(5)
+
+    await scenario.mass.players.cmd_stop(group_id if stopped == "group" else player_ids[1])
+    await scenario.advance(1)
+
+    live_source.provider.on_source_released.assert_awaited_once_with(SOURCE_ID, group_id)
+    for player_id in (group_id, *player_ids):
+        assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+    for player_id in player_ids:
+        assert _state(scenario, player_id).active_group is None
+
+
+async def test_a_sync_group_whose_source_ends_while_paused_goes_idle(
+    scenario: Scenario, live_source: LiveSource
+) -> None:
+    """A session that ends upstream leaves the group and its speakers idle at once."""
+    _, player_ids, group_id = await _paused_sync_group(scenario, live_source)
+    await scenario.advance(5)
+    session = scenario.mass.players.get_audio_source_session(group_id)
+    assert session is not None
+
+    await scenario.mass.players.deselect_source(
+        group_id,
+        stop_playback=False,
+        provider_instance_id=INSTANCE_ID,
+        source_id=SOURCE_ID,
+        playback_session_id=session.playback_session_id,
+    )
+    await scenario.advance(1)
+
+    for player_id in (group_id, *player_ids):
+        assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+    # as any group that plays nothing, it lets its speakers go after its idle grace
+    await scenario.advance(IDLE_GRACE_SECONDS)
+    for player_id in player_ids:
+        assert _state(scenario, player_id).active_group is None

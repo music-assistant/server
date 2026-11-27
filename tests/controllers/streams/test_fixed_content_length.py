@@ -13,7 +13,6 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.helpers.audio import calculate_content_length
@@ -59,17 +58,14 @@ def _controller(queue_item: QueueItem, fixed_content_length: bool) -> MagicMock:
     Build a bare streams controller serving one queue that holds the given item.
 
     :param queue_item: The queue item the player asks for.
-    :param fixed_content_length: The player's fixed content length setting.
+    :param fixed_content_length: Whether the player needs a content length.
     """
     queue_data = PlayerQueueData(
         queue=MagicMock(queue_id=QUEUE_ID, display_name="Queue"),
         items=[queue_item],
         session_id=SESSION_ID,
     )
-    player = MagicMock()
-    player.get_config_value.side_effect = lambda key, default=None, **_kwargs: (
-        fixed_content_length if key == CONF_REQUIRES_FIXED_CONTENT_LENGTH else default
-    )
+    player = MagicMock(requires_content_length=fixed_content_length)
 
     ctrl = MagicMock()
     ctrl._open_item_streams = {}
@@ -152,10 +148,10 @@ async def test_a_flow_stream_gets_the_placeholder_length() -> None:
 
 @pytest.mark.parametrize("serve", [_serve_item, _serve_flow], ids=["item", "flow"])
 @pytest.mark.parametrize("version", [HttpVersion10, HttpVersion11], ids=["http10", "http11"])
-async def test_no_length_and_no_forced_chunking_without_the_setting(
+async def test_no_length_and_no_forced_chunking_without_the_trait(
     serve: Any, version: HttpVersion
 ) -> None:
-    """Without the setting a player gets no length and chunking is left to the HTTP version."""
+    """Without the trait a player gets no length and chunking is left to the HTTP version."""
     ctrl = _controller(_queue_item(duration=180), fixed_content_length=False)
 
     resp = await serve(ctrl, version)

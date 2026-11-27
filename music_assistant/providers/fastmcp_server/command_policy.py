@@ -134,6 +134,7 @@ _PLAYBACK_COMMANDS = frozenset(
         "players/cmd/resume",
         "players/cmd/seek",
         "players/cmd/shuffle",
+        "players/cmd/skip",
         "players/cmd/stop",
     }
 )

@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 125
+API_SCHEMA_VERSION: Final[int] = 127
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -207,7 +207,6 @@ CONF_DEFAULT_IMAGE_ENGINE: Final[str] = "image_engine"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
-CONF_REQUIRES_FIXED_CONTENT_LENGTH: Final[str] = "requires_fixed_content_length"
 CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
 CONF_ENABLE_ICY_METADATA: Final[str] = "enable_icy_metadata"
 CONF_VOLUME_NORMALIZATION_RADIO: Final[str] = "volume_normalization_radio"
@@ -750,22 +749,6 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
-)
-
-
-CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH = ConfigEntry(
-    key=CONF_REQUIRES_FIXED_CONTENT_LENGTH,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=False,
-    category="protocol_generic",
-    advanced=True,
-    requires_reload=True,
-)
-CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_DEFAULT_ENABLED = ConfigEntry.from_dict(
-    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True}
-)
-CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED = ConfigEntry.from_dict(
-    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True, "hidden": True}
 )
 
 

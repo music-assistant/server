@@ -29,7 +29,10 @@ from pyatv.const import (
     Protocol,
 )
 from pyatv.const import MediaType as PyatvMediaType
+from pyatv.core import CoreStateDispatcher
+from pyatv.core.facade import FacadeAudio
 from pyatv.interface import App, AppleTV, ArtworkInfo, Playing
+from pyatv.protocols.mrp import MrpAudio, messages, protobuf
 from pyatv.settings import MrpTunnel
 from zeroconf import ServiceStateChange
 
@@ -1205,6 +1208,52 @@ async def test_homepod_mrp_connection_uses_transient_credentials() -> None:
     assert service.credentials is None
 
 
+def _mrp_audio(
+    answer: float | Exception, known_level: float = 0.0
+) -> tuple[FacadeAudio, MagicMock]:
+    """
+    Create pyatv's audio interface of an MRP connection, and the protocol below it.
+
+    :param answer: The level the device answers a volume request with, or the error raised.
+    :param known_level: The level pyatv knows from a push.
+    """
+    protocol = MagicMock()
+    protocol.device_info = messages.create(protobuf.DEVICE_INFO_MESSAGE)  # type: ignore[no-untyped-call]
+    protobuf.extract_inner(protocol.device_info).deviceUID = "homepod-uid"
+    if isinstance(answer, Exception):
+        protocol.send_and_receive = AsyncMock(side_effect=answer)
+    else:
+        result = messages.create(protobuf.GET_VOLUME_RESULT_MESSAGE)  # type: ignore[no-untyped-call]
+        protobuf.extract_inner(result).volume = answer
+        protocol.send_and_receive = AsyncMock(return_value=result)
+    mrp_audio = MrpAudio(protocol, MagicMock())
+    mrp_audio._volume = known_level
+    audio = FacadeAudio(CoreStateDispatcher())
+    audio.register(mrp_audio, Protocol.MRP)
+    return audio, protocol
+
+
+async def test_a_homepod_asks_for_its_level_at_connect() -> None:
+    """A HomePod is asked for its level at connect, as MRP only reports it once it changes."""
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player._attr_volume_level = 62
+    device = MagicMock(spec=AppleTV)
+    available = {FeatureName.PushUpdates, FeatureName.Volume}
+    device.features.in_state.side_effect = lambda _state, feature: feature in available
+    device.metadata.playing = AsyncMock(return_value=Playing(device_state=DeviceState.Idle))
+    device.audio, _ = _mrp_audio(0.05)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.control_player.pyatv.connect", return_value=device
+        ),
+        patch.object(player, "update_state"),
+    ):
+        assert await player._connect_mrp() is False
+
+    assert player.volume_level == 5
+
+
 async def test_third_party_mrp_tunnel_is_forced_from_capabilities() -> None:
     """A third-party MRP tunnel is not blocked by pyatv's model allowlist."""
     player = _make_control_player(companion_flags=None)
@@ -2128,6 +2177,35 @@ async def test_a_set_takes_over_the_level_known_at_connect(reported: int, expect
     ):
         await player._connect_speaker()
 
+    assert player.volume_level == expected
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [(0.05, 5), (TimeoutError(), 30), (KeyError("request"), 30)],
+    ids=["answered", "no answer", "connection closed"],
+)
+async def test_a_set_asks_its_speaker_for_the_level_at_connect(
+    answer: float | Exception, expected: int
+) -> None:
+    """The level a HomePod answers at connect is taken over; without an answer, pyatv's is."""
+    player, _ = _make_set_player()
+    player._attr_volume_level = 62
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.Volume
+    device.audio, protocol = _mrp_audio(answer, known_level=30.0)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.control_player.pyatv.connect", return_value=device
+        ),
+        patch.object(player, "update_state"),
+    ):
+        await player._connect_speaker()
+
+    request = protocol.send_and_receive.await_args.args[0]
+    assert request.type == protobuf.GET_VOLUME_MESSAGE
+    assert protobuf.extract_inner(request).outputDeviceUID == "homepod-uid"
     assert player.volume_level == expected
 
 

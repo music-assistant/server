@@ -38,6 +38,9 @@ ITEM_ID = "item-1"
 MATCHED_ITEM_ID = "item-on-tidal"
 USER_ID = "listener"
 OTHER_USER_ID = "housemate"
+# a capacity budget no test outlasts, however slow the machine: what a test sees is
+# decided by its mocks, and nothing in it waits for a source for real
+AMPLE_BUDGET = 60.0
 
 
 def _mapping(
@@ -123,7 +126,7 @@ def _mass(
     mass.providers = list(providers.values())
     mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
-    mass.player_queues.has_paused_stream_slot_holder.return_value = False
+    mass.player_queues.has_stream_slot_to_take_over.return_value = False
     mass.player_queues.refuse_held_stream_slot.return_value = None
     if access is not None:
         mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
@@ -165,7 +168,9 @@ async def test_saturated_single_mapping_is_rescued_by_a_cross_provider_match(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert queue_item.streamdetails is not None
@@ -238,7 +243,9 @@ async def test_a_provider_without_track_support_is_never_searched(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     # the radio-only provider is skipped; the track-capable provider gets the search
@@ -263,7 +270,9 @@ async def test_a_matchless_search_falls_back_to_the_blocking_wait(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     mass.music.tracks.match_provider.assert_awaited_once()
@@ -306,7 +315,9 @@ async def test_a_cross_provider_match_still_rescues_a_held_source(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert queue_item.streamdetails is not None
@@ -331,7 +342,9 @@ async def test_a_matchless_search_ends_in_a_refusal_when_a_realtime_holder_has_t
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
     with pytest.raises(ProviderStreamHeldError) as exc_info:
-        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+        await audio.get_audio_buffer(
+            queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+        )
 
     mass.music.tracks.match_provider.assert_awaited_once()
     waits = [call.kwargs["source_wait_timeout"] for call in get_buffer.await_args_list]
@@ -356,7 +369,9 @@ async def test_a_matchless_search_still_raises_when_the_slot_never_frees(
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
     with pytest.raises(ProviderStreamLimitError):
-        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=0.2)
+        await audio.get_audio_buffer(
+            queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+        )
 
     mass.music.tracks.match_provider.assert_awaited_once()
     assert get_buffer.await_count == 2
@@ -384,7 +399,7 @@ async def test_disallowed_provider_match_is_never_attempted(
         await audio.get_audio_buffer(
             queue_item,
             reason="prepare_next",
-            capacity_wait_timeout=0.2,
+            capacity_wait_timeout=AMPLE_BUDGET,
             allow_provider_match=False,
         )
 
@@ -413,7 +428,9 @@ async def test_a_library_track_persists_the_discovered_mapping(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     # the write-back runs as a background task, detached from this playback request
@@ -442,7 +459,9 @@ async def test_a_library_track_is_not_searched_on_a_service_without_a_match(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     mass.music.tracks.match_provider.assert_not_awaited()
@@ -472,7 +491,9 @@ async def test_one_failing_provider_does_not_end_the_search(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert mass.music.tracks.match_provider.await_count == 2
@@ -504,7 +525,9 @@ async def test_a_failed_mapping_write_back_does_not_fail_the_rescue(
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     assert queue_item.streamdetails is not None
@@ -538,7 +561,9 @@ async def test_discovery_runs_at_most_once_per_buffer_request(
     )
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
 
-    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", capacity_wait_timeout=AMPLE_BUDGET
+    )
 
     assert result is expected_buffer
     mass.music.tracks.match_provider.assert_awaited_once()

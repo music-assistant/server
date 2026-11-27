@@ -57,7 +57,7 @@ from music_assistant.constants import (
     GENRE_ICONS_DIR_NAME,
     RESOURCES_DIR,
 )
-from music_assistant.controllers.music.helpers import genre_lookup_cte, search_name_match_clause
+from music_assistant.controllers.music.helpers import genre_lookup_table, search_name_match_clause
 from music_assistant.controllers.music.listing import resolve_listing_sort
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.database import UNSET
@@ -1673,7 +1673,7 @@ class GenreController(MediaControllerBase[Genre]):
 
     async def _bulk_scan_media_genres(self) -> None:
         """
-        Bulk-scan all media items and rebuild genre mappings using CTE.
+        Bulk-scan all media items and rebuild genre mappings.
 
         Resolution is scoped per genre taxonomy (music / audiobook / podcast): for each bucket
         the genre names from that bucket's tables are resolved against — and created within —
@@ -1733,28 +1733,27 @@ class GenreController(MediaControllerBase[Genre]):
             if not raw_name_to_genres:
                 continue
 
-            # Build CTE with (raw_name, genre_id) pairs and INSERT mappings for this bucket's
+            # Build a lookup with (raw_name, genre_id) pairs and INSERT mappings for this bucket's
             # tables. One raw name can produce multiple rows when it maps to multiple genres.
-            cte, cte_params = genre_lookup_cte(raw_name_to_genres)
-
-            for table, media_type in tables:
-                full_query = (
-                    f"{cte} INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}"
-                    f"(genre_id, media_id, media_type, alias) "
-                    f"SELECT gl.genre_id, {table}.item_id, "
-                    f"'{media_type.value}', TRIM(g.value) "
-                    f"FROM {table}, "
-                    f"json_each(CASE WHEN json_valid({table}.metadata) "
-                    f"THEN json_extract({table}.metadata, '$.genres') END) AS g "
-                    f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
-                    f"WHERE TRIM(g.value) != '' "
-                    f"AND NOT EXISTS ("
-                    f"SELECT 1 FROM {excl} e "
-                    f"WHERE e.genre_id = gl.genre_id "
-                    f"AND e.media_id = {table}.item_id "
-                    f"AND e.media_type = '{media_type.value}')"
-                )
-                await db.execute(full_query, cte_params)
+            async with genre_lookup_table(db, raw_name_to_genres) as genre_lookup:
+                for table, media_type in tables:
+                    full_query = (
+                        f"INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}"
+                        f"(genre_id, media_id, media_type, alias) "
+                        f"SELECT gl.genre_id, {table}.item_id, "
+                        f"'{media_type.value}', TRIM(g.value) "
+                        f"FROM {table}, "
+                        f"json_each(CASE WHEN json_valid({table}.metadata) "
+                        f"THEN json_extract({table}.metadata, '$.genres') END) AS g "
+                        f"JOIN {genre_lookup} gl ON gl.raw_name = LOWER(TRIM(g.value)) "
+                        f"WHERE TRIM(g.value) != '' "
+                        f"AND NOT EXISTS ("
+                        f"SELECT 1 FROM {excl} e "
+                        f"WHERE e.genre_id = gl.genre_id "
+                        f"AND e.media_id = {table}.item_id "
+                        f"AND e.media_type = '{media_type.value}')"
+                    )
+                    await db.execute(full_query)
             await db.commit()
 
         self.logger.info(
@@ -1868,7 +1867,7 @@ class GenreController(MediaControllerBase[Genre]):
 
     async def _bulk_scan_unmapped_genres(self) -> int:
         """
-        Scan only unmapped media items and create genre mappings using CTE.
+        Scan only unmapped media items and create genre mappings.
 
         Similar to _bulk_scan_media_genres but filters to items not yet in
         genre_media_item_mapping. Used by the incremental scanner after syncs.
@@ -1933,33 +1932,32 @@ class GenreController(MediaControllerBase[Genre]):
             for gid, new_aliases in genre_new_aliases.items():
                 await self._ensure_aliases(gid, new_aliases)
 
-            # Build CTE with n:n pairs and INSERT only for unmapped items
-            cte, cte_params = genre_lookup_cte(raw_name_to_genres)
-
-            for table, media_type in tables:
-                full_query = (
-                    f"{cte} INSERT OR REPLACE INTO {gm}"
-                    f"(genre_id, media_id, media_type, alias) "
-                    f"SELECT gl.genre_id, {table}.item_id, "
-                    f"'{media_type.value}', TRIM(g.value) "
-                    f"FROM {table}, "
-                    f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
-                    f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
-                    f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
-                    f"AND json_extract({table}.metadata, '$.genres') != '[]' "
-                    f"AND NOT EXISTS ("
-                    f"SELECT 1 FROM {gm} ex "
-                    f"WHERE ex.genre_id = gl.genre_id "
-                    f"AND ex.media_id = {table}.item_id "
-                    f"AND ex.media_type = '{media_type.value}' "
-                    f"AND ex.is_derived = 0) "
-                    f"AND NOT EXISTS ("
-                    f"SELECT 1 FROM {excl} e "
-                    f"WHERE e.genre_id = gl.genre_id "
-                    f"AND e.media_id = {table}.item_id "
-                    f"AND e.media_type = '{media_type.value}')"
-                )
-                await db.execute(full_query, cte_params)
+            # Build a lookup with n:n pairs and INSERT only for unmapped items
+            async with genre_lookup_table(db, raw_name_to_genres) as genre_lookup:
+                for table, media_type in tables:
+                    full_query = (
+                        f"INSERT OR REPLACE INTO {gm}"
+                        f"(genre_id, media_id, media_type, alias) "
+                        f"SELECT gl.genre_id, {table}.item_id, "
+                        f"'{media_type.value}', TRIM(g.value) "
+                        f"FROM {table}, "
+                        f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
+                        f"JOIN {genre_lookup} gl ON gl.raw_name = LOWER(TRIM(g.value)) "
+                        f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
+                        f"AND json_extract({table}.metadata, '$.genres') != '[]' "
+                        f"AND NOT EXISTS ("
+                        f"SELECT 1 FROM {gm} ex "
+                        f"WHERE ex.genre_id = gl.genre_id "
+                        f"AND ex.media_id = {table}.item_id "
+                        f"AND ex.media_type = '{media_type.value}' "
+                        f"AND ex.is_derived = 0) "
+                        f"AND NOT EXISTS ("
+                        f"SELECT 1 FROM {excl} e "
+                        f"WHERE e.genre_id = gl.genre_id "
+                        f"AND e.media_id = {table}.item_id "
+                        f"AND e.media_type = '{media_type.value}')"
+                    )
+                    await db.execute(full_query)
             mapped_any = True
 
         if mapped_any:

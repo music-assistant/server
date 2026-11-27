@@ -540,7 +540,7 @@ async def test_dev_folder_and_installed_provider(
 
     async def start(self: CommunityCatalogController) -> None:
         self.mass.dev_mode = True
-        self.mass.dev_providers_path = str(location)
+        self.mass.dev_providers_paths = (str(location),)
         await original_start(self)
 
     with patch.object(CommunityCatalogController, "start", start):

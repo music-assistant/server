@@ -77,6 +77,8 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # seconds the silence nudge waits for the audio pipe's consumer to reattach
 AUDIO_PIPE_READER_TIMEOUT = 1.0
+# seconds a flush of the AirPlay client must last to count as a pause (a seek resumes at once)
+FLUSH_PAUSE_DELAY = 2.0
 
 
 def airplay_receiver_ports(instance_id: str, player_ids: Iterable[str]) -> dict[str, int]:
@@ -149,6 +151,10 @@ class _ReceiverDaemon:
     pending_stop_task: asyncio.Task[None] | None = None
     # the in-flight externally-triggered playback start (awaits the pending stop)
     pending_start_task: asyncio.Task[None] | None = None
+    # pauses the player once a flush of the AirPlay client is not followed by a resume
+    pending_pause_task: asyncio.Task[None] | None = None
+    # the player the source was paused on, which a resume of the AirPlay client plays on again
+    paused_player_id: str | None = None
     first_volume_event_received: bool = False  # Track if we've received the first volume event
     # an AirPlay client streams to this receiver (shairport-sync's active state)
     client_active: bool = False
@@ -597,7 +603,11 @@ class AirPlayReceiverProvider(PluginProvider):
         # cancellation-delayed player command cannot land after the daemon is gone
         pending_tasks = [
             task
-            for task in (daemon.pending_stop_task, daemon.pending_start_task)
+            for task in (
+                daemon.pending_stop_task,
+                daemon.pending_start_task,
+                daemon.pending_pause_task,
+            )
             if task and not task.done()
         ]
         for pending_task in pending_tasks:
@@ -607,6 +617,7 @@ class AirPlayReceiverProvider(PluginProvider):
                 await pending_task
         daemon.pending_stop_task = None
         daemon.pending_start_task = None
+        daemon.pending_pause_task = None
 
         # Stop metadata reader
         if daemon.metadata_reader:
@@ -1002,11 +1013,30 @@ class AirPlayReceiverProvider(PluginProvider):
 
     def _handle_play_state_change(self, daemon: _ReceiverDaemon, play_state: str) -> None:
         """
-        Handle the start or end of an AirPlay client's playback.
+        Handle the start, pause, resume or end of an AirPlay client's playback.
 
         :param daemon: The receiver daemon the state change originates from.
-        :param play_state: The new play state ("playing" or "stopped").
+        :param play_state: The new play state ("playing", "flushed", "resumed" or "stopped").
         """
+        if play_state == "flushed":
+            if (player_id := daemon.in_use_by_player) and daemon.pending_pause_task is None:
+                daemon.pending_pause_task = self.mass.create_task(
+                    self._pause_after_flush(daemon, player_id)
+                )
+            return
+        if play_state == "resumed":
+            self._cancel_pending_pause(daemon)
+            if not (player_id := daemon.paused_player_id):
+                return
+            daemon.paused_player_id = None
+            if daemon.pending_start_task and not daemon.pending_start_task.done():
+                return
+            self.logger.info("AirPlay playback resumed, playing on player %s", player_id)
+            daemon.active_player_id = player_id
+            daemon.pending_start_task = self.mass.create_task(
+                self._start_playback(daemon, player_id)
+            )
+            return
         if play_state == "playing":
             # Reset volume event flag for new playback session
             daemon.first_volume_event_received = False
@@ -1027,6 +1057,8 @@ class AirPlayReceiverProvider(PluginProvider):
                 )
         elif play_state == "stopped":
             self.logger.info("AirPlay playback stopped")
+            self._cancel_pending_pause(daemon)
+            daemon.paused_player_id = None
             # Reset volume event flag for next session
             daemon.first_volume_event_received = False
             # Get the current player before clearing
@@ -1043,6 +1075,35 @@ class AirPlayReceiverProvider(PluginProvider):
                 daemon.pending_stop_task = self.mass.create_task(
                     self.mass.players.cmd_stop(current_player_id)
                 )
+
+    async def _pause_after_flush(self, daemon: _ReceiverDaemon, player_id: str) -> None:
+        """
+        Show the player as paused once a flush of the AirPlay client is not followed by a resume.
+
+        :param daemon: The receiver whose AirPlay client flushed.
+        :param player_id: The player streaming the receiver's source.
+        """
+        await asyncio.sleep(FLUSH_PAUSE_DELAY)
+        daemon.pending_pause_task = None
+        if daemon.in_use_by_player != player_id:
+            return
+        daemon.paused_player_id = player_id
+        try:
+            await self.mass.players.pause_audio_source(
+                player_id, daemon.player_id, self.instance_id
+            )
+        except Exception as err:  # noqa: BLE001 - player code, a resume still plays on
+            self.logger.debug("Failed to pause player %s: %s", player_id, err)
+            return
+        # shairport-sync writes nothing while paused, so the stream of the silenced player
+        # would wait for audio until it stalls
+        await self._write_silence_to_unblock_stream(daemon)
+
+    def _cancel_pending_pause(self, daemon: _ReceiverDaemon) -> None:
+        """Cancel the pause a flush of the AirPlay client scheduled, if it is still waiting."""
+        if daemon.pending_pause_task is not None:
+            daemon.pending_pause_task.cancel()
+            daemon.pending_pause_task = None
 
     async def _start_playback(self, daemon: _ReceiverDaemon, target_player_id: str) -> None:
         """Start playback after any pending stop completes, or once the player can play."""

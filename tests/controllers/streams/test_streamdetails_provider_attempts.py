@@ -81,6 +81,7 @@ def _queue_item(
         provider_mappings=set(mappings),
     )
     return QueueItem(
+        userid=USER_ID,
         queue_id="q1",
         queue_item_id="qi1",
         name="Intro",
@@ -138,9 +139,6 @@ def _audio(
     mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     # no other loaded instances to widen a mapping to
     mass.providers = []
-    mass.player_queues.queue_data_or_none.return_value = (
-        MagicMock(userid=USER_ID) if owned else None
-    )
     mass.webserver.auth.get_user = AsyncMock(
         return_value=User(user_id=USER_ID, username=USER_ID, role=UserRole.USER) if owned else None
     )
@@ -428,6 +426,7 @@ async def test_an_audiobook_plays_from_the_account_it_was_started_from(
         provider_mappings={_mapping(first_instance), _mapping(second_instance)},
     )
     queue_item = QueueItem(
+        userid=USER_ID,
         queue_id="q1",
         queue_item_id="qi1",
         name="Dune",
@@ -464,6 +463,7 @@ async def test_an_episode_plays_from_the_service_it_was_started_from(
         ),
     )
     queue_item = QueueItem(
+        userid=USER_ID,
         queue_id="q1",
         queue_item_id="qi1",
         name="Episode 1",

@@ -12,6 +12,7 @@ from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -83,7 +84,7 @@ class SqueezelitePlayer(PlayerProtocol):
 
     # the Sendspin bridge of this player while it has one, set by that bridge
     sendspin_bridge: SendspinSqueezeliteBridge | None = None
-    # set once the saved power state is restored: the state a player connects with is not saved
+    # set once the player is set up: a state reported before that is not saved
     _power_tracking: bool = False
 
     def __init__(
@@ -161,7 +162,9 @@ class SqueezelitePlayer(PlayerProtocol):
         # carries a volume from the legacy cache over before that entry expires; only after the
         # attach, which creates the record of a new protocol
         self._store_volume()
-        await self._restore_power()
+        # its power state was restored on connect, by the provider's _get_initial_power; from
+        # here on a change is kept for the next connect
+        self._power_tracking = PlayerFeature.POWER in self.supported_features
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -602,15 +605,6 @@ class SqueezelitePlayer(PlayerProtocol):
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
 
-    async def _restore_power(self) -> None:
-        """Power the player on again, unless it was switched off before it disconnected."""
-        # straight to the device: Music Assistant's power command would also apply auto play
-        if PlayerFeature.POWER not in self.supported_features:
-            return
-        if self.mass.config.get_protocol_value(self.protocol_id, CONF_STORED_POWER, True):
-            await self.client.power(True)
-        self._power_tracking = True
-
     def _store_volume(self) -> None:
         """Keep the current volume in the protocol config so it survives a reconnect."""
         volume = self.client.volume_level
@@ -646,6 +640,15 @@ class SqueezelitePlayer(PlayerProtocol):
         quality = {"samplerate": str(output_format.sample_rate)}
         if output_format.content_type.is_lossless():
             quality["samplesize"] = str(output_format.bit_depth)
+        # the codec and bitrate are those of the source, as LMS shows them
+        source = streamdetails.audio_format
+        codec = (
+            source.codec_type if source.codec_type != ContentType.UNKNOWN else source.content_type
+        )
+        if codec != ContentType.UNKNOWN:
+            quality["type"] = codec.value
+        if source.bit_rate:
+            quality["bitrate"] = f"{source.bit_rate}kbps"
         # the update replaces all metadata of the stream
         self.mass.create_task(
             self.client.update_metadata(cast("MediaMetadata", {**metadata, **quality}))

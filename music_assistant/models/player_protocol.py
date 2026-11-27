@@ -155,6 +155,7 @@ class PlayerProtocol(ABC):
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
     _attr_paused_position_reliable: bool = False
+    _attr_stops_on_pause: bool = False
 
     def __init__(self, provider: PlayerProvider, protocol_id: str) -> None:
         """Initialize the protocol object."""
@@ -251,6 +252,17 @@ class PlayerProtocol(ABC):
         """
         return False
 
+    @property
+    def requires_content_length(self) -> bool:
+        """
+        Return if the player needs a Content-Length on a stream that has no length.
+
+        Set this only for a player that stops or loops the audio without one. A stream that
+        is not a file (see `fetches_files`) then declares a length for it: an estimate for a
+        single item, and one it never reaches for a stream that runs on.
+        """
+        return False
+
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
         Return whether the player already holds the given queue item as the one it plays next.
@@ -264,6 +276,16 @@ class PlayerProtocol(ABC):
         :param queue_item: The queue item that follows the one playing out.
         """
         return True
+
+    def on_file_requested_again(self) -> None:  # noqa: B027
+        """
+        Handle the player asking again for the file of the track it plays.
+
+        A player that fetches files does so when it resumes or seeks by itself, see
+        `fetches_files`. Override this for a player that does not report its new position by
+        itself, to read its state back from the device. It is called on the event loop
+        and must return quickly.
+        """
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -480,6 +502,18 @@ class PlayerProtocol(ABC):
         so the queue (also in flow mode) follows it while paused.
         """
         return self._attr_paused_position_reliable
+
+    @property
+    def stops_on_pause(self) -> bool:
+        """
+        Return whether a pause of what the player plays now would stop it instead.
+
+        Set (or override) this for a player that supports PlayerFeature.PAUSE but can not
+        resume what it plays now, so its pause stops it. Its pause is then not called but it is
+        stopped, as a player without a pause of its own: its own queue shows as paused until the
+        pause timeout and plays on from where it was.
+        """
+        return self._attr_stops_on_pause
 
     @property
     def group_members(self) -> list[str]:

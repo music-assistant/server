@@ -9,12 +9,16 @@ A playing queue keeps its slot. When its source is realtime, that slot stays tak
 item ends, so a start on another queue is refused at once instead of waiting its budget out.
 A play command is refused that way before its tracks are fetched, unless one of the item's own
 sources has a free slot.
+
+The owner of an account goes first: a queue that plays it for someone else gives its realtime
+slot up to the owner's playback, and goes on from another source or stops.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
 from functools import partial
 from types import SimpleNamespace
@@ -22,6 +26,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.access import ProviderAccess
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import (
     ContentType,
@@ -29,6 +34,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerType,
     ProviderFeature,
+    ProviderSharing,
     ProviderType,
     QueueOption,
     StreamType,
@@ -53,15 +59,21 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from music_assistant.helpers.provider_access import PlaybackSources
 from music_assistant.models.music_provider import (
     MusicProvider,
     ProviderStreamHeldError,
     ProviderStreamLimitError,
 )
+from tests.common import set_music_source_access
 
 INSTANCE = "spotify--one"
+SECOND_INSTANCE = "spotify--two"
 PAUSED_QUEUE = "living_room"
 STARTING_QUEUE = "kitchen"
+BORROWING_QUEUE = "office"
+OWNER = "owner"
+BORROWER = "housemate"
 PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16)
 
 
@@ -234,14 +246,18 @@ class _Rig:
         return task
 
     async def _device_stopped(self, queue_id: str) -> None:
-        """Let the player report idle once it was told to stop."""
+        """Let the player report idle once it was told to stop, and its queue follow it."""
         self.players[queue_id].playback_state = PlaybackState.IDLE
+        self.queues._queue_data[queue_id].queue.state = PlaybackState.IDLE
 
 
 @pytest.fixture
 def rig(monkeypatch: pytest.MonkeyPatch) -> _Rig:
     """Build the rig with every music source open to the queues' playback."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
+    for module in (audio_mod, feeder_mod):
+        monkeypatch.setattr(
+            module, "playback_sources", AsyncMock(return_value=PlaybackSources(None, []))
+        )
     return _Rig()
 
 
@@ -290,7 +306,7 @@ async def test_a_stop_that_ended_no_session_reports_no_freed_slot(rig: _Rig) -> 
     paused_buffer = await rig.fill(paused_item)
     rig.queues._handle_stop = AsyncMock(side_effect=RuntimeError("broken"))  # type: ignore[method-assign]
 
-    assert not await rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE)
+    assert not await rig.queues.take_over_stream_slot(INSTANCE, STARTING_QUEUE)
 
     assert rig.queues._queue_data[PAUSED_QUEUE].session_id is not None
     await paused_buffer.clear()
@@ -301,7 +317,7 @@ async def test_play_after_a_failed_stop_starts_the_queue_again(rig: _Rig) -> Non
     paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
     await rig.fill(paused_item)
     rig.stop_device.side_effect = PlayerUnavailableError("gone")
-    assert await rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE)
+    assert await rig.queues.take_over_stream_slot(INSTANCE, STARTING_QUEUE)
     assert rig.players[PAUSED_QUEUE].playback_state == PlaybackState.PAUSED
     rig.queues.resume = AsyncMock()  # type: ignore[method-assign]
 
@@ -720,8 +736,8 @@ async def test_only_another_queue_paused_on_its_player_gives_up_its_slot(
     player.active_source = active_source
     player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = announcing
 
-    assert not rig.queues.has_paused_stream_slot_holder(INSTANCE, asking_queue)
-    assert not await rig.queues.release_paused_stream_slot(INSTANCE, asking_queue)
+    assert not rig.queues.has_stream_slot_to_take_over(INSTANCE, asking_queue)
+    assert not await rig.queues.take_over_stream_slot(INSTANCE, asking_queue)
 
     await asyncio.gather(*rig.tasks)
     rig.stop_device.assert_not_awaited()
@@ -745,7 +761,7 @@ async def test_a_paused_queue_still_waiting_for_a_slot_is_no_holder(rig: _Rig) -
     await asyncio.sleep(0)
     assert waiting_buffer.is_buffering
 
-    assert not rig.queues.has_paused_stream_slot_holder(INSTANCE, STARTING_QUEUE)
+    assert not rig.queues.has_stream_slot_to_take_over(INSTANCE, STARTING_QUEUE)
 
     await waiting_buffer.clear()
     await playing_buffer.clear()
@@ -766,7 +782,7 @@ async def test_a_user_only_takes_the_slot_of_a_player_they_may_control(
         User(user_id="kid", username="kid", role=UserRole.USER, player_filter=player_filter)
     )
     try:
-        assert rig.queues.has_paused_stream_slot_holder(INSTANCE, STARTING_QUEUE) is expected
+        assert rig.queues.has_stream_slot_to_take_over(INSTANCE, STARTING_QUEUE) is expected
     finally:
         set_current_user(None)
     await paused_buffer.clear()
@@ -778,8 +794,8 @@ async def test_a_paused_queue_without_a_session_is_no_holder(rig: _Rig) -> None:
     paused_buffer = await rig.fill(paused_item)
     rig.queues._queue_data[PAUSED_QUEUE].session_id = None
 
-    assert not rig.queues.has_paused_stream_slot_holder(INSTANCE, STARTING_QUEUE)
-    assert not await rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE)
+    assert not rig.queues.has_stream_slot_to_take_over(INSTANCE, STARTING_QUEUE)
+    assert not await rig.queues.take_over_stream_slot(INSTANCE, STARTING_QUEUE)
 
     rig.stop_device.assert_not_awaited()
     await paused_buffer.clear()
@@ -801,7 +817,7 @@ async def test_a_queue_that_resumes_before_it_is_stopped_keeps_playing(rig: _Rig
 
     resume = asyncio.ensure_future(_resume())
     await lock_taken.wait()
-    release = asyncio.ensure_future(rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE))
+    release = asyncio.ensure_future(rig.queues.take_over_stream_slot(INSTANCE, STARTING_QUEUE))
     await asyncio.sleep(0)
     resumed.set()
 
@@ -826,7 +842,7 @@ async def test_a_holder_whose_source_finished_meanwhile_is_left_alone(rig: _Rig)
 
     holder = asyncio.ensure_future(_hold_the_lock())
     await lock_taken.wait()
-    release = asyncio.ensure_future(rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE))
+    release = asyncio.ensure_future(rig.queues.take_over_stream_slot(INSTANCE, STARTING_QUEUE))
     await asyncio.sleep(0)
     await paused_buffer.clear()
     source_done.set()
@@ -907,9 +923,9 @@ async def test_a_play_on_a_held_source_is_refused_before_its_tracks_are_fetched(
 
 def _second_account(rig: _Rig) -> MusicProvider:
     """Add a free second account of the provider's streaming service."""
-    second = _provider(instance="spotify--two")
+    second = _provider(instance=SECOND_INSTANCE)
     second.available = True
-    rig.other_providers["spotify--two"] = second
+    rig.other_providers[SECOND_INSTANCE] = second
     rig.mass.providers = [rig.provider, second]
     return second
 
@@ -924,7 +940,7 @@ async def test_a_copy_on_a_free_second_account_keeps_a_play_from_being_refused_e
         item_id="7",
         provider="library",
         name="Seven",
-        provider_mappings={_mapping(INSTANCE), _mapping("spotify--two")},
+        provider_mappings={_mapping(INSTANCE), _mapping(SECOND_INSTANCE)},
     )
 
     rig.queues.refuse_held_item(track, STARTING_QUEUE, None)
@@ -952,11 +968,13 @@ async def test_a_free_account_the_user_may_not_use_does_not_keep_a_play_going(
         item_id="7",
         provider="library",
         name="Seven",
-        provider_mappings={_mapping(INSTANCE), _mapping("spotify--two")},
+        provider_mappings={_mapping(INSTANCE), _mapping(SECOND_INSTANCE)},
     )
 
     with (
-        patch.object(feeder_mod, "visible_playback_sources", return_value=[INSTANCE]),
+        patch.object(
+            feeder_mod, "playback_sources_for", return_value=PlaybackSources([INSTANCE], [])
+        ),
         pytest.raises(ProviderStreamHeldError),
     ):
         rig.queues.refuse_held_item(track, STARTING_QUEUE, None)
@@ -996,3 +1014,265 @@ async def test_a_provider_with_more_than_one_slot_is_not_refused_early(rig: _Rig
 
     await first_buffer.clear()
     await second_buffer.clear()
+
+
+def _owned_by(rig: _Rig, owner: str | None = OWNER) -> None:
+    """Let the given user own the provider's account, which is shared with everyone."""
+    set_music_source_access(
+        rig.mass, {INSTANCE: ProviderAccess(owner=owner, sharing=ProviderSharing.EVERYONE)}
+    )
+
+
+async def _borrow(rig: _Rig, userid: str | None = BORROWER) -> tuple[QueueItem, AudioBuffer]:
+    """Let realtime playback for the given user take the account's only slot, 42s in its item."""
+    rig.provider.available = True
+    item = rig.add_queue(BORROWING_QUEUE, PlaybackState.PLAYING, realtime=True)
+    queue_data = rig.queues._queue_data[BORROWING_QUEUE]
+    queue_data.userid = userid
+    queue_data.queue.elapsed_time = 42
+    queue_data.queue.elapsed_time_last_updated = time.time()
+    return item, await rig.fill(item)
+
+
+def _owner_queue(rig: _Rig, userid: str | None = OWNER) -> QueueItem:
+    """Register the queue that starts playback for the given user."""
+    item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+    rig.queues._queue_data[STARTING_QUEUE].userid = userid
+    return item
+
+
+def _follow_resumes(rig: _Rig) -> list[tuple[str, int | str, int]]:
+    """
+    Let a queue that resumes get the audio of its item as a start does, and record the resumes.
+
+    Its source is the item's own account, or the second one while the first has no free slot.
+    """
+    resumed: list[tuple[str, int | str, int]] = []
+
+    async def _get_stream_details(
+        queue_item: QueueItem,
+        excluded_provider_instances: set[str] | None = None,
+        **_kwargs: Any,
+    ) -> StreamDetails:
+        excluded = excluded_provider_instances or set()
+        return StreamDetails(
+            provider=next(i for i in (INSTANCE, SECOND_INSTANCE) if i not in excluded),
+            item_id=f"track-{queue_item.queue_id}",
+            audio_format=PCM_FORMAT,
+            media_type=MediaType.SOUND_EFFECT,
+            stream_type=StreamType.CUSTOM,
+            duration=600,
+            queue_id=queue_item.queue_id,
+            is_realtime=True,
+        )
+
+    async def _play_index(
+        queue_id: str,
+        index: int | str,
+        seek_position: int = 0,
+        fade_in: bool = False,  # noqa: ARG001 - the signature of the method it stands in for
+    ) -> None:
+        resumed.append((queue_id, index, seek_position))
+        queue_item = rig.queues.get_item(queue_id, index)
+        assert queue_item is not None
+        rig.queues._queue_data[queue_id].session_id = "resumed"
+        await rig.audio.get_audio_buffer(
+            queue_item, seek_position_ms=seek_position * 1000, reason="prepare"
+        )
+
+    rig.audio.get_stream_details = _get_stream_details  # type: ignore[method-assign,assignment]
+    rig.queues.play_index = _play_index  # type: ignore[method-assign]
+    return resumed
+
+
+def _logged_giving_way(rig: _Rig, outcome: str) -> bool:
+    """Return whether the borrowing queue was logged to give way, with the given outcome."""
+    return any(
+        BORROWING_QUEUE in call.args and outcome in call.args
+        for call in rig.queues.logger.info.call_args_list  # type: ignore[attr-defined]
+    )
+
+
+async def test_a_playing_borrower_gives_way_to_the_owner_and_goes_on_from_another_account(
+    rig: _Rig,
+) -> None:
+    """The owner's start gets the account, and the borrower resumes where it was on a free one."""
+    _owned_by(rig)
+    second = _second_account(rig)
+    borrowed_item, borrowed_buffer = await _borrow(rig)
+    owner_item = _owner_queue(rig)
+    resumed = _follow_resumes(rig)
+
+    buffer = await rig.audio.get_audio_buffer(owner_item, reason="prepare", capacity_wait_timeout=5)
+    await asyncio.wait_for(asyncio.gather(*rig.tasks), 5)
+
+    assert buffer is not None
+    assert rig.provider.stream_slot_holders == (buffer,)
+    rig.stop_device.assert_awaited_once_with(BORROWING_QUEUE)
+    assert borrowed_buffer.cancelled
+    borrower = rig.queues._queue_data[BORROWING_QUEUE].queue
+    assert borrower.resume_pos >= 42
+    assert resumed == [(BORROWING_QUEUE, borrowed_item.queue_item_id, borrower.resume_pos)]
+    assert borrowed_item.streamdetails is not None
+    assert borrowed_item.streamdetails.provider == SECOND_INSTANCE
+    moved_buffer = borrowed_item.streamdetails.buffer
+    assert moved_buffer is not None
+    assert second.stream_slot_holders == (moved_buffer,)
+    assert _logged_giving_way(rig, "it goes on from another source")
+    await buffer.clear()
+    await moved_buffer.clear()
+
+
+@pytest.mark.parametrize(
+    "other_source", ["none", "busy", "not-theirs"], ids=lambda value: f"other-account-{value}"
+)
+async def test_a_playing_borrower_without_another_free_source_stops_and_keeps_its_position(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch, other_source: str
+) -> None:
+    """The owner's start gets the account, and the borrower stops where it can resume from."""
+    _owned_by(rig)
+    async with contextlib.AsyncExitStack() as stack:
+        if other_source != "none":
+            second = _second_account(rig)
+            if other_source == "busy":
+                await stack.enter_async_context(second.acquire_stream_slot(0))
+        if other_source == "not-theirs":
+            monkeypatch.setattr(
+                feeder_mod,
+                "playback_sources",
+                AsyncMock(return_value=PlaybackSources([INSTANCE], [])),
+            )
+        _, borrowed_buffer = await _borrow(rig)
+        owner_item = _owner_queue(rig)
+        resumed = _follow_resumes(rig)
+
+        buffer = await rig.audio.get_audio_buffer(
+            owner_item, reason="prepare", capacity_wait_timeout=5
+        )
+        await asyncio.wait_for(asyncio.gather(*rig.tasks), 5)
+
+    assert buffer is not None
+    assert rig.provider.stream_slot_holders == (buffer,)
+    rig.stop_device.assert_awaited_once_with(BORROWING_QUEUE)
+    assert borrowed_buffer.cancelled
+    borrower = rig.queues._queue_data[BORROWING_QUEUE]
+    assert borrower.session_id is None
+    assert borrower.queue.resume_pos >= 42
+    assert resumed == []
+    assert _logged_giving_way(rig, "it stops, as no other source has a free slot")
+    await buffer.clear()
+
+
+async def test_the_owners_own_queue_keeps_the_slot_from_the_owners_other_queue(
+    rig: _Rig,
+) -> None:
+    """A queue that plays for the owner is no borrower: the owner's start elsewhere is refused."""
+    _owned_by(rig)
+    _, playing_buffer = await _borrow(rig, userid=OWNER)
+    owner_item = _owner_queue(rig)
+
+    with pytest.raises(ProviderStreamHeldError):
+        await rig.audio.get_audio_buffer(owner_item, reason="prepare", capacity_wait_timeout=15)
+
+    rig.stop_device.assert_not_awaited()
+    assert playing_buffer.is_buffering
+    await playing_buffer.clear()
+
+
+async def test_a_borrower_can_not_take_the_slot_back_before_the_owners_queue_has_it(
+    rig: _Rig,
+) -> None:
+    """The slot is kept for the owner's queue before the borrower goes on, so it moves instead."""
+    _owned_by(rig)
+    second = _second_account(rig)
+    borrowed_item, _ = await _borrow(rig)
+    _owner_queue(rig)
+    resumed = _follow_resumes(rig)
+
+    assert await rig.queues.take_over_stream_slot(INSTANCE, STARTING_QUEUE)
+    # the owner's queue has not taken its slot yet when the borrower resumes
+    await asyncio.wait_for(asyncio.gather(*rig.tasks), 5)
+
+    assert len(resumed) == 1
+    assert rig.provider.stream_slot_holders == ()
+    assert rig.provider.stream_slot_reservations == (STARTING_QUEUE,)
+    assert borrowed_item.streamdetails is not None
+    assert borrowed_item.streamdetails.provider == SECOND_INSTANCE
+    moved_buffer = borrowed_item.streamdetails.buffer
+    assert moved_buffer is not None
+    assert second.stream_slot_holders == (moved_buffer,)
+    rig.provider.end_stream_slot_reservation(STARTING_QUEUE)
+    await moved_buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("owner", "holder_user", "starting_user", "gives_way"),
+    [
+        (OWNER, BORROWER, OWNER, True),
+        (OWNER, None, OWNER, True),
+        (OWNER, OWNER, OWNER, False),
+        (OWNER, BORROWER, "visitor", False),
+        (OWNER, BORROWER, None, False),
+        (None, BORROWER, OWNER, False),
+    ],
+    ids=[
+        "another-user",
+        "anonymous-playback",
+        "the-owners-own-queue",
+        "a-start-for-someone-else",
+        "an-anonymous-start",
+        "an-account-without-owner",
+    ],
+)
+async def test_only_a_queue_borrowing_the_account_gives_way_to_its_owner(
+    rig: _Rig,
+    owner: str | None,
+    holder_user: str | None,
+    starting_user: str | None,
+    gives_way: bool,
+) -> None:
+    """A realtime holder playing the account for someone else gives it up to its owner alone."""
+    _owned_by(rig, owner)
+    _, buffer = await _borrow(rig, holder_user)
+    _owner_queue(rig, starting_user)
+
+    with contextlib.nullcontext() if gives_way else pytest.raises(ProviderStreamHeldError):
+        rig.queues.refuse_held_stream_slot(INSTANCE, STARTING_QUEUE)
+    assert rig.queues.has_stream_slot_to_take_over(INSTANCE, STARTING_QUEUE) is gives_way
+
+    await buffer.clear()
+
+
+async def test_the_owner_takes_the_slot_of_a_borrower_on_a_player_they_may_not_control(
+    rig: _Rig,
+) -> None:
+    """Owning the account is the right to its slot, where a paused player has to be the user's."""
+    _owned_by(rig)
+    _, buffer = await _borrow(rig)
+    _owner_queue(rig)
+    set_current_user(
+        User(user_id=OWNER, username=OWNER, role=UserRole.USER, player_filter=[STARTING_QUEUE])
+    )
+    try:
+        assert rig.queues.has_stream_slot_to_take_over(INSTANCE, STARTING_QUEUE)
+    finally:
+        set_current_user(None)
+    await buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("userid", "refused"), [(OWNER, False), ("visitor", True)], ids=["the-owner", "someone-else"]
+)
+async def test_a_play_of_the_owner_is_not_refused_over_a_borrower(
+    rig: _Rig, userid: str, refused: bool
+) -> None:
+    """The play goes ahead for the owner, whoever the queue played for before."""
+    _owned_by(rig)
+    _, buffer = await _borrow(rig)
+    _owner_queue(rig, userid=None)
+    user = User(user_id=userid, username=userid, role=UserRole.USER)
+
+    with pytest.raises(ProviderStreamHeldError) if refused else contextlib.nullcontext():
+        rig.queues.refuse_held_item(_playlist(), STARTING_QUEUE, user)
+
+    await buffer.clear()

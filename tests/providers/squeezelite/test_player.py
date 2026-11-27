@@ -391,31 +391,17 @@ def _saved_power_states(mass: MagicMock) -> list[object]:
     ]
 
 
-@pytest.mark.parametrize("saved_power", [True, None])
-async def test_a_player_that_was_on_or_is_new_comes_up_powered_on(
-    saved_power: bool | None,
-) -> None:
-    """After a boot or a server restart a player that was on, or is new, comes up on."""
+@pytest.mark.parametrize("saved_power", [True, False, None])
+async def test_setting_up_a_player_sends_no_power_command(saved_power: bool | None) -> None:
+    """The player connected in its saved power state already, so setup leaves it as it is."""
     player, mass = _connecting_player({PlayerFeature.POWER}, saved_power)
     await player.setup()
-    cast("MagicMock", player.client).power.assert_awaited_once_with(True)
-    mass.players.register.assert_awaited_once_with(player)
-
-
-async def test_powering_on_after_connecting_starts_no_playback() -> None:
-    """The device is powered on itself: Music Assistant's power command would run its auto play."""
-    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=True)
-    await player.setup()
+    cast("MagicMock", player.client).power.assert_not_awaited()
+    # Music Assistant's power command would also run its auto play
     mass.players.cmd_power.assert_not_awaited()
     mass.player_queues.resume.assert_not_called()
-
-
-async def test_a_player_that_was_switched_off_stays_off_after_connecting() -> None:
-    """Rebooting a player does not turn on one that was off, as on LMS."""
-    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=False)
-    await player.setup()
-    cast("MagicMock", player.client).power.assert_not_awaited()
     mass.players.register.assert_awaited_once_with(player)
+    assert player._power_tracking
 
 
 async def test_a_player_without_power_control_is_not_powered_on() -> None:
@@ -932,6 +918,8 @@ async def test_a_protocol_that_is_removed_takes_its_bridge_client_along() -> Non
 FLAC_96_24 = AudioFormat(content_type=ContentType.FLAC, sample_rate=96000, bit_depth=24)
 MP3_44_16 = AudioFormat(content_type=ContentType.MP3, sample_rate=44100, bit_depth=16)
 QUEUE_ITEM_METADATA = {"title": "One", "source_id": "queue_1", "queue_item_id": "item_1"}
+# a source with no known codec or bitrate, so the tests of the stream format see only that
+UNKNOWN_SOURCE = AudioFormat()
 
 
 def _player_streamed(
@@ -950,6 +938,7 @@ def _player_streamed(
     player.client = MagicMock(player_id="p1", update_metadata=AsyncMock())
     player.client.current_media.metadata = {**QUEUE_ITEM_METADATA, **metadata}
     queue_item = MagicMock()
+    queue_item.streamdetails.audio_format = UNKNOWN_SOURCE
     queue_item.streamdetails.audio_processing = (
         None if outputs is None else AudioProcessingChain(outputs=outputs)
     )
@@ -992,6 +981,39 @@ async def test_the_player_reports_the_format_it_is_streamed(
     # the whole metadata goes along: the update replaces it
     cast("AsyncMock", player.client.update_metadata).assert_awaited_once_with(
         {**QUEUE_ITEM_METADATA, **quality}
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "quality"),
+    [
+        (
+            AudioFormat(content_type=ContentType.MP3, bit_rate=320),
+            {"type": "mp3", "bitrate": "320kbps"},
+        ),
+        # a container names the codec it holds
+        (
+            AudioFormat(content_type=ContentType.M4A, codec_type=ContentType.AAC, bit_rate=256),
+            {"type": "aac", "bitrate": "256kbps"},
+        ),
+        # a lossless source of no known bitrate
+        (AudioFormat(content_type=ContentType.FLAC), {"type": "flac"}),
+        (UNKNOWN_SOURCE, {}),
+    ],
+    ids=["mp3", "m4a_aac", "flac", "unknown"],
+)
+async def test_the_player_reports_the_codec_and_bitrate_of_the_source(
+    source: AudioFormat, quality: dict[str, str]
+) -> None:
+    """Now Playing shows the codec and bitrate of the source, as on LMS."""
+    player = _player_streamed([AudioOutputDetails(player_ids=["pl_p1"], output_format=FLAC_96_24)])
+    queue_item = player.mass.player_queues.get_item("queue_1", "item_1")
+    cast("MagicMock", queue_item).streamdetails.audio_format = source
+
+    await _report_update(player)
+
+    cast("AsyncMock", player.client.update_metadata).assert_awaited_once_with(
+        {**QUEUE_ITEM_METADATA, "samplerate": "96000", "samplesize": "24", **quality}
     )
 
 

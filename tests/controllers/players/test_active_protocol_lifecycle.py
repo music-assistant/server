@@ -21,7 +21,12 @@ from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, ProtocolRole
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import CONF_POWER_CONTROL
+from music_assistant.constants import (
+    CONF_MUTE_CONTROL,
+    CONF_POWER_CONTROL,
+    CONF_VOLUME_CONTROL,
+    PLAYER_CONTROL_PROTOCOL,
+)
 from music_assistant.controllers.players import PlayerController
 from music_assistant.models.player import Player
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
@@ -257,8 +262,16 @@ class TestKeptMemberOutputs:
         A member's kept, idle output gets the level and mute of its player before the group plays.
 
         While that output played nothing, the level and mute of the member went to its own
-        protocol, so the output still holds the ones it had before.
+        protocol, so the output still holds the ones it had before. The user selected "auto" as
+        the volume and mute control of the players.
         """
+        mock_mass.config.get_player_value = MagicMock(
+            side_effect=lambda _player_id, key, default=None: (
+                PLAYER_CONTROL_PROTOCOL
+                if key in (CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
+                else (0 if key == "min_volume" else 100 if key == "max_volume" else default)
+            )
+        )
         events: list[tuple[str, str, object]] = []
         leader, _, leader_ap = _player_with_airplay(mock_mass, "leader", events)
         member, member_own, member_ap = _player_with_airplay(mock_mass, "member", events)

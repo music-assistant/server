@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlayerFeature
 
+from music_assistant.constants import PLAYER_CONTROL_PROTOCOL
+
 from .harness import DEFAULT_FEATURES, FakeProtocol, Scenario
 
 if TYPE_CHECKING:
@@ -68,13 +70,17 @@ async def test_playback_goes_to_the_output_the_user_prefers(scenario: Scenario) 
     assert state.active_output_protocol == "ap_kitchen"
 
 
-async def _stopped_airplay_group(scenario: Scenario) -> tuple[FakeProtocol, FakeProtocol, str, str]:
+async def _stopped_airplay_group(
+    scenario: Scenario, *, auto: bool = False
+) -> tuple[FakeProtocol, FakeProtocol, str, str]:
     """
     Group Study under Lounge over AirPlay, play the group and stop it.
 
     Lounge is a Sonos speaker and Study a WiiM speaker; each has an AirPlay receiver, the only
     way they group. Returns Lounge's own protocol, its AirPlay receiver and the ids of Lounge
     and Study.
+
+    :param auto: Whether the user selected "auto" as the volume and mute control of both.
     """
     sonos = await scenario.add_provider("sonos")
     wiim = await scenario.add_provider("wiim")
@@ -102,6 +108,13 @@ async def _stopped_airplay_group(scenario: Scenario) -> tuple[FakeProtocol, Fake
     await scenario.idle()
     lounge_id = scenario.single_player(lounge, lounge_airplay).player_id
     study_id = scenario.single_player(study, study_airplay).player_id
+    if auto:
+        for player_id in (lounge_id, study_id):
+            await scenario.configure_player(
+                player_id,
+                volume_control=PLAYER_CONTROL_PROTOCOL,
+                mute_control=PLAYER_CONTROL_PROTOCOL,
+            )
     await scenario.mass.players.cmd_set_members(lounge_id, player_ids_to_add=[study_id])
     await scenario.play(lounge_id)
     await scenario.mass.players.cmd_stop(lounge_id)
@@ -118,9 +131,10 @@ async def test_a_stopped_leader_takes_volume_on_its_own_protocol_while_it_keeps_
     A stopped leader takes volume and mute on its own protocol, though its group keeps its output.
 
     Its AirPlay receiver stays its output for the group, but plays nothing, and an AirPlay
-    receiver only takes a volume command while it streams.
+    receiver only takes a volume command while it streams. The user selected "auto" as the
+    volume and mute control.
     """
-    lounge, lounge_airplay, lounge_id, _ = await _stopped_airplay_group(scenario)
+    lounge, lounge_airplay, lounge_id, _ = await _stopped_airplay_group(scenario, auto=True)
 
     await scenario.mass.players.cmd_volume_set(lounge_id, 30)
     await scenario.mass.players.cmd_volume_mute(lounge_id, True)
@@ -139,9 +153,10 @@ async def test_a_member_plays_again_at_the_level_it_got_while_its_group_was_stop
 
     Its AirPlay receiver stayed its output for the group, and the level and mute went to its
     own protocol meanwhile. The receiver gets them before the group plays again: an AirPlay
-    receiver sends the level it holds when its stream starts.
+    receiver sends the level it holds when its stream starts. The user selected "auto" as the
+    volume and mute control.
     """
-    _, _, lounge_id, study_id = await _stopped_airplay_group(scenario)
+    _, _, lounge_id, study_id = await _stopped_airplay_group(scenario, auto=True)
     study, study_airplay = scenario.protocol("wiim_study"), scenario.protocol("airplay_study")
     study.commands.clear()
     await scenario.mass.players.cmd_volume_set(study_id, 20)

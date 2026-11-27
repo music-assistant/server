@@ -9,10 +9,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import (
-    CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_DEFAULT_ENABLED,
-)
+from music_assistant.constants import CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player_protocol import PlayerProtocol
 
@@ -97,6 +94,11 @@ class WamPlayer(PlayerProtocol):
         return True
 
     @property
+    def requires_content_length(self) -> bool:
+        """Return if the speaker needs a Content-Length on a stream that has no length."""
+        return True
+
+    @property
     def ip_address(self) -> str:
         """Return the IP address of the speaker."""
         return self._ip_address
@@ -129,10 +131,7 @@ class WamPlayer(PlayerProtocol):
 
         :return: A list of ConfigEntry objects.
         """
-        return [
-            CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_DEFAULT_ENABLED,
-            CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-        ]
+        return [CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN]
 
     async def on_config_updated(self) -> None:
         """Handle player config updates."""

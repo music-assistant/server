@@ -23,7 +23,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_PASSWORD, CONF_SYNC_ADJUST
+from music_assistant.constants import ATTR_VOLUME_TARGET, CONF_PASSWORD, CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import Player
@@ -1335,6 +1335,114 @@ def test_owns_volume_false_when_another_control_owns_it(
     assert airplay_player.owns_volume is False
 
 
+@pytest.mark.parametrize("domain", ["wiim", "bose_soundtouch"])
+def test_native_start_volume_is_the_level_of_a_device_that_sets_its_own(
+    airplay_player: AirPlayPlayer, domain: str
+) -> None:
+    """A WiiM or Bose SoundTouch whose native protocol owns the volume starts at that level."""
+    player = _attach_to_player(airplay_player, own=_native_protocol(domain, volume_level=7))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume == 7
+    player.volume_control_for_output.assert_called_once_with(airplay_player.protocol_id)
+
+
+def test_native_start_volume_is_none_for_a_device_that_keeps_its_own_level(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A device not known to set a level of its own, such as a MusicCast receiver, gets none."""
+    player = _attach_to_player(airplay_player, own=_native_protocol("musiccast"))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume is None
+
+
+def test_native_start_volume_is_none_for_a_device_its_provider_only_controls(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A device the wiim provider only controls (a generic LinkPlay device) gets none."""
+    player = _attach_to_player(
+        airplay_player, own=_native_protocol("wiim", role=ProtocolRole.CONTROL)
+    )
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume is None
+
+
+@pytest.mark.parametrize("control", ["test_player", "dlna_player", "media_player.amplifier"])
+def test_native_start_volume_is_none_when_the_native_protocol_does_not_own_the_volume(
+    airplay_player: AirPlayPlayer, control: str
+) -> None:
+    """The level of any other control is not the level of the device itself."""
+    player = _attach_to_player(
+        airplay_player,
+        own=_native_protocol("wiim"),
+        controls={"dlna_player": MagicMock(underlying_protocol_id=None)},
+    )
+    player.volume_control_for_output.return_value = control
+    player.volume_muted = False
+
+    assert airplay_player.native_start_volume is None
+
+
+def test_native_start_volume_is_none_while_the_player_is_muted(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A muted player is not handed a level that would make it heard."""
+    player = _attach_to_player(airplay_player, own=_native_protocol("wiim"))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    player.volume_muted = True
+
+    assert airplay_player.native_start_volume is None
+
+
+def test_native_start_volume_is_none_while_not_attached(airplay_player: AirPlayPlayer) -> None:
+    """A protocol without a player has no native protocol to take a level from."""
+    assert airplay_player.native_start_volume is None
+
+
+@pytest.mark.parametrize(
+    ("target", "commanded"),
+    [((25, 101.0), True), ((25, 99.0), False), (None, False)],
+)
+def test_volume_commanded_since_follows_the_last_volume_command(
+    airplay_player: AirPlayPlayer, target: tuple[int, float] | None, commanded: bool
+) -> None:
+    """Only a volume command given through Music Assistant after the moment counts."""
+    player = _attach_to_player(airplay_player)
+    player.extra_data = {} if target is None else {ATTR_VOLUME_TARGET: target}
+
+    assert airplay_player.volume_commanded_since(100.0) is commanded
+
+
+def test_volume_commanded_since_is_false_while_not_attached(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A protocol without a player has no volume commands to look at."""
+    assert airplay_player.volume_commanded_since(100.0) is False
+
+
+def _native_protocol(
+    domain: str, volume_level: int = 30, role: ProtocolRole = ProtocolRole.NATIVE
+) -> MagicMock:
+    """
+    Build the native protocol of a player.
+
+    :param domain: Domain of the provider the native protocol belongs to.
+    :param volume_level: The level the native protocol reports.
+    :param role: The role the protocol has on its device.
+    """
+    return MagicMock(
+        provider=MagicMock(domain=domain),
+        volume_level=volume_level,
+        underlying_protocol_id=None,
+        role=role,
+    )
+
+
 def test_update_volume_from_device_keeps_native_parent_feedback(
     airplay_player: AirPlayPlayer,
 ) -> None:
@@ -1353,6 +1461,90 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
         airplay_player.protocol_id, CONF_STORED_VOLUME, 57
     )
     mock_update.assert_called_once()
+
+
+async def _report_device_level(
+    airplay_player: AirPlayPlayer, native_domain: str, volume: int, airplay_volume: float
+) -> MagicMock:
+    """
+    Have the device report a level while its native protocol owns the volume.
+
+    :param airplay_player: The AirPlay protocol the device reports on.
+    :param native_domain: Domain of the provider of the native protocol.
+    :param volume: The reported level on the 0-100 scale.
+    :param airplay_volume: The reported AirPlay volume in dB.
+    :return: The running stream the level is set on.
+    """
+    player = _attach_to_player(airplay_player, own=_native_protocol(native_domain))
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 3
+    airplay_player.last_command_sent = time.time() - 10
+    stream = MagicMock(running=True, send_cli_command=AsyncMock())
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    airplay_player.update_volume_from_device(volume, airplay_volume)
+    while adoptions:
+        await adoptions.pop()
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_a_device_level_is_set_on_the_device_while_the_native_protocol_owns_the_volume(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level the device reports is set over AirPlay, also while its own control owns the volume.
+
+    A Sonos holds a change made with its own controls until the sender sets that level.
+    """
+    stream = await _report_device_level(airplay_player, "sonos", 5, -28.5)
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME_DB=-28.500000")
+    assert airplay_player._attr_volume_level == 5
+
+
+@pytest.mark.asyncio
+async def test_a_device_level_goes_back_exactly_as_the_device_reported_it(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level the device reports goes back in dB as reported, not rounded to a whole percent.
+
+    A WiiM reports its level 5 as -28.65 dB; set again as 5% (-28.5 dB) it lands on 6.
+    """
+    stream = await _report_device_level(airplay_player, "wiim", 5, -28.65)
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME_DB=-28.650000")
+    assert airplay_player._attr_volume_level == 5
+
+
+@pytest.mark.asyncio
+async def test_a_new_level_one_step_away_right_after_a_command_goes_back(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Every new level the device reports goes back, also one step away right after a command.
+
+    A Sonos turned up step by step asks for each level in turn; a level left out stays
+    unapplied, so a sweep would stop at its first step.
+    """
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 5
+    airplay_player.last_command_sent = time.time()
+    stream = MagicMock(running=True, send_cli_command=AsyncMock())
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    airplay_player.update_volume_from_device(6, -28.2)
+    while adoptions:
+        await adoptions.pop()
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME_DB=-28.200000")
+    assert airplay_player._attr_volume_level == 6
 
 
 def test_release_foreign_mute_latch_clears_mute_owned_by_other_control(
@@ -1772,6 +1964,47 @@ async def test_synced_child_pause_parks_session(airplay_player: AirPlayPlayer) -
     session.standby.assert_awaited_once()
     mock_stop.assert_not_called()
     send_cmd.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grouped", [False, True])
+async def test_hold_parks_the_session(airplay_player: AirPlayPlayer, grouped: bool) -> None:
+    """A paused live source parks the session, of a single speaker as well as of a group."""
+    airplay_player._attr_group_members = ["test_player", "child"] if grouped else []
+    send_cmd = _setup_running_stream(airplay_player)
+    assert airplay_player.stream is not None
+    session = cast("MagicMock", airplay_player.stream.session)
+    session.standby = AsyncMock(return_value=True)
+
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.hold()
+
+    session.standby.assert_awaited_once()
+    mock_stop.assert_not_called()
+    send_cmd.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_hold_stops_a_session_that_cannot_be_parked(airplay_player: AirPlayPlayer) -> None:
+    """A speaker that lost its connection is stopped instead of parked."""
+    _setup_running_stream(airplay_player)
+    assert airplay_player.stream is not None
+    session = cast("MagicMock", airplay_player.stream.session)
+    session.standby = AsyncMock(return_value=False)
+
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.hold()
+
+    mock_stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_hold_stops_a_player_without_a_session(airplay_player: AirPlayPlayer) -> None:
+    """A player that streams nothing has no session to park, so it is stopped."""
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.hold()
+
+    mock_stop.assert_called_once()
 
 
 # --- Automatic group re-join after unexpected stream loss ---

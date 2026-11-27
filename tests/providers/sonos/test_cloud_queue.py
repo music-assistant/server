@@ -722,7 +722,11 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
 
 @pytest.mark.parametrize(
     ("codec", "policies"),
-    [("wav", [{"canSeek": True}, None]), ("flac", [None, None])],
+    [
+        ("wav", [{"canSeek": True}, None]),
+        ("mp3", [{"canSeek": True}, None]),
+        ("flac", [None, None]),
+    ],
 )
 async def test_only_a_track_served_as_a_file_allows_a_seek(
     codec: str, policies: list[dict[str, bool] | None]
@@ -744,10 +748,17 @@ async def test_only_a_track_served_as_a_file_allows_a_seek(
     assert [item.get("policies") for item in body["items"]] == policies
 
 
-async def test_a_track_in_a_queue_with_crossfade_allows_no_seek() -> None:
-    """Test a track whose stream carries a mix is no file, so the speaker may not seek in it."""
-    player, _ = _make_player([_make_media_queue_item("track0", MediaType.TRACK)])
+@pytest.mark.parametrize(
+    ("repeat_mode", "policies"),
+    [(RepeatMode.OFF, [{"canSeek": True}]), (RepeatMode.ONE, [None])],
+)
+async def test_a_track_in_a_queue_with_crossfade_allows_a_seek_unless_it_repeats(
+    repeat_mode: RepeatMode, policies: list[dict[str, bool] | None]
+) -> None:
+    """Test a track whose stream carries a mix is a file too, but not one that comes right back."""
+    player, queues = _make_player([_make_media_queue_item("track0", MediaType.TRACK)])
     _set_output_codec(player, "wav")
+    queues.queue.repeat_mode = repeat_mode
     streams = cast("MagicMock", player.mass.streams)
     streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
     request = MagicMock()
@@ -756,7 +767,7 @@ async def test_a_track_in_a_queue_with_crossfade_allows_no_seek() -> None:
     response = await _make_cloud_queue()._handle_sonos_queue_itemwindow(player, request)
 
     body = json.loads(response.text or "{}")
-    assert [item.get("policies") for item in body["items"]] == [None]
+    assert [item.get("policies") for item in body["items"]] == policies
 
 
 async def test_the_queue_itself_allows_no_seek() -> None:

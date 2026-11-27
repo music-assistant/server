@@ -4,8 +4,8 @@ Helpers to derive which music sources a user may see and use.
 Ownership and sharing live on the provider instance (`ProviderConfig.access`); a user's
 set of music sources is derived from those records. The derived set is read straight from
 the raw provider configs, so disabled and unavailable instances count too. Playback narrows
-that set once more: a streaming service the user has an enabled account of is served by that
-account only.
+that set once more: a streaming service is served by the enabled accounts of it that are the
+closest to the user only, and by others that are set to step in when those are busy.
 """
 
 from __future__ import annotations
@@ -13,17 +13,20 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import replace
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
+from music_assistant_models.access import ProviderAccess
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import ProviderSharing, ProviderType
+from music_assistant_models.enums import ProviderSharing, ProviderType, SharedPlayback
 from music_assistant_models.media_items import MediaItem
 
 from music_assistant.constants import CONF_PROVIDERS, EXTERNAL_ID_PROVIDER, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from music_assistant_models.access import AccessRecord
     from music_assistant_models.media_items import ProviderMapping
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -38,11 +41,28 @@ _ANONYMOUS_PLAYBACK_USER: Final = User(
 _UNREADABLE_ACCESS = ProviderAccess(sharing=ProviderSharing.PRIVATE)
 
 
-def access_allows(access: ProviderAccess | None, user: User | None) -> bool:
-    """
-    Return whether the given user may use a provider instance with this access record.
+class PlaybackSources(NamedTuple):
+    """The music sources that may serve a playback."""
 
-    :param access: The instance's access record; None means a source of the whole home.
+    # the sources that may serve it, or None when every configured music source may
+    allowed: list[str] | None
+    # the enabled sources the playback user owns, which are to be tried first
+    preferred: list[str]
+    # accounts of a streaming service that step in, the closest to the user first, once
+    # none of the allowed sources can serve it
+    stand_ins: tuple[str, ...] = ()
+
+    @property
+    def usable(self) -> list[str] | None:
+        """Return all sources that may serve the playback, or None for every one there is."""
+        return None if self.allowed is None else [*self.allowed, *self.stand_ins]
+
+
+def access_allows(access: AccessRecord | None, user: User | None) -> bool:
+    """
+    Return whether the given user may use an object with this access record.
+
+    :param access: The object's access record; None means it is of the whole home.
     :param user: The user to check; None means anonymous playback.
     """
     if access is None:
@@ -92,18 +112,16 @@ def visible_playback_sources(mass: MusicAssistant, user: User | None) -> list[st
     """
     Return the instance ids of the music sources the given playback user may use.
 
-    Another account of a streaming service counts only when the user has no enabled account
-    of that same service, so playback never moves off their own account. Sources whose
-    instances each hold a library of their own are never narrowed this way.
+    Of a streaming service only the enabled accounts closest to the user count: their own,
+    else the ones shared with them by name, else the ones shared with all. An account that
+    plays for its owner only counts for nobody else. Sources whose instances each hold a
+    library of their own are never narrowed this way.
     None means every configured music source may be used.
 
     :param mass: The MusicAssistant instance.
     :param user: The user the playback is for; None for anonymous playback.
     """
-    sources = _music_sources(mass)
-    return _without_other_instances_of_own_services(
-        mass, sources, user, _visible_sources(sources, user)
-    )
+    return _playback_reach(mass, user)[0]
 
 
 def playback_instance_for(
@@ -346,51 +364,73 @@ async def resolve_playback_user(mass: MusicAssistant, queue_id: str) -> User | N
     return None
 
 
-async def resolve_playback_user_or_stand_in(mass: MusicAssistant, queue_id: str) -> User:
+async def resolve_queue_item_user(mass: MusicAssistant, queue_item: QueueItem) -> User | None:
     """
-    Return the user to fetch media as for the playback of a queue.
+    Return the user a queue item plays for, None for anonymous playback.
 
-    That is the user the queue plays for. For anonymous playback it is a stand-in user the
+    :param mass: The MusicAssistant instance.
+    :param queue_item: The queue item that plays.
+    """
+    if queue_item.userid:
+        return await mass.webserver.auth.get_user(queue_item.userid)
+    return None
+
+
+async def resolve_playback_user_or_stand_in(mass: MusicAssistant, queue_item: QueueItem) -> User:
+    """
+    Return the user to fetch media as for the playback of a queue item.
+
+    That is the user the item plays for. For anonymous playback it is a stand-in user the
     music source rules give exactly what they give anonymous playback: the sources of the
     whole home and the ones shared with everyone. Media fetched as this user is on a
-    source the queue's stream may use, where fetching it without a user would use every
+    source the item's stream may use, where fetching it without a user would use every
     source there is.
 
     :param mass: The MusicAssistant instance.
-    :param queue_id: The queue the playback belongs to.
+    :param queue_item: The queue item that plays.
     """
-    return await resolve_playback_user(mass, queue_id) or _ANONYMOUS_PLAYBACK_USER
+    return playback_user_or_stand_in(await resolve_queue_item_user(mass, queue_item))
 
 
-async def playback_sources(
-    mass: MusicAssistant, queue_id: str
-) -> tuple[list[str] | None, list[str]]:
+def playback_user_or_stand_in(user: User | None) -> User:
     """
-    Return the (allowed, preferred) music sources for the queue's playback user.
+    Return the user to fetch media as for a playback of the given user.
 
-    ``allowed`` holds the sources that may serve this playback, or None when every
-    configured music source may; ``preferred`` holds the enabled sources the playback user
-    owns, which are to be tried first. Another account of a streaming service the user has
-    an enabled account of never serves them.
+    :param user: The user the playback is for, None for anonymous playback, which gets the
+        stand-in user.
+    """
+    return user or _ANONYMOUS_PLAYBACK_USER
+
+
+async def playback_sources(mass: MusicAssistant, queue_item: QueueItem) -> PlaybackSources:
+    """
+    Return the music sources that may serve the user a queue item plays for.
 
     :param mass: The MusicAssistant instance.
-    :param queue_id: The queue the playback belongs to.
+    :param queue_item: The queue item that plays.
     """
-    return playback_sources_for(mass, await resolve_playback_user(mass, queue_id))
+    return playback_sources_for(mass, await resolve_queue_item_user(mass, queue_item))
 
 
-def playback_sources_for(
-    mass: MusicAssistant, user: User | None
-) -> tuple[list[str] | None, list[str]]:
+def playback_sources_for(mass: MusicAssistant, user: User | None) -> PlaybackSources:
     """
-    Return the (allowed, preferred) music sources for the given playback user.
+    Return the music sources that may serve the given playback user.
 
     The sources :func:`playback_sources` returns once a queue plays for this user.
 
     :param mass: The MusicAssistant instance.
     :param user: The user the playback is for; None for anonymous playback.
     """
-    return visible_playback_sources(mass, user), _own_enabled_sources(mass, user)
+    allowed, stand_ins = _playback_reach(mass, user)
+    return PlaybackSources(allowed, _own_enabled_sources(mass, user), stand_ins)
+
+
+class _Closeness(IntEnum):
+    """How close an account of a streaming service is to a user, closest first."""
+
+    OWN = 0
+    SHARED_BY_NAME = 1
+    SHARED_WITH_ALL = 2
 
 
 class _MusicSource(NamedTuple):
@@ -414,37 +454,70 @@ def _visible_sources(sources: list[_MusicSource], user: User | None) -> list[str
     return allowed if restricted else None
 
 
-def _without_other_instances_of_own_services(
-    mass: MusicAssistant,
-    sources: list[_MusicSource],
-    user: User | None,
-    allowed: list[str] | None,
-) -> list[str] | None:
+def _playback_reach(
+    mass: MusicAssistant, user: User | None
+) -> tuple[list[str] | None, tuple[str, ...]]:
     """
-    Return the allowed sources without the other accounts of the user's own services.
+    Return the music sources the playback user may use, and the accounts that step in for them.
 
     Only a streaming service has one catalog behind its accounts; instances of a local or
     self-hosted source are libraries of their own and never narrow one another.
     """
-    if user is None:
-        return allowed
-    own_domains = {
-        source.domain
+    sources = _music_sources(mass)
+    allowed = _visible_sources(sources, user)
+    accounts = [
+        source
         for source in sources
-        if source.enabled
-        and _is_owned_by(source, user)
+        if access_allows(source.access, user)
         and _is_streaming_service(mass, source.instance_id, source.domain)
-    }
-    dropped = {
-        source.instance_id
-        for source in sources
-        if source.domain in own_domains and not _is_owned_by(source, user)
-    }
+    ]
+    dropped = {source.instance_id for source in accounts if not _plays_for(source, user)}
+    closest: dict[str, _Closeness] = {}
+    for source in accounts:
+        # a disabled account can not play, so it keeps nobody from one further away
+        if source.enabled and source.instance_id not in dropped:
+            closeness = _closeness(source, user)
+            closest[source.domain] = min(closest.get(source.domain, closeness), closeness)
+    further = [
+        source
+        for source in accounts
+        if source.instance_id not in dropped
+        and _closeness(source, user) > closest.get(source.domain, _Closeness.SHARED_WITH_ALL)
+    ]
+    dropped.update(source.instance_id for source in further)
     if not dropped:
-        return allowed
+        return allowed, ()
+    stand_ins = sorted(
+        (source for source in further if source.enabled and _plays_when_busy(source)),
+        key=lambda source: _closeness(source, user),
+    )
     # an unrestricted user needs a list of their own once a source is taken out of it
     remaining = allowed if allowed is not None else [source.instance_id for source in sources]
-    return [instance_id for instance_id in remaining if instance_id not in dropped]
+    return (
+        [instance_id for instance_id in remaining if instance_id not in dropped],
+        tuple(source.instance_id for source in stand_ins),
+    )
+
+
+def _closeness(source: _MusicSource, user: User | None) -> _Closeness:
+    """Return how close a music source the user may use is to them."""
+    if user is not None and _is_owned_by(source, user):
+        return _Closeness.OWN
+    if source.access is not None and source.access.sharing == ProviderSharing.SELECTED:
+        return _Closeness.SHARED_BY_NAME
+    return _Closeness.SHARED_WITH_ALL
+
+
+def _plays_for(source: _MusicSource, user: User | None) -> bool:
+    """Return whether an account the user may use plays for them at all."""
+    if source.access is None or source.access.shared_playback != SharedPlayback.NEVER:
+        return True
+    return user is not None and _is_owned_by(source, user)
+
+
+def _plays_when_busy(source: _MusicSource) -> bool:
+    """Return whether an account steps in for a user whose closer accounts are busy."""
+    return source.access is not None and source.access.shared_playback == SharedPlayback.WHEN_BUSY
 
 
 def _own_enabled_sources(mass: MusicAssistant, user: User | None) -> list[str]:

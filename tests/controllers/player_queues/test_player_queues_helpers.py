@@ -811,7 +811,7 @@ class TestBuildQueueItem:
 
     def test_slims_track_metadata(self) -> None:
         """A track's heavy metadata is dropped while playback-relevant fields are kept."""
-        item = build_queue_item("q1", _heavy_track())
+        item = build_queue_item("q1", _heavy_track(), userid=None)
         assert isinstance(item.media_item, Track)
         # heavy metadata is dropped
         assert item.media_item.metadata == MediaItemMetadata()
@@ -833,12 +833,12 @@ class TestBuildQueueItem:
     def test_reduces_serialized_size(self) -> None:
         """Slimming a track queue item substantially reduces its serialized size."""
         fat = len(json.dumps(QueueItem.from_media_item("q1", _heavy_track()).to_dict()))
-        slim = len(json.dumps(build_queue_item("q1", _heavy_track()).to_dict()))
+        slim = len(json.dumps(build_queue_item("q1", _heavy_track(), userid=None).to_dict()))
         assert slim < fat * 0.6
 
     def test_leaves_non_track_untouched(self) -> None:
         """Non-track items (e.g. radio) keep their metadata as they are not re-hydrated."""
-        item = build_queue_item("q1", _heavy_radio())
+        item = build_queue_item("q1", _heavy_radio(), userid=None)
         assert isinstance(item.media_item, Radio)
         assert item.media_item.metadata.description
         assert item.media_item.metadata.images
@@ -852,14 +852,16 @@ class TestBuildQueueItem:
             provider_instance="test",
             item_id="t1",
         )
-        item = build_queue_item("q1", _heavy_track(), origin=origin)
+        item = build_queue_item("q1", _heavy_track(), userid=None, origin=origin)
         assert item.origin == origin
         assert QueueItem.from_cache(item.to_cache()).origin == origin
-        assert build_queue_item("q1", _heavy_track()).origin is None
+        assert build_queue_item("q1", _heavy_track(), userid=None).origin is None
 
     def test_cache_roundtrip_preserves_slim_shape(self) -> None:
         """A slim track queue item round-trips through the persisted cache unchanged."""
-        restored = QueueItem.from_cache(build_queue_item("q1", _heavy_track()).to_cache())
+        restored = QueueItem.from_cache(
+            build_queue_item("q1", _heavy_track(), userid=None).to_cache()
+        )
         assert isinstance(restored.media_item, Track)
         assert restored.media_item.metadata == MediaItemMetadata()
         assert restored.media_item.provider_mappings == _PROVIDER_MAPPINGS

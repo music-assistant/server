@@ -202,12 +202,13 @@ streamed) to its end, is taken for ended 5 seconds later, unless it plays again 
 refilled from its dynamic source when it has one, and marked as ended otherwise. A pause or a
 stop is never that end. A queue whose playback a command halted (`halted_by_command`: set by a
 pause and by the common stop handler) keeps its place until it plays again, also when the
-command left its player idle (a player without a pause of its own is stopped, and a paused player
-is stopped once the pause timeout passes). Only the stop of a sleep timer that waited for the
-end of an item or a chapter ends the queue, at that point; a timer that runs out mid-track stops
-the queue like any other stop. The flag is cleared when the queue is seen playing, when its
-paused player is told to play on or when a play action starts a stream session, taken back by a
-pause or a stop that fails, and reset when the queue is cleared or marked as ended.
+command left its player idle (a player without a pause of its own is stopped, and shows as paused
+until the pause timeout, and a paused player is stopped once the pause timeout passes). Only the
+stop of a sleep timer that waited for the end of an item or a chapter ends the queue, at that
+point; a timer that runs out mid-track stops the queue like any other stop. The flag is cleared
+when the queue is seen playing, when its paused player is told to play on or when a play action
+starts a stream session, taken back by a pause or a stop that fails, and reset when the queue is
+cleared or marked as ended.
 
 That check runs in a task of its own, holds no lock, and belongs to the playback that went idle:
 it remembers the stream session the queue was last seen playing. After every wait (each of its
@@ -294,8 +295,9 @@ track prepared ahead of time) while it is open who keeps the slot (it is reserve
 or another queue's realtime source has it and no audio yet) waits in the provider's line, in the
 order it asked, within its budget. It looks again each time a source takes a slot or a holder gets
 its first audio: once a realtime source of another queue holds the slot with audio the start is
-refused, naming the player to a user who may control it, and a paused queue's source that got its
-audio hands its slot over as at any other moment. A source that is being given up holds nothing
+refused, naming the player to a user who may control it, and the source of a queue that gives its
+slot up (a paused one, or one that borrows the account, see below) hands it over once it got its
+audio, as at any other moment. A source that is being given up holds nothing
 here. When the slot comes free for the start
 it stays reserved for its queue, so its source takes it next, unless the queue no longer wants that
 track or its consumer is gone: then it goes on to whoever waits next.
@@ -317,11 +319,24 @@ itself while it plays the queue's stream, not for another source paused on the p
 watcher leaves the queue alone while a command still waits for players to start up before it
 acts on the player of the queue, and counts again from the end of that wait: only then can a
 pause outlast the buffer.
+A queue on a player without a pause of its own ends its session at the pause instead. The player
+shows as paused (`Player.fake_paused`) until the pause timeout of the player controller ends
+that, the queue keeps the position of the pause meanwhile, whatever the stopped player reports,
+and play starts it again from there.
 When playback on another queue finds no free provider stream slot and one of those buffers holds
 one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
 source stream. Preparing the next track ahead of time never stops a paused queue. A player that
 could not be told to stop still shows paused on a stream its queue has ended, so play starts the
 queue again there rather than unpausing the player.
+
+The owner of a streaming account goes first. When playback for the user who owns the account finds
+no free slot of it, and a queue that plays it for someone else (another user, a guest, or anonymous
+playback) holds the slot with a source that delivers at playback pace, that queue gives way, whether
+or not the owner may control its player. It is stopped, and once the slot is kept for the owner's
+queue it resumes where it was on another source its own playback user may use that has a free
+slot; without one it stays stopped at its position. A play command of the owner is not refused over
+such a queue. The owner's own playback on another player keeps its slot as before, and preparing
+the next track ahead of time never makes a queue give way.
 
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
 (Next-track audio-buffer warming is driven separately by the streams pipeline, relative to the

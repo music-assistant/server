@@ -303,6 +303,16 @@ async def test_podcast_episode_release_date(helper: AudibleHelper) -> None:
     assert episode.metadata.release_date == datetime(2022, 8, 21, 15, 2, 44, tzinfo=UTC)
 
 
+async def test_audiobook_without_cover(helper: AudibleHelper) -> None:
+    """An audiobook whose product_images is null is parsed without an image."""
+    audiobook_data = {"asin": "B002V0K5FC", "title": "No Cover", "product_images": None}
+
+    book = helper._parse_audiobook(audiobook_data)
+
+    assert book.item_id == "B002V0K5FC"
+    assert not book.metadata.images
+
+
 def _mock_auth(locale: str) -> MagicMock:
     """Return a mock Authenticator with signing auth and the given locale."""
     auth = MagicMock()

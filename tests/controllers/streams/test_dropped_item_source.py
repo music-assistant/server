@@ -102,7 +102,7 @@ class _Harness:
 
         player = MagicMock()
         player.stop_called = False
-        player.get_config_value.return_value = False
+        player.requires_content_length = False
 
         self.ctrl = MagicMock()
         self.ctrl.logger = Mock()

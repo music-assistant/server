@@ -1,5 +1,8 @@
 {
   "manifest": {
     "description": "Discover and control WiiM, Audio Pro and other compatible LinkPlay speakers, including generic LinkPlay devices such as Edifier."
+  },
+  "errors": {
+    "set_can_only_lead": "Cannot add {0} to {1}: a stereo pair or other speaker set can only lead a group, add {1} to {0} instead"
   }
 }

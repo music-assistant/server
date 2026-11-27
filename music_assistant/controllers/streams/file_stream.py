@@ -3,39 +3,74 @@ A track served to a player as a file.
 
 Some players are built around files: they want the length of a track up front, and they
 pause, resume and seek by asking for a part of the file. For such a player a track becomes
-a WAV file with a declared length. The file is virtual: every part is encoded while it is
-sent, and only the start of the file is kept in memory.
+a WAV or an MP3 file with a declared length. The file is virtual: every part is encoded
+while it is sent, and only the start of the file is kept in memory. A track that is mixed
+with its neighbours also keeps the audio of those mixes, see `MixedTrack`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+from copy import copy
 from typing import TYPE_CHECKING, Final, NamedTuple
 
+from music_assistant_models.enums import ContentType
+
+from music_assistant.controllers.streams.constants import REALTIME_BURST
 from music_assistant.helpers.audio import create_streaming_wave_header
+from music_assistant.helpers.ffmpeg import DEFAULT_MP3_BIT_RATE
 
 if TYPE_CHECKING:
     from aiohttp import web
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.controllers.streams.mixed_track import MixedTrack
+
 # Bytes of the start of a file that are kept in memory. Players ask for the start again
 # before they resume or seek, and mostly drop that request.
 HEAD_SIZE: Final[int] = 1024 * 1024
 
 # Seconds of audio a file hands over ahead of playback, and how much of that one encode
-# gets. Every part a player asks for is paced like any other stream, so a player that
-# seeks often ends up at playback speed. See the usage policy.
+# gets: the burst of any other stream. Every part a player asks for is paced like any
+# other stream, so a player that seeks often ends up at playback speed. See the usage
+# policy.
 HEAD_START_PER_FILE: Final[int] = 30
-HEAD_START_PER_ENCODE: Final[int] = 10
+HEAD_START_PER_ENCODE: Final[int] = REALTIME_BURST
 
 # Seconds an encode starts before the part it is asked for. Filters in the chain (DSP, a
-# resampler) need that audio to settle, so the part comes out as it would in one pass.
+# resampler) need that audio to settle, so the part comes out as it would in one pass. An
+# MP3 encoder needs its first three frames for the same.
 RUN_IN_SECONDS: Final[int] = 1
+
+# The codecs a file can have: their size is known before the audio is encoded.
+FILE_CODECS: Final = (ContentType.WAV, ContentType.MP3)
+
+# An MP3 file is a row of frames at a constant bit rate, without a tag or a Xing header in
+# front of them. Without the bit reservoir no frame holds audio of another one, so a part
+# that is encoded by itself is made of the same bytes as the whole file.
+MP3_ENCODER_ARGS: Final = ("-write_xing", "0", "-id3v2_version", "0", "-reservoir", "0")
+MP3_FRAME_SAMPLES: Final[int] = 1152
+# the size of a frame in bytes, times the sample rate
+_MP3_FRAME_SLOTS: Final[int] = 144 * DEFAULT_MP3_BIT_RATE * 1000
+
+# How many frames apart the frames of an MP3 are that an encode can start on, by sample
+# rate. An MP3 is 44.1 or 48 kHz: no player takes a lower rate, and a lossy codec gets no
+# higher one. Such a frame starts on a whole frame of every sample rate the audio passes
+# through, and on a whole number of bytes at the bit rate of the file, which is where the
+# encoder starts over with how it pads its frames: every 1.28 seconds (51200 bytes) at
+# 44.1 kHz and every 0.12 seconds (4800 bytes) at 48 kHz.
+MP3_BLOCK_FRAMES: Final[dict[int, int]] = {44100: 49, 48000: 5}
+
+# The last bytes of an MP3 file, where a renderer looks for an ID3v1 tag.
+ID3V1_TAG_SIZE: Final[int] = 128
 
 # The track that plays and its neighbours.
 MAX_FILES_PER_PLAYER: Final[int] = 3
+
+# The track that plays and the one after it: the files that keep the audio of their mixes.
+MAX_MIXED_FILES_PER_PLAYER: Final[int] = 2
 
 # Seconds a player gets to hang up, or to ask for another part, after the start of a file
 # was sent to it from memory.
@@ -84,6 +119,41 @@ def declared_frames(queue_item: QueueItem, sample_rate: int) -> int:
     return max(round((seconds - int(streamdetails.seek_position)) * sample_rate), 0)
 
 
+def mp3_frame_count(samples: int) -> int:
+    """
+    Return the number of frames an MP3 file has for an amount of audio.
+
+    :param samples: Length of the audio in samples.
+    """
+    # the last frame of the audio is filled up, and the encoder adds one for its delay
+    return -(-samples // MP3_FRAME_SAMPLES) + 1
+
+
+def mp3_frame_offset(frame: int, sample_rate: int) -> int:
+    """
+    Return the offset in an MP3 file of one of its frames.
+
+    :param frame: Number of the frame, 0 for the first.
+    :param sample_rate: Sample rate of the file.
+    """
+    # where the size of a frame is no whole number of bytes, the encoder cuts the first
+    # frame down to one and from there adds a byte to every frame that would leave the
+    # file behind its bit rate without it
+    fraction = _MP3_FRAME_SLOTS % sample_rate
+    return -((fraction - frame * _MP3_FRAME_SLOTS) // sample_rate)
+
+
+def mp3_frame_at(offset: int, sample_rate: int) -> int:
+    """
+    Return the number of the frame of an MP3 file that holds a byte.
+
+    :param offset: Offset of the byte in the file.
+    :param sample_rate: Sample rate of the file.
+    """
+    fraction = _MP3_FRAME_SLOTS % sample_rate
+    return (offset * sample_rate + fraction) // _MP3_FRAME_SLOTS
+
+
 def is_connected(request: web.Request) -> bool:
     """
     Return whether a player still holds the connection of its request.
@@ -110,7 +180,7 @@ async def player_hangs_up(request: web.Request) -> bool:
 
 class FileStream:
     """
-    One track as the WAV file a player fetches.
+    One track as the WAV or MP3 file a player fetches.
 
     Its formats and its declared size are fixed when it is made, so every part a player
     asks for is cut from the same file.
@@ -126,16 +196,33 @@ class FileStream:
         """
         self.pcm_format = pcm_format
         self.output_format = output_format
-        self.byte_rate = output_format.pcm_sample_size
-        data_size = frames * output_format.channels * (output_format.bit_depth // 8)
-        self._head = bytearray(create_streaming_wave_header(output_format, data_size))
-        self.header_size = len(self._head)
-        self.size = self.header_size + data_size
+        self._is_mp3 = output_format.content_type == ContentType.MP3
+        # the format an encode of the file is asked for, and the arguments of its encoder
+        self.encode_format = copy(output_format)
+        self.encoder_args: list[str] = []
+        header = b""
+        if self._is_mp3:
+            self.byte_rate = DEFAULT_MP3_BIT_RATE * 1000 // 8
+            self.encoder_args = [*MP3_ENCODER_ARGS]
+            # the encoder gets the audio in the depth it is read in: brought down to 16 bit
+            # first it would get dither, which differs from one encode to the next
+            self.encode_format.bit_depth = pcm_format.bit_depth
+        else:
+            self.byte_rate = output_format.pcm_sample_size
+            data_size = frames * output_format.channels * (output_format.bit_depth // 8)
+            header = create_streaming_wave_header(output_format, data_size)
+            # ffmpeg only delivers the samples: the header is the file's own
+            self.encode_format.content_type = ContentType.from_bit_depth(output_format.bit_depth)
+        self._head = bytearray(header)
+        self.header_size = len(header)
+        self.size = self._size_of(frames)
+        # the sizes the file had before its audio ended short of them
+        self._earlier_sizes: list[int] = []
         self._head_start = HEAD_START_PER_FILE
         # the request an encode of this file runs for
         self.request: web.Request | None = None
-        # whether the queue was told that the player loads this file
-        self.loaded = False
+        # the stream the file is cut from, for a track that is mixed with its neighbours
+        self.mix: MixedTrack | None = None
 
     @property
     def has_audio_in_memory(self) -> bool:
@@ -144,10 +231,13 @@ class FileStream:
 
     def head(self, part: range) -> bytes:
         """
-        Return the start of a part, as far as memory holds it.
+        Return the start of a part, as far as it is known without an encode.
 
         :param part: The bytes of the file a player asks for.
         """
+        if self._is_mp3 and part.start >= self.size - ID3V1_TAG_SIZE:
+            # a renderer looks here for a tag before it plays or seeks: the file has none
+            return bytes(len(part))
         return bytes(self._head[part.start : part.stop])
 
     def keep(self, offset: int, data: bytes) -> None:
@@ -170,16 +260,49 @@ class FileStream:
         """
         Return where an encode starts that delivers the file from an offset.
 
-        An encode starts on a whole second: that is a whole frame in every format the audio
-        passes through, so a part is cut out of the same samples as one pass over the file.
+        An encode starts on a whole frame in every format the audio passes through, so a
+        part is cut out of the same samples as one pass over the file: on a whole second,
+        and for an MP3 on a frame from where the encoder makes the same bytes as well.
 
         :param offset: Offset in the file of the first byte to deliver, past the header.
-        :return: The second of the file the encode starts at, and the bytes of its output
-            that come before the offset.
+        :return: The millisecond of the file the encode starts at, and the bytes of its
+            output that come before the offset.
         """
+        if self._is_mp3:
+            rate = self.output_format.sample_rate
+            run_in_frames = -(-RUN_IN_SECONDS * rate // MP3_FRAME_SAMPLES)
+            block = MP3_BLOCK_FRAMES[rate]
+            frame = max(mp3_frame_at(offset, rate) - run_in_frames, 0) // block * block
+            position_ms = frame * MP3_FRAME_SAMPLES * 1000 // rate
+            return position_ms, offset - mp3_frame_offset(frame, rate)
         data_offset = offset - self.header_size
         second = max(data_offset // self.byte_rate - RUN_IN_SECONDS, 0)
-        return second, data_offset - second * self.byte_rate
+        return second * 1000, data_offset - second * self.byte_rate
+
+    def offset_of(self, pcm_size: int) -> int:
+        """
+        Return the offset in the file where an amount of the audio it is read from ends.
+
+        :param pcm_size: Bytes of audio, in the PCM format the file reads.
+        """
+        return self._size_of(
+            pcm_size * self.output_format.sample_rate // self.pcm_format.pcm_sample_size
+        )
+
+    def size_for(self, range_header: str | None) -> int:
+        """
+        Return the size of the file that a request is answered against.
+
+        That is its size, unless a renderer looks for a tag at the end of a size the file
+        had when it asked for the start.
+
+        :param range_header: Value of the Range header, if the request has one.
+        """
+        if self._is_mp3 and (part := parse_range(range_header, self.size)) is not None:
+            for size in self._earlier_sizes:
+                if part.start == size - ID3V1_TAG_SIZE:
+                    return size
+        return self.size
 
     def end_at(self, size: int) -> None:
         """
@@ -187,7 +310,25 @@ class FileStream:
 
         :param size: Offset in the file where the audio ended.
         """
-        self.size = min(self.size, size)
+        if size < self.size:
+            self._earlier_sizes.append(self.size)
+            self.size = size
+
+    def close(self) -> None:
+        """Give up what the file keeps of the stream it is cut from."""
+        if self.mix is not None:
+            self.mix.close()
+
+    def _size_of(self, frames: int) -> int:
+        """
+        Return the size of the file for an amount of audio.
+
+        :param frames: Length of the audio in frames.
+        """
+        sample_rate = self.output_format.sample_rate
+        if self._is_mp3:
+            return mp3_frame_offset(mp3_frame_count(frames), sample_rate)
+        return self.header_size + frames * self.byte_rate // sample_rate
 
 
 class FileKey(NamedTuple):
@@ -213,7 +354,18 @@ class FileStreams:
         :param player_id: The player that fetches the file.
         :param key: The track and the playback it belongs to.
         """
-        return self._files.get(player_id, {}).get(key)
+        files = self._files.get(player_id, {})
+        if (file := files.get(key)) is not None:
+            return file
+        # a fade into a track moves the position the track starts at
+        return next(
+            (
+                file
+                for known, file in files.items()
+                if file.mix is not None and known[:3] == key[:3]
+            ),
+            None,
+        )
 
     def add(self, player_id: str, key: FileKey, file: FileStream) -> None:
         """
@@ -228,7 +380,11 @@ class FileStreams:
         unread = [known for known, other in files.items() if other.request is None]
         files[key] = file
         for known in unread[: max(len(files) - MAX_FILES_PER_PLAYER, 0)]:
-            del files[known]
+            files.pop(known).close()
+        # the audio of a mix is only kept for the track that plays and the one after it
+        for known in list(files)[:-MAX_MIXED_FILES_PER_PLAYER]:
+            if files[known].mix is not None and known in unread:
+                files.pop(known).close()
 
     def release(self, queue_id: str, current_session_id: str | None) -> None:
         """
@@ -240,6 +396,6 @@ class FileStreams:
         for player_id, files in list(self._files.items()):
             for key in list(files):
                 if key.queue_id == queue_id and key.session_id != current_session_id:
-                    del files[key]
+                    files.pop(key).close()
             if not files:
                 del self._files[player_id]
