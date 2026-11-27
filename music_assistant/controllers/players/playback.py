@@ -36,6 +36,7 @@ from music_assistant_models.media_items import Track
 from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 
 from music_assistant.constants import CONF_PLAY_MEDIA_OVERRIDES_GROUP
+from music_assistant.controllers.player_queues.constants import SKIP_END_MARGIN
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
@@ -218,6 +219,38 @@ class PlaybackMixin(_PlayerControllerBase):
             )
         # handle command on player directly
         await self._get_transport_protocol(player).seek(position)
+
+    @api_command("players/cmd/skip", required_scope=Scope.PLAYERS_CONTROL)
+    @handle_player_command(to_playback_owner=True)
+    async def cmd_skip(self, player_id: str, seconds: int) -> None:
+        """
+        Handle SKIP command for given player.
+
+        Moves the playback position within the item that plays, whatever plays on the
+        player. A forward skip stops short of the end of an item with a known duration.
+        Quick repeated skips add up into a single jump only while the player plays its queue.
+
+        :param player_id: player_id of the player to handle the command.
+        :param seconds: number of seconds to skip in the current item, negative to skip back.
+        """
+        player = self._get_player_with_redirect(player_id)
+        if self._get_active_audio_source(player) is None and (
+            active_queue := self.get_active_queue(player)
+        ):
+            await self.mass.player_queues.skip(active_queue.queue_id, seconds)
+            return
+        if (position := player.corrected_elapsed_time) is None:
+            msg = f"Player {player.name} does not report the position of what it plays"
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_control_unsupported",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
+        target = max(0.0, position + seconds)
+        if player.current_media and (duration := player.current_media.duration):
+            target = min(target, max(0.0, duration - SKIP_END_MARGIN))
+        await self.cmd_seek(player.player_id, int(target))
 
     @api_command("players/cmd/shuffle", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(to_playback_owner=True)
