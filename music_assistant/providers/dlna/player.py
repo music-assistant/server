@@ -19,7 +19,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
-from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -111,8 +111,8 @@ class DLNAPlayer(PlayerProtocol):
 
     @property
     def fetches_files(self) -> bool:
-        """Return if the renderer is built around files, which its user tells."""
-        return self.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False, return_type=bool)
+        """Return if the renderer is built around files."""
+        return True
 
     def set_available(self, available: bool) -> None:
         """Set the availability of the player."""

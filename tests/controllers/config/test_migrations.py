@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
@@ -26,6 +27,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_artist_catalogue_selection,
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
+    _migrate_drop_fixed_content_length,
     _migrate_drop_http_profile,
     _migrate_emby_album_artists_heal,
     _migrate_milkdrop_drop_color_tint,
@@ -44,8 +46,6 @@ from music_assistant.controllers.config.migrations import (
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def _fake_encrypt(value: str) -> str:
@@ -251,6 +251,137 @@ def test_migrate_drop_http_profile_tolerates_malformed_data() -> None:
     assert data["players"]["p1"] == "broken"
     assert "values" not in data["players"]["p2"]
     assert data["players"]["p4"]["values"] == {}
+
+
+def test_migrate_drop_fixed_content_length_drops_every_stored_value() -> None:
+    """The fixed content length setting is dropped from every player and protocol."""
+    data: dict[str, Any] = {
+        "players": {
+            # a player with the copy it held of its protocol player's value
+            "sonos_1": {
+                "provider": "sonos",
+                "values": {
+                    "dlna_1||protocol||requires_fixed_content_length": True,
+                    "dlna_1||protocol||flow_mode": True,
+                    "hide_in_ui": True,
+                },
+            },
+            "ap_1": {"provider": "airplay", "values": {"hide_in_ui": False}},
+        },
+        "player_protocols": {
+            "dlna_1": {
+                "provider": "dlna",
+                "values": {"requires_fixed_content_length": True, "flow_mode": False},
+            },
+            "wam_1": {
+                "provider": "samsung_wam",
+                "values": {"requires_fixed_content_length": False},
+            },
+            "cast_1": {"provider": "chromecast", "values": {"output_codec": "flac"}},
+        },
+    }
+
+    assert _migrate_drop_fixed_content_length(data) is True
+    assert data["players"]["sonos_1"]["values"] == {
+        "dlna_1||protocol||flow_mode": True,
+        "hide_in_ui": True,
+    }
+    assert data["players"]["ap_1"]["values"] == {"hide_in_ui": False}
+    assert data["player_protocols"]["dlna_1"]["values"] == {"flow_mode": False}
+    assert data["player_protocols"]["wam_1"]["values"] == {}
+    assert data["player_protocols"]["cast_1"]["values"] == {"output_codec": "flac"}
+    assert _migrate_drop_fixed_content_length(data) is False
+
+
+async def test_migrate_drops_the_fixed_content_length_of_a_config_from_before_the_split() -> None:
+    """A config from before the split keeps the setting in no record the split makes."""
+    data: dict[str, Any] = {
+        "players": {
+            # a player with the copy it held of its protocol player's value
+            "sonos_1": {
+                "provider": "sonos",
+                "player_type": "player",
+                "values": {
+                    "dlna_1||protocol||requires_fixed_content_length": True,
+                    "output_codec": "mp3",
+                },
+            },
+            "dlna_1": {
+                "provider": "dlna",
+                "player_type": "protocol",
+                "values": {
+                    "protocol_parent_id": "sonos_1",
+                    "requires_fixed_content_length": True,
+                    "flow_mode": False,
+                },
+            },
+            "wam_1": {
+                "provider": "samsung_wam",
+                "player_type": "player",
+                "values": {"requires_fixed_content_length": False},
+            },
+        }
+    }
+
+    assert await migrate(data) is True
+
+    records = [*data["players"].values(), *data["player_protocols"].values()]
+    assert not [
+        key
+        for record in records
+        for key in record["values"]
+        if "requires_fixed_content_length" in key
+    ]
+    assert data["player_protocols"]["sonos_1"]["values"] == {"output_codec": "mp3"}
+    assert data["player_protocols"]["dlna_1"]["values"] == {"flow_mode": False}
+    assert data["player_protocols"]["wam_1"]["values"] == {}
+    assert await migrate(data) is False
+
+
+async def test_migrate_drops_the_fixed_content_length_of_a_split_config() -> None:
+    """A split config loses the fixed content length setting its protocols hold."""
+    data: dict[str, Any] = {
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
+        "players": {
+            "pl_a": {"player_id": "pl_a", "provider": "dlna", "values": {"hide_in_ui": True}}
+        },
+        "player_protocols": {
+            "dlna_a": {
+                "protocol_id": "dlna_a",
+                "provider": "dlna",
+                "player_id": "pl_a",
+                "role": "native",
+                "enabled": True,
+                "values": {"requires_fixed_content_length": True, "flow_mode": False},
+            }
+        },
+    }
+
+    assert await migrate(data) is True
+
+    assert data["player_protocols"]["dlna_a"]["values"] == {"flow_mode": False}
+    assert data["players"]["pl_a"]["values"] == {"hide_in_ui": True}
+    assert await migrate(data) is False
+
+
+@pytest.mark.parametrize("tree", ["players", "player_protocols"])
+def test_migrate_drop_fixed_content_length_tolerates_malformed_data(tree: str) -> None:
+    """Missing or non-dict records and values are skipped without raising."""
+    assert _migrate_drop_fixed_content_length({}) is False
+    assert _migrate_drop_fixed_content_length({tree: "broken"}) is False
+    data: dict[str, Any] = {
+        tree: {
+            "a": "broken",
+            "b": {"provider": "dlna"},
+            "c": {"provider": "dlna", "values": None},
+            "d": {"provider": "dlna", "values": {"requires_fixed_content_length": None}},
+        }
+    }
+    assert _migrate_drop_fixed_content_length(data) is True
+    assert data[tree]["a"] == "broken"
+    assert "values" not in data[tree]["b"]
+    assert data[tree]["d"]["values"] == {}
 
 
 def test_migrate_airplay_apple_power_control_flips_stale_default() -> None:

@@ -475,7 +475,7 @@ async def test_a_player_that_does_not_fetch_files_keeps_its_stream(rig: _Rig) ->
     """Without the property a range is not answered, and no length or part is announced."""
     await rig.decode()
     rig.player.fetches_files = False
-    rig.player.get_config_value.return_value = False
+    rig.player.requires_content_length = False
 
     resp, _ = await rig.fetch("bytes=100000-", method="HEAD")
 

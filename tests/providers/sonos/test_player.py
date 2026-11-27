@@ -1774,3 +1774,10 @@ def test_a_speaker_fetches_files() -> None:
     player, _ = _make_player()
 
     assert player.fetches_files is True
+
+
+def test_a_speaker_needs_no_content_length() -> None:
+    """Test a stream that is not a file reaches a speaker without a made-up length."""
+    player, _ = _make_player()
+
+    assert player.requires_content_length is False

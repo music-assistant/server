@@ -214,9 +214,16 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 1. **HTTP endpoints** (`serve_queue_item_stream`, `serve_queue_flow_stream`): Used by players that consume HTTP streams (Chromecast, DLNA, Sonos, etc.)
 2. **Direct PCM** (`get_stream`): Used by player providers that consume raw PCM directly (AirPlay, Sendspin, etc.)
 
+### The Length of a Stream
+
+An HTTP stream declares no `Content-Length`: it ends when its audio does. Two traits of a player's protocol change that, and neither is a user setting:
+
+- A player that is built around files (`PlayerProtocol.fetches_files`: Sonos speakers, DLNA renderers and Cast devices) gets a track as a file with its real length, see below.
+- A player that stops or loops the audio without a length (`PlayerProtocol.requires_content_length`: Bluesound, Samsung WAM and Yandex Station) gets one on every stream that is not a file. A single item declares an estimate from its duration (`get_content_length`). The flow stream, a live source and an item without a duration declare 12 hours of audio, and the stream of a universal group 4 GiB: a length they never reach. An announcement is rendered in full and sent with its real length.
+
 ### A Track as a File
 
-A player that is built around files (`PlayerProtocol.fetches_files`) wants the length of a track up front, and pauses, resumes and seeks by asking for a part of the file. For such a player `serve_queue_item_stream` serves a track as a WAV or an MP3 file: a `Content-Length`, `Accept-Ranges: bytes`, and a `206` for a `Range` request. `StreamsController.serves_as_file` decides: a track with a known duration, WAV or MP3 as output codec (the two whose size is known before the audio is encoded), normal playback speed, no fade-in and no declared tail overlap. Everything else keeps the stream without a length.
+A player that is built around files (`PlayerProtocol.fetches_files`) wants the length of a track up front, and pauses, resumes and seeks by asking for a part of the file. For such a player `serve_queue_item_stream` serves a track as a WAV or an MP3 file: a `Content-Length`, `Accept-Ranges: bytes`, and a `206` for a `Range` request. The flow stream is never a file. `StreamsController.serves_as_file` decides: a track with a known duration, WAV or MP3 as output codec (the two whose size is known before the audio is encoded), normal playback speed, no fade-in and no declared tail overlap. Everything else keeps the stream without a length.
 
 - The file is virtual. Every request that needs audio gets an encode of its own, read from the track's `AudioBuffer` at the position that belongs to the byte offset, and that encode ends with its connection. Nothing goes to disk; only the first megabyte of a file is kept in memory, because players ask for the start again before they resume or seek.
 - The same offset always gives the same audio. A player may put the bytes of different requests next to each other, so an encode starts a second or more before the part that is asked, and drops what comes before it: filters and resamplers have settled by then. It starts on a whole frame of every format the audio passes through, which for a WAV file is a whole second. What is left is dither, when a WAV file goes from more bits to 16.

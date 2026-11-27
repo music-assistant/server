@@ -16,7 +16,6 @@ from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 
 from music_assistant.constants import (
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
-    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED,
     MAIN_ZONE,
     create_sample_rates_config_entry,
 )
@@ -101,6 +100,12 @@ class BluesoundPlayer(PlayerProtocol):
         """Return if the player requires flow mode."""
         return True
 
+    @property
+    def requires_content_length(self) -> bool:
+        """Return if the player needs a Content-Length on a stream that has no length."""
+        # BluOS keeps looping the audio without one
+        return True
+
     async def setup(self) -> None:
         """Set up the player."""
         await self.update_attributes()
@@ -109,9 +114,6 @@ class BluesoundPlayer(PlayerProtocol):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            # BluOS keeps looping the audio without a fixed content length,
-            # so this is not a choice we can leave to the user.
-            CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED,
             create_sample_rates_config_entry(
                 max_sample_rate=192000,
                 safe_max_sample_rate=192000,
