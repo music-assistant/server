@@ -42,6 +42,7 @@ def _player(
     player._stepping_out = False
     player._taken_over_item_id = None
     player._flow_queue_id = None
+    player._flow_media = None
     player._evicted_cloud_queue = None
     player._queue_session_id = session_id if cloud_queue_id else None
     client = MagicMock()
@@ -113,6 +114,9 @@ def _player_loading_our_queue(
     player._served_bindings = {}
     player.cloud_queue_version = 1.0
     cast("MagicMock", player.mass).streams.base_url = "http://192.168.1.10:8097"
+    cast("MagicMock", player.mass).streams.resolve_stream_url = AsyncMock(
+        return_value="http://192.168.1.10:8097/single/abc.wav"
+    )
     client.player.is_passive = False
     # the speaker plays the old queue in the session it holds
     client.player.group.active_session_id = "session1"
@@ -244,13 +248,13 @@ async def test_an_unanswered_load_keeps_the_queue_only_with_a_session(
 def _player_streaming_our_queue(
     on_load: object,
 ) -> tuple[SonosPlayer, MagicMock, PlayerMedia]:
-    """Create a player in flow mode whose speaker runs `on_load` while it loads the stream."""
+    """Create a player whose speaker runs `on_load` while it loads a compressed flow stream."""
     player, client, media = _player_loading_our_queue(None)
     client.player.group.play_stream_url = AsyncMock(side_effect=on_load)
     player._provider = MagicMock()
     player._provider.mass = player.mass
     cast("MagicMock", player.mass).streams.resolve_stream_url = AsyncMock(
-        return_value="http://192.168.1.10:8097/flow/abc.flac"
+        return_value="http://192.168.1.10:8097/flow/abc.mp3"
     )
     return player, client, media
 

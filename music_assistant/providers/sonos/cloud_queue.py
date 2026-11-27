@@ -97,6 +97,7 @@ class SonosCloudQueue:
         queue_version = player.cloud_queue_version
         wire_generation = player.cloud_queue_item_generation
         wire_center = request.query.get("itemId")
+        player.on_cloud_queue_read(request.query.get("reason"), wire_center)
         # built from the queue as it is right now: the speaker fetches on its own schedule and
         # plays out of what it cached, so only a live answer keeps a track added mid-playback
         # from being played over. The beginning/end flags must be honest - signalling

@@ -210,6 +210,9 @@ class SonosPlayerProvider(PlayerProvider):
         for player in self.protocols:
             if not isinstance(player, SonosPlayer) or player.cloud_queue_id != event.object_id:
                 continue
+            if player.plays_flow_item:
+                # its one item is the stream of the queue, whatever the queue holds
+                continue
             # invalidate straight away, so a window served before the command goes out does
             # not carry a version the speaker reads as current
             player.bump_cloud_queue_version()
