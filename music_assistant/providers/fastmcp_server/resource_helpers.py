@@ -175,9 +175,9 @@ def _min_insert_index(queue: object) -> int:
     """Return the first queue index where new rows may be inserted."""
     floor = getattr(queue, "current_index", None)
     floor_value = floor if isinstance(floor, int) else -1
-    buffered = getattr(queue, "index_in_buffer", None)
-    if isinstance(buffered, int):
-        floor_value = max(floor_value, buffered)
+    locked = getattr(queue, "last_locked_index", None)
+    if isinstance(locked, int):
+        floor_value = max(floor_value, locked)
     return floor_value + 1
 
 

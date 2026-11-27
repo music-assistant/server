@@ -44,3 +44,15 @@ def test_a_wrapped_buffer_never_reports_a_boundary_before_the_playing_track() ->
     so the queue would end up naming a different track than the one being played.
     """
     assert committed_index(_queue(current_index=4, index_in_buffer=0), False) == 4
+
+
+@pytest.mark.parametrize(
+    ("current_index", "index_in_buffer", "expected"),
+    [(2, 3, 2), (3, 4, 4)],
+    ids=["a track follows it", "it is the last track"],
+)
+def test_a_replaceable_buffered_track_is_held_while_nothing_follows_it(
+    current_index: int, index_in_buffer: int, expected: int
+) -> None:
+    """A player can only replace the buffered track with a track that follows it."""
+    assert committed_index(_queue(current_index, index_in_buffer), True) == expected

@@ -62,7 +62,6 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    ATTR_LAST_LOCKED_INDEX,
     ATTR_PLAY_ACTION_IN_PROGRESS,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     MASS_LOGO_ONLINE,
@@ -988,11 +987,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         boundary_index = (
             self.committed_index(queue_id) if queue.index_in_buffer is not None else None
         )
-        if boundary_index is not None and (
-            item_index <= boundary_index
-            # a player can only replace the buffered item with an item that follows it
-            or item_index == queue.index_in_buffer == queue.items - 1
-        ):
+        if boundary_index is not None and item_index <= boundary_index:
             # ignore request if track already loaded in the buffer
             # the frontend should guard so this is just in case
             self.logger.warning("delete requested for item already loaded in buffer")
@@ -2551,7 +2546,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # resolves to, so refresh the derived flag with every signaled update
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         # clients may only move or remove the items after this index
-        queue.extra_attributes[ATTR_LAST_LOCKED_INDEX] = (
+        queue.last_locked_index = (
             self.committed_index(queue_id) if queue.index_in_buffer is not None else None
         )
         if items_changed:

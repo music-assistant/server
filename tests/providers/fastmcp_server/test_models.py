@@ -106,6 +106,7 @@ def test_to_brief_queue_preserves_absolute_indices_and_insertion_floor() -> None
         queue_id="q1",
         current_index=3,
         index_in_buffer=5,
+        last_locked_index=5,
         items=12,
         shuffle_enabled=True,
         repeat_mode=SimpleNamespace(value="all"),

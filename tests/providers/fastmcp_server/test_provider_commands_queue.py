@@ -14,7 +14,7 @@ from music_assistant.providers.fastmcp_server.commands.queue import remove_items
 async def test_safe_remove_never_deletes_played_or_buffered_rows() -> None:
     """Every requested id is classified once and only a future row is deleted."""
     mass = MagicMock()
-    mass.player_queues.get.return_value = SimpleNamespace(current_index=1, index_in_buffer=2)
+    mass.player_queues.get.return_value = SimpleNamespace(current_index=1, last_locked_index=2)
     positions: dict[str, list[int | None]] = {
         "played": [1],
         "buffered": [2],
@@ -34,10 +34,24 @@ async def test_safe_remove_never_deletes_played_or_buffered_rows() -> None:
     mass.player_queues.delete_item.assert_called_once_with("q1", "future")
 
 
+async def test_safe_remove_deletes_a_buffered_row_the_player_can_still_replace() -> None:
+    """A buffered row behind the queue's locked index is removed like any future row."""
+    mass = MagicMock()
+    mass.player_queues.get.return_value = SimpleNamespace(
+        current_index=1, index_in_buffer=2, last_locked_index=1
+    )
+    mass.player_queues.index_by_id.side_effect = [2, None]
+
+    result = await remove_items_safe(mass, "q1", ["replaceable"])
+
+    assert result.removed == ["replaceable"]
+    mass.player_queues.delete_item.assert_called_once_with("q1", "replaceable")
+
+
 async def test_safe_remove_reclassifies_silently_ignored_delete() -> None:
     """A row MA leaves behind is reported as buffered, never falsely removed."""
     mass = MagicMock()
-    mass.player_queues.get.return_value = SimpleNamespace(current_index=0, index_in_buffer=0)
+    mass.player_queues.get.return_value = SimpleNamespace(current_index=0, last_locked_index=0)
     mass.player_queues.index_by_id.side_effect = [4, 4]
 
     result = await remove_items_safe(mass, "q1", ["racing"])
