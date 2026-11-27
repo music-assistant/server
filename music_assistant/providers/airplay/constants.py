@@ -30,6 +30,15 @@ class AirPlayRemoteCommand(StrEnum):
     PLAY_PAUSE = "play_pause"
     NEXT = "next"
     PREVIOUS = "previous"
+    SEEK = "seek"
+
+
+# How long a scrub on the receiver must settle before its seek is sent on: a
+# drag can report several positions, and only the last one matters.
+AIRPLAY_REMOTE_SEEK_SETTLE_SECONDS: Final[float] = 0.1
+# A receiver re-sending the same seek target this soon after it last sent it is a repeat,
+# not a new scrub.
+AIRPLAY_REMOTE_SEEK_REPEAT_SECONDS: Final[float] = 0.5
 
 
 class ClockReadiness(StrEnum):
@@ -454,3 +463,6 @@ CLI_PROBLEM_MARKERS: Final[tuple[str, ...]] = ("error", "cannot", "failed", "una
 # A burst still gets through, which is what a real one-shot daemon failure is.
 PTP_DAEMON_WARN_BURST: Final[int] = 5
 PTP_DAEMON_WARN_WINDOW: Final[float] = 60.0
+
+# Resend the progress to a receiver once its own count is this far off, in seconds.
+PROGRESS_RESEND_DRIFT_S: Final[float] = 1.5

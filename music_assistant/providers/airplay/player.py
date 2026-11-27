@@ -94,6 +94,8 @@ from .helpers import (
 from .stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from music_assistant_models.config_entries import PlayerConfig
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -726,28 +728,7 @@ class AirPlayPlayer(PlayerProtocol):
         # drop any pending automatic re-join
         self.cancel_group_rejoin()
         async with self._lock:
-            # forward stop to the entire stream session, also one a stopped stream was part of
-            if session := self.session or next(
-                (
-                    endpoint.stream.session
-                    for endpoint in self.session_endpoints
-                    if endpoint.stream and endpoint.stream.session
-                ),
-                None,
-            ):
-                await session.stop()
-            elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(
-                self.protocol_id
-            ):
-                # Sendspin bridge active: it tears the transport down straight
-                # away and takes the player out of the Sendspin session
-                pass
-            elif self.stream and self.stream.running:
-                # Fallback: stop protocol directly
-                await self.stream.stop(force=True)
-                self.stream = None
-            self._attr_current_media = None
-            self.update_state()
+            await self._stop_locked()
 
     async def play(self) -> None:
         """Handle PLAY (unpause) command on the player."""
@@ -809,6 +790,32 @@ class AirPlayPlayer(PlayerProtocol):
         if (session := self.session) and await session.standby():
             return
         await self.stop()
+
+    async def resync_live_source(self, get_position: Callable[[], float | None]) -> bool | None:
+        """
+        Drop the audio queued for a live source and re-anchor on a short lead.
+
+        A player that cannot re-anchor after dropping the queued audio is stopped:
+        it would otherwise stay silent while it reports playing.
+
+        :param get_position: Returns the source's position now, in seconds, or None
+            when the source does not play.
+        """
+        # serialised with play_media, stop and group changes, which reshape the session
+        async with self._lock:
+            if (session := self.session) is None:
+                return False
+            # read only now: waiting for the lock (a start in progress) moves it on
+            if (position := get_position()) is None:
+                return False
+            media = session.media
+            try:
+                return await session.resync_live(round(position * 1000))
+            except PlayerCommandFailed as err:
+                if self.session is session and session.media is media:
+                    self.logger.error("%s; stopping the player", err)
+                    await self._stop_locked()
+                return True
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -1443,8 +1450,31 @@ class AirPlayPlayer(PlayerProtocol):
         metadata = owner.player.current_media if owner and owner.player else None
         if not metadata:
             return
-        progress = int(metadata.corrected_elapsed_time or 0)
+        progress = round(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
+
+    async def _stop_locked(self) -> None:
+        """Stop the player; the caller holds the player lock."""
+        # forward stop to the entire stream session, also one a stopped stream was part of
+        if session := self.session or next(
+            (
+                endpoint.stream.session
+                for endpoint in self.session_endpoints
+                if endpoint.stream and endpoint.stream.session
+            ),
+            None,
+        ):
+            await session.stop()
+        elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(self.protocol_id):
+            # Sendspin bridge active: it tears the transport down straight
+            # away and takes the player out of the Sendspin session
+            pass
+        elif self.stream and self.stream.running:
+            # Fallback: stop protocol directly
+            await self.stream.stop(force=True)
+            self.stream = None
+        self._attr_current_media = None
+        self.update_state()
 
     async def _adopt_device_volume(self, volume: int, airplay_volume: float | None) -> None:
         """

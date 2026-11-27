@@ -859,6 +859,22 @@ class PlayerProtocol(ABC):
         """
         raise NotImplementedError("seek needs to be implemented when PlayerFeature.SEEK is set")
 
+    async def resync_live_source(self, get_position: Callable[[], float | None]) -> bool | None:
+        """
+        Drop the audio queued for a live source and play on from what the source delivers now.
+
+        A live source (such as Spotify Connect) counts audio as played when it is
+        read, so audio the player still has queued is audio the source's clock
+        already ran past. A player that queues a long lead can drop it here, after
+        a seek or a cold start, so what is heard matches the source's position.
+
+        :param get_position: Returns the source's position now, in seconds, or None
+            when the source does not play; read at the moment the re-sync starts.
+        :return: True when the player re-synced, False when it could not (yet), and
+            None when the player keeps no lead worth dropping (the default).
+        """
+        return None
+
     async def set_shuffle(self, shuffle_enabled: bool) -> None:
         """
         Handle SET SHUFFLE command on the player.

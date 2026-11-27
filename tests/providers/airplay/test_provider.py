@@ -16,6 +16,7 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
+    AIRPLAY_REMOTE_SEEK_SETTLE_SECONDS,
     PTP_DAEMON_WARN_BURST,
     PTP_DAEMON_WARN_WINDOW,
     AirPlayRemoteCommand,
@@ -1556,3 +1557,19 @@ def test_a_remote_command_of_a_speaker_controls_its_set() -> None:
     bridge_manager = cast("MagicMock", prov._bridge_manager)
     bridge_manager.get_transport_command_target.assert_called_once_with("apc43875e9e53a")
     cast("MagicMock", prov.mass).players.cmd_pause.assert_called_once_with("plc43875e9e53a")
+
+
+def test_remote_seek_settles_before_seeking() -> None:
+    """A scrub on the receiver seeks the player once the drag settled, in whole seconds."""
+    prov, airplay_player = _remote_command_player(None)
+
+    prov.handle_remote_command(airplay_player, AirPlayRemoteCommand.SEEK, 83_600)
+
+    mass = cast("MagicMock", prov.mass)
+    mass.call_later.assert_called_once_with(
+        AIRPLAY_REMOTE_SEEK_SETTLE_SECONDS,
+        mass.players.cmd_seek,
+        "plc43875e9e53a",
+        84,
+        task_id="airplay_remote_seek_plc43875e9e53a",
+    )

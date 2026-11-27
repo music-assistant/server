@@ -44,6 +44,7 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
+    AIRPLAY_REMOTE_SEEK_SETTLE_SECONDS,
     AIRPLAY_VOLUME_MUTE,
     CLI_PROBLEM_MARKERS,
     COMPANION_DISCOVERY_TYPE,
@@ -209,8 +210,19 @@ class AirPlayProvider(PlayerProvider):
             exit_task.cancel()
             await asyncio.gather(ready_task, exit_task, return_exceptions=True)
 
-    def handle_remote_command(self, player: AirPlayPlayer, command: AirPlayRemoteCommand) -> None:
-        """Dispatch a transport command received from an AirPlay receiver."""
+    def handle_remote_command(
+        self,
+        player: AirPlayPlayer,
+        command: AirPlayRemoteCommand,
+        position_ms: int | None = None,
+    ) -> None:
+        """
+        Dispatch a transport command received from an AirPlay receiver.
+
+        :param player: The player whose receiver sent the command.
+        :param command: The command received.
+        :param position_ms: The target of a seek, in milliseconds.
+        """
         # a speaker of a set controls its set
         if (owner := player.owner) is None:
             return
@@ -238,6 +250,14 @@ class AirPlayProvider(PlayerProvider):
                 self.mass.create_task(self.mass.players.cmd_next_track(player_id))
             case AirPlayRemoteCommand.PREVIOUS:
                 self.mass.create_task(self.mass.players.cmd_previous_track(player_id))
+            case AirPlayRemoteCommand.SEEK if position_ms is not None:
+                self.mass.call_later(
+                    AIRPLAY_REMOTE_SEEK_SETTLE_SECONDS,
+                    self.mass.players.cmd_seek,
+                    player_id,
+                    round(position_ms / 1000),
+                    task_id=f"airplay_remote_seek_{player_id}",
+                )
 
     def get_set_carrier(self, set_id: str) -> AirPlayPlayer | None:
         """

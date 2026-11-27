@@ -99,6 +99,14 @@ VOLUME_MODE_OPTIONS: Final = [
 
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
+# A reported position this far from where playback should be is a seek.
+SEEK_DETECT_THRESHOLD_S = 2.0
+# A seek settles this long before the player re-syncs, so a drag re-syncs once.
+SEEK_RESYNC_SETTLE_S = 0.1
+# A player still setting up its stream is retried this often, for about 5 s.
+RESYNC_RETRY_INTERVAL_S = 0.05
+RESYNC_ATTEMPTS = 100
+
 # When playback is paused the backend stops writing PCM. If no PCM arrives for
 # this long while we're not in a 'playing' state, end the stream (clean EOF) so
 # the player leaves the playing state; the next 'playing' event re-streams.
@@ -196,6 +204,13 @@ class _PlayerDaemon:
     # the queue claim exists — and pushed to the queue once claimed in
     # on_source_selected. Cleared when the session ends.
     last_playback_options: BackendPlaybackOptions | None = None
+    # Spotify's last reported position and when, to tell a seek from playback.
+    position_ref: float | None = None
+    position_ref_at: float = 0.0
+    position_ref_playing: bool = False
+    position_ref_track: str | None = None
+    # a re-sync is owed: scheduled and not done yet, or a seek made while paused
+    resync_pending: bool = False
 
     def set_playing(self, playing: bool) -> None:
         """Set the backend's play state, moving the stream position anchor to this moment."""
@@ -206,9 +221,9 @@ class _PlayerDaemon:
             and metadata.elapsed_time is not None
             and metadata.elapsed_time_last_updated is not None
         ):
-            now = int(time.time())
+            now = time.time()
             if not playing:
-                metadata.elapsed_time += int(now - metadata.elapsed_time_last_updated)
+                metadata.elapsed_time += round(now - metadata.elapsed_time_last_updated)
             metadata.elapsed_time_last_updated = now
         self.playing = playing
 
@@ -559,6 +574,9 @@ class SpotifyConnectProvider(PluginProvider):
         # real level. Not awaited: go-librespot can only answer once something
         # reads its audio, and that reader is the stream this call holds up.
         self.mass.create_task(self._sync_player_volume_to_spotify(daemon, active_player_id))
+        # a start from Music Assistant queues the same cold-start lead as one from the
+        # Spotify app; the re-sync waits for the player's stream to come up
+        self._schedule_player_resync(daemon, 0)
 
     async def on_source_unselected(
         self, source_id: str, owner_player_id: str, stream_session_id: str
@@ -633,6 +651,9 @@ class SpotifyConnectProvider(PluginProvider):
                 and not isinstance(value, bool)
             ):
                 await daemon.backend.seek(int(value) * 1000)
+                # the backend may report the new position late; re-sync to the target
+                self._set_position_ref(daemon, float(int(value)))
+                self._schedule_player_resync(daemon, SEEK_RESYNC_SETTLE_S)
             elif action == SourceControl.SHUFFLE and isinstance(value, bool):
                 # strict bool: None or a misrouted enum (bool(RepeatMode.OFF) is
                 # True) must not silently toggle shuffle
@@ -1166,6 +1187,11 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.in_use_by_player = None
         daemon.active_session_id = None
         daemon.set_playing(False)
+        daemon.position_ref = None
+        daemon.position_ref_track = None
+        daemon.resync_pending = False
+        # a re-sync still running would wait for audio the ended session no longer sends
+        self.mass.cancel_task(f"spotify_connect_resync_{daemon.player_id}")
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
             # the player is not playing us any more, so it should stop saying it is;
@@ -1182,6 +1208,20 @@ class SpotifyConnectProvider(PluginProvider):
                 )
             )
 
+    def _handle_connection_lost(self, daemon: _PlayerDaemon) -> None:
+        """
+        Reset the session state of a backend whose Spotify session is gone (e.g. daemon exit).
+
+        :param daemon: The daemon whose backend lost its session.
+        """
+        # a dead/restarting backend must not be treated as active and controllable;
+        # a fresh 'active' event re-establishes it. As for a pause, a re-sync still
+        # running is cancelled.
+        self._set_play_state(daemon, playing=False)
+        daemon.spotify_session_active = False
+        # stale options must not outlive the session they belong to
+        daemon.last_playback_options = None
+
     async def _handle_backend_event(self, daemon: _PlayerDaemon, event: BackendEvent) -> None:
         """Dispatch a single normalized event received from a daemon's backend."""
         if daemon.stop_called:
@@ -1190,13 +1230,7 @@ class SpotifyConnectProvider(PluginProvider):
             # late event of its dying backend
             return
         if event.type is BackendEventType.CONNECTION_LOST:
-            # The backend's Spotify session is gone (e.g. daemon exit). Reset
-            # session state so a dead/restarting backend isn't treated as active
-            # and controllable; a fresh 'active' event re-establishes it.
-            daemon.set_playing(False)
-            daemon.spotify_session_active = False
-            # stale options must not outlive the session they belong to
-            daemon.last_playback_options = None
+            self._handle_connection_lost(daemon)
             return
         if event.type is BackendEventType.FATAL_ERROR:
             self._handle_fatal_error(daemon, event)
@@ -1243,7 +1277,7 @@ class SpotifyConnectProvider(PluginProvider):
                 self._schedule_pause_stop(daemon, prev_player_id)
             return
         elif event.type is BackendEventType.PLAYING:
-            daemon.set_playing(True)
+            self._set_play_state(daemon, playing=True)
             # A resume can arrive while the pause-stop is still in flight on a
             # slow player; cancel it so it doesn't kill the restarted stream.
             # (a stop that already completed is fine: play_media below restarts)
@@ -1258,7 +1292,7 @@ class SpotifyConnectProvider(PluginProvider):
             self._schedule_play_media(daemon)
         elif event.type in (BackendEventType.PAUSED, BackendEventType.STOPPED):
             was_playing = daemon.playing
-            daemon.set_playing(False)
+            self._set_play_state(daemon, playing=False)
             # A pause/stop is the definitive "don't start": cancel a deferred fire
             # from a now-stale 'playing'. On a backend whose stream ends on pause the
             # active get_audio_stream sees the PCM stop and ends the stream (clean
@@ -1285,9 +1319,14 @@ class SpotifyConnectProvider(PluginProvider):
 
         if event.type is BackendEventType.METADATA and event.metadata is not None:
             self._apply_metadata(daemon, event.metadata)
+            # a backend that reports a position only on a seek still sends one with
+            # each track, which a later seek is measured against (not a seek itself:
+            # a repeated track starts over under the same uri)
+            self._set_position_ref(daemon, float(event.metadata.position))
         elif event.type is BackendEventType.POSITION and event.position is not None:
             daemon.stream_metadata.elapsed_time = event.position
-            daemon.stream_metadata.elapsed_time_last_updated = int(time.time())
+            daemon.stream_metadata.elapsed_time_last_updated = time.time()
+            self._track_position(daemon, float(event.position))
 
         if event.type is BackendEventType.VOLUME and event.volume is not None:
             await self._handle_volume_event(daemon, event.volume)
@@ -1366,7 +1405,7 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.stream_metadata.description = None
         daemon.stream_metadata.duration = metadata.duration
         daemon.stream_metadata.elapsed_time = metadata.position
-        daemon.stream_metadata.elapsed_time_last_updated = int(time.time())
+        daemon.stream_metadata.elapsed_time_last_updated = time.time()
 
     async def _handle_volume_event(self, daemon: _PlayerDaemon, volume: int) -> None:
         """
@@ -1445,6 +1484,117 @@ class SpotifyConnectProvider(PluginProvider):
             # restore on failure so a retry of this value isn't wrongly deduped
             daemon.last_volume_sent = previous_volume
             raise
+
+    def _track_position(self, daemon: _PlayerDaemon, position: float) -> None:
+        """Re-sync the player when Spotify's position jumps during playback (a seek)."""
+        now = self.mass.loop.time()
+        track = daemon.stream_metadata.uri
+        if (
+            daemon.position_ref is not None
+            and daemon.position_ref_playing == daemon.playing
+            and track == daemon.position_ref_track
+        ):
+            expected = daemon.position_ref
+            if daemon.playing:
+                expected += now - daemon.position_ref_at
+            if abs(position - expected) > SEEK_DETECT_THRESHOLD_S:
+                self.logger.debug(
+                    "Spotify position jumped from %.1f to %.1f s (seek)", expected, position
+                )
+                if daemon.playing:
+                    self._schedule_player_resync(daemon, SEEK_RESYNC_SETTLE_S)
+                else:
+                    # the player still queues audio from before the seek: re-synced on resume
+                    daemon.resync_pending = True
+        self._set_position_ref(daemon, position)
+
+    def _set_position_ref(self, daemon: _PlayerDaemon, position: float) -> None:
+        """Record Spotify's position as of now."""
+        daemon.position_ref = position
+        daemon.position_ref_at = self.mass.loop.time()
+        daemon.position_ref_playing = daemon.playing
+        daemon.position_ref_track = daemon.stream_metadata.uri
+
+    def _set_play_state(self, daemon: _PlayerDaemon, *, playing: bool) -> None:
+        """
+        Set the backend's play state, carrying Spotify's position across the change.
+
+        :param daemon: The daemon whose backend reported the state.
+        :param playing: Whether the backend plays.
+        """
+        was_playing = daemon.playing
+        daemon.set_playing(playing)
+        if not playing:
+            # a re-sync waits for audio a paused source no longer delivers; it stays owed
+            self.mass.cancel_task(f"spotify_connect_resync_{daemon.player_id}")
+        elif daemon.resync_pending and not was_playing:
+            # only on a resume: Spotify repeats 'playing' after a seek, and restarting the
+            # re-sync then in flight would flush the player a second time. A seek made
+            # while paused (or a re-sync the pause cut short) is done now
+            self._schedule_player_resync(daemon, SEEK_RESYNC_SETTLE_S)
+        # a backend may report no position on pause or resume
+        if daemon.position_ref is None or daemon.position_ref_playing == daemon.playing:
+            return
+        now = self.mass.loop.time()
+        if daemon.position_ref_playing:
+            daemon.position_ref += now - daemon.position_ref_at
+        daemon.position_ref_at = now
+        daemon.position_ref_playing = daemon.playing
+
+    def _playing_position(self, daemon: _PlayerDaemon) -> float | None:
+        """Return Spotify's position now, or None when it does not play."""
+        return self._current_position(daemon) if daemon.playing else None
+
+    def _current_position(self, daemon: _PlayerDaemon) -> float:
+        """Return Spotify's position now, extrapolated from its last report."""
+        if daemon.position_ref is None:
+            metadata = daemon.stream_metadata
+            elapsed = float(metadata.elapsed_time or 0)
+            if daemon.playing and metadata.elapsed_time_last_updated:
+                elapsed += max(0.0, time.time() - metadata.elapsed_time_last_updated)
+            return elapsed
+        if not daemon.position_ref_playing:
+            return daemon.position_ref
+        return daemon.position_ref + self.mass.loop.time() - daemon.position_ref_at
+
+    def _schedule_player_resync(self, daemon: _PlayerDaemon, delay_s: float) -> None:
+        """Re-sync the player's queued audio with Spotify's position (the last call wins)."""
+        daemon.resync_pending = True
+        self.mass.create_task(
+            self._resync_player(daemon, delay_s),
+            task_id=f"spotify_connect_resync_{daemon.player_id}",
+            abort_existing=True,
+        )
+
+    async def _resync_player(self, daemon: _PlayerDaemon, delay_s: float) -> None:
+        """
+        Drop the audio the player has queued, so it plays on from Spotify's position.
+
+        Spotify counts audio as played when it is read, so whatever the player has
+        queued is audio Spotify's clock already ran past. Retries briefly while the
+        player's stream is still being set up.
+
+        :param daemon: The daemon whose player re-syncs.
+        :param delay_s: Seconds to wait first.
+        """
+        await asyncio.sleep(delay_s)
+        for _ in range(RESYNC_ATTEMPTS):
+            player_id = daemon.active_player_id
+            if not daemon.playing:
+                # owed until the resume, which re-syncs (a seek made while paused)
+                return
+            if not player_id:
+                break
+            player = self.mass.players.get_player(player_id)
+            if player is None or (output := player.resolve_output_protocol()) is None:
+                break
+            if (
+                await output.resync_live_source(partial(self._playing_position, daemon))
+                is not False
+            ):
+                break
+            await asyncio.sleep(RESYNC_RETRY_INTERVAL_S)
+        daemon.resync_pending = False
 
     @property
     def _soloist_configured(self) -> bool:

@@ -11,8 +11,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import (
@@ -169,7 +169,7 @@ class QueueControlFakeBackend(FakeBackend):
         self.calls.append(("request_queue", limit))
 
 
-def _create_task(coro_or_result: Any, *, eager_start: bool = True) -> Any:
+def _create_task(coro_or_result: Any, *, eager_start: bool = True, **_kwargs: Any) -> Any:
     """Run coroutines as real tasks, started eagerly like mass.create_task; mock the rest."""
     if asyncio.iscoroutine(coro_or_result):
         return asyncio.Task(
@@ -195,6 +195,9 @@ def _make_provider(
     mass.create_task.side_effect = _create_task
     # awaited inline by the deferred play_media trigger
     mass.player_queues.play_media = AsyncMock()
+    # a player that keeps no lead to re-sync, unless a test says otherwise
+    output = mass.players.get_player.return_value.resolve_output_protocol.return_value
+    output.resync_live_source = AsyncMock(return_value=None)
     # no live source session yet: every stream request starts a fresh selection
     mass.players.get_audio_source_session.return_value = None
     provider = object.__new__(SpotifyConnectProvider)
@@ -971,6 +974,8 @@ async def test_source_selected_does_not_wait_for_volume_push() -> None:
         backend.calls.append(("set_volume", volume))
 
     mass.create_task.side_effect = _track_task
+    # the re-sync that follows a start is not what is held up here
+    provider._schedule_player_resync = MagicMock()  # type: ignore[method-assign]
     backend.on_acquire = _mark_playing
     backend.set_volume = _set_volume_until_released  # type: ignore[method-assign]
 
@@ -1465,6 +1470,364 @@ async def test_handoff_kick_cannot_release_the_session() -> None:
     mass.players.cmd_stop.assert_awaited_once_with("queue_old")
 
 
+def _resync_output(mass: MagicMock, result: bool | None = True) -> AsyncMock:
+    """
+    Make the player's output re-sync with the given answer.
+
+    :return: A mock awaited with the position the output read, once per re-sync.
+    """
+    output = mass.players.get_player.return_value.resolve_output_protocol.return_value
+    resync = AsyncMock(return_value=result)
+
+    async def _resync_live_source(get_position: Any) -> bool | None:
+        return cast("bool | None", await resync(get_position()))
+
+    output.resync_live_source = _resync_live_source
+    return resync
+
+
+async def _let_the_resync_run() -> None:
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+async def test_seeking_from_the_player_resyncs_its_queued_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A seek drops what the player queued, so the new position is heard right away."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, _daemon, mass = _make_provider(
+        FakeBackend(), playing=True, active_player_id="player1"
+    )
+    resync = _resync_output(mass)
+
+    await provider.on_source_control(_PLAYER_ID, SourceControl.SEEK, 42)
+    await _let_the_resync_run()
+
+    resync.assert_awaited_once()
+
+
+async def test_seeking_from_the_player_resyncs_to_the_seek_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The re-sync uses the target, even before the backend reports the new position."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    resync = _resync_output(mass)
+    mass.loop.time = MagicMock(return_value=100.0)
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=10)
+    )
+
+    await provider.on_source_control(_PLAYER_ID, SourceControl.SEEK, 42)
+    await _let_the_resync_run()
+
+    resync.assert_awaited_once_with(42.0)
+
+
+async def test_a_pause_without_a_position_report_is_not_a_seek(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Time spent paused does not count as playback when the backend resumes."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    daemon.stream_metadata.uri = "spotify:track:a"
+    resync = _resync_output(mass)
+    now = [100.0]
+    mass.loop.time = lambda: now[0]
+
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=10)
+    )
+    now[0] = 105.0
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
+    now[0] = 165.0
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    now[0] = 170.0
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=20)
+    )
+    await _let_the_resync_run()
+
+    for awaited in resync.await_args_list:
+        # only the resume's own start re-sync may run, never a seek re-sync
+        assert awaited.args != (20.0,)
+
+
+async def test_a_position_jump_during_playback_resyncs_the_player(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A seek made in the Spotify app shows up as a jump in the reported position."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    daemon.stream_metadata.uri = "spotify:track:a"
+    resync = _resync_output(mass)
+    now = [100.0]
+    mass.loop.time = lambda: now[0]
+
+    for at, position in ((100.0, 10), (105.0, 15)):
+        now[0] = at
+        await provider._handle_backend_event(
+            daemon, BackendEvent(BackendEventType.POSITION, position=position)
+        )
+    await _let_the_resync_run()
+    # playback moving on as expected is not a seek
+    resync.assert_not_awaited()
+
+    now[0] = 106.0
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=80)
+    )
+    await _let_the_resync_run()
+
+    resync.assert_awaited_once_with(80.0)
+
+
+async def test_a_seek_reported_only_as_a_position_after_metadata_resyncs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backend that reports a position only on a seek is measured against the metadata."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    resync = _resync_output(mass)
+    now = [100.0]
+    mass.loop.time = lambda: now[0]
+
+    await provider._handle_backend_event(
+        daemon,
+        BackendEvent(
+            BackendEventType.METADATA,
+            metadata=BackendTrackMetadata(track_uri="spotify:track:a", position=10),
+        ),
+    )
+    now[0] = 105.0
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=80)
+    )
+    await _let_the_resync_run()
+
+    resync.assert_awaited_once_with(80.0)
+
+
+async def test_selecting_the_source_in_music_assistant_resyncs_the_player() -> None:
+    """A start from Music Assistant drops the cold-start lead like one from the app."""
+    backend = QueueControlFakeBackend()
+    provider, _daemon, mass = _make_provider(backend, playing=True, session_active=True)
+    _player_with_volume(mass, 25)
+    resync = _resync_output(mass)
+
+    await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess1")
+    await _let_the_resync_run()
+
+    resync.assert_awaited_once()
+
+
+async def test_a_new_track_starting_from_zero_is_not_a_seek() -> None:
+    """The position resetting for the next track does not re-sync the player."""
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    daemon.stream_metadata.uri = "spotify:track:a"
+    resync = _resync_output(mass)
+    mass.loop.time = MagicMock(return_value=100.0)
+
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=200)
+    )
+    daemon.stream_metadata.uri = "spotify:track:b"
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=0)
+    )
+    await _let_the_resync_run()
+
+    resync.assert_not_awaited()
+
+
+async def test_resync_retries_while_the_player_is_still_starting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A player whose stream is not anchored yet is asked again until it re-syncs."""
+    monkeypatch.setattr(provider_mod, "RESYNC_RETRY_INTERVAL_S", 0)
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    resync = _resync_output(mass)
+    resync.side_effect = [False, False, True]
+
+    await provider._resync_player(daemon, 0)
+
+    assert resync.await_count == 3
+
+
+async def test_a_player_without_a_lead_is_asked_once() -> None:
+    """A player that keeps no lead worth dropping is not asked again."""
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    resync = _resync_output(mass, None)
+
+    await provider._resync_player(daemon, 0)
+
+    resync.assert_awaited_once()
+
+
+async def test_starting_playback_resyncs_the_player(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cold start drops the long lead the player queued before it is heard."""
+    monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0.01)
+    provider, daemon, mass = _make_provider(
+        FakeBackend(), session_active=True, active_player_id="player1"
+    )
+    _player_with_volume(mass, 25)
+    resync = _resync_output(mass)
+
+    async def _stream_opens(*_args: Any) -> None:
+        # the player opens the source's stream, which selects it
+        await provider.on_source_selected(_PLAYER_ID, "proto1", "player1", "sess1")
+
+    mass.player_queues.play_media = AsyncMock(side_effect=_stream_opens)
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    assert daemon.pending_play_media_task is not None
+    await daemon.pending_play_media_task
+    await _let_the_resync_run()
+
+    mass.player_queues.play_media.assert_called_once_with("player1", _SOURCE_URI)
+    # once, by the selection: a second re-sync would flush the first halfway
+    resync.assert_awaited_once()
+
+
+async def test_a_repeated_track_is_not_a_seek(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same track starting over (repeat one) reports its uri at 0, which is no seek."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    resync = _resync_output(mass)
+    now = [100.0]
+    mass.loop.time = lambda: now[0]
+    track = BackendTrackMetadata(track_uri="spotify:track:a", position=0)
+
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.METADATA, metadata=track)
+    )
+    now[0] = 300.0
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.METADATA, metadata=track)
+    )
+    await _let_the_resync_run()
+
+    resync.assert_not_awaited()
+
+
+async def test_a_pause_cancels_a_pending_resync() -> None:
+    """A re-sync waiting for audio a paused source no longer delivers is cancelled."""
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
+
+    mass.cancel_task.assert_any_call(f"spotify_connect_resync_{daemon.player_id}")
+
+
+async def test_a_seek_made_while_paused_resyncs_on_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The player still queues audio from before a seek made while paused."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, daemon, mass = _make_provider(
+        FakeBackend(), playing=True, session_active=True, active_player_id="player1"
+    )
+    resync = _resync_output(mass)
+    mass.loop.time = MagicMock(return_value=100.0)
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
+
+    await provider.on_source_control(_PLAYER_ID, SourceControl.SEEK, 90)
+    await _let_the_resync_run()
+    resync.assert_not_awaited()
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    await _let_the_resync_run()
+
+    resync.assert_awaited_once_with(90.0)
+
+
+async def test_a_seek_in_the_app_while_paused_resyncs_on_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A position that jumps while paused is a seek too, re-synced on resume."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    daemon.stream_metadata.uri = "spotify:track:a"
+    resync = _resync_output(mass)
+    mass.loop.time = MagicMock(return_value=100.0)
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=20)
+    )
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
+
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=90)
+    )
+    await _let_the_resync_run()
+    resync.assert_not_awaited()
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    await _let_the_resync_run()
+
+    resync.assert_awaited_once_with(90.0)
+
+
+async def test_a_repeated_playing_does_not_restart_a_seek_resync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spotify repeats 'playing' after a seek; the re-sync in flight runs once."""
+    monkeypatch.setattr(provider_mod, "SEEK_RESYNC_SETTLE_S", 0)
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    resync = _resync_output(mass)
+    mass.loop.time = MagicMock(return_value=100.0)
+    release = asyncio.Event()
+
+    async def _flushing(_position: float | None) -> bool:
+        await release.wait()
+        return True
+
+    resync.side_effect = _flushing
+
+    await provider.on_source_control(_PLAYER_ID, SourceControl.SEEK, 42)
+    await _let_the_resync_run()
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    await _let_the_resync_run()
+    release.set()
+    await _let_the_resync_run()
+
+    resync.assert_awaited_once_with(42.0)
+
+
+async def test_a_plain_pause_and_resume_does_not_resync() -> None:
+    """Resuming without a seek leaves the player's queue alone."""
+    provider, daemon, mass = _make_provider(FakeBackend(), playing=True, active_player_id="player1")
+    daemon.stream_metadata.uri = "spotify:track:a"
+    resync = _resync_output(mass)
+    mass.loop.time = MagicMock(return_value=100.0)
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=20)
+    )
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
+    await provider._handle_backend_event(
+        daemon, BackendEvent(BackendEventType.POSITION, position=20)
+    )
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    await _let_the_resync_run()
+
+    resync.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "event_type", [BackendEventType.SESSION_INACTIVE, BackendEventType.CONNECTION_LOST]
+)
+async def test_the_session_ending_cancels_a_running_resync(event_type: BackendEventType) -> None:
+    """A re-sync would wait for audio a session that ended no longer sends."""
+    provider, daemon, mass = _make_provider(
+        FakeBackend(), playing=True, session_active=True, active_player_id="player1"
+    )
+
+    await provider._handle_backend_event(daemon, BackendEvent(event_type))
+
+    mass.cancel_task.assert_any_call(f"spotify_connect_resync_{daemon.player_id}")
+
+
 async def test_reselect_during_handoff_kick_is_no_reopen(monkeypatch: pytest.MonkeyPatch) -> None:
     """A request keeps the selection it came for when the target is reselected meanwhile."""
     monkeypatch.setattr(provider_mod, "STREAM_REOPEN_GRACE_S", 0)
@@ -1505,3 +1868,18 @@ async def test_reselect_during_handoff_kick_is_no_reopen(monkeypatch: pytest.Mon
     await provider.on_source_selected(_PLAYER_ID, "proto_new", "queue_new", "sess2")
 
     assert backend.calls == [("play", ("spotify:playlist:ctx", None)), ("set_volume", 25)]
+
+
+async def test_a_reported_position_keeps_the_time_it_was_reported_at() -> None:
+    """The position is anchored at the exact moment, not the whole second before it."""
+    provider, daemon, _mass = _make_provider(FakeBackend(), playing=True)
+
+    with patch(
+        "music_assistant.providers.spotify_connect.provider.time.time", return_value=1000.75
+    ):
+        await provider._handle_backend_event(
+            daemon, BackendEvent(BackendEventType.POSITION, position=42)
+        )
+
+    assert daemon.stream_metadata.elapsed_time == 42
+    assert daemon.stream_metadata.elapsed_time_last_updated == 1000.75
