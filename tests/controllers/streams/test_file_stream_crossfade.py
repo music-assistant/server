@@ -19,8 +19,9 @@ from music_assistant_models.enums import (
     PlayerFeature,
     RepeatMode,
     StreamType,
+    VolumeNormalizationMode,
 )
-from music_assistant_models.errors import QueueEmpty
+from music_assistant_models.errors import AudioError, QueueEmpty
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
@@ -61,7 +62,7 @@ from tests.controllers.streams.test_file_stream_route import (
 from tests.controllers.streams.test_item_voice_over import _item_audio
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Iterator
+    from collections.abc import AsyncGenerator, Callable, Iterator
 
 RATE = 44100
 PCM_F32 = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=RATE, bit_depth=32)
@@ -136,6 +137,8 @@ class _Rig:
         self.items: dict[str, QueueItem] = {}
         # every read of the decoded audio of a track: the item and the position in it
         self.opened: list[tuple[str, int]] = []
+        # and the volume normalization it was pinned to
+        self.normalization: list[VolumeNormalizationMode | None] = []
         for item_id, pcm in tracks.items():
             duration = len(pcm) // self.buffer_format.pcm_sample_size
             item = QueueItem(
@@ -334,6 +337,7 @@ class _Rig:
         if position_ms is None:
             position_ms = int(seek_position * 1000)
         self.opened.append((queue_item.queue_item_id, position_ms))
+        self.normalization.append(kwargs.get("normalization_override"))
         assert queue_item.streamdetails is not None
         return cast(
             "AsyncGenerator[bytes]",
@@ -759,24 +763,786 @@ async def test_a_request_into_the_end_of_a_track_makes_the_whole_mix(rig: _Rig) 
     assert rig.passes == [None, (TRACK_SECONDS - WINDOW - 2) * 1000]
 
 
-async def test_a_request_from_another_address_ends_the_reader_of_a_mixed_track(
-    rig: _Rig,
-) -> None:
-    """A mixed track has one reader: a second speaker ends its encode, which asks again."""
-    playthrough = _Rig(_pair(PCM_16), output_format=WAV_16, pcm_format=PCM_16)
-    await playthrough.decode()
-    _, whole = await playthrough.fetch("a")
-    seek = rig.offset(5.5)
+# the second of three tracks, in seconds of its stream: where the fade into it ends, from
+# where its own audio comes from a pass, and where its end starts
+LEAD_IN = TRIMMED
+PASS_ONLY = LEAD_IN + JOIN_SECONDS - 2 * WINDOW - 2
+END = LEAD_IN + JOIN_SECONDS - 2 * WINDOW
+# the position in that track a pass starts at for a speaker that read up to there by itself
+PASS_FROM_MS = (JOIN_SECONDS - WINDOW - 3) * 1000
 
-    first_request, first = rig.request("a", stall_at=PCM_16.pcm_sample_size)
-    task = asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, first_request))
-    await first.stalled.wait()
-    _, body = await rig.fetch("a", f"bytes={seek}-", address=OTHER_ADDRESS)
+
+def _trio(pcm_format: AudioFormat = PCM_16, seconds: float = JOIN_SECONDS) -> dict[str, bytes]:
+    """
+    Return the audio of three tracks: the second one starts and ends with a mix.
+
+    :param pcm_format: Format of the audio.
+    :param seconds: Length of each track.
+    """
+    return {
+        item_id: _tone(seconds, seed, pcm_format) for seed, item_id in enumerate("abc", start=1)
+    }
+
+
+@pytest.fixture
+async def middle(request: pytest.FixtureRequest) -> tuple[_Rig, bytes]:
+    """
+    Return a rig for the second of three tracks, and that track as one download of it.
+
+    The player of the rig has fetched the first track, so the fade into the second waits.
+    """
+    request.getfixturevalue("passthrough_encoder")
+    await check_ffmpeg_version()
+    rigs = []
+    for _ in range(2):
+        rig = _Rig(_trio(), output_format=WAV_16, pcm_format=PCM_16)
+        await rig.decode()
+        await rig.fetch("a")
+        rigs.append(rig)
+    _, whole = await rigs[0].fetch("b")
+    return rigs[1], whole
+
+
+def _serve(rig: _Rig, request: web.Request) -> asyncio.Task[web.StreamResponse]:
+    """
+    Answer a request of a speaker beside whatever else goes on.
+
+    :param rig: The rig that serves the request.
+    :param request: The request.
+    """
+    return asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
+
+
+# Seconds a test waits at most for what has to happen, far more than it takes; and a test
+# as a whole, for when what goes wrong keeps the loop too busy for such a wait to end
+WAIT = 5
+bounded = pytest.mark.timeout(20)
+
+
+async def _stands_still(download: _Download) -> None:
+    """
+    Wait until a speaker has stopped reading, which it has to within a few seconds.
+
+    :param download: The request of the speaker.
+    """
+    await asyncio.wait_for(download.stalled.wait(), WAIT)
+
+
+async def _ended(*tasks: asyncio.Task[Any]) -> None:
+    """
+    Wait until requests are answered, which they have to be within a few seconds.
+
+    :param tasks: The tasks that answer them.
+    """
+    await asyncio.wait_for(asyncio.gather(*tasks), WAIT)
+
+
+async def _until(holds: Callable[[], bool]) -> None:
+    """
+    Wait until something holds, which it has to within a few seconds.
+
+    :param holds: Tells whether it holds.
+    """
+    async with asyncio.timeout(WAIT):
+        while not holds():
+            await asyncio.sleep(0.005)
+
+
+def _hold_next_track(rig: _Rig, until: asyncio.Event) -> None:
+    """
+    Let the track after one that is read out take its time to load, which holds its mix up.
+
+    :param rig: The rig whose queue loads the track.
+    :param until: Set when the track is loaded.
+    """
+
+    async def _held(queue_id: str, item_id: str) -> QueueItem:
+        await until.wait()
+        return await rig._load_next(queue_id, item_id)
+
+    rig.mass.player_queues.load_next_queue_item = AsyncMock(side_effect=_held)
+
+
+def _hold_track(
+    rig: _Rig, position_ms: int, until: asyncio.Event, error: AudioError | None = None
+) -> None:
+    """
+    Let a read of a track from one position wait for its audio.
+
+    :param rig: The rig whose tracks are read.
+    :param position_ms: The position in the track of the read that waits.
+    :param until: Set when the audio comes.
+    :param error: What the first of these reads raises then, instead of its audio.
+    """
+    item_stream = rig.audio.get_queue_item_stream
+    errors = [error] if error is not None else []
+
+    def _held(*args: Any, **kwargs: Any) -> AsyncGenerator[bytes]:
+        stream = item_stream(*args, **kwargs)
+        if kwargs.get("seek_position_ms") != position_ms:
+            return stream
+
+        async def _wait() -> AsyncGenerator[bytes]:
+            async with aclosing(stream):
+                await until.wait()
+                if errors:
+                    raise errors.pop()
+                async for chunk in stream:
+                    yield chunk
+
+        return _wait()
+
+    rig.audio.get_queue_item_stream = _held  # type: ignore[method-assign]
+
+
+class _BesideCase(NamedTuple):
+    """Where two speakers are in the stream of a track when the second one asks for it."""
+
+    # the seconds of the track the first speaker has when it stops reading for a while
+    stands_at: float
+    # the second where the part of the second speaker starts: not past `stands_at`, so in
+    # what the first speaker has, in whatever pieces that reached it
+    asks_from: float
+    # whether the first speaker reads on to the end while the second one stands still
+    first_reads_on: bool = False
+
+
+BESIDE_CASES = {
+    # the first speaker makes the end of the track, and the second one finds it kept
+    "behind a speaker that reads on": _BesideCase(4, 2.5, first_reads_on=True),
+    # the end is made for the second speaker, and the first one reads on from the buffer
+    "past a speaker that stands still": _BesideCase(4, 2.5),
+    "from where a speaker stands still": _BesideCase(1, 1),
+    # both in the seconds before the end, where the track's own audio comes from a pass
+    "in the seconds before the end": _BesideCase(6, 5.9),
+    "in the end that is kept": _BesideCase(8.5, 8.4),
+}
+
+
+@bounded
+@pytest.mark.parametrize("name", BESIDE_CASES)
+async def test_two_speakers_read_a_mixed_track_beside_each_other(
+    middle: tuple[_Rig, bytes], name: str
+) -> None:
+    """A speaker that asks for a track another one reads gets its part, and ends nobody's."""
+    rig, whole = middle
+    case = BESIDE_CASES[name]
+    start = rig.offset(case.asks_from)
+
+    first_request, first = rig.request("b", stall_at=rig.offset(case.stands_at))
+    first_task = _serve(rig, first_request)
+    await _stands_still(first)
+    if case.stands_at > END:
+        # the pass that made the end ran on by itself, and has kept all of it
+        mix = rig.file("b").mix
+        assert mix is not None
+        await _until(lambda: mix.size is not None)
+    second_request, second = rig.request(
+        "b",
+        f"bytes={start}-",
+        stall_at=PCM_16.pcm_sample_size if case.first_reads_on else None,
+        address=OTHER_ADDRESS,
+    )
+    second_task = _serve(rig, second_request)
+    if case.first_reads_on:
+        await _stands_still(second)
+        # nothing is read ahead of two speakers that stand still
+        assert rig.mixes.await_count == 1
+        first.resume.set()
+        await _ended(first_task)
+        second.resume.set()
+    await _ended(second_task)
+    first.resume.set()
+    await _ended(first_task)
+
+    first.transport.abort.assert_not_called()
+    second.transport.abort.assert_not_called()
+    assert bytes(first.body) == whole
+    assert bytes(second.body) == whole[start:]
+    # the mix into the track and the one out of it, each made once
+    assert rig.mixes.await_count == 2
+
+
+THIRD_ADDRESS = "192.168.1.22"
+
+
+@bounded
+async def test_a_speaker_that_asks_for_a_part_that_was_not_sent_takes_a_mixed_track_over(
+    middle: tuple[_Rig, bytes],
+) -> None:
+    """A request past what the file has sent ends the one that drives the pass, and runs its own."""
+    rig, whole = middle
+    start = rig.offset(8.7)
+    first_request, first = rig.request("b", stall_at=rig.offset(1))
+    first_task = _serve(rig, first_request)
+    await _stands_still(first)
+
+    _, body = await asyncio.wait_for(rig.fetch("b", f"bytes={start}-", address=OTHER_ADDRESS), WAIT)
 
     first.transport.abort.assert_called_once()
     first.resume.set()
-    await task
-    assert body == whole[seek:]
+    await _ended(first_task)
+    assert body == whole[start:]
+    assert rig.passes[2:] == [PASS_FROM_MS]
+    assert rig.ctrl._active_output_streams == 0
+
+
+@bounded
+async def test_a_speaker_takes_a_mixed_track_over_while_the_fade_into_it_is_made(
+    middle: tuple[_Rig, bytes],
+) -> None:
+    """The fade into the track is kept for the request that takes it over, which runs its own pass."""
+    rig, whole = middle
+    made = asyncio.Event()
+    handover = rig.audio._crossfade_handover[QUEUE_ID]
+    fade = handover.stream
+    assert fade is not None
+
+    async def _held() -> AsyncGenerator[bytes]:
+        async with aclosing(fade):
+            await made.wait()
+            async for chunk in fade:
+                yield chunk
+
+    handover.stream = _held()
+    start = rig.offset(5)
+    first_request, first = rig.request("b")
+    first_task = _serve(rig, first_request)
+    await _until(lambda: len(first.body) == HEADER_SIZE)
+    second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await _until(lambda: first.transport.abort.called)
+
+    first.transport.abort.assert_called_once()
+    made.set()
+    await asyncio.wait_for(asyncio.gather(first_task, second_task), WAIT)
+    assert bytes(second.body) == whole[start:]
+    assert rig.passes[2:] == [6000]
+    assert rig.mixes.await_count == 2
+
+
+@bounded
+@pytest.mark.parametrize("phase", ["a pass that no speaker drives", "the mix into the next track"])
+async def test_a_speaker_takes_a_mixed_track_over_while_its_end_is_made(
+    middle: tuple[_Rig, bytes], phase: str
+) -> None:
+    """The end that is being made for speakers that are ended is the end of the one that took over."""
+    rig, whole = middle
+    held = asyncio.Event()
+    if phase == "a pass that no speaker drives":
+        # two speakers wait for the pass that reads the last seconds of the track
+        _hold_track(rig, PASS_FROM_MS, held)
+        stands_at, waits_at = 1.0, PASS_ONLY
+    else:
+        # two speakers wait for the track after it, at the end of what they have
+        _hold_next_track(rig, held)
+        stands_at, waits_at = END, END
+    first_request, first = rig.request("b", stall_at=rig.offset(stands_at))
+    first_task = _serve(rig, first_request)
+    await _until(lambda: first.stalled.is_set() or len(first.body) == rig.offset(END))
+    begin = rig.offset(1)
+    second_request, second = rig.request("b", f"bytes={begin}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await _until(lambda: len(second.body) == rig.offset(waits_at) - begin)
+    # the pass that makes the end runs: the one of the first speaker, or one in its place
+    passes = 3 if phase == "a pass that no speaker drives" else 2
+    await _until(lambda: len(rig.passes) == passes)
+
+    start = rig.offset(END + 2)
+    third_request, third = rig.request("b", f"bytes={start}-", address=THIRD_ADDRESS)
+    third_task = _serve(rig, third_request)
+    await _until(lambda: first.transport.abort.called and second.transport.abort.called)
+    first.transport.abort.assert_called_once()
+    second.transport.abort.assert_called_once()
+    first.resume.set()
+    held.set()
+    await asyncio.wait_for(asyncio.gather(first_task, second_task, third_task), WAIT)
+
+    assert bytes(third.body) == whole[start:]
+    # no pass of its own: the one that ran made the end for it
+    assert len(rig.passes) == passes
+    assert rig.mixes.await_count == 2
+    assert rig.ctrl._active_output_streams == 0
+
+
+@bounded
+async def test_two_speakers_wait_for_the_fade_into_a_track(middle: tuple[_Rig, bytes]) -> None:
+    """The fade into a track is made once, for every speaker that asks for its start."""
+    rig, whole = middle
+    made = asyncio.Event()
+    handover = rig.audio._crossfade_handover[QUEUE_ID]
+    fade = handover.stream
+    assert fade is not None
+
+    async def _held() -> AsyncGenerator[bytes]:
+        async with aclosing(fade):
+            await made.wait()
+            async for chunk in fade:
+                yield chunk
+
+    handover.stream = _held()
+
+    downloads, tasks = [], []
+    for address in (PLAYER_ADDRESS, OTHER_ADDRESS):
+        request, download = rig.request("b", address=address)
+        downloads.append(download)
+        tasks.append(_serve(rig, request))
+        # it has the start of the file, and waits for the fade
+        await _until(lambda: len(downloads[-1].body) == HEADER_SIZE)
+    made.set()
+    await _ended(*tasks)
+
+    for download in downloads:
+        download.transport.abort.assert_not_called()
+        assert bytes(download.body) == whole
+    assert rig.mixes.await_count == 2
+
+
+@bounded
+async def test_two_speakers_wait_for_an_end_that_is_being_made(middle: tuple[_Rig, bytes]) -> None:
+    """While the mix into the next track is made, every speaker that got that far waits for it."""
+    rig, whole = middle
+    loaded = asyncio.Event()
+    _hold_next_track(rig, loaded)
+    start = rig.offset(END - 0.5)
+
+    first_request, first = rig.request("b")
+    first_task = _serve(rig, first_request)
+    await _until(lambda: len(first.body) == rig.offset(END))
+    second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await _until(lambda: len(second.body) == rig.offset(END) - start)
+    loaded.set()
+    await _ended(first_task, second_task)
+
+    first.transport.abort.assert_not_called()
+    assert bytes(first.body) == whole
+    assert bytes(second.body) == whole[start:]
+    assert rig.mixes.await_count == 2
+
+
+@bounded
+@pytest.mark.parametrize("stands_at", [1, 6])
+async def test_the_speaker_that_drove_the_pass_reads_on_beside_one_that_needs_the_end(
+    middle: tuple[_Rig, bytes], stands_at: int
+) -> None:
+    """A pass made for a speaker that got to the end first serves the one whose pass it replaced."""
+    rig, whole = middle
+    ready = asyncio.Event()
+    _hold_track(rig, PASS_FROM_MS, ready)
+    start = rig.offset(min(stands_at, 4.5))
+    first_request, first = rig.request("b", stall_at=rig.offset(stands_at))
+    first_task = _serve(rig, first_request)
+    await _stands_still(first)
+    second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await _until(lambda: len(second.body) == rig.offset(PASS_ONLY) - start)
+    # the pass that waits for no speaker took the place of the one the first speaker drove
+    await _until(lambda: len(rig.passes) == 3)
+
+    # the first speaker reads on while the end is still to be made
+    first.resume.set()
+    await _until(lambda: len(first.body) >= rig.offset(PASS_ONLY))
+    assert not first_task.done()
+    assert not second_task.done()
+    assert len(first.body) < rig.offset(END)
+    ready.set()
+    await _ended(first_task, second_task)
+
+    first.transport.abort.assert_not_called()
+    assert bytes(first.body) == whole
+    assert bytes(second.body) == whole[start:]
+    assert rig.passes[2:] == [PASS_FROM_MS]
+    assert rig.mixes.await_count == 2
+
+
+@bounded
+async def test_two_speakers_that_ask_in_the_same_moment_both_get_their_part(
+    middle: tuple[_Rig, bytes],
+) -> None:
+    """A speaker whose pass makes way as it starts reads on from the buffer of the track."""
+    rig, whole = middle
+    # a speaker read most of the track and left, and its pass with it
+    await asyncio.wait_for(rig.fetch("b", wanted=rig.offset(7)), WAIT)
+    mix = rig.file("b").mix
+    assert mix is not None
+    assert mix._pass is not None
+    assert mix._pass.task is not None
+    await asyncio.wait({mix._pass.task})
+    behind, ahead = rig.offset(4.5), rig.offset(6.5)
+
+    first_request, first = rig.request("b", f"bytes={behind}-")
+    second_request, second = rig.request("b", f"bytes={ahead}-", address=OTHER_ADDRESS)
+    tasks = [_serve(rig, first_request), _serve(rig, second_request)]
+    await asyncio.wait_for(asyncio.gather(*tasks), WAIT)
+
+    assert bytes(first.body) == whole[behind:]
+    assert bytes(second.body) == whole[ahead:]
+    assert rig.mixes.await_count == 2
+
+
+@bounded
+async def test_a_pass_that_is_replaced_before_its_first_step_tells_its_reader() -> None:
+    """A reader does not wait forever for the audio of a pass that never got to run."""
+    second = bytes(PCM_16.pcm_sample_size)
+    opened: list[int | None] = []
+
+    async def _stream(
+        *, start_ms: int | None, marks: MixedTrack, **_kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        opened.append(start_ms)
+        if start_ms is None:
+            marks.lead_in_ended(0, 0, None)
+        while True:
+            await asyncio.sleep(0)
+            yield second
+
+    async def _track(**_kwargs: Any) -> AsyncGenerator[bytes]:
+        while True:
+            yield second
+
+    mix = MixedTrack(PCM_16, 60000, 50000, _stream, _track)
+    # the fade into the track is known, and the pass that brought it has gone with its reader
+    start = mix.read(0, lambda: True)
+    assert await anext(start)
+    await start.aclose()
+    assert mix._pass is not None
+    assert mix._pass.task is not None
+    await asyncio.wait({mix._pass.task})
+
+    reader = mix.read(10 * len(second), lambda: True)
+    reading = asyncio.create_task(anext(reader))
+    # one turn of the loop: the reader has started its pass, which has taken no step yet
+    await asyncio.sleep(0)
+    assert len(opened) == 1
+    # a reader that needs the end has a pass that waits for no reader take its place
+    mix._start(48 * len(second), 48000, mix._has_reader, unpaced=True)
+
+    # the reader reads on, from the buffer of the track
+    assert await asyncio.wait_for(reading, WAIT)
+    assert 9000 not in opened
+    await reader.aclose()
+    mix.close()
+
+
+@bounded
+async def test_a_speaker_makes_the_end_when_the_pass_that_no_speaker_drives_fails(
+    middle: tuple[_Rig, bytes],
+) -> None:
+    """A speaker whose pass was replaced runs a new one when the pass in its place ends early."""
+    rig, whole = middle
+    ready = asyncio.Event()
+    _hold_track(rig, PASS_FROM_MS, ready, AudioError("the track could not be read"))
+    start = rig.offset(4.5)
+    # the first speaker stands in the seconds before the end, with the pass it drives
+    first_request, first = rig.request("b", stall_at=rig.offset(6))
+    first_task = _serve(rig, first_request)
+    await _stands_still(first)
+    second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await _until(lambda: len(second.body) == rig.offset(PASS_ONLY) - start)
+    await _until(lambda: len(rig.passes) == 3)
+    mix = rig.file("b").mix
+    assert mix is not None
+    replacement = mix._pass
+    assert replacement is not None
+    assert replacement.task is not None
+
+    second.hang_up()
+    await asyncio.wait_for(second_task, WAIT)
+    ready.set()
+    await asyncio.wait_for(replacement.task, WAIT)
+    assert mix.size is None
+    first.resume.set()
+    await asyncio.wait_for(first_task, WAIT)
+
+    assert bytes(first.body) == whole
+    # after the pass in the place of its own, a pass it drives again
+    assert rig.passes[2] == PASS_FROM_MS
+    assert len(rig.passes) == 4
+
+
+@bounded
+async def test_a_pass_opens_its_stream_once_the_one_it_replaces_has_gone() -> None:
+    """A pass that takes the place of another reads the track only after that one let go of it."""
+    second = bytes(PCM_16.pcm_sample_size)
+    events: list[tuple[str, int | None]] = []
+
+    async def _stream(
+        *, start_ms: int | None, marks: MixedTrack, **_kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        events.append(("opened", start_ms))
+        try:
+            if start_ms is None:
+                marks.lead_in_ended(0, 0, None)
+            while True:
+                await asyncio.sleep(0)
+                yield second
+        finally:
+            # a stream takes a moment to let go of its track
+            await asyncio.sleep(0.01)
+            events.append(("gone", start_ms))
+
+    async def _track(**_kwargs: Any) -> AsyncGenerator[bytes]:
+        while True:
+            yield second
+
+    mix = MixedTrack(PCM_16, 60000, 50000, _stream, _track)
+    first = mix.read(0, lambda: True)
+    assert await anext(first)
+    # a reader that needs the end: a pass that waits for no reader takes the place of the first
+    other = mix.read(49 * len(second), lambda: True)
+    waiting = asyncio.create_task(anext(other))
+    await _until(lambda: len(events) == 3)
+
+    assert events == [("opened", None), ("gone", None), ("opened", 48000)]
+    # the first reader reads on, from the buffer of the track
+    assert await anext(first)
+    waiting.cancel()
+    await asyncio.wait({waiting})
+    await first.aclose()
+    mix.close()
+
+
+@bounded
+async def test_a_pass_waits_for_the_one_that_has_the_track_whatever_was_ended_in_between() -> None:
+    """A player that seeks twice at once: the pass of the last seek opens when the first let go."""
+    second = bytes(PCM_16.pcm_sample_size)
+    events: list[tuple[str, int | None]] = []
+    let_go = asyncio.Event()
+
+    async def _stream(
+        *, start_ms: int | None, marks: MixedTrack, **_kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        events.append(("opened", start_ms))
+        try:
+            if start_ms is None:
+                marks.lead_in_ended(0, 0, None)
+            while True:
+                await asyncio.sleep(0)
+                yield second
+        finally:
+            if start_ms is None:
+                # the first pass takes its time to let go of the track
+                await let_go.wait()
+            events.append(("gone", start_ms))
+
+    async def _track(**_kwargs: Any) -> AsyncGenerator[bytes]:
+        while True:
+            yield second
+
+    mix = MixedTrack(PCM_16, 60000, 50000, _stream, _track)
+    there = {"first": True, "seek": True}
+    first = mix.read(0, lambda: there["first"])
+    assert await anext(first)
+    # its player seeks, and seeks again before the pass of the first seek got the track
+    there["first"] = False
+    seek = asyncio.create_task(anext(mix.read(10 * len(second), lambda: there["seek"])))
+    await asyncio.sleep(0)
+    there["seek"] = False
+    seek.cancel()
+    await asyncio.wait({seek})
+    reading = asyncio.create_task(anext(mix.read(20 * len(second), lambda: True)))
+
+    # turns of the loop, not time: all a pass needs to open its stream when nothing holds it
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert events == [("opened", None)]
+    let_go.set()
+    assert await asyncio.wait_for(reading, WAIT)
+    assert events == [("opened", None), ("gone", None), ("opened", 19000)]
+    await first.aclose()
+    mix.close()
+
+
+@bounded
+@pytest.mark.parametrize("pinned", [VolumeNormalizationMode.DYNAMIC, None])
+async def test_a_read_from_the_buffer_has_the_normalization_the_fade_pinned_the_track_to(
+    rig: _Rig, pinned: VolumeNormalizationMode | None
+) -> None:
+    """A part that is read beside or after the pass has the level of the pass."""
+    rig.ctrl.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    fade = _tone(1.5, 9, PCM_16)
+
+    async def _fade() -> AsyncGenerator[bytes]:
+        yield fade
+
+    rig.audio._crossfade_handover[QUEUE_ID] = CrossfadeHandover(
+        stream=_fade(),
+        fade_in_media_duration=3.5,
+        pcm_format=PCM_16,
+        queue_item_id="b",
+        crossfade_mode=CrossfadeMode.VOICE_OVER,
+        elapsed_time_offset=2.0,
+        normalization_mode=pinned,
+        session_id=SESSION_ID,
+    )
+
+    _, body = await asyncio.wait_for(rig.fetch("b"), WAIT)
+    _, part = await asyncio.wait_for(rig.fetch("b", f"bytes={rig.offset(3.0)}-"), WAIT)
+
+    assert part == body[rig.offset(3.0) :]
+    # the pass that played the track, and the read from its buffer
+    assert rig.normalization == [pinned, pinned]
+
+
+@bounded
+async def test_a_speaker_makes_the_end_when_the_one_that_drove_the_pass_has_left(
+    middle: tuple[_Rig, bytes],
+) -> None:
+    """A speaker that reads beside the pass of another one goes on when that one hangs up."""
+    rig, whole = middle
+    start = rig.offset(2.5)
+    first_request, first = rig.request("b", stall_at=rig.offset(3))
+    first_task = _serve(rig, first_request)
+    await _stands_still(first)
+    mix = rig.file("b").mix
+    assert mix is not None
+    running = mix._pass
+    assert running is not None
+    assert running.task is not None
+    second_request, second = rig.request(
+        "b", f"bytes={start}-", stall_at=PCM_16.pcm_sample_size, address=OTHER_ADDRESS
+    )
+    second_task = _serve(rig, second_request)
+    await _stands_still(second)
+
+    first.hang_up()
+    first.resume.set()
+    await _ended(first_task)
+    await asyncio.wait({running.task}, timeout=WAIT)
+
+    # the pass ends with the speaker it was paced by: the other one stands still
+    assert running.task.cancelled()
+    assert mix.size is None
+    assert rig.mixes.await_count == 1
+    second.resume.set()
+    await _ended(second_task)
+    assert bytes(second.body) == whole[start:]
+    # it read the track from the buffer, and ran a pass from where the end is made
+    assert rig.passes[2:] == [PASS_FROM_MS]
+    assert rig.mixes.await_count == 2
+
+
+@bounded
+async def test_a_speaker_that_hangs_up_while_it_waits_for_the_end_is_let_go(
+    middle: tuple[_Rig, bytes],
+) -> None:
+    """A speaker that leaves while a mix is made ends its request, and the other one gets the mix."""
+    rig, whole = middle
+    loaded = asyncio.Event()
+    _hold_next_track(rig, loaded)
+    start = rig.offset(END - 0.5)
+    first_request, first = rig.request("b")
+    first_task = _serve(rig, first_request)
+    await _until(lambda: len(first.body) == rig.offset(END))
+    second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await _until(lambda: len(second.body) == rig.offset(END) - start)
+
+    first.hang_up()
+    await asyncio.wait_for(first_task, WAIT)
+
+    assert not second_task.done()
+    loaded.set()
+    await _ended(second_task)
+    assert bytes(second.body) == whole[start:]
+
+
+@bounded
+async def test_a_pass_that_no_speaker_drives_makes_no_mix_for_speakers_that_have_gone(
+    middle: tuple[_Rig, bytes],
+) -> None:
+    """The end of a track is not made, and its next track not loaded, once nobody reads it."""
+    rig, whole = middle
+    ready = asyncio.Event()
+    # the pass that makes the end for a speaker that got there before the one that drives
+    _hold_track(rig, PASS_FROM_MS, ready)
+    start = rig.offset(1)
+    first_request, first = rig.request("b", stall_at=rig.offset(1))
+    first_task = _serve(rig, first_request)
+    await _stands_still(first)
+    second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await _until(lambda: len(second.body) == rig.offset(PASS_ONLY) - start)
+    await _until(lambda: len(rig.passes) == 3)
+    mix = rig.file("b").mix
+    assert mix is not None
+    running = mix._pass
+    assert running is not None
+    assert running.task is not None
+
+    for download, task in ((first, first_task), (second, second_task)):
+        download.hang_up()
+        download.resume.set()
+        await asyncio.wait_for(task, WAIT)
+    ready.set()
+    await asyncio.wait_for(running.task, WAIT)
+
+    assert len(second.body) == rig.offset(PASS_ONLY) - start
+    assert mix.size is None
+    assert rig.mixes.await_count == 1
+    assert rig.mass.player_queues.load_next_queue_item.await_count == 1
+    # a speaker that comes back gets the rest, with the end that is made for it
+    _, rest = await asyncio.wait_for(rig.fetch("b", f"bytes={start}-"), WAIT)
+    assert rest == whole[start:]
+
+
+@bounded
+@pytest.mark.parametrize("name", ["24-bit", "processed"])
+async def test_two_speakers_get_the_audio_of_one_download(name: str) -> None:
+    """
+    Beside another speaker a part of a mixed track is the audio of one download as well.
+
+    One speaker stops reading early in the track. A second one asks for a part the first
+    one has and gets it to the end, which is made for it; the first one then reads on, from
+    the track's buffer instead of from its pass.
+    """
+    case = JOIN_CASES[name]
+    await check_ffmpeg_version()
+    tracks = _trio(case.buffer_format, JOIN_SECONDS + 0.37)
+
+    async def _rig() -> _Rig:
+        rig = _Rig(
+            tracks,
+            output_format=case.output_format,
+            buffer_format=case.buffer_format,
+            track_filters=case.track_filters,
+            player_filters=case.player_filters,
+        )
+        await rig.decode()
+        await asyncio.wait_for(rig.fetch("a"), WAIT)
+        return rig
+
+    # the pace is not what this is about, and would make the test last as long as the tracks
+    with patch(
+        "music_assistant.controllers.streams.controller.output_pacing_args", return_value=[]
+    ):
+        whole = await _rig()
+        _, download = await whole.fetch("b")
+
+        beside = await _rig()
+        start = beside.offset(0.4)
+        first_request, first = beside.request("b", stall_at=beside.offset(0.5))
+        first_task = _serve(beside, first_request)
+        await _stands_still(first)
+        _, part = await asyncio.wait_for(
+            beside.fetch("b", f"bytes={start}-", address=OTHER_ADDRESS), WAIT
+        )
+        first.resume.set()
+        await _ended(first_task)
+
+    first.transport.abort.assert_not_called()
+    assert bytes(first.body[:HEADER_SIZE]) == download[:HEADER_SIZE]
+    for body, expected in (
+        (bytes(first.body[HEADER_SIZE:]), download[HEADER_SIZE:]),
+        (part, download[start:]),
+    ):
+        assert len(body) == len(expected)
+        if case.tolerance == 0:
+            assert body == expected
+        else:
+            assert np.abs(_samples(body) - _samples(expected)).max() <= case.tolerance
 
 
 async def test_a_pass_ends_with_the_request_that_drives_it(rig: _Rig) -> None:
@@ -801,6 +1567,33 @@ async def test_a_pass_ends_with_the_request_that_drives_it(rig: _Rig) -> None:
     streamdetails = rig.items["a"].streamdetails
     assert streamdetails is not None
     assert streamdetails.buffer.users == ()
+
+
+@bounded
+async def test_a_request_that_is_replaced_as_it_starts_its_pass_ends(rig: _Rig) -> None:
+    """A pass that is ended before it ran tells its request, which does not wait for it forever."""
+    # the player read the start of the track and left: no pass runs
+    await rig.fetch("a", wanted=KIB_16)
+    mix = rig.file("a").mix
+    assert mix is not None
+    assert mix._pass is not None
+    assert mix._pass.task is not None
+    await asyncio.wait({mix._pass.task})
+    seek = rig.offset(5.5)
+
+    # the player asks for a part, and in the same moment for another one
+    replaced_request, replaced = rig.request("a", f"bytes={rig.offset(2.5)}-")
+    request, download = rig.request("a", f"bytes={seek}-")
+    tasks = [
+        asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, asked))
+        for asked in (replaced_request, request)
+    ]
+    await asyncio.wait_for(asyncio.gather(*tasks), WAIT)
+
+    replaced.transport.abort.assert_called_once()
+    assert not replaced.body
+    assert len(download.body) == rig.offset(TRACK_SECONDS - TRIMMED) - seek
+    assert rig.ctrl._active_output_streams == 0
 
 
 async def test_a_pass_that_reached_the_end_of_its_track_runs_on_by_itself(rig: _Rig) -> None:
@@ -1026,7 +1819,7 @@ async def test_the_held_tail_is_cut_at_exactly_the_fade_window(
     tail_start = len(audio_bytes) - STANDARD_CROSSFADE_DURATION * second
     assert build.await_args.kwargs["fade_out_data"] == audio_bytes[tail_start:]
     assert bytes(output[:tail_start]) == audio_bytes[:tail_start]
-    marks.lead_in_ended.assert_called_once_with(0, 0)
+    marks.lead_in_ended.assert_called_once_with(0, 0, None)
     marks.source_read_out.assert_called_once_with(tail_start)
     await audio._crossfade_handover.pop("queue-1").close()
 

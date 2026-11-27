@@ -2867,7 +2867,7 @@ class StreamsController(CoreController):
                 ):
                     return offset
 
-        file.add_reader(request)
+        file.add_reader(request, offset)
         self.logger.debug(
             "Serving %s as a file to %s from byte %s of %s",
             queue_item.name,
@@ -2896,6 +2896,7 @@ class StreamsController(CoreController):
                         # audio handed to a connection that is still open may reach the
                         # player, also when the write fails
                         file.head_start_handed_out(address)
+                        file.sent_up_to(offset + len(data))
                     try:
                         await resp.write(data)
                     except ConnectionError:

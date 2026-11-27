@@ -102,6 +102,8 @@ class _Download:
         self._wanted = wanted
         self._stall_at = stall_at
         self.body = bytearray()
+        # the bytes handed to the player: those it got, and the write that is under way
+        self.handed = 0
         self.transport = Mock()
         self.transport.get_extra_info.return_value = None
         self.transport.is_closing.return_value = False
@@ -127,6 +129,7 @@ class _Download:
         self.protocol.transport = None
 
     async def _write(self, data: bytes) -> None:
+        self.handed = len(self.body) + len(data)
         if self._stall_at is not None and len(self.body) >= self._stall_at:
             self.stalled.set()
             await self.resume.wait()
@@ -725,6 +728,278 @@ async def test_a_speaker_that_asks_for_the_same_file_ends_no_encode_of_another(
     assert bytes(leader.body) == whole_file[seek:]
     assert resp.keep_alive
     assert rig.ctrl._active_output_streams == 0
+
+
+@pytest.fixture
+def long_rig() -> _Rig:
+    """Return a rig with a track of a hundred seconds."""
+    return _Rig(_tone(100), duration=100)
+
+
+class _Speakers:
+    """The requests of several speakers for one file, each answered beside the others."""
+
+    def __init__(self, rig: _Rig) -> None:
+        """
+        Initialize the speakers.
+
+        :param rig: The rig that serves the file.
+        """
+        self._rig = rig
+        self.downloads: list[_Download] = []
+        self._tasks: list[asyncio.Task[web.StreamResponse]] = []
+
+    async def ask(
+        self, address: str, start: int | None, *, reads: int | None = 0, wanted: int | None = None
+    ) -> _Download:
+        """
+        Let a speaker ask for the file from an offset, and read some of it.
+
+        :param address: The address of the speaker.
+        :param start: Offset in the file its part starts at, None for a request without a range.
+        :param reads: The bytes after which it stops reading for a while, None to read on.
+        :param wanted: The bytes after which it hangs up, None for all it gets.
+        """
+        request, download = self._rig.request(
+            f"bytes={start}-" if start is not None else None,
+            wanted=wanted,
+            stall_at=reads,
+            address=address,
+        )
+        task = asyncio.create_task(
+            StreamsController.serve_queue_item_stream(self._rig.ctrl, request)
+        )
+        self.downloads.append(download)
+        self._tasks.append(task)
+        waits = [asyncio.create_task(download.stalled.wait()), task]
+        done, _ = await asyncio.wait(waits, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+        waits[0].cancel()
+        assert done, "the speaker neither stopped reading nor got its part"
+        return download
+
+    async def read_on(self) -> None:
+        """Let every speaker read on to the end of its part."""
+        for download in self.downloads:
+            download.resume.set()
+        await asyncio.wait_for(asyncio.gather(*self._tasks), 10)
+
+
+def _second(seconds: float) -> int:
+    """
+    Return the offset in a 16 bit file of a moment in it.
+
+    :param seconds: The moment, in seconds from the start of the audio.
+    """
+    return HEADER_SIZE + round(seconds * 44100) * 4
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_change_of_leader_as_measured_ends_no_encode_of_the_other_speaker(
+    long_rig: _Rig,
+) -> None:
+    """The requests of a group that changes its leader all start in what the file has sent."""
+    await long_rig.decode()
+    speakers = _Speakers(long_rig)
+    # the old leader read the file from its start, up to about 7.46 megabytes
+    downloading = await speakers.ask(PLAYER_ADDRESS, None, reads=7461308)
+
+    # the new coordinator asks for its part, the old leader for where its download stopped,
+    # and both once more
+    first = await speakers.ask(OTHER_ADDRESS, 5816320)
+    again = await speakers.ask(PLAYER_ADDRESS, 7461308, reads=145776)
+    part = await speakers.ask(OTHER_ADDRESS, 5816320)
+    rest = await speakers.ask(PLAYER_ADDRESS, 7607084)
+
+    # every request ended the one before it of its own speaker, and none of the other
+    aborts = [download.transport.abort.call_count for download in speakers.downloads]
+    assert aborts == [1, 1, 1, 0, 0]
+    await speakers.read_on()
+    assert not first.body
+    assert bytes(part.body) == long_rig.pcm[5816320 - HEADER_SIZE :]
+    assert bytes(rest.body) == long_rig.pcm[7607084 - HEADER_SIZE :]
+    assert len(again.body) < len(long_rig.pcm) - 7461308
+    assert len(downloading.body) < len(long_rig.pcm)
+    assert long_rig.ctrl._active_output_streams == 0
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+@pytest.mark.parametrize(
+    ("asked", "reads_beside"),
+    [
+        ("where the first speaker started", True),
+        ("between the two speakers", True),
+        ("where the speaker that passed has got", True),
+        ("the byte after the last one handed out", True),
+        ("a frame before the first speaker started", False),
+        ("a frame past the last byte handed out", False),
+    ],
+)
+async def test_a_speaker_reads_beside_the_others_from_what_the_file_has_sent(
+    long_rig: _Rig, asked: str, reads_beside: bool
+) -> None:
+    """A request for a part that no speaker was sent ends the encodes that run."""
+    await long_rig.decode()
+    speakers = _Speakers(long_rig)
+    # a speaker stands still two seconds into its part, and one that passed it twenty
+    started, passed = _second(10), _second(11)
+    await speakers.ask(PLAYER_ADDRESS, started, reads=2 * BYTES_PER_SECOND)
+    ahead = await speakers.ask(OTHER_ADDRESS, passed, reads=20 * BYTES_PER_SECOND)
+    start = {
+        "where the first speaker started": started,
+        "between the two speakers": _second(20),
+        "where the speaker that passed has got": passed + len(ahead.body),
+        "the byte after the last one handed out": passed + ahead.handed,
+        "a frame before the first speaker started": started - 4,
+        "a frame past the last byte handed out": passed + ahead.handed + 4,
+    }[asked]
+
+    third = await speakers.ask("192.168.1.22", start, reads=None)
+
+    assert bytes(third.body) == long_rig.pcm[start - HEADER_SIZE :]
+    aborted = [download.transport.abort.called for download in speakers.downloads]
+    assert aborted == [not reads_beside, not reads_beside, False]
+    await speakers.read_on()
+    complete = [
+        bytes(download.body) == long_rig.pcm[begin - HEADER_SIZE :]
+        for download, begin in zip(speakers.downloads, (started, passed, start), strict=True)
+    ]
+    assert complete == [reads_beside, reads_beside, True]
+    assert long_rig.ctrl._active_output_streams == 0
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_speaker_asks_again_for_bytes_of_a_write_that_did_not_return(
+    long_rig: _Rig,
+) -> None:
+    """What was handed to a connection may have reached its speaker, also when the write fails."""
+    await long_rig.decode()
+    speakers = _Speakers(long_rig)
+    reading = await speakers.ask(PLAYER_ADDRESS, _second(10), reads=5 * BYTES_PER_SECOND)
+    beside = await speakers.ask(OTHER_ADDRESS, _second(11))
+    under_way = reading.handed - len(reading.body)
+    assert under_way > 4
+
+    # its connection breaks while a write is under way, of which it got the first half
+    reading.hang_up()
+    stopped = _second(10) + len(reading.body) + under_way // 8 * 4
+    again = await speakers.ask(PLAYER_ADDRESS, stopped, reads=None)
+
+    beside.transport.abort.assert_not_called()
+    assert bytes(again.body) == long_rig.pcm[stopped - HEADER_SIZE :]
+    await speakers.read_on()
+    assert bytes(beside.body) == long_rig.pcm[11 * BYTES_PER_SECOND :]
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_speakers_spread_over_a_track_leave_one_encode(long_rig: _Rig) -> None:
+    """A file is no way to read several parts of a track at once, each at playback speed."""
+    await long_rig.decode()
+    speakers = _Speakers(long_rig)
+    for number, second in enumerate((2, 34, 66, 98)):
+        await speakers.ask(f"192.168.1.{20 + number}", _second(second))
+
+    assert [download.connected for download in speakers.downloads] == [False, False, False, True]
+    await speakers.read_on()
+    assert [bool(download.body) for download in speakers.downloads] == [False, False, False, True]
+    assert bytes(speakers.downloads[-1].body) == long_rig.pcm[98 * BYTES_PER_SECOND :]
+    assert long_rig.ctrl._active_output_streams == 0
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_speakers_that_ask_just_ahead_of_each_other_leave_one_encode(
+    long_rig: _Rig,
+) -> None:
+    """Speakers that stay close together and each ask past what the others were sent gain nothing."""
+    await long_rig.decode()
+    speakers = _Speakers(long_rig)
+    start = _second(10)
+    for number in range(6):
+        download = await speakers.ask(
+            f"192.168.1.{20 + number % 3}", start, reads=2 * BYTES_PER_SECOND
+        )
+        # the next speaker asks a second past what this one was handed
+        start += download.handed + BYTES_PER_SECOND
+
+        connected = [download.connected for download in speakers.downloads]
+        assert connected == [False] * number + [True]
+
+    await speakers.read_on()
+    assert long_rig.ctrl._active_output_streams == 0
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+@pytest.mark.parametrize("hangs_up", [True, False])
+async def test_a_speaker_asks_for_the_start_of_a_file_that_another_one_seeked_in(
+    long_rig: _Rig, hangs_up: bool
+) -> None:
+    """A look at the start that is dropped ends nothing; a speaker that reads on from it takes over."""
+    megabyte = 1024 * 1024
+    await long_rig.decode()
+    speakers = _Speakers(long_rig)
+    # a speaker read the first megabytes, and then seeked by itself
+    await speakers.ask(PLAYER_ADDRESS, None, reads=None, wanted=2 * megabyte)
+    seeked = await speakers.ask(PLAYER_ADDRESS, _second(50), reads=2 * BYTES_PER_SECOND)
+
+    start = await speakers.ask(
+        OTHER_ADDRESS, None, reads=megabyte, wanted=KIB_16 if hangs_up else None
+    )
+
+    if hangs_up:
+        # and its own part, which the first speaker was sent, is read beside that one
+        await speakers.ask(OTHER_ADDRESS, _second(51))
+    assert seeked.transport.abort.called is not hangs_up
+    await speakers.read_on()
+    assert (len(start.body) == HEADER_SIZE + len(long_rig.pcm)) is not hangs_up
+    assert (bytes(seeked.body) == long_rig.pcm[50 * BYTES_PER_SECOND :]) is hangs_up
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_speakers_read_beside_each_other_again_after_one_took_the_file_over(
+    long_rig: _Rig,
+) -> None:
+    """A speaker that a take-over ended asks again for where it was, and the other for its part."""
+    megabyte = 1024 * 1024
+    await long_rig.decode()
+    speakers = _Speakers(long_rig)
+    # the old leader read the first megabytes, seeked by itself and has nine seconds from there
+    await speakers.ask(PLAYER_ADDRESS, None, reads=None, wanted=2 * megabyte)
+    seeked = await speakers.ask(PLAYER_ADDRESS, _second(50), reads=9 * BYTES_PER_SECOND)
+    # the new coordinator asks for the start first, and holds that request too long
+    start = await speakers.ask(OTHER_ADDRESS, None, reads=megabyte)
+    seeked.transport.abort.assert_called_once()
+
+    # the old leader asks again for where its download stopped, the coordinator for its part
+    stopped = _second(50) + len(seeked.body)
+    again = await speakers.ask(PLAYER_ADDRESS, stopped)
+    part = await speakers.ask(OTHER_ADDRESS, _second(52))
+
+    assert start.transport.abort.called
+    again.transport.abort.assert_not_called()
+    part.transport.abort.assert_not_called()
+    await speakers.read_on()
+    assert bytes(again.body) == long_rig.pcm[stopped - HEADER_SIZE :]
+    assert bytes(part.body) == long_rig.pcm[52 * BYTES_PER_SECOND :]
+    assert long_rig.ctrl._active_output_streams == 0
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_speakers_that_take_a_file_back_in_turn_leave_one_encode(long_rig: _Rig) -> None:
+    """What a file had sent before a take-over is no second place to read at the same time."""
+    await long_rig.decode()
+    speakers = _Speakers(long_rig)
+    # three speakers with a part of their own each, which ask again for where they were
+    reached = {f"192.168.1.{20 + number}": _second(10 + 30 * number) for number in range(3)}
+    first, second, third = reached
+    turns = (first, second, first, second, third, second, third, first, third, first)
+    for turn, address in enumerate(turns):
+        download = await speakers.ask(address, reached[address], reads=2 * BYTES_PER_SECOND)
+        reached[address] += len(download.body)
+
+        connected = [download.connected for download in speakers.downloads]
+        assert connected == [False] * turn + [True]
+
+    await speakers.read_on()
+    assert long_rig.ctrl._active_output_streams == 0
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
