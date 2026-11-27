@@ -68,11 +68,8 @@ class SonosCloudQueue:
         path_parts = request.path.strip("/").split("/")
         if len(path_parts) != 4 or path_parts[0] != "sonos_queue":
             return web.Response(status=404)
-        protocol_id = path_parts[1]
-        if not (sonos_player := self.provider.get_protocol(protocol_id)):
+        if not (sonos_player := self._speaker_for(path_parts[1])):
             return web.Response(status=501)
-        if TYPE_CHECKING:
-            assert isinstance(sonos_player, SonosPlayer)
         endpoint = path_parts[3]
         if endpoint == "itemWindow":
             return await self._handle_sonos_queue_itemwindow(sonos_player, request)
@@ -280,6 +277,23 @@ class SonosCloudQueue:
         if player.is_served_as_file(media.queue_item_id):
             item["policies"] = {"canSeek": True}
         return item
+
+    def _speaker_for(self, path_id: str) -> SonosPlayer | None:
+        """
+        Return the speaker a cloud queue path is served for.
+
+        :param path_id: The id the path names: a speaker, or a group whose queue a speaker
+            has loaded.
+        """
+        return next(
+            (
+                speaker
+                for speaker in self.provider.protocols
+                if isinstance(speaker, SonosPlayer)
+                and path_id in (speaker.protocol_id, speaker.group_queue_id)
+            ),
+            None,
+        )
 
     def _handle_reported_playback_error(
         self, player: SonosPlayer, item: dict[str, Any], error: dict[str, Any]

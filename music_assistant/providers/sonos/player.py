@@ -223,6 +223,9 @@ class SonosPlayer(PlayerProtocol):
         # loaded, and the version the speaker compares against to decide whether its cached
         # copy is still valid
         self.cloud_queue_id: str | None = None
+        # set when that queue is a group's whose stream this speaker renders as its leader:
+        # the cloud queue and its stream urls then name the group
+        self.group_queue_id: str | None = None
         self._loaded_session_id: str | None = None
         self.cloud_queue_version: float = time.time()
         # advanced on every play_media: item ids are served suffixed with it, so a
@@ -829,11 +832,16 @@ class SonosPlayer(PlayerProtocol):
             self._queue_session_id = None
             self._flow_queue_id = None
             self.cloud_queue_id = media.source_id
+            self.group_queue_id = (
+                media.source_id if self._leads_group_queue(media.source_id) else None
+            )
 
             def _load_starts(_sonos_session_id: str) -> None:
                 self._loaded_session_id = media.queue_session_id
 
-            cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.protocol_id}/v2.3/"
+            cloud_queue_url = (
+                f"{self.mass.streams.base_url}/sonos_queue/{self._queue_url_id()}/v2.3/"
+            )
             try:
                 await self.group_controller.play_cloud_queue(
                     cloud_queue_url,
@@ -2042,9 +2050,23 @@ class SonosPlayer(PlayerProtocol):
             )
         return queue_item_id
 
+    def _leads_group_queue(self, queue_id: str) -> bool:
+        """Return whether a queue belongs to a group whose stream this speaker renders."""
+        # the queue's player plays through a protocol of its own (a sync group) that has
+        # this speaker render its stream; a speaker's own queue resolves to the speaker itself
+        if (player := self.mass.players.get_player(queue_id)) is None:
+            return False
+        owner = player.resolve_output_protocol()
+        return owner is not None and owner is not self and owner.resolve_output_protocol() is self
+
+    def _queue_url_id(self) -> str:
+        """Return the id the loaded cloud queue and its stream urls are served under."""
+        return self.group_queue_id or self.protocol_id
+
     def _forget_queue(self) -> None:
         """Forget the MA queue the speaker played, on either path."""
         self.cloud_queue_id = None
+        self.group_queue_id = None
         self._flow_queue_id = None
 
     def _moved_queue_id(self) -> str | None:
@@ -2179,7 +2201,7 @@ class SonosPlayer(PlayerProtocol):
         # such a fetch right away.
         media.queue_session_id = self._loaded_session_id
         media.uri = await self.mass.streams.resolve_stream_url(
-            self.protocol_id, media, queue_index=queue_index
+            self._queue_url_id(), media, queue_index=queue_index
         )
         return media
 
