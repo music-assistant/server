@@ -478,12 +478,12 @@
     }
   },
   "config_categories": {
-    "generic": "Generic",
+    "generic": "General",
     "advanced": "Advanced",
     "announcements": "Announcements",
     "player_controls": "Player controls",
     "sync_options": "Sync/import options",
-    "builtin_playlists": "Built-in playlists to show in your library",
+    "builtin_playlists": "Built-in playlists",
     "web_player": "Web Player",
     "playback": "Playback",
     "source_selection": "Source selection",
