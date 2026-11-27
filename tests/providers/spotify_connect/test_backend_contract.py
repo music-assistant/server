@@ -169,10 +169,12 @@ class QueueControlFakeBackend(FakeBackend):
         self.calls.append(("request_queue", limit))
 
 
-def _create_task(coro_or_result: Any) -> Any:
-    """Run coroutines as real tasks; pass anything else through as a mock."""
+def _create_task(coro_or_result: Any, *, eager_start: bool = True) -> Any:
+    """Run coroutines as real tasks, started eagerly like mass.create_task; mock the rest."""
     if asyncio.iscoroutine(coro_or_result):
-        return asyncio.get_running_loop().create_task(coro_or_result)
+        return asyncio.Task(
+            coro_or_result, loop=asyncio.get_running_loop(), eager_start=eager_start
+        )
     return MagicMock()
 
 
@@ -945,6 +947,41 @@ async def test_source_selected_resumes_active_session_via_backend() -> None:
     await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess1")
 
     assert backend.calls == [("resume", None), ("set_volume", 25)]
+
+
+async def test_source_selected_does_not_wait_for_volume_push() -> None:
+    """Selecting the source returns while the backend still holds the volume push."""
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(backend, session_active=True)
+    _player_with_volume(mass, 25)
+    volume_tasks: list[asyncio.Task[None]] = []
+    release = asyncio.Event()
+
+    def _track_task(coro: Any) -> Any:
+        task = _create_task(coro)
+        volume_tasks.append(task)
+        return task
+
+    def _mark_playing() -> None:
+        daemon.playing = True
+
+    async def _set_volume_until_released(volume: int) -> None:
+        # go-librespot answers only once the stream reads its audio
+        await release.wait()
+        backend.calls.append(("set_volume", volume))
+
+    mass.create_task.side_effect = _track_task
+    backend.on_acquire = _mark_playing
+    backend.set_volume = _set_volume_until_released  # type: ignore[method-assign]
+
+    async with asyncio.timeout(1):
+        await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess1")
+    assert backend.calls == [("resume", None)]
+
+    release.set()
+    await asyncio.gather(*volume_tasks)
+    assert backend.calls == [("resume", None), ("set_volume", 25)]
+    assert daemon.last_volume_sent == 25
 
 
 @pytest.mark.parametrize(
