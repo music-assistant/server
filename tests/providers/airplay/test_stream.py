@@ -805,14 +805,59 @@ async def test_stdout_reader_dispatches_remote_events_once() -> None:
     player = _make_player()
     stream = AirPlayStream(player)
     process = MagicMock()
-    output = "".join(f"[EVENT] remote command={command}\n" for command in AirPlayRemoteCommand)
+    commands = [c for c in AirPlayRemoteCommand if c is not AirPlayRemoteCommand.SKIP]
+    output = "".join(f"[EVENT] remote command={command}\n" for command in commands)
+    output += "[EVENT] remote command=skip interval_ms=30000\n"
     process.read = AsyncMock(side_effect=[output.encode(), b""])
     stream._cli_proc = process
 
     await stream._stdout_reader()
 
     assert player.provider.handle_remote_command.call_args_list == [
-        call(player, command) for command in AirPlayRemoteCommand
+        *(call(player, command) for command in commands),
+        call(player, AirPlayRemoteCommand.SKIP, interval_ms=30000),
+    ]
+
+
+@pytest.mark.parametrize("interval_ms", [30000, -30000])
+def test_parse_remote_skip(interval_ms: int) -> None:
+    """A skip asked of the receiver is dispatched with its distance, negative for a skip back."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._parse_remote_event(f"[EVENT] remote command=skip interval_ms={interval_ms}")
+
+    player.provider.handle_remote_command.assert_called_once_with(
+        player, AirPlayRemoteCommand.SKIP, interval_ms=interval_ms
+    )
+
+
+@pytest.mark.parametrize("arguments", ["", " interval_ms=x", " interval_ms=0"])
+def test_parse_remote_skip_without_an_interval_is_ignored(
+    arguments: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A skip reported without a usable interval is ignored with a warning."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_remote_event(f"[EVENT] remote command=skip{arguments}")
+
+    player.provider.handle_remote_command.assert_not_called()
+    assert "Ignoring a remote skip without an interval" in caplog.text
+
+
+def test_a_repeated_remote_skip_is_dispatched_each_time() -> None:
+    """Two skips of the same length are two commands, however close together."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    for _ in range(2):
+        stream._parse_remote_event("[EVENT] remote command=skip interval_ms=30000")
+
+    assert player.provider.handle_remote_command.call_args_list == [
+        call(player, AirPlayRemoteCommand.SKIP, interval_ms=30000),
+        call(player, AirPlayRemoteCommand.SKIP, interval_ms=30000),
     ]
 
 

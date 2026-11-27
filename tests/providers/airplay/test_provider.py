@@ -1556,3 +1556,13 @@ def test_a_remote_command_of_a_speaker_controls_its_set() -> None:
     bridge_manager = cast("MagicMock", prov._bridge_manager)
     bridge_manager.get_transport_command_target.assert_called_once_with("apc43875e9e53a")
     cast("MagicMock", prov.mass).players.cmd_pause.assert_called_once_with("plc43875e9e53a")
+
+
+@pytest.mark.parametrize(("interval_ms", "seconds"), [(30_000, 30), (-15_000, -15)])
+def test_remote_skip_skips_within_what_plays(interval_ms: int, seconds: int) -> None:
+    """A skip asked of the receiver skips on its player, in whole seconds."""
+    prov, airplay_player = _remote_command_player(None)
+
+    prov.handle_remote_command(airplay_player, AirPlayRemoteCommand.SKIP, interval_ms=interval_ms)
+
+    cast("MagicMock", prov.mass).players.cmd_skip.assert_called_once_with("plc43875e9e53a", seconds)

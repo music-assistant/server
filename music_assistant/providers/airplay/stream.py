@@ -1362,6 +1362,7 @@ class AirPlayStream:
             buffered_formats=<hex> buffered_known=<0|1>
           [STATUS] mrp path=<command> status=<http status>
           [EVENT] remote command=<play|pause|play_pause|next|previous>
+          [EVENT] remote command=skip interval_ms=<signed int>
         """
         if not self._cli_proc:
             return
@@ -1389,7 +1390,11 @@ class AirPlayStream:
 
     def _parse_remote_event(self, line: str) -> None:
         """Dispatch a normalized remote command reported by cliairplay."""
-        command_value = line.removeprefix("[EVENT] remote command=").strip()
+        event = line.removeprefix("[EVENT] remote command=").strip()
+        command_value, _, arguments = event.partition(" ")
+        if command_value == AirPlayRemoteCommand.SKIP:
+            self._parse_remote_skip(arguments.split())
+            return
         try:
             command = AirPlayRemoteCommand(command_value)
         except ValueError:
@@ -1425,6 +1430,20 @@ class AirPlayStream:
         self._remote_commands_suppressed = 0
         prov = cast("AirPlayProvider", self.prov)
         prov.handle_remote_command(self.player, command)
+
+    def _parse_remote_skip(self, arguments: list[str]) -> None:
+        """Dispatch a skip forward or back asked of the receiver."""
+        fields = dict(argument.partition("=")[::2] for argument in arguments)
+        try:
+            interval_ms = int(fields.get("interval_ms", ""))
+        except ValueError:
+            interval_ms = 0
+        if not interval_ms:
+            self.player.logger.warning("Ignoring a remote skip without an interval")
+            return
+        # not held against the last one: two skips of the same length are two commands
+        prov = cast("AirPlayProvider", self.prov)
+        prov.handle_remote_command(self.player, AirPlayRemoteCommand.SKIP, interval_ms=interval_ms)
 
     def _parse_mrp_status(self, line: str) -> None:
         """

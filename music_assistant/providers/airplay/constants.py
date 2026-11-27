@@ -30,6 +30,7 @@ class AirPlayRemoteCommand(StrEnum):
     PLAY_PAUSE = "play_pause"
     NEXT = "next"
     PREVIOUS = "previous"
+    SKIP = "skip"
 
 
 class ClockReadiness(StrEnum):

@@ -209,8 +209,19 @@ class AirPlayProvider(PlayerProvider):
             exit_task.cancel()
             await asyncio.gather(ready_task, exit_task, return_exceptions=True)
 
-    def handle_remote_command(self, player: AirPlayPlayer, command: AirPlayRemoteCommand) -> None:
-        """Dispatch a transport command received from an AirPlay receiver."""
+    def handle_remote_command(
+        self,
+        player: AirPlayPlayer,
+        command: AirPlayRemoteCommand,
+        interval_ms: int | None = None,
+    ) -> None:
+        """
+        Dispatch a transport command received from an AirPlay receiver.
+
+        :param player: The player whose receiver sent the command.
+        :param command: The command received.
+        :param interval_ms: The distance of a skip, in milliseconds; negative skips back.
+        """
         # a speaker of a set controls its set
         if (owner := player.owner) is None:
             return
@@ -238,6 +249,10 @@ class AirPlayProvider(PlayerProvider):
                 self.mass.create_task(self.mass.players.cmd_next_track(player_id))
             case AirPlayRemoteCommand.PREVIOUS:
                 self.mass.create_task(self.mass.players.cmd_previous_track(player_id))
+            case AirPlayRemoteCommand.SKIP if interval_ms:
+                self.mass.create_task(
+                    self.mass.players.cmd_skip(player_id, round(interval_ms / 1000))
+                )
 
     def get_set_carrier(self, set_id: str) -> AirPlayPlayer | None:
         """
