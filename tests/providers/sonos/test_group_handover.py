@@ -29,7 +29,7 @@ from tests.providers.sonos.test_cloud_queue import (
     _make_cloud_queue,
     _make_media_queue_item,
     _make_player,
-    _set_output_codec,
+    _set_playback_quality,
 )
 from tests.providers.sonos.test_player import _connected_player
 
@@ -157,12 +157,14 @@ class _Queues:
 class _Household:
     """Three Sonos speakers around real aiosonos clients: Kitchen leads a sync group's queue."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, codec: str = "wav") -> None:
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, playback_quality: str = "lossless_uncompressed"
+    ) -> None:
         """
         Create the household, with the group playing the first track of the group's queue.
 
         :param monkeypatch: The fixture that restores what the household patches.
-        :param codec: The codec the speakers get their streams in.
+        :param playback_quality: The playback quality the speakers get their streams in.
         """
         own_queue = _FakeQueues([_own_item(f"own{i}") for i in range(2)])
         # the speakers stop it when Kitchen leaves its group
@@ -190,7 +192,9 @@ class _Household:
         # the playback state and the queue item each speaker reported, in order
         self.reports: dict[str, list[tuple[PlaybackState | None, str | None]]] = {}
         self.apis = {player_id: self._api(player_id) for player_id in (KITCHEN, STUDY, BATHROOM)}
-        self.speakers = {player_id: self._speaker(player_id, codec) for player_id in self.apis}
+        self.speakers = {
+            player_id: self._speaker(player_id, playback_quality) for player_id in self.apis
+        }
         self.kitchen._loaded_session_id = "session"
         self.kitchen.cloud_queue_version = 12.5
         self.kitchen.cloud_queue_item_generation = GENERATION
@@ -349,10 +353,10 @@ class _Household:
         api.group_volume.get_volume.return_value = {"volume": 20, "muted": False, "fixed": False}
         return api
 
-    def _speaker(self, player_id: str, codec: str) -> SonosPlayer:
+    def _speaker(self, player_id: str, playback_quality: str) -> SonosPlayer:
         """Create a connected speaker that reports its state, around a real aiosonos client."""
         speaker, _ = _make_player([])
-        _set_output_codec(speaker, codec)
+        _set_playback_quality(speaker, playback_quality)
         streams = cast("MagicMock", speaker.mass).streams
         streams.resolve_stream_url = AsyncMock(
             side_effect=lambda url_id, _media, queue_index: f"{url_id}/{queue_index}"
@@ -429,8 +433,8 @@ async def make_home(
     """Return a factory of households, whose background work ends with the test."""
     homes: list[_Household] = []
 
-    def _make(codec: str = "wav") -> _Household:
-        homes.append(_Household(monkeypatch, codec))
+    def _make(playback_quality: str = "lossless_uncompressed") -> _Household:
+        homes.append(_Household(monkeypatch, playback_quality))
         return homes[-1]
 
     yield _make
@@ -498,7 +502,9 @@ async def test_a_leader_hands_its_session_over_only_while_it_plays_a_file_of_a_g
     make_home: Callable[..., _Household], state: str, hands_over: bool
 ) -> None:
     """Test the session only survives a leader that plays a file out of a group's cloud queue."""
-    home = make_home("flac" if state == "gets its tracks as flac" else "wav")
+    home = make_home(
+        "lossless_compressed" if state == "gets its tracks as flac" else "lossless_uncompressed"
+    )
     kitchen, group = home.kitchen, home.kitchen.group_controller
     if state == "paused in it":
         group._playback_status_data = cast(
@@ -890,7 +896,9 @@ async def test_a_leader_that_can_not_hand_over_leaves_its_group_as_before(
     make_home: Callable[..., _Household], state: str
 ) -> None:
     """Test such a leader only leaves, and the move is handled as one the speakers made."""
-    home = make_home("flac" if state == "gets its tracks as flac" else "wav")
+    home = make_home(
+        "lossless_compressed" if state == "gets its tracks as flac" else "lossless_uncompressed"
+    )
     if state == "leads a group made by hand":
         home.play(KITCHEN_QUEUE, "own0", group_queue=False)
 
