@@ -642,6 +642,29 @@ async def test_a_position_reported_for_the_item_that_was_taken_over_is_not_its_p
     assert home.kitchen.elapsed_time != 7
 
 
+async def test_a_hand_over_right_after_a_change_of_track_takes_the_new_item_over(
+    home: _Household,
+) -> None:
+    """Test the item that plays is the one the status names, ahead of the metadata."""
+    # the leader moved on to the next track, which its metadata does not name yet
+    leader_group = home.kitchen.group_controller
+    leader_group._playback_status_data = cast("Any", {**PLAYING, "itemId": f"track1@{GENERATION}"})
+    assert home.kitchen.can_hand_over_session
+
+    await _step_out(home)
+    await home.settle()
+    group = home.bathroom.group_controller
+    group._playback_metadata_data = cast("Any", _metadata(QUEUE_ID, "track1"))
+    home.bathroom.on_player_event(None)
+    assert home.bathroom.current_media is not None
+    assert home.bathroom.current_media.queue_item_id == "track1"
+
+    # it took over in the new track, and counts its reports for it from there
+    await home.report_position(QUEUE_ID, f"track1@{GENERATION}", 7)
+
+    assert home.bathroom.elapsed_time == pytest.approx(25, abs=1)
+
+
 async def test_a_position_reported_for_the_next_item_is_taken(home: _Household) -> None:
     """Test the new coordinator's reports count again from the track that follows."""
     await _step_out(home)

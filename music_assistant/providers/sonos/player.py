@@ -2043,6 +2043,17 @@ class SonosPlayer(PlayerProtocol):
 
         :param group: The group, as this player's connection reports it.
         """
+        wire_item_id = self._playing_wire_id(group)
+        return wire_item_id is not None and self.is_served_as_file(
+            self.served_item_id(wire_item_id)
+        )
+
+    def _playing_wire_id(self, group: SonosGroup) -> str | None:
+        """
+        Return the id of the item of our current load that a group plays, as the speaker reports it.
+
+        :param group: The group, as this player's connection reports it.
+        """
         # the status names the item right after a load or a change of track, the metadata only
         # seconds later; a status id without the generation of our current load is no item of
         # ours (another source or server, or a replaced load), so the metadata decides then
@@ -2052,8 +2063,8 @@ class SonosPlayer(PlayerProtocol):
             wire_item_id = current_item.get("id") if current_item else None
         # while a load is in flight both still describe the load it replaces
         if not wire_item_id or not self.from_current_load(wire_item_id):
-            return False
-        return self.is_served_as_file(self.served_item_id(wire_item_id))
+            return None
+        return wire_item_id
 
     def _paused_in_file(self, group: SonosGroup) -> bool:
         """
@@ -2460,8 +2471,7 @@ class SonosPlayer(PlayerProtocol):
 
         What is kept for the cloud queue of the sync group it played goes to that member.
         """
-        current_item = self.group_controller.playback_metadata.get("currentItem")
-        item_id = current_item.get("id") if current_item else None
+        item_id = self._playing_wire_id(self.group_controller)
         members = [
             member
             for member_id in self.client.player.group_members
