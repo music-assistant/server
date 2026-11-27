@@ -72,6 +72,7 @@ def _queue_item(*mappings: ProviderMapping) -> QueueItem:
         provider_mappings=set(mappings),
     )
     return QueueItem(
+        userid=USER_ID,
         queue_id="q1",
         queue_item_id="qi1",
         name="Song",
@@ -127,14 +128,11 @@ def _audio(
     :param access: The access record of each configured music source; None means a household
         source. Every loaded instance needs an entry, as a user's sources are derived from
         the configs.
-    :param user: The queue's playback user, or None for anonymous playback.
+    :param user: The user the queue item plays for, or None for anonymous playback.
     """
     mass = MagicMock()
     mass.providers = list(providers.values())
     mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
-    mass.player_queues.queue_data_or_none.return_value = MagicMock(
-        userid=user.user_id if user else None
-    )
     mass.webserver.auth.get_user = AsyncMock(return_value=user)
     set_music_source_access(mass, access)
     mass.streams.get_config_value.return_value = -17

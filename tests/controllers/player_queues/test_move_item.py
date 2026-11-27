@@ -44,6 +44,7 @@ def _controller(
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.fake_paused = False
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]
     ctrl._enqueue_next_item = Mock()  # type: ignore[method-assign]

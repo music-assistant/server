@@ -86,6 +86,7 @@ def _player_reports(
         name="Sonos",
         available=True,
         playback_state=state,
+        fake_paused=False,
         corrected_elapsed_time=stream_elapsed,
         group_members=[],
     )

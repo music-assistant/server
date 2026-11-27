@@ -972,7 +972,7 @@ async def test_a_jump_is_not_undone_by_the_report_on_the_replaced_load() -> None
     queues = _real_queues("queue1", ["track0", "track1", "track2"])
     mass.player_queues = queues
     queue = queues._queue_data["queue1"].queue
-    reporting = MagicMock(corrected_elapsed_time=0.0)
+    reporting = MagicMock(corrected_elapsed_time=0.0, fake_paused=False)
     reporting.resolve_output_protocol.return_value = player
     _report_playing_our_queue(group, cast("str", player.wire_item_id("track0")))
     player.on_player_event(None)
@@ -1732,6 +1732,39 @@ async def test_pause_stops_a_speaker_playing_the_queue_of_its_player(queue_playi
         group.pause.assert_not_awaited()
     else:
         group.pause.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("queue_playing", "served_as_file", "can_pause", "passive", "stops"),
+    [
+        pytest.param(True, False, True, False, True, id="queue item not served as a file"),
+        pytest.param(True, True, True, False, False, id="queue item served as a file"),
+        pytest.param(False, False, True, False, False, id="another source"),
+        pytest.param(False, False, False, False, True, id="no pause offered"),
+        pytest.param(True, False, True, True, False, id="synced to another speaker"),
+    ],
+)
+def test_a_speaker_stops_on_a_pause_it_could_not_resume(
+    queue_playing: bool, served_as_file: bool, can_pause: bool, passive: bool, stops: bool
+) -> None:
+    """
+    Test a speaker stops on a pause in a queue item it does not get as a file, or without a pause.
+
+    :param queue_playing: Whether the speaker plays a Music Assistant queue.
+    :param served_as_file: Whether the item it plays is served to it as a file.
+    :param can_pause: Whether the speaker offers a pause of what it plays.
+    :param passive: Whether the speaker follows another one, which handles the pause.
+    :param stops: Whether a pause stops the speaker.
+    """
+    player, mass, client = _connected_player()
+    client.player.is_passive = passive
+    client.player.group.playback_actions.can_pause = can_pause
+    player._player = MagicMock(spec=Player)
+    player._player.active_source = "pl0123456789ab"
+    mass.player_queues.get.return_value = MagicMock() if queue_playing else None
+
+    with patch.object(SonosPlayer, "_plays_file", return_value=served_as_file):
+        assert player.stops_on_pause is stops
 
 
 @pytest.mark.asyncio

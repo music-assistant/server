@@ -77,6 +77,7 @@ def _player(
         name="P",
         available=True,
         playback_state=state,
+        fake_paused=False,
         active_source=QUEUE_ID,
         corrected_elapsed_time=stream_elapsed,
         group_members=[],

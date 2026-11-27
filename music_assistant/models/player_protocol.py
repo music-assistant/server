@@ -155,6 +155,7 @@ class PlayerProtocol(ABC):
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
     _attr_paused_position_reliable: bool = False
+    _attr_stops_on_pause: bool = False
 
     def __init__(self, provider: PlayerProvider, protocol_id: str) -> None:
         """Initialize the protocol object."""
@@ -285,6 +286,16 @@ class PlayerProtocol(ABC):
         itself, to read its state back from the device. It is called on the event loop
         and must return quickly.
         """
+
+    def resolve_output_protocol(self) -> PlayerProtocol:
+        """
+        Return the protocol that renders the audio of a stream asked for under this protocol's id.
+
+        That is this protocol itself. Override this for a protocol whose streams another
+        protocol renders, such as a group whose leader plays its stream: the output format,
+        DSP and stream callbacks are then those of that protocol.
+        """
+        return self
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -503,6 +514,18 @@ class PlayerProtocol(ABC):
         return self._attr_paused_position_reliable
 
     @property
+    def stops_on_pause(self) -> bool:
+        """
+        Return whether a pause of what the player plays now would stop it instead.
+
+        Set (or override) this for a player that supports PlayerFeature.PAUSE but can not
+        resume what it plays now, so its pause stops it. Its pause is then not called but it is
+        stopped, as a player without a pause of its own: its own queue shows as paused until the
+        pause timeout and plays on from where it was.
+        """
+        return self._attr_stops_on_pause
+
+    @property
     def group_members(self) -> list[str]:
         """
         Return the group members of the player.
@@ -527,6 +550,21 @@ class PlayerProtocol(ABC):
         tell actual playback partners from tracked group membership.
         """
         return self.group_members
+
+    @property
+    def can_hand_over_session(self) -> bool:
+        """
+        Return whether the sync session this player leads plays on when it leaves the session.
+
+        A sync group then changes its leader without a stop and without a restart: it calls
+        `set_members` with only this player's own id in `player_ids_to_remove`, which must
+        keep the session playing for its members, and then `set_members` with the remaining
+        members in `player_ids_to_add` on a member the session still feeds (see
+        `live_session_members`), which leads the session from then on. Without it, the group
+        stops the session and forms it anew around another leader, with a short gap.
+        The answer may depend on what the player plays at the moment it is asked.
+        """
+        return False
 
     @property
     def can_group_with(self) -> set[str]:

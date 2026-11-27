@@ -1464,7 +1464,7 @@ class TestPowerOffEndsTheQueue:
 
         await controller._handle_cmd_power("player_1", False)
 
-        queue_stop.assert_awaited_once_with("player_1", keep_sleep_timer=False)
+        queue_stop.assert_awaited_once_with("player_1", pause=False)
         # the queue stop issues the player stop itself
         player_stop.assert_not_awaited()
 
@@ -2899,9 +2899,7 @@ class TestProtocolOutputPlayPause:
         await controller._handle_cmd_pause("player_1")
 
         native.pause.assert_not_called()
-        mock_mass.player_queues._handle_stop.assert_awaited_once_with(
-            "player_1", keep_sleep_timer=True
-        )
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1", pause=True)
         # the queue stop issues the player stop itself
         controller._handle_cmd_stop.assert_not_awaited()
 
@@ -2927,7 +2925,8 @@ class TestPauseWithoutPauseSupport:
     Pause on a player that plays its own queue and can not pause.
 
     The pause falls back to a stop of the queue, which releases the queue's audio and the
-    music source right away. A later play resumes the queue at the paused position.
+    music source right away and shows the queue as paused until the pause timeout. A later
+    play resumes the queue at the paused position.
     """
 
     @staticmethod
@@ -2962,10 +2961,69 @@ class TestPauseWithoutPauseSupport:
 
         await controller._handle_cmd_pause("player_1")
 
-        mock_mass.player_queues._handle_stop.assert_awaited_once_with(
-            "player_1", keep_sleep_timer=True
-        )
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1", pause=True)
         cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("player_type", "stops_on_pause"),
+        [
+            (PlayerType.PLAYER, True),
+            (PlayerType.PLAYER, False),
+            (PlayerType.GROUP, True),
+            (PlayerType.GROUP, False),
+        ],
+    )
+    async def test_pause_of_a_protocol_that_would_stop_for_it_ends_the_queue(
+        self, mock_mass: MagicMock, player_type: PlayerType, stops_on_pause: bool
+    ) -> None:
+        """
+        A protocol that would stop for a pause is not paused: its player's queue shows the pause.
+
+        :param player_type: The type of player; a group plays on its own protocol, without an
+            active output protocol.
+        :param stops_on_pause: Whether the protocol would stop for the pause.
+        """
+        controller, player = self._player_on_own_queue(mock_mass, player_type)
+        protocol = cast("MockProtocol", player.own_protocol)
+        protocol._attr_supported_features.add(PlayerFeature.PAUSE)
+        protocol._attr_stops_on_pause = stops_on_pause
+        protocol.pause = AsyncMock()  # type: ignore[method-assign]
+        if player_type == PlayerType.PLAYER:
+            player.set_active_output_protocol("native")
+        _refresh(player)
+
+        await controller._handle_cmd_pause("player_1")
+
+        if stops_on_pause:
+            protocol.pause.assert_not_awaited()
+            mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1", pause=True)
+        else:
+            protocol.pause.assert_awaited_once()
+            mock_mass.player_queues._handle_stop.assert_not_awaited()
+        cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
+
+    async def test_pause_of_a_protocol_that_would_stop_for_it_stops_another_queue(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player that plays another queue than its own is stopped, as its protocol would be."""
+        controller, player = self._player_on_own_queue(mock_mass)
+        group_queue = _stub_queue("group_1")
+        mock_mass.player_queues.get = MagicMock(
+            side_effect=lambda queue_id: group_queue if queue_id == "group_1" else None
+        )
+        protocol = cast("MockProtocol", player.own_protocol)
+        protocol._attr_supported_features.add(PlayerFeature.PAUSE)
+        protocol._attr_stops_on_pause = True
+        protocol.pause = AsyncMock()  # type: ignore[method-assign]
+        player.set_active_output_protocol("native")
+        player.set_active_mass_source("group_1")
+        _refresh(player)
+
+        await controller._handle_cmd_pause("player_1")
+
+        protocol.pause.assert_not_awaited()
+        mock_mass.player_queues._handle_stop.assert_not_awaited()
+        cast("AsyncMock", controller._handle_cmd_stop).assert_awaited_once_with("player_1")
 
 
 class TestMirrorsParentMedia:
@@ -4628,7 +4686,7 @@ class TestAddCurrentlyPlayingToFavorites:
 
         :param mock_mass: The mocked MusicAssistant instance.
         :param session_user: The user the command is called as.
-        :param playback_user: The user the queue plays for.
+        :param playback_user: The user the current item plays for.
         :param expected: The user the favorite must be recorded for.
         """
         controller = _controller(mock_mass)
@@ -4650,7 +4708,7 @@ class TestAddCurrentlyPlayingToFavorites:
                 patch.object(controller, "get_active_queue", return_value=queue),
                 patch.object(
                     players_playback,
-                    "resolve_playback_user",
+                    "resolve_queue_item_user",
                     AsyncMock(return_value=playback_user),
                 ),
             ):
@@ -4689,7 +4747,7 @@ class TestAddCurrentlyPlayingToFavorites:
 
         with (
             patch.object(controller, "get_active_queue", return_value=queue),
-            patch.object(players_playback, "resolve_playback_user", AsyncMock(return_value=None)),
+            patch.object(players_playback, "resolve_queue_item_user", AsyncMock(return_value=None)),
             pytest.raises(PlayerCommandFailed) as error,
         ):
             await controller.add_currently_playing_to_favorites("player1")
@@ -4934,7 +4992,7 @@ class TestAddCurrentlyPlayingToFavoritesResolution:
         with (
             patch.object(controller, "_get_player_with_redirect", return_value=player),
             patch.object(controller, "get_active_queue", return_value=queue),
-            patch.object(players_playback, "resolve_playback_user", AsyncMock(return_value=None)),
+            patch.object(players_playback, "resolve_queue_item_user", AsyncMock(return_value=None)),
         ):
             await controller.add_currently_playing_to_favorites("player1")
 

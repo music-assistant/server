@@ -256,14 +256,14 @@ async def test_audiobook_outside_the_library_has_no_successor() -> None:
 # --- dispatch on the queue's last item ---
 
 
-def _queue_item(media_item: PlayableMediaItemType) -> Any:
+def _queue_item(media_item: PlayableMediaItemType, userid: str | None = None) -> Any:
     """Build a queue item stand-in for the given media item."""
     return SimpleNamespace(
-        media_item=media_item, media_type=media_item.media_type, name=media_item.name
+        media_item=media_item, media_type=media_item.media_type, name=media_item.name, userid=userid
     )
 
 
-def _loader(*items: Any, seeds: list[Any] | None = None) -> Any:
+def _loader(*items: Any, seeds: list[Any] | None = None, userid: str | None = None) -> Any:
     """Build a queue loader stand-in holding a queue with the given items (autoplay on)."""
     loader = MagicMock()
     loader.get = MagicMock(
@@ -274,7 +274,7 @@ def _loader(*items: Any, seeds: list[Any] | None = None) -> Any:
             queue=loader.get.return_value,
             items=list(items),
             enqueued_media_items=seeds or [],
-            userid=None,
+            userid=userid,
         )
     }
     loader._fill_autoplay_music_tracks = AsyncMock()
@@ -501,19 +501,25 @@ async def test_music_refill_bails_when_the_queue_is_removed_mid_fetch(
 
 
 async def test_next_in_series_appends_the_successor() -> None:
-    """The resolved next episode is appended behind the queue's last item."""
+    """
+    The resolved next episode is appended behind the queue's last item.
+
+    It is looked up and enqueued for whom the previous one played, not for the queue's owner.
+    """
     podcast = _podcast()
-    last_item = _queue_item(_episode("ep1", 1, podcast))
-    loader = _loader(last_item)
+    last_item = _queue_item(_episode("ep1", 1, podcast), userid="user_1")
+    loader = _loader(last_item, userid="owner")
     loader._media_resolver.get_next_podcast_episode = AsyncMock(
         return_value=_episode("ep2", 2, podcast)
     )
 
     await QueueLoaderMixin._fill_autoplay_next_in_series(loader, "q1", last_item)
 
-    loader.load.assert_awaited_once()
+    loader._media_resolver.get_next_podcast_episode.assert_awaited_once_with(
+        last_item.media_item, userid="user_1"
+    )
     queue_items = loader.load.await_args.args[1]
-    assert [x.media_item.item_id for x in queue_items] == ["ep2"]
+    assert [(x.media_item.item_id, x.userid) for x in queue_items] == [("ep2", "user_1")]
 
 
 async def test_next_in_series_without_successor_appends_nothing() -> None:

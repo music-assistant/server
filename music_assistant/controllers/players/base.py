@@ -249,14 +249,17 @@ class _PlayerControllerBase(CoreController):
         minted can be the id of one of its protocols, which this returns also while another
         of its protocols renders.
 
+        A protocol whose streams another protocol renders, such as a group whose leader plays
+        its stream, answers with that protocol (`PlayerProtocol.resolve_output_protocol`), so
+        a stream asked for under the id of a group follows a change of its leader.
+
         :param protocol_or_player_id: ID of an attached protocol, else of a player or one
             of the legacy ids of a player.
         """
-        if protocol := self._protocols.get(protocol_or_player_id):
-            return protocol
-        if player := self.get_player(protocol_or_player_id):
-            return player.resolve_output_protocol()
-        return None
+        protocol = self._protocols.get(protocol_or_player_id)
+        if protocol is None and (player := self.get_player(protocol_or_player_id)):
+            protocol = player.resolve_output_protocol()
+        return protocol.resolve_output_protocol() if protocol else None
 
     def get_player_by_protocol(self, protocol_or_player_id: str) -> Player | None:
         """
@@ -783,9 +786,7 @@ class _PlayerControllerBase(CoreController):
         # playback
         async def cmd_stop(self, player_id: str) -> None: ...
         async def cmd_play(self, player_id: str) -> None: ...
-        async def _stop_player_or_its_queue(
-            self, player: Player, keep_sleep_timer: bool = False
-        ) -> None: ...
+        async def _stop_player_or_its_queue(self, player: Player, pause: bool = False) -> None: ...
         async def _handle_cmd_resume(
             self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
         ) -> None: ...
@@ -836,6 +837,7 @@ class _PlayerControllerBase(CoreController):
             self, owner: Player, member_ids: Iterable[str] | None = None
         ) -> list[Player]: ...
         def _cancel_power_on(self, player: Player) -> None: ...
+        def _has_waiting_start(self, player: Player) -> bool: ...
         def _cancel_member_power_ons(self, *players: Player) -> None: ...
         # volume
         def _enforce_volume_limits(self, player: Player) -> bool: ...

@@ -73,10 +73,10 @@ def _episode(
     )
 
 
-def _queue_item(media_item: Any) -> Any:
+def _queue_item(media_item: Any, userid: str | None = None) -> Any:
     """Build a queue item stand-in for the given media item."""
     return SimpleNamespace(
-        media_item=media_item, media_type=media_item.media_type, name=media_item.name
+        media_item=media_item, media_type=media_item.media_type, name=media_item.name, userid=userid
     )
 
 
@@ -383,11 +383,15 @@ async def test_autoplay_dispatch_rechecks_lock_after_user_context_restore_for_mu
 
 
 async def test_autoplay_dispatch_rechecks_lock_after_user_context_restore_for_series() -> None:
-    """A repeat lock acquired during auth restore prevents a series refill from dispatching."""
+    """
+    A repeat lock acquired during auth restore prevents a series refill from dispatching.
+
+    The series refill restores the user of the episode it follows, not the queue owner.
+    """
     queue = SimpleNamespace(queue_id="q1", display_name="Queue", autoplay_enabled=True)
     podcast = _podcast()
-    last_item = _queue_item(_episode("ep1", 1, podcast))
-    loader = _loader(queue, last_item, userid="u1")
+    last_item = _queue_item(_episode("ep1", 1, podcast), userid="u1")
+    loader = _loader(queue, last_item, userid="owner")
 
     async def _disable_autoplay(*_args: Any, **_kwargs: Any) -> Any:
         queue.autoplay_enabled = False

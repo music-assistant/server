@@ -62,15 +62,3 @@ FEATURES_FROM_LEADER: Final[set[PlayerFeature]] = {
     PlayerFeature.SEEK,
     PlayerFeature.NEXT_PREVIOUS,
 }
-
-
-# Provider domains whose live sync session can survive removal of the current
-# leader (the protocol promotes another sync_client to leader at the protocol
-# level). When the active session is owned by one of these providers the sync
-# group can do a seamless leader handoff; otherwise it must dissolve and
-# re-form (with a brief audio gap) on leader change.
-PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH: Final[tuple[str, ...]] = (
-    "airplay",
-    "snapcast",
-    "sendspin",
-)

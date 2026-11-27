@@ -251,6 +251,19 @@ async def test_transfer_queue_carries_the_album_credit_bookkeeping() -> None:
     )
 
 
+async def test_transfer_queue_carries_the_queue_owner() -> None:
+    """The queue stays its owner's, not whoever last played on the target."""
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    fake._queue_data["src"].userid = "listener"
+    fake._queue_data["tgt"].userid = "housemate"
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    assert fake._queue_data["tgt"].userid == "listener"
+
+
 async def test_transfer_queue_overwrites_the_targets_own_shuffle() -> None:
     """The queue brings its own shuffle state, so the target's previous one does not survive."""
     fake = _shuffle_controller(source_shuffle_enabled=False, target_shuffle_enabled=True)

@@ -26,6 +26,7 @@ from music_assistant.constants import CONF_PROVIDERS, EXTERNAL_ID_PROVIDER, MASS
 if TYPE_CHECKING:
     from music_assistant_models.access import AccessRecord
     from music_assistant_models.media_items import ProviderMapping
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -363,30 +364,52 @@ async def resolve_playback_user(mass: MusicAssistant, queue_id: str) -> User | N
     return None
 
 
-async def resolve_playback_user_or_stand_in(mass: MusicAssistant, queue_id: str) -> User:
+async def resolve_queue_item_user(mass: MusicAssistant, queue_item: QueueItem) -> User | None:
     """
-    Return the user to fetch media as for the playback of a queue.
+    Return the user a queue item plays for, None for anonymous playback.
 
-    That is the user the queue plays for. For anonymous playback it is a stand-in user the
+    :param mass: The MusicAssistant instance.
+    :param queue_item: The queue item that plays.
+    """
+    if queue_item.userid:
+        return await mass.webserver.auth.get_user(queue_item.userid)
+    return None
+
+
+async def resolve_playback_user_or_stand_in(mass: MusicAssistant, queue_item: QueueItem) -> User:
+    """
+    Return the user to fetch media as for the playback of a queue item.
+
+    That is the user the item plays for. For anonymous playback it is a stand-in user the
     music source rules give exactly what they give anonymous playback: the sources of the
     whole home and the ones shared with everyone. Media fetched as this user is on a
-    source the queue's stream may use, where fetching it without a user would use every
+    source the item's stream may use, where fetching it without a user would use every
     source there is.
 
     :param mass: The MusicAssistant instance.
-    :param queue_id: The queue the playback belongs to.
+    :param queue_item: The queue item that plays.
     """
-    return await resolve_playback_user(mass, queue_id) or _ANONYMOUS_PLAYBACK_USER
+    return playback_user_or_stand_in(await resolve_queue_item_user(mass, queue_item))
 
 
-async def playback_sources(mass: MusicAssistant, queue_id: str) -> PlaybackSources:
+def playback_user_or_stand_in(user: User | None) -> User:
     """
-    Return the music sources that may serve the queue's playback user.
+    Return the user to fetch media as for a playback of the given user.
+
+    :param user: The user the playback is for, None for anonymous playback, which gets the
+        stand-in user.
+    """
+    return user or _ANONYMOUS_PLAYBACK_USER
+
+
+async def playback_sources(mass: MusicAssistant, queue_item: QueueItem) -> PlaybackSources:
+    """
+    Return the music sources that may serve the user a queue item plays for.
 
     :param mass: The MusicAssistant instance.
-    :param queue_id: The queue the playback belongs to.
+    :param queue_item: The queue item that plays.
     """
-    return playback_sources_for(mass, await resolve_playback_user(mass, queue_id))
+    return playback_sources_for(mass, await resolve_queue_item_user(mass, queue_item))
 
 
 def playback_sources_for(mass: MusicAssistant, user: User | None) -> PlaybackSources:

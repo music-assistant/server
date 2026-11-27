@@ -236,6 +236,9 @@ This mirrors how a typical AVR or stereo system behaves: turn it on, it's an act
 5. play_media plays on with the same members; a stop or the pause timeout stops the group as any stop
 ```
 
+The group's queue pauses the same way when its leader has no pause of its own, or one that would
+stop it: the group reports `stops_on_pause` from the protocol of its session.
+
 ### Stopping Playback
 
 ```
@@ -282,7 +285,7 @@ When `SET_MEMBERS` is called on a dynamic group:
 
 1. Remove from the internal member list (static members cannot be removed)
 2. If removing the **sync leader** while playing:
-   - If the active protocol supports dynamic leader switching (provider domain is in `PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH` — currently AirPlay, Snapcast, Sendspin), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_session_protocol_id])` on the protocol that carries the session and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol of the same domain. Remaining members keep playing.
+   - If the protocol that carries the session can hand it over (`can_hand_over_session` on the protocol — currently AirPlay, Snapcast, Sendspin), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_session_protocol_id])` on the protocol that carries the session and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol of the same domain. Remaining members keep playing.
      Other members removed in the same command are released by the old leader first, as the handoff only takes the leader itself out of the session.
      Members the old leader holds outside that session (e.g. a Sonos speaker that follows it natively) are released before its stream ends. Those that can be reached on the session's protocol join it once the new leader has taken over, the others leave the group.
    - If no remaining member is part of the live session (e.g. only freshly-added players are left), or the protocol doesn't support handoff: fall back to **dissolve + re-form** (brief audio gap)
@@ -292,7 +295,7 @@ When `SET_MEMBERS` is called on a dynamic group:
 
 A leader whose stream died is not removed from the group: its provider reports the loss through `on_session_leader_lost`, for static and dynamic groups alike.
 
-1. While the group plays and the protocol supports dynamic leader switching, the session is handed over with the same seamless handoff as above, to the members it still feeds once the lost leader is out of it
+1. While the group plays and the protocol can hand the session over, the session is handed over with the same seamless handoff as above, to the members it still feeds once the lost leader is out of it
 2. The lost leader stays in the internal member list, so it is part of the group again once it re-joins and the next time the group forms. It is last in line to lead a dynamic group; a static group goes by its configured order
 3. Without a member that is still fed, the group is left to the caller, which ends the session
 

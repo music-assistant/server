@@ -114,6 +114,15 @@ class DLNAPlayer(PlayerProtocol):
         """Return if the renderer is built around files."""
         return True
 
+    @property
+    def stops_on_pause(self) -> bool:
+        """Return whether a pause stops the renderer, as its user set it to."""
+        return (
+            self.device is not None
+            and self.device.can_stop
+            and self.get_config_value("replace_pause_with_stop", return_type=bool)
+        )
+
     def set_available(self, available: bool) -> None:
         """Set the availability of the player."""
         self._attr_available = available
@@ -332,9 +341,7 @@ class DLNAPlayer(PlayerProtocol):
         """Send PAUSE command to given player."""
         assert self.device is not None  # for type checking
 
-        replace_pause_with_stop = self.get_config_value("replace_pause_with_stop", return_type=bool)
-
-        if replace_pause_with_stop and self.device.can_stop:
+        if self.stops_on_pause:
             await self.stop()
             return
 
