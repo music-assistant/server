@@ -8,7 +8,7 @@ music_assistant/providers/audible/audible_helper.py	21
 music_assistant/providers/audiobookshelf/__init__.py	10
 music_assistant/providers/audiobookshelf/helpers.py	4
 music_assistant/providers/bandcamp/__init__.py	11
-music_assistant/providers/bbc_sounds/adaptor.py	5
+music_assistant/providers/bbc_sounds/adaptor.py	2
 music_assistant/providers/bluesound/player.py	3
 music_assistant/providers/deezer/browse.py	3
 music_assistant/providers/deezer/media.py	27
@@ -17,7 +17,6 @@ music_assistant/providers/digitally_incorporated/__init__.py	2
 music_assistant/providers/emby/__init__.py	16
 music_assistant/providers/gpodder/client.py	4
 music_assistant/providers/heos/player.py	11
-music_assistant/providers/heos/provider.py	5
 music_assistant/providers/ibroadcast/__init__.py	4
 music_assistant/providers/internet_archive/helpers.py	6
 music_assistant/providers/internet_archive/provider.py	13
@@ -30,7 +29,6 @@ music_assistant/providers/musicme/provider.py	10
 music_assistant/providers/neteasecloudmusic/__init__.py	14
 music_assistant/providers/nicovideo/config/factory.py	6
 music_assistant/providers/nicovideo/converters/track.py	1
-music_assistant/providers/nicovideo/helpers/hls_seek_optimizer.py	1
 music_assistant/providers/nicovideo/services/search.py	1
 music_assistant/providers/nugs/__init__.py	2
 music_assistant/providers/orf_radiothek/__init__.py	9

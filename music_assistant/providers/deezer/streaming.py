@@ -34,6 +34,7 @@ from music_assistant_models.errors import AudioError, MediaNotFoundError, Retrie
 from music_assistant_models.media_items import AudioFormat, MediaItemType
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import forget_cached
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import utc, utc_timestamp
 
@@ -49,7 +50,6 @@ from .constants import (
 from .gw_client import DeezerGWAuthError, DeezerGWError
 from .helpers import (
     fetch_all_audiobook_chapter_edges,
-    fetch_all_bookmarks,
     parse_flac_streaminfo,
 )
 from .parsers import parse_audio_format, parse_bookmark_time
@@ -90,7 +90,7 @@ class DeezerStreamingManager:
         """
         if media_type != MediaType.PODCAST_EPISODE:
             return (False, 0, None)
-        bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
+        bookmarks = await self.provider.media_manager.get_podcast_bookmarks()
         if item_id in bookmarks:
             is_played, position_ms, bookmarked_at = bookmarks[item_id]
             return (is_played, position_ms, parse_bookmark_time(bookmarked_at))
@@ -127,6 +127,7 @@ class DeezerStreamingManager:
             await self.provider.gql_client.bookmark_podcast_episode(
                 episode_id=prov_item_id, offset=position
             )
+        await forget_cached(self.provider.media_manager.get_podcast_bookmarks)
 
     async def on_stream_started(self, streamdetails: StreamDetails) -> None:
         """Handle callback when a track starts playing."""
@@ -369,6 +370,7 @@ class DeezerStreamingManager:
 
         prev_chapter: StreamDetails | None = None
         current_chapter: StreamDetails | None = None
+        first_chunk = True
         try:
             for i in range(start_chapter, len(chapter_ids)):
                 chapter_id = chapter_ids[i]
@@ -405,7 +407,13 @@ class DeezerStreamingManager:
                 self._start_listen(chapter_details)
                 seek = chapter_seek if i == start_chapter else 0
                 async for chunk in self._stream_encrypted_track(chapter_details, seek):
-                    yield chunk
+                    if first_chunk and chunk[:4] == b"fLaC":
+                        # ffmpeg keeps the max block size of the first chapter and drops
+                        # bigger blocks of later chapters, so allow the FLAC maximum
+                        yield chunk[:10] + b"\xff\xff" + chunk[12:]
+                    else:
+                        yield chunk
+                    first_chunk = False
                 prev_chapter = chapter_details
                 current_chapter = None
         finally:

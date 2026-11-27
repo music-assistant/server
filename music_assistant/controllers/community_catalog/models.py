@@ -149,6 +149,8 @@ class CommunityProvider(DataClassDictMixin):
     state: CommunityProviderState
     installed_version: str | None = None
     latest_version: str | None = None
+    # the version an update installs, whatever the state
+    update_version: str | None = None
     # the version that becomes active at the next start of the server
     pending_version: str | None = None
     # a version this server went back from; installed again only when the admin asks for it

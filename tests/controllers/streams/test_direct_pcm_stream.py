@@ -8,7 +8,13 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlayerFeature,
+    StreamType,
+)
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat, ItemMapping, Radio
 from music_assistant_models.player import PlayerMedia
@@ -101,8 +107,8 @@ def test_single_item_stream_forwards_the_seek_position(seek_position: int) -> No
     assert call_kwargs["seek_position"] == seek_position
 
 
-def test_single_item_stream_never_mixes_a_declared_tail_overlap() -> None:
-    """A direct PCM stream of a single item plays a declared overlap as part of the item."""
+def test_single_item_stream_without_a_player_never_mixes_a_declared_tail_overlap() -> None:
+    """A direct PCM stream with no player to mix for plays a declared overlap as part of the item."""
     queue_item = _queue_item(0)
     assert queue_item.streamdetails is not None
     queue_item.streamdetails.tail_overlap = TailOverlap(duration=3.0, next_queue_item_id="item-2")
@@ -277,15 +283,15 @@ async def test_direct_radio_stream_is_served_only_once_the_overlay_mix_emits_aud
 
 
 @pytest.mark.parametrize(
-    ("requested_session", "marked"),
+    ("requested_session", "served"),
     [("session-2", True), ("session-1", False), (None, True)],
     ids=["current load", "superseded load", "no session named"],
 )
 @pytest.mark.asyncio
-async def test_direct_pcm_stream_marks_served_only_for_the_queue_current_load(
-    requested_session: str | None, marked: bool
+async def test_direct_pcm_stream_plays_only_for_the_queue_current_load(
+    requested_session: str | None, served: bool
 ) -> None:
-    """A stream left over from a superseded load serves nothing the current load should count."""
+    """A stream left over from a superseded load ends without audio and serves nothing."""
     controller = _pcm_stream_controller()
     cast("Any", controller.mass.player_queues.queue_data_or_none).return_value = SimpleNamespace(
         session_id="session-2"
@@ -294,8 +300,100 @@ async def test_direct_pcm_stream_marks_served_only_for_the_queue_current_load(
     media.queue_session_id = requested_session
 
     stream = controller.get_stream(media, PCM_FORMAT)
+    chunks = [chunk async for chunk in stream]
+
+    assert chunks == ([b"chunk-1", b"chunk-2"] if served else [])
+    mark_item_served = cast("MagicMock", controller.mass.player_queues.mark_item_served)
+    assert mark_item_served.called is served
+
+
+@pytest.mark.asyncio
+async def test_direct_pcm_stream_ends_once_its_session_is_replaced() -> None:
+    """A stream stops at the first chunk after the queue moved on to another session."""
+    controller = _pcm_stream_controller()
+    queue_data = SimpleNamespace(session_id="session-1")
+    cast("Any", controller.mass.player_queues.queue_data_or_none).return_value = queue_data
+    media = _media()
+    media.queue_session_id = "session-1"
+
+    stream = controller.get_stream(media, PCM_FORMAT)
     assert await anext(stream) == b"chunk-1"
+    queue_data.session_id = "session-2"
+
+    assert [chunk async for chunk in stream] == []
+
+
+def _gapless_player(*, supports_enqueue: bool) -> MagicMock:
+    """Build a player protocol that plays gapless and takes raw PCM without flow mode."""
+    player = MagicMock()
+    player.flow_mode = False
+    player.supported_features = {PlayerFeature.GAPLESS_PLAYBACK}
+    if supports_enqueue:
+        player.supported_features.add(PlayerFeature.ENQUEUE)
+    player.supports_feature.side_effect = player.supported_features.__contains__
+    return player
+
+
+@pytest.mark.asyncio
+async def test_direct_pcm_stream_crossfades_on_a_gapless_player() -> None:
+    """A gapless player gets the crossfade stream, which mixes the next item into the end."""
+    controller = _pcm_stream_controller()
+    cast("Any", controller.mass.players.get_output_protocol).return_value = _gapless_player(
+        supports_enqueue=True
+    )
+    cast("Any", controller.mass.player_queues.get).return_value = PlayerQueue(
+        queue_id=QUEUE_ID,
+        active=True,
+        display_name="Player",
+        available=True,
+        items=2,
+        crossfade_enabled=True,
+    )
+    cast("Any", controller.mass.config.get_raw_core_config_value).side_effect = (
+        lambda _domain, _key, default: default
+    )
+    queue_item = _queue_item(0)
+    assert queue_item.streamdetails is not None
+    queue_item.streamdetails.media_type = MediaType.TRACK
+    cast("Any", controller.mass.player_queues.get_item).return_value = queue_item
+    audio = cast("Any", controller.audio)
+    audio.fade_into_pending.return_value = False
+    audio.get_queue_item_stream_with_smartfade.side_effect = lambda **_kwargs: _pcm_chunks(
+        (b"mixed",)
+    )
+
+    stream = controller.get_stream(_media(), PCM_FORMAT, player_id=QUEUE_ID)
+
+    assert [chunk async for chunk in stream] == [b"mixed"]
+    smartfade_kwargs = audio.get_queue_item_stream_with_smartfade.call_args.kwargs
+    assert smartfade_kwargs["crossfade_mode"] != CrossfadeMode.DISABLED
+    audio.get_queue_item_stream.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("supports_enqueue", "loaded"),
+    [(True, True), (False, False)],
+    ids=["enqueue player", "player without enqueue"],
+)
+@pytest.mark.asyncio
+async def test_direct_pcm_stream_reports_the_item_loaded_to_an_enqueue_player(
+    supports_enqueue: bool, loaded: bool
+) -> None:
+    """Only a player that takes the next item gets it lined up from the first chunk on."""
+    controller = _pcm_stream_controller()
+    cast("Any", controller.mass.players.get_output_protocol).return_value = _gapless_player(
+        supports_enqueue=supports_enqueue
+    )
+    cast("Any", controller.audio).fade_into_pending.return_value = False
+    player_queues = cast("Any", controller.mass.player_queues)
+
+    stream = controller.get_stream(_media(), PCM_FORMAT, player_id=QUEUE_ID)
+    assert await anext(stream) == b"chunk-1"
+    assert await anext(stream) == b"chunk-2"
     await stream.aclose()
 
-    mark_item_served = cast("MagicMock", controller.mass.player_queues.mark_item_served)
-    assert mark_item_served.called is marked
+    if loaded:
+        player_queues.track_loaded_in_buffer.assert_called_once_with(QUEUE_ID, QUEUE_ITEM_ID)
+    else:
+        player_queues.track_loaded_in_buffer.assert_not_called()
+    assert player_queues.mark_item_served.called is not loaded

@@ -1,6 +1,7 @@
 """Streaming-related code for the BBC Sounds provider."""
 
 from collections.abc import AsyncGenerator
+from functools import partial
 from typing import TYPE_CHECKING
 
 from auntie_sounds import SoundsClient, exceptions
@@ -35,9 +36,8 @@ from music_assistant.providers.bbc_sounds.live_rewind import (
     rewind_playlist_url,
     stream_programme,
 )
-from music_assistant.providers.bbc_sounds.now_playing import (
-    NowPlayingManager,
-)
+from music_assistant.providers.bbc_sounds.naming import full_station_name
+from music_assistant.providers.bbc_sounds.now_playing import NowPlaying, NowPlayingManager
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -118,9 +118,12 @@ class StreamManager:
         # current track immediately rather than the station name until the first
         # callback lands. (stolen from siriusxm provider)
         try:
-            await self.now_playing.update_live_stream_metadata(stream_details, 0)
-        except exceptions.SoundsException:
-            self.logger.exception("Failed to update live stream metadata for %s", item_id)
+            if update := stream_details.stream_metadata_update_callback:
+                await update(stream_details, 0)
+        except Exception:  # bare exception to prevent stopping playback
+            self.logger.warning(
+                "Failed to update live stream metadata for %s", item_id, exc_info=True
+            )
         return stream_details
 
     @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
@@ -140,13 +143,15 @@ class StreamManager:
         if not stream_details or not isinstance(episode, PlayableItem):
             raise self._stream_error(item_id, media_type)
 
-        stream_details.data = {
-            "vpid": episode.id,
-            "pid": episode.pid,
-            "episode_metadata": stream_details.stream_metadata,
-        }
-        stream_details.stream_metadata_update_callback = (
-            self.now_playing.update_on_demand_stream_metadata
+        try:
+            segments = await self.now_playing.programme_segments(episode.id)
+        except Exception:  # bare exception to prevent stopping playback
+            self.logger.warning("No track list for %s", episode.id, exc_info=True)
+            segments = []
+        stream_details.stream_metadata_update_callback = partial(
+            self.now_playing.update_on_demand,
+            NowPlaying(fallback=stream_details.stream_metadata),
+            segments,
         )
         stream_details.stream_metadata_update_interval = Constants.LISTEN_BACK_REFRESH_TIME
         return stream_details
@@ -173,8 +178,11 @@ class StreamManager:
         if not stream_details:
             raise self._stream_error(item_id, MediaType.RADIO)
 
-        stream_details.stream_metadata_update_callback = (
-            self.now_playing.update_live_stream_metadata
+        stream_details.stream_metadata_update_callback = partial(
+            self.now_playing.update_station,
+            NowPlaying(
+                fallback=stream_details.stream_metadata, album=full_station_name(station=station)
+            ),
         )
         stream_details.stream_metadata_update_interval = Constants.NOW_PLAYING_REFRESH_TIME
         return stream_details
@@ -203,9 +211,10 @@ class StreamManager:
         live_url = variant.path
         # fail here rather than once playback starts when the stream can not be rewound
         rewind_playlist_url(live_url)
+
         # no stream metadata: the queue item already describes the programme, whereas the
         # station's current programme may be another one
-        return StreamDetails(
+        stream_details = StreamDetails(
             provider=self.provider.instance_id,
             item_id=programme_id.item_id,
             # MPEG-TS segments, left for ffmpeg to detect
@@ -219,9 +228,21 @@ class StreamManager:
             # keep these details, and the buffer seeks are checked against, for the whole
             # programme; the live playlist URLs carry no expiring token
             expiration=max(600, programme_id.end - int(datetime.utc_timestamp()) + 600),
-            stream_metadata_update_callback=self.now_playing.update_live_programme_metadata,
-            stream_metadata_update_interval=Constants.NOW_PLAYING_REFRESH_TIME,
         )
+        try:
+            programme = await self.provider.live_programme(programme_id)
+        except exceptions.SoundsException, MediaNotFoundError:
+            # Track info is optional. The stream plays without it.
+            self.logger.debug("No now-playing data for %s", programme_id.item_id, exc_info=True)
+            return stream_details
+        stream_details.stream_metadata_update_callback = partial(
+            self.now_playing.update_live_programme,
+            NowPlaying(fallback=None, album=full_station_name(station=station)),
+            programme_id,
+            programme,
+        )
+        stream_details.stream_metadata_update_interval = Constants.NOW_PLAYING_REFRESH_TIME
+        return stream_details
 
     async def _continue_with_station(
         self, streamdetails: StreamDetails, programme_id: LiveProgrammeId

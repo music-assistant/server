@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiosendspin.models.types import GoodbyeReason
 from aiosendspin.server import ClientRemovedEvent
 from music_assistant_models.errors import PlayerCommandFailed
 
@@ -23,6 +24,7 @@ from music_assistant.controllers.config.migrations import _migrate_sendspin_one_
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
 from music_assistant.providers.chromecast.constants import (
     CONF_SENDSPIN_UNSUPPORTED,
+    SENDSPIN_CAST_APP_ID,
     SENDSPIN_CAST_EXPERIMENTAL_NOTE,
 )
 from music_assistant.providers.chromecast.sendspin_bridge import (
@@ -150,6 +152,26 @@ class TestCastBridgePolicy:
         name, arguments = scheduled_call(mass.create_task.call_args.args[0])
         assert name.endswith(".evaluate_bridge"), "the bridge is set up outside the player lock"
         assert arguments["protocol"] is cast_protocol
+
+    async def test_a_claimed_receiver_whose_app_closes_is_detached(self) -> None:
+        """Test a receiver claimed before its Cast status came in is let go once its app closes."""
+        manager, mass, cast_protocol = _make_cast_environment()
+        mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda call, *args: call(*args))
+        mass.create_task = MagicMock(side_effect=lambda coro: coro.close())
+        sendspin = mass.get_provider.return_value
+        sendspin.apply_bridge_claim = AsyncMock(return_value=True)
+        client = sendspin.server_api.get_client.return_value
+        cast_protocol.cc.app_id = None
+        assert await manager._try_claim_existing(cast_protocol) is True
+        # claimed while connecting to the device, so still without a status
+        cast_protocol.on_app_status_changed(None)
+        client.detach_connection.assert_not_called()
+
+        cast_protocol.on_app_status_changed(SENDSPIN_CAST_APP_ID)
+        client.detach_connection.assert_not_called()
+        cast_protocol.on_app_status_changed(None)
+
+        client.detach_connection.assert_called_once_with(GoodbyeReason.SHUTDOWN)
 
     async def test_a_claimed_client_goes_with_its_protocol_for_good(self) -> None:
         """Test a permanent removal takes the claimed client along when it rides on the protocol."""

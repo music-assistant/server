@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -41,7 +42,7 @@ from music_assistant.controllers.music.media.base import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.mass import MusicAssistant
-from tests.controllers.music.helpers import media_item_events
+from tests.controllers.music.helpers import media_item_events, png_base64
 
 # the user whose like a merge has to carry over to the surviving item
 MERGE_USER = "merge-user"
@@ -500,6 +501,25 @@ async def test_audiobook_merge_keeps_per_user_resume_state(mass: MusicAssistant)
     assert playlog["timestamp"] == 30
     assert playlog["seconds_played"] == 30
     assert playlog["user_initiated"] == 1
+
+
+async def test_genre_merge_keeps_custom_image_file_of_source(mass: MusicAssistant) -> None:
+    """A generic merge skips the genre override, so the target keeps the source's image file."""
+    target = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name="Target Genre", provider_mappings=set())
+    )
+    source = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name="Source Genre", provider_mappings=set())
+    )
+    with_image = await mass.music.genres.set_image(source.item_id, png_base64())
+    assert with_image.image is not None
+    custom_file = Path(mass.storage_path) / with_image.image.path
+
+    merged = await mass.music.genres.merge_library_items(target.item_id, source.item_id)
+
+    assert custom_file.is_file()
+    assert merged.image is not None
+    assert merged.image.path == with_image.image.path
 
 
 async def test_genre_merge_transfers_genre_references(mass: MusicAssistant) -> None:

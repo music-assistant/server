@@ -169,13 +169,13 @@ class ResourceAuthorizer:
             return _AuthenticationEvidence(None)
         try:
             user = await self.mass.webserver.auth.authenticate_with_token(token.token)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any auth failure rejects the request
             return _AuthenticationEvidence(None)
         if user is None:
             return _AuthenticationEvidence(None)
         try:
             live_token_id = await self.mass.webserver.auth.get_token_id_from_token(token.token)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any lookup failure is recorded as failed
             return _AuthenticationEvidence(user, token_id_lookup_failed=True)
         return _AuthenticationEvidence(
             with_visible_music_sources(self.mass, user), live_token_id=live_token_id

@@ -9,6 +9,7 @@ import re
 import struct
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -16,6 +17,17 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 if TYPE_CHECKING:
     from collections.abc import Callable
     from logging import Logger
+
+
+@dataclass
+class MdnsService:
+    """An mDNS service that shairport-sync hands over for publishing."""
+
+    # service type without domain, e.g. "_raop._tcp"
+    service_type: str
+    name: str
+    port: int
+    txt: dict[str, str]
 
 
 class MetadataReader:
@@ -48,7 +60,7 @@ class MetadataReader:
     async def start(self) -> None:
         """Start reading metadata from the pipe."""
         self._stop = False
-        # Open the FIFO up front so hook writers never block on a missing reader.
+        # Open the FIFO up front: shairport-sync drops metadata while it has no reader.
         try:
             self._fd = await self._open_pipe()
         except OSError as err:
@@ -73,14 +85,14 @@ class MetadataReader:
         """
         Keep the pipe reader alive until stopped.
 
-        A dead reader would silently drop all sessioncontrol markers and leave
-        hook writers blocked on the FIFO, so unexpected errors must not be fatal.
+        A dead reader would silently drop all metadata, including the playback start
+        and end markers, so unexpected errors must not be fatal.
         """
         backoff = 1
         while not self._stop:
             try:
                 await self._read_metadata()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the reader loop must keep running
                 # Only the first failure of a streak is worth an error, retries are noise.
                 log = self.logger.error if backoff == 1 else self.logger.debug
                 log("Metadata reader failed, retrying in %ss: %s", backoff, err)
@@ -133,35 +145,12 @@ class MetadataReader:
                     await asyncio.sleep(0.1)
 
         finally:
-            # Remove the reader callback, but keep the fd open so hook writers
-            # never find the FIFO readerless while _run() restarts the loop.
+            # Remove the reader callback, but keep the fd open so shairport-sync
+            # never finds the FIFO readerless while _run() restarts the loop.
             loop.remove_reader(fd)
 
     def _process_buffer(self) -> None:
-        """Process all complete metadata items in the buffer (XML format or plain text markers)."""
-        # First, check for plain text markers from sessioncontrol hooks
-        while "\n" in self._buffer:
-            # Check if we have a complete line before any XML
-            line_end = self._buffer.index("\n")
-            if "<item>" not in self._buffer or self._buffer.index("<item>") > line_end:
-                # We have a plain text line before any XML
-                line = self._buffer[:line_end].strip()
-                self._buffer = self._buffer[line_end + 1 :]
-
-                # Handle our custom markers
-                if line == "MA_PLAY_BEGIN":
-                    self.logger.info("Playback started (via sessioncontrol hook)")
-                    if self.on_metadata:
-                        self.on_metadata({"play_state": "playing"})
-                elif line == "MA_PLAY_END":
-                    self.logger.info("Playback ended (via sessioncontrol hook)")
-                    if self.on_metadata:
-                        self.on_metadata({"play_state": "stopped"})
-                # Ignore other plain text lines
-            else:
-                # XML item comes first, stop looking for lines
-                break
-
+        """Process all complete metadata items in the buffer, in order."""
         # Look for complete <item>...</item> blocks
         while "<item>" in self._buffer and "</item>" in self._buffer:
             try:
@@ -187,7 +176,7 @@ class MetadataReader:
                 else:
                     # Wait for more data
                     break
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the reader must survive malformed metadata
                 self.logger.error("Unexpected error processing buffer: %s", err)
                 # Clear the buffer on unexpected error
                 self._buffer = ""
@@ -235,7 +224,7 @@ class MetadataReader:
                         else:
                             # Text metadata: decode to UTF-8
                             data = decoded_data.decode("utf-8", errors="ignore")
-                    except Exception as err:
+                    except ValueError as err:
                         self.logger.debug("Error decoding base64 data: %s", err)
 
             # Process the metadata item
@@ -249,7 +238,7 @@ class MetadataReader:
 
             task.add_done_callback(_on_task_done)
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the reader must survive malformed metadata
             self.logger.debug("Error parsing XML item: %s", err)
 
     async def _process_metadata_item(
@@ -289,6 +278,30 @@ class MetadataReader:
         if item_type == "ssnc" and code == "mden":
             if self.on_metadata and self._current_metadata:
                 self.on_metadata(dict(self._current_metadata))
+            return
+
+        # Handle active state begin/end markers (playback started/ended)
+        if item_type == "ssnc" and code == "abeg":
+            self.logger.info("Playback started")
+            if self.on_metadata:
+                self.on_metadata({"play_state": "playing"})
+            return
+
+        if item_type == "ssnc" and code == "aend":
+            self.logger.info("Playback ended")
+            if self.on_metadata:
+                self.on_metadata({"play_state": "stopped"})
+            return
+
+        # A flush stops the audio: the client paused, or it seeks and resumes right away
+        if item_type == "ssnc" and code == "pfls":
+            if self.on_metadata:
+                self.on_metadata({"play_state": "flushed"})
+            return
+
+        if item_type == "ssnc" and code == "prsm":
+            if self.on_metadata:
+                self.on_metadata({"play_state": "resumed"})
             return
 
         # Parse core metadata (from iTunes/iOS)
@@ -368,10 +381,9 @@ class MetadataReader:
             # Send progress updates immediately (not batched with mden)
             if self.on_metadata and "elapsed_time" in self._current_metadata:
                 self.on_metadata({"elapsed_time": self._current_metadata["elapsed_time"]})
-        elif code == "paus":  # Paused
-            self._current_metadata["paused"] = True
-        elif code == "prsm":  # Playing/resumed
-            self._current_metadata["paused"] = False
+        elif code == "svrg":  # mDNS service to publish (mdns_backend = "metadata")
+            if self.on_metadata and (service := self._parse_mdns_service(data)):
+                self.on_metadata({"mdns_service": service})
 
     def _parse_volume(self, data: str) -> None:
         """
@@ -414,3 +426,30 @@ class MetadataReader:
                 self._current_metadata["elapsed_time"] = int(elapsed_seconds)
         except (ValueError, IndexError) as err:
             self.logger.debug("Error parsing progress: %s", err)
+
+    def _parse_mdns_service(self, data: str) -> MdnsService | None:
+        """
+        Parse an mDNS service registration, or return None when it is malformed.
+
+        :param data: The `svrg` payload: `service=`, `name=` and `port=` lines, then a
+            `txt=<key=value>` line per TXT record.
+        """
+        fields: dict[str, str] = {}
+        txt: dict[str, str] = {}
+        for line in data.splitlines():
+            key, _, value = line.partition("=")
+            if key == "txt":
+                txt_key, _, txt_value = value.partition("=")
+                txt[txt_key] = txt_value
+            else:
+                fields[key] = value
+        try:
+            return MdnsService(
+                service_type=fields["service"],
+                name=fields["name"],
+                port=int(fields["port"]),
+                txt=txt,
+            )
+        except KeyError, ValueError:
+            self.logger.warning("Ignoring a malformed mDNS service registration: %r", data)
+            return None

@@ -13,6 +13,7 @@ from music_assistant_models.errors import MusicAssistantError, PlayerCommandFail
 
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 
 from .constants import (
     AIRPLAY_ANCHOR_SEAT_LEAD_MS,
@@ -152,6 +153,8 @@ class AirPlayStreamSession:
         # members, and also when the source ends without ever handing any over,
         # so a waiter is never left holding on for a feed that is not coming.
         self._feed_settled = asyncio.Event()
+        # Set when the source of this start cycle refused to play on the members.
+        self._source_refusal: AudioSourceRefusedError | None = None
         # Starvation shift of the group timeline a late joiner was mapped onto,
         # keyed by player id. Its own reported shift counts from there.
         self._member_shift_base: dict[str, float] = {}
@@ -198,6 +201,8 @@ class AirPlayStreamSession:
         persistent stdin and starts feeding audio, then commands one shared
         audible start instant. On any failure the whole session is stopped so the
         caller can fall back to a cold restart.
+
+        :raises AudioSourceRefusedError: When the source refuses to play on the members.
         """
         ap2_members = sum(1 for p in self.sync_clients if p.protocol == StreamingProtocol.AIRPLAY2)
         if ap2_members:
@@ -244,6 +249,10 @@ class AirPlayStreamSession:
             )
             self._join_silent_members()
         except asyncio.CancelledError:
+            await self.stop()
+            raise
+        except AudioSourceRefusedError:
+            # the streams controller logs a source refusing this player itself
             await self.stop()
             raise
         except Exception as err:
@@ -295,6 +304,9 @@ class AirPlayStreamSession:
         shared instant. A group flushes every member and awaits all acks before
         the shared start. Returns False when anything fails so the caller can
         fall back to the cold path.
+
+        :raises AudioSourceRefusedError: When the new source refuses to play on the
+            members, after the session is stopped.
         """
         position_ms = int((media.elapsed_time or 0) * 1000)
         # the shared START below puts every member back on one timeline
@@ -337,6 +349,7 @@ class AirPlayStreamSession:
             self.seconds_streamed = 0
             self._pcm_total_fed = 0
             self._feed_settled.clear()
+            self._source_refusal = None
             self._pcm_buffer.clear()
             # The shared START below re-establishes start_time, so the per-client
             # late-join skip counters and every member's accumulated starvation
@@ -352,7 +365,11 @@ class AirPlayStreamSession:
             self._join_silent_members()
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except AudioSourceRefusedError:
+            # logged by the streams controller, and a cold restart would only be refused again
+            await self.stop()
+            raise
+        except Exception as err:  # noqa: BLE001 - any failure falls back to a cold restart
             self.prov.logger.warning(
                 "Warm replacement failed (%r); falling back to a cold restart", err
             )
@@ -393,7 +410,7 @@ class AirPlayStreamSession:
             assert stream
             try:
                 command_delivered = await stream.send_cli_command("ACTION=STANDBY")
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any failure falls back to a cold restart
                 self.prov.logger.warning(
                     "Could not park AirPlay player %s: %s", player.protocol_id, err
                 )
@@ -404,6 +421,7 @@ class AirPlayStreamSession:
                     player.protocol_id,
                 )
                 return False
+            stream.start_pending = False
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=stream)
         # a parked session has no live timeline; the resume re-anchors it
         self.seconds_streamed = 0
@@ -594,7 +612,7 @@ class AirPlayStreamSession:
         except asyncio.CancelledError:
             await self.stop_client(airplay_player, reason="late joiner start cancelled")
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing late joiner must not stop the group
             self.prov.logger.warning(
                 "Late joiner %s: failed to connect pipeline: %s",
                 airplay_player.protocol_id,
@@ -665,7 +683,9 @@ class AirPlayStreamSession:
                     # the real content on the instant the group plays it, which
                     # dropping the missing head would not.
                     missing = keep_bytes - len(servable)
-                    lead = self.seconds_streamed - (cli_clock_time() - effective_start_time)
+                    lead = self.seconds_streamed - (
+                        cli_clock_time(self.mass.timeline_clock) - effective_start_time
+                    )
                     if committed:
                         # One ring's worth is already far past any real
                         # shortfall, so it bounds what an implausible ack (one
@@ -717,7 +737,7 @@ class AirPlayStreamSession:
                 skip += (frame_size - first_abs % frame_size) % frame_size
             return anchor_at, due, prime_slice, skip
 
-        now = cli_clock_time()
+        now = cli_clock_time(self.mass.timeline_clock)
         clock_out = ready_at_unix_ms / 1000 - now
         if readiness is ClockReadiness.PROJECTED and clock_out <= 0:
             clock_note = _CLOCK_LOCKED_NOTE.format(ago=abs(clock_out))
@@ -765,7 +785,7 @@ class AirPlayStreamSession:
         except asyncio.CancelledError:
             await self.stop_client(airplay_player, reason="late joiner start cancelled")
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing late joiner must not stop the group
             self.prov.logger.warning(
                 "Late joiner %s: failed to start/prime pipeline: %r",
                 airplay_player.protocol_id,
@@ -815,11 +835,12 @@ class AirPlayStreamSession:
                     skip_bytes / pcm_sample_size,
                     self.seconds_streamed,
                     fed_pos_due,
-                    start_at - cli_clock_time(),
+                    start_at - cli_clock_time(self.mass.timeline_clock),
                     int(acked_at * 1000) - start_unix_ms,
                     min_headroom,
                     self.effective_start_time - self.start_time,
-                    self.seconds_streamed - (cli_clock_time() - self.effective_start_time),
+                    self.seconds_streamed
+                    - (cli_clock_time(self.mass.timeline_clock) - self.effective_start_time),
                     self._peak_lead_seconds,
                     self._pcm_buffer_max / pcm_sample_size,
                 )
@@ -827,7 +848,7 @@ class AirPlayStreamSession:
                 if prime:
                     try:
                         await self._write_chunk_to_player(airplay_player, prime)
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - a failing late joiner must not stop the group
                         self.prov.logger.warning(
                             "Late joiner %s: failed to start/prime pipeline: %r",
                             airplay_player.protocol_id,
@@ -860,7 +881,7 @@ class AirPlayStreamSession:
         self.prov.logger.debug(
             "Late joiner %s: started after %.2fs",
             airplay_player.protocol_id,
-            cli_clock_time() - now,
+            cli_clock_time(self.mass.timeline_clock) - now,
         )
         if airplay_player.renders_audio:
             self._join_silent_members(joined=airplay_player)
@@ -909,7 +930,7 @@ class AirPlayStreamSession:
         """
         if self.start_time <= 0:
             return  # not anchored yet, so there is no audible position to measure against
-        now = cli_clock_time()
+        now = cli_clock_time(self.mass.timeline_clock)
         if now < self.effective_start_time:
             # Still inside the start lead: everything fed is ahead of an anchor
             # that has not arrived, which would read as a lead seconds larger
@@ -1039,6 +1060,12 @@ class AirPlayStreamSession:
         except asyncio.CancelledError:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise
+        except AudioSourceRefusedError as err:
+            # the streams controller logs a source refusing this player itself. The (re)start
+            # waiting for this feed stops the session, which ends the members' ffmpeg: retiring
+            # them here as well would race that stop and leave them untracked
+            self._source_refusal = err
+            return
         except Exception as err:
             stream_error = err
             self.prov.logger.error(
@@ -1340,7 +1367,7 @@ class AirPlayStreamSession:
             # Cold group start: cover the members' receiver-side clock
             # acquisition (see AIRPLAY_COLD_GROUP_START_LEAD_MS).
             lead_ms = AIRPLAY_COLD_GROUP_START_LEAD_MS
-        anchor = int(cli_clock_time() * 1000) + lead_ms
+        anchor = int(cli_clock_time(self.mass.timeline_clock) * 1000) + lead_ms
         if ready_at_unix_ms:
             anchor = max(anchor, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
         if not warm:
@@ -1361,7 +1388,9 @@ class AirPlayStreamSession:
         if member_requirement > 0:
             anchor = max(
                 anchor,
-                int(cli_clock_time() * 1000) + member_requirement + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+                int(cli_clock_time(self.mass.timeline_clock) * 1000)
+                + member_requirement
+                + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
             )
         for player in audible:
             stream = player.stream
@@ -1385,8 +1414,13 @@ class AirPlayStreamSession:
         waited out first and the per-member budget below measures the binary
         alone; giving up on the source here would only restart the session into
         the very same wait.
+
+        :raises AudioSourceRefusedError: When the source refused to play on the members.
         """
         await self._wait_feed_settled()
+        if self._source_refusal is not None:
+            # a refused source fed nothing, so no member can report its audio
+            raise self._source_refusal
         members = [(p, p.stream) for p in self._audible_clients if p.stream]
         results = await asyncio.gather(*[stream.wait_audio_present() for _, stream in members])
         if all(results):
@@ -1483,11 +1517,15 @@ class AirPlayStreamSession:
         # a member already sent, so anchor everyone far enough out that nothing
         # has left before the slowest member accepts, then command the real
         # instant, which the members' fresh clock readiness must still allow.
-        seat_unix_ms = int(cli_clock_time() * 1000) + AIRPLAY_ANCHOR_SEAT_LEAD_MS
+        seat_unix_ms = (
+            int(cli_clock_time(self.mass.timeline_clock) * 1000) + AIRPLAY_ANCHOR_SEAT_LEAD_MS
+        )
         async with asyncio.TaskGroup() as task_group:
             for stream in streams:
                 task_group.create_task(stream.start(seat_unix_ms, position_ms))
-        floor_unix_ms = int(cli_clock_time() * 1000) + AIRPLAY_GROUP_START_LEAD_MS
+        floor_unix_ms = (
+            int(cli_clock_time(self.mass.timeline_clock) * 1000) + AIRPLAY_GROUP_START_LEAD_MS
+        )
         if ready_at_unix_ms := await self._wait_members_clock_ready():
             floor_unix_ms = max(floor_unix_ms, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
         return max(start_unix_ms, floor_unix_ms)
@@ -1824,7 +1862,7 @@ class AirPlayStreamSession:
             return await asyncio.wait_for(
                 stream.send_cli_command(command), AIRPLAY_SILENT_MEMBER_TIMEOUT
             )
-        except Exception as err:
+        except OSError as err:  # a timeout is an OSError too
             self.prov.logger.debug(
                 "Could not send %s to %s: %s", command, airplay_player.protocol_id, err
             )

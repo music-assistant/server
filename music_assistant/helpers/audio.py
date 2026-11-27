@@ -49,6 +49,9 @@ SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 
 _CONTROL_CHARS_RE: Final = re.compile(r"[\x00-\x1f\x7f]")
 
+# Size of the wave header in front of every WAV stream, see create_streaming_wave_header.
+WAVE_HEADER_SIZE: Final[int] = 44
+
 # Mapping of audio format identifiers to their correct IANA MIME types
 # where the format name differs from the MIME subtype.
 # Strict DLNA/UPnP devices reject non-standard MIME types (e.g. audio/mp3).
@@ -267,11 +270,12 @@ def create_wave_header(
     return file.getvalue()
 
 
-def create_streaming_wave_header(audio_format: AudioFormat) -> bytes:
+def create_streaming_wave_header(audio_format: AudioFormat, data_size: int | None = None) -> bytes:
     """
-    Generate a wave header for a stream whose length is not known up front.
+    Generate the wave header of a stream.
 
     :param audio_format: The PCM format the audio behind the header is in.
+    :param data_size: Size of that audio in bytes, or None when it is not known up front.
     """
     channels = audio_format.channels
     sample_rate = audio_format.sample_rate
@@ -280,16 +284,21 @@ def create_streaming_wave_header(audio_format: AudioFormat) -> bytes:
     block_align = channels * (bits_per_sample // 8)
     # RIFF size & data size both set to 0xFFFFFFFF so clients honoring the WAV
     # length fields don't cut the stream off (create_wave_header hardcodes ~6.7h).
+    riff_size = data_chunk_size = 0xFFFFFFFF
+    if data_size is not None:
+        # a size these fields can not hold leaves them as they are
+        riff_size = min(WAVE_HEADER_SIZE - 8 + data_size, riff_size)
+        data_chunk_size = min(data_size, data_chunk_size)
     return (
         b"RIFF"
-        + struct.pack("<L", 0xFFFFFFFF)
+        + struct.pack("<L", riff_size)
         + b"WAVE"
         + b"fmt "
         + struct.pack(
             "<LHHLLHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample
         )
         + b"data"
-        + struct.pack("<L", 0xFFFFFFFF)
+        + struct.pack("<L", data_chunk_size)
     )
 
 
@@ -427,11 +436,11 @@ async def realtime_pcm_pacer(
             await asyncio.sleep(expected_elapsed - actual_elapsed)
 
 
-async def audio_source_silence_keepalive(
+async def audio_source_silence_keepalive(  # noqa: PLR0915
     inner: AsyncGenerator[bytes],
     pcm_format: AudioFormat,
     silence_chunk_ms: int = 100,
-    idle_threshold_s: float | None = None,
+    idle_threshold_s: float = 0.3,
 ) -> AsyncGenerator[bytes]:
     """
     Wrap a live AudioSource PCM stream and emit silence during idle gaps.
@@ -439,8 +448,8 @@ async def audio_source_silence_keepalive(
     Plugin providers exposing an AudioSource may stop yielding bytes while the
     upstream device is paused (e.g. user paused in the Spotify app). Without
     bytes flowing the downstream consumer (ffmpeg / the player) may disconnect.
-    This wrapper inserts ``silence_chunk_ms`` worth of zero bytes whenever the
-    inner generator hasn't produced for ``idle_threshold_s`` seconds, while
+    Once the inner generator hasn't produced for ``idle_threshold_s`` seconds,
+    this wrapper emits zero bytes at realtime for the whole idle period, while
     relaying real bytes immediately when they arrive.
 
     Only meaningful for PCM streams — injecting raw zero bytes into a compressed
@@ -452,11 +461,9 @@ async def audio_source_silence_keepalive(
         silence chunk so it lines up to a frame boundary).
     :param silence_chunk_ms: Duration of each silence chunk in milliseconds.
     :param idle_threshold_s: Seconds without input before silence is inserted.
-        Defaults to the chunk duration so silence flows at realtime — critical
-        for keeping HTTP consumers (Sonos, Chromecast) connected.
+        The default rides out short event loop stalls without injecting
+        silence into a live source.
     """
-    if idle_threshold_s is None:
-        idle_threshold_s = silence_chunk_ms / 1000
     frame_size = pcm_format.channels * (pcm_format.bit_depth // 8)
     bytes_per_second = (
         pcm_format.sample_rate * frame_size if pcm_format.content_type.is_pcm() else 0
@@ -491,14 +498,31 @@ async def audio_source_silence_keepalive(
         else:
             await queue.put(None)
 
+    chunk_s = silence_bytes / bytes_per_second
+    loop = asyncio.get_running_loop()
     producer_task = asyncio.create_task(_producer())
     try:
+        last_audio = loop.time()
+        silence_sent_s = 0.0
         while True:
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=idle_threshold_s)
-            except TimeoutError:
-                yield silence_chunk
-                continue
+            if not queue.empty():
+                # wait_for with a zero timeout cancels the get before it reads a queued item
+                item = queue.get_nowait()
+            else:
+                # After the threshold, silence catches up with idle time one chunk per wait.
+                due = silence_sent_s + chunk_s if silence_sent_s else idle_threshold_s
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=max(0.0, last_audio + due - loop.time())
+                    )
+                except TimeoutError:
+                    # after a loop stall the producer may have queued audio during the timeout
+                    if queue.empty():
+                        yield silence_chunk
+                        silence_sent_s += chunk_s
+                    continue
+            last_audio = loop.time()
+            silence_sent_s = 0.0
             if item is None:
                 break
             if isinstance(item, Exception):
@@ -616,7 +640,9 @@ def calculate_content_length(
     pcm_size = int(fmt.sample_rate * (fmt.bit_depth / 8) * fmt.channels * seconds)
     if fmt.content_type.is_pcm():
         return pcm_size
-    if fmt.content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
+    if fmt.content_type == ContentType.WAV:
+        return WAVE_HEADER_SIZE + pcm_size
+    if fmt.content_type in (ContentType.AIFF, ContentType.DSF):
         return pcm_size
     if fmt.bit_rate and fmt.bit_rate < 10000:
         return int(((fmt.bit_rate * 1000) / 8) * seconds)
@@ -635,10 +661,11 @@ def calculate_content_length(
     return int((320000 / 8) * seconds)
 
 
-# Bump whenever an encoder setting in get_ffmpeg_args moves the encoded size. The
-# content-length cache holds measured bytes, so a stale entry announces a body we no
-# longer produce. Older entries are never read again and expire on their own.
-OUTPUT_ENCODING_REVISION: Final[int] = 2
+# Bump whenever an encoder setting in get_ffmpeg_args, or the header get_ffmpeg_stream
+# writes, moves the encoded size. The content-length cache holds measured bytes, so a
+# stale entry announces a body we no longer produce. Older entries are never read again
+# and expire on their own.
+OUTPUT_ENCODING_REVISION: Final[int] = 3
 
 
 def get_output_format_key(fmt: AudioFormat) -> str:

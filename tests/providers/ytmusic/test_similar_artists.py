@@ -75,7 +75,7 @@ async def test_get_similar_artists_success(provider: YoutubeMusicProvider) -> No
         artists = await get_similar(provider, "UCartist1")
 
     mock_get_artist.assert_awaited_once_with(
-        prov_artist_id="UCartist1", headers=provider._headers, language="en"
+        prov_artist_id="UCartist1", headers=provider._headers, language="en", user=None
     )
     assert len(artists) == 2
     assert all(isinstance(a, Artist) for a in artists)

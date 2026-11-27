@@ -4,12 +4,21 @@ from __future__ import annotations
 
 from typing import Final
 
-from music_assistant_models.enums import SortDirection, SortField
+from music_assistant_models.enums import MediaType, SortDirection, SortField
 
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 # the playlog stores whole seconds, so closer resume positions count as unchanged
 RESUME_POSITION_TOLERANCE_SECONDS: Final[int] = 2
+
+# kinds of item that are never stored in the library: audio sources and sound effects are
+# live provider content, and of a podcast only the podcast itself is stored, not its episodes
+NON_LIBRARY_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
+    MediaType.AUDIO_SOURCE,
+    MediaType.SOUND_EFFECT,
+    MediaType.PODCAST_EPISODE,
+)
+
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
@@ -43,6 +52,11 @@ LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 BROWSE_CACHE_EXPIRATION: Final[int] = 2 * 60
 # how many similar artists or tracks the providers are asked for, the size of such a listing
 SIMILAR_ITEMS_LIMIT: Final[int] = 25
+# how many results a provider search for a match returns: a match is among the best hits,
+# and a deeper search costs a provider that pages its search (such as Spotify) more requests
+MATCH_SEARCH_LIMIT: Final[int] = 10
+# how many of an artist's tracks, and of its albums, are searched for to match the artist
+MATCH_REFERENCE_LIMIT: Final[int] = 10
 
 # max time to wait for a single provider's search results before
 # contributing empty results for it, so one slow provider can never block
@@ -70,6 +84,9 @@ RECOMMENDATIONS_ROWS_TIMEOUT: Final[int] = 5
 
 # browse scheme under which every recommendation row can be opened in full
 RECOMMENDATIONS_BROWSE_SCHEME: Final[str] = "discover"
+
+# browse scheme of the folder that holds the live sources
+LIVE_SOURCES_BROWSE_SCHEME: Final[str] = "live_sources"
 
 # max items a library recommendation row returns when browsed in full,
 # instead of the handful its Discover row shows

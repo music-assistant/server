@@ -47,6 +47,7 @@ from music_assistant.controllers.player_queues.media_resolver import ResolvedIte
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.helpers.provider_access import PlaybackSources
 from music_assistant.models.music_provider import (
     MusicProvider,
     ProviderStreamHeldError,
@@ -379,8 +380,12 @@ class _Setup:
 def _no_playback_sources() -> Any:
     """Leave out the active playback sources a real server would report."""
     with (
-        patch.object(audio_mod, "playback_sources", AsyncMock(return_value=(None, []))),
-        patch.object(feeder_mod, "visible_playback_sources", Mock(return_value=None)),
+        patch.object(
+            audio_mod, "playback_sources", AsyncMock(return_value=PlaybackSources(None, []))
+        ),
+        patch.object(
+            feeder_mod, "playback_sources_for", Mock(return_value=PlaybackSources(None, []))
+        ),
     ):
         yield
 

@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.enums import PlayerFeature
 
 from music_assistant.models.player import Player
-from music_assistant.providers.bose_soundtouch.client.schema.enums import PlayStatus
+from music_assistant.providers.bose_soundtouch.client.schema.enums import PlayStatus, SourceStatus
 from music_assistant.providers.bose_soundtouch.client.schema.models import (
     ContentItem,
     Info,
     NowPlaying,
+    Source,
+    Sources,
 )
 from music_assistant.providers.bose_soundtouch.player import BoseSoundTouchPlayer
 from tests.common import MockProvider, mock_player_mass
@@ -65,3 +68,37 @@ def test_pause_withheld_while_music_assistant_streams() -> None:
         NowPlaying(play_status=PlayStatus.PLAY_STATE, content_item=ContentItem(source="BLUETOOTH"))
     )
     assert PlayerFeature.PAUSE in protocol._attr_supported_features
+
+
+async def test_aux_and_the_product_inputs_are_marked_as_inputs() -> None:
+    """AUX and the TV and HDMI inputs are inputs; Bluetooth and a music service are not."""
+    _, protocol = _make_player()
+    cast("MagicMock", protocol._client).get_sources = AsyncMock(
+        return_value=Sources(
+            sources=[
+                Source(
+                    source=source,
+                    source_account=account,
+                    source_name=name,
+                    status=SourceStatus.READY,
+                )
+                for source, account, name in (
+                    ("AUX", "AUX", "AUX IN"),
+                    ("PRODUCT", "TV", "TV"),
+                    ("PRODUCT", "HDMI_1", "HDMI 1"),
+                    ("BLUETOOTH", None, "Bluetooth"),
+                    ("SPOTIFY", "user1", "Spotify"),
+                )
+            ]
+        )
+    )
+
+    await protocol._refresh_sources()
+
+    assert {x.id: x.is_input for x in protocol._attr_source_list} == {
+        "AUX:AUX": True,
+        "PRODUCT:TV": True,
+        "PRODUCT:HDMI_1": True,
+        "BLUETOOTH": False,
+        "SPOTIFY:user1": False,
+    }

@@ -28,6 +28,9 @@ PLAYER_FEATURES_BASE = {
 }
 
 SOURCE_LINE_IN = "line_in"
+# the line-in of a speaker of the household, followed by the id of that speaker: one id on
+# every speaker, so a group member that follows its coordinator finds it in its own list
+SOURCE_LINE_IN_OF = f"{SOURCE_LINE_IN}@"
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"
@@ -41,6 +44,7 @@ PLAYER_SOURCE_MAP = {
         id=SOURCE_LINE_IN,
         name="Line-in",
         passive=False,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
@@ -49,6 +53,7 @@ PLAYER_SOURCE_MAP = {
         id=SOURCE_TV,
         name="TV",
         passive=False,
+        is_input=True,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
@@ -89,6 +94,7 @@ PLAYER_SOURCE_MAP = {
 }
 
 DEVICE_FEATURE_WAKEABLE = "WAKEABLE"
+DEVICE_FEATURE_PORTABLE = "PORTABLE"
 
 UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1", "Play:3")
 NON_HIRES_MODELS = (
@@ -128,6 +134,7 @@ UPNP_TIMEOUT = 10
 RENDERING_CONTROL_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
 DEVICE_PROPERTIES_SERVICE = "urn:schemas-upnp-org:service:DeviceProperties:1"
 HT_CONTROL_SERVICE = "urn:schemas-upnp-org:service:HTControl:1"
+AUDIO_IN_SERVICE = "urn:schemas-upnp-org:service:AudioIn:1"
 
 
 class EqType(StrEnum):
@@ -152,7 +159,8 @@ class IrRepeaterState(StrEnum):
     DISABLED = "Disabled"
 
 
-# UPnP RenderingControl events, received on the stream server
+# UPnP events (RenderingControl, and AudioIn of a speaker with a line-in), received on the
+# stream server
 EVENTS_PATH = "/sonos/notify"
 # seconds a subscription is asked for; it is renewed halfway, by the poll
 EVENT_SUBSCRIPTION_TIMEOUT = 1800

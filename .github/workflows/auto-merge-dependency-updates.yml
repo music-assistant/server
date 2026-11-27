@@ -4,7 +4,7 @@
 name: Auto-merge dependency updates
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened]
     branches:
       - dev
@@ -24,8 +24,8 @@ env:
   # the frontend wheel by URL and sha256 from its GitHub release
   PIN_LINE: '^[+-][[:space:]]*"?music-assistant-(models==[0-9][0-9a-zA-Z.]*|frontend @ https://github\.com/music-assistant/frontend/releases/download/[0-9][0-9a-zA-Z.]*/music_assistant_frontend-[0-9][0-9a-zA-Z.]*-py3-none-any\.whl#sha256=[0-9a-f]{64})"?,?[[:space:]]*$'
 
-# CRITICAL SECURITY: This workflow uses pull_request_target which runs in the context
-# of the base repository and has access to secrets. Multiple security checks ensure
+# CRITICAL SECURITY: On a pull request from a branch of this repository, this workflow
+# runs with secrets and a write token. Multiple security checks ensure
 # only trusted automation PRs are auto-merged.
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     # Only run if branch name matches the expected pattern
     if: |
-      github.event_name == 'pull_request_target' && (
+      github.event_name == 'pull_request' && (
         startsWith(github.event.pull_request.head.ref, 'auto-update-frontend-') ||
         startsWith(github.event.pull_request.head.ref, 'auto-update-models-')
       )
@@ -337,7 +337,7 @@ jobs:
       # GITHUB_TOKEN, so neither the queue's checks nor the discover-stale job below would run.
       - name: Create merge token
         id: merge_token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
@@ -541,7 +541,7 @@ jobs:
       - name: Create branch token
         if: steps.pin.outputs.changed == 'true'
         id: push_token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}

@@ -1086,7 +1086,7 @@ class SendspinSqueezeliteBridge:
             session.started = True
         except TimeoutError:
             self._recover(session, "it did not get ready to play")
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure recovers the player
             self.logger.warning(
                 "Failed to start the Sendspin stream on %s: %s", self.protocol.display_name, err
             )
@@ -1543,7 +1543,7 @@ class SendspinSqueezeliteBridge:
         rejoined = self._rejoined
         try:
             previous_group_id = await client.quiesce_to_solo_stopped()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - library code, the player stays registered
             self.logger.warning(
                 "Could not take %s out of its Sendspin session: %s",
                 self.protocol.display_name,
@@ -1607,7 +1607,7 @@ class SendspinSqueezeliteBridge:
                     return
                 try:
                     await group.add_client(client)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - a failed re-join attempt is retried
                     self.logger.warning(
                         "Could not re-join %s to its Sendspin group (attempt %d/%d): %s",
                         name,
@@ -1733,6 +1733,10 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         if bridge := self._bridges.get(protocol_id):
             return bridge.stop_streaming()
         return False
+
+    def has_stream(self) -> bool:
+        """Return whether any bridge has a stream on its player."""
+        return any(bridge.owns_stream for bridge in self._bridges.values())
 
     def get_start_offset_us(self, protocol_id: str) -> int:
         """

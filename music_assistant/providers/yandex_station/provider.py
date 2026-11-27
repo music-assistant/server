@@ -183,7 +183,7 @@ class YandexStationProvider(PlayerProvider):
             for ls in local_list:
                 local_speakers[ls["device_id"]] = ls
             self.logger.info("Found %d local speakers via Glagol API", len(local_speakers))
-        except Exception:
+        except Exception:  # noqa: BLE001 - local speaker details are optional
             self.logger.debug("Failed to get local speakers from Glagol API")
 
         # If Quasar failed, build a synthetic speakers list from the local

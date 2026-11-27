@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 def _player(
     *,
     negotiated_role_ids: list[str],
-    line_sense: bool,
+    line_sense: bool | None,
     known_players: list[str],
     unavailable_players: list[str] | None = None,
     non_audio_players: dict[str, PlayerType] | None = None,
@@ -57,7 +57,9 @@ def _player(
         SimpleNamespace(
             negotiated_role_ids=negotiated_role_ids,
             info_or_none=SimpleNamespace(
-                source_support=SimpleNamespace(features=SimpleNamespace(line_sense=line_sense))
+                source_support=None
+                if line_sense is None
+                else SimpleNamespace(features=SimpleNamespace(line_sense=line_sense))
             ),
         ),
     )
@@ -95,6 +97,12 @@ def test_a_source_without_line_sense_gets_a_note_instead_of_the_setting() -> Non
     assert [(e.key, e.type) for e in entries] == [
         ("source_autostart_unavailable", ConfigEntryType.LABEL)
     ]
+
+
+def test_a_source_without_source_support_offers_the_setting() -> None:
+    """A source on the current spec sends no source@v1_support and always reports its signal."""
+    player = _player(negotiated_role_ids=["source@v1"], line_sense=None, known_players=["speaker"])
+    assert _target_entry(player) is not None
 
 
 def test_no_autostart_entries_for_a_client_without_a_source_role() -> None:
@@ -410,7 +418,9 @@ async def test_a_change_of_the_analysis_switch_reaches_the_playing_input(
         )
     sendspin = await scenario.add_provider("sendspin")
     cast("Any", sendspin).clients = {}
-    cast("Any", sendspin).server_api = SimpleNamespace(get_client=cast("Any", sendspin).clients.get)
+    cast("Any", sendspin).server_api = SimpleNamespace(
+        get_client=cast("Any", sendspin).clients.get, allow_noncompliant_clients=True
+    )
     cast("Any", sendspin).is_virtual_player = lambda _client_id: False
     sources = cast("Any", sendspin).sources = MagicMock()
     protocol: SendspinBasePlayer

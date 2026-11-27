@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.api.models import SonosCapability
+from aiosonos.exceptions import NotAPlayer
 from music_assistant_models.enums import IdentifierType, PlayerType
 
 from music_assistant.providers.sonos.player import SonosPlayer
@@ -20,6 +23,9 @@ from tests.providers.sonos.test_channel_layout import (
     _zone,
 )
 from tests.providers.sonos.test_lifecycle import _Subscriptions
+from tests.providers.sonos.test_player import _connect_player
+from tests.providers.sonos.test_power_cut import RECONNECT
+from tests.providers.sonos.test_power_cut import _speaker as _reachable_speaker
 from tests.scenarios.harness import Scenario
 
 if TYPE_CHECKING:
@@ -28,6 +34,7 @@ if TYPE_CHECKING:
 
     from aiosonos.api.models import DiscoveryInfo
 
+    from music_assistant.mass import MusicAssistant
     from tests.scenarios.harness import FakePlayerProvider
 
 # the ids _zone() gives the second, third and fourth speaker of a zone
@@ -238,3 +245,81 @@ async def test_a_pair_bonded_while_the_server_runs_removes_the_player_of_its_sec
     with patch.object(second, "_connect", AsyncMock()) as connect:
         await scenario.advance(60)
     connect.assert_not_awaited()
+
+
+def _bonded_speaker(mass: MusicAssistant) -> tuple[SonosPlayer, list[tuple[bool, bool]]]:
+    """
+    Bind a speaker that went up in another player's set, so its API lists it as no player.
+
+    :param mass: A MusicAssistant with the real task and timer machinery.
+    :return: The speaker, and (connected, available) at each state it published.
+    """
+    speaker, client, published = _reachable_speaker(mass)
+    _bond(client)
+    return speaker, published
+
+
+def _bond(client: MagicMock) -> None:
+    """
+    Make the API of a speaker list it as no player from now on.
+
+    :param client: The client of the speaker.
+    """
+
+    async def _start_listening(_init_ready: asyncio.Event) -> None:
+        msg = f"{SECOND} is not one of the players of its household"
+        raise NotAPlayer(msg)
+
+    client.start_listening = _start_listening
+
+
+async def test_a_speaker_that_went_up_in_a_set_is_not_connected_again(
+    timer_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reconnect to a speaker that is part of another player's set gives up without a fuss."""
+    speaker, published = _bonded_speaker(timer_mass)
+    timer_mass.players = MagicMock()
+    timer_mass.players.get_protocol.return_value = speaker
+
+    with caplog.at_level(logging.DEBUG):
+        await speaker._connect(retry_on_fail=5)
+        await asyncio.sleep(0)
+
+    assert published[-1] == (False, False)
+    assert RECONNECT not in timer_mass._tracked_timers
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+
+
+async def test_setting_up_a_speaker_that_is_part_of_a_set_fails_on_that(
+    timer_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The setup of a speaker that is part of another player's set says so, and is not retried."""
+    speaker, _ = _bonded_speaker(timer_mass)
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(NotAPlayer):
+        await speaker._connect(False)
+    await asyncio.sleep(0)
+
+    assert RECONNECT not in timer_mass._tracked_timers
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+
+
+async def test_a_speaker_whose_power_is_back_in_a_set_reads_unavailable(
+    timer_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A speaker that went up in another player's set while its power was cut is not connected."""
+    speaker, client, published = _reachable_speaker(timer_mass)
+    timer_mass.players = MagicMock()
+    timer_mass.players.get_protocol.return_value = speaker
+    await _connect_player(speaker, client)
+    await speaker.on_power_cut()
+    _bond(client)
+
+    with caplog.at_level(logging.DEBUG):
+        await speaker.on_power_restored()
+        await asyncio.sleep(0)
+
+    assert published[-1] == (False, False)
+    assert RECONNECT not in timer_mass._tracked_timers
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+    await speaker.on_detach()

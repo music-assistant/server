@@ -942,6 +942,20 @@ class GroupRules:
             protocol_id=own.protocol_id, add=tuple(native_add), remove=tuple(native_remove)
         )
 
+    def holds_idle_output(self, leader: PlayerView) -> bool:
+        """
+        Return whether the leader keeps an audio protocol as its output while idle and ungrouped.
+
+        :param leader: The leader.
+        """
+        if leader.playback_state in RENDERING:
+            return False
+        active = self.active_output(leader)
+        if active is None or active == "native":
+            return False
+        protocol = self.snapshot.attached(leader, active)
+        return protocol is not None and len(protocol.group_members) <= 1
+
     # -- translation --
 
     def _translate_adds(

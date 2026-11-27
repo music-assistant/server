@@ -17,6 +17,8 @@ Developer docs
 
       export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib:/usr/local/lib:/usr/lib"
 
+* shairport-sync 5.6.3 or newer (a classic AirPlay build), also at OS level. Install it if you want to run the `airplay_receiver` plugin. On macOS, run `brew install shairport-sync`. Distribution packages are often older or built for AirPlay 2; [the plugin's README](music_assistant/providers/airplay_receiver/bin/README.md) explains how to build it.
+
 We recommend developing on a (recent) macOS or Linux machine.
 It is recommended to use Visual Studio Code as your IDE, since launch files to start Music Assistant are provided as part of the repository. Furthermore, the current code base is not verified to work on a native Windows machine. If you would like to develop on a Windows machine, install [WSL2](https://code.visualstudio.com/blogs/2019/09/03/wsl2) to increase your swag-level 🤘.
 
@@ -93,6 +95,13 @@ A provider that lives outside the server repository (for example in a repository
 
       PYTHONDEVMODE=1 python -m music_assistant --dev-providers-dir /path/to/my_providers
 
+  Pass `--dev-providers-dir` more than once to load providers from several folders at once, which is useful when you work on providers across repositories:
+
+      PYTHONDEVMODE=1 python -m music_assistant \
+          --dev-providers-dir /path/to/repo_a \
+          --dev-providers-dir /path/to/repo_b
+
+  If two folders carry a provider with the same `domain`, the first-passed folder wins and the other is skipped with a warning naming both paths.
 * The `requirements` in `manifest.json` are plain package names with versions, such as `aiohttp-retry==2.9.1`. They are installed next to the server's own packages and never replace one of them: a provider whose requirements clash with the server is not loaded.
 * A change to the code takes effect after a restart of the server.
 * To test the provider against a real server, add `pytest_plugins = ["music_assistant.testing"]` to `tests/conftest.py` (with pytest-asyncio's `asyncio_mode = "auto"`). The `mass` fixture then gives a started server in dev mode that loads the providers in the root folder of the test run. It announces nothing on the network and listens on the loopback address only; the requests a provider makes itself still go out. Next to the server, install the requirements of its built-in Sendspin provider (`aiosendspin[server]` and `av`, at the versions in `music_assistant/providers/sendspin/manifest.json`): the server starts that provider at every boot.

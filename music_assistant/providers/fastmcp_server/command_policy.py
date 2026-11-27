@@ -366,6 +366,8 @@ EXACT_POLICIES: dict[str, CommandDecision] = {
         frozenset({str(Capability.CONFIG_WRITE_PLAYER)}),
     ),
     "players/create_multi_channel_player": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
+    "players/add_multi_channel_speaker": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
+    "players/remove_multi_channel_speaker": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
     "players/remove_group_player": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
     "players/remove": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
     "players/remove_unavailable": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
@@ -739,7 +741,7 @@ def _config_entries_sync(mass: Any, arguments: Mapping[str, Any]) -> Any | None:
     try:
         getter_name, target = _config_entries_target(arguments)
         entries = getattr(mass.config, getter_name)(target)
-    except Exception:
+    except ValueError, AttributeError:
         return None
     if inspect.isawaitable(entries):
         _close_awaitable(entries)
@@ -844,7 +846,7 @@ def _setup_flow_step_sync(mass: Any, flow_id: str) -> Any | None:
     if callable(getter):
         try:
             step = getter(flow_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 - getter is any callable, failure means no step
             step = None
         if inspect.isawaitable(step):
             _close_awaitable(step)

@@ -6,7 +6,6 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import web
-from aiosendspin.clock import RawMonotonicClock
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
@@ -23,11 +22,12 @@ from .constants import (
     CONF_CLI_JSON_PORT,
     CONF_CLI_TELNET_PORT,
     CONF_DISCOVERY,
+    CONF_STORED_POWER,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
     DEFAULT_SLIMPROTO_PORT,
 )
-from .player import SqueezelitePlayer
+from .player import SqueezelitePlayer, is_protocol_only_device
 from .sendspin_bridge import BRIDGE_STREAM_PATH, SendspinBridgeManager
 
 if TYPE_CHECKING:
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
     from aiosendspin.clock import Clock
     from aioslimproto.cli import SlimCLICommand
+    from aioslimproto.client import SlimClient
     from music_assistant_models.event import MassEvent
 
 
@@ -47,6 +48,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
     clock: Clock
     bridge_manager: SendspinBridgeManager
     _unsub_queue_updated: Callable[[], None] | None = None
+    _unsub_timeline_rate: Callable[[], None] | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -92,8 +94,12 @@ class SqueezelitePlayerProvider(PlayerProvider):
         # Validate ALL required ports before starting ANY services
         await self._validate_all_ports(control_port, telnet_port, json_port)
 
-        self.clock = RawMonotonicClock()
+        self.clock = self.mass.timeline_clock
         self.bridge_manager = SendspinBridgeManager(self)
+        # a bridge stream maps the timeline onto the clock of its player
+        self._unsub_timeline_rate = self.mass.timeline_clock.add_rate_listener(
+            pinned=self.bridge_manager.has_stream
+        )
 
         # create the server here (also validates config and sets up the CLI) but defer
         # start() to loaded_in_mass, so we subscribe to events before accepting clients
@@ -106,6 +112,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             cli_command_handler=self._handle_cli_command,
             clock=self._server_time,
             initial_volume=self._get_initial_volume,
+            initial_power=self._get_initial_power,
         )
 
     async def loaded_in_mass(self) -> None:
@@ -119,7 +126,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         self.slimproto.subscribe(self._handle_slimproto_event)
         try:
             await self.slimproto.start()
-        except Exception as err:
+        except OSError as err:
             # ports were validated during setup, so a failure here is unlikely
             self.unload_with_error(err)
             return
@@ -151,6 +158,9 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if self._unsub_queue_updated is not None:
             self._unsub_queue_updated()
             self._unsub_queue_updated = None
+        if self._unsub_timeline_rate is not None:
+            self._unsub_timeline_rate()
+            self._unsub_timeline_rate = None
         # Stop all Sendspin bridges
         bridge_manager = getattr(self, "bridge_manager", None)
         if bridge_manager:
@@ -170,9 +180,22 @@ class SqueezelitePlayerProvider(PlayerProvider):
         return mass_player.name if mass_player else None
 
     def _lookup_elapsed(self, player_id: str) -> float | None:
-        """Return the position in the track of a player as its Sendspin bridge has it, else None."""
+        """Return a player's position in the track from its Sendspin bridge or queue, else None."""
         bridge = self.bridge_manager.get_bridge(player_id)
-        return bridge.position_in_track if bridge else None
+        if bridge and (position := bridge.position_in_track) is not None:
+            return position
+        slimclient = self.slimproto.get_player(player_id) if self.slimproto else None
+        media = slimclient.current_media if slimclient else None
+        if media and (source_id := media.metadata.get("source_id")):
+            queue = self.mass.player_queues.get(cast("str", source_id))
+            # the end of the previous track can still play while the queue is on the next one
+            if (
+                queue
+                and queue.current_item
+                and queue.current_item.queue_item_id == media.metadata.get("queue_item_id")
+            ):
+                return queue.corrected_elapsed_time
+        return None
 
     async def _validate_all_ports(
         self, control_port: int, telnet_port: int | None, json_port: int | None
@@ -205,7 +228,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if self.slimproto:
             try:
                 await self.slimproto.stop()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - cleanup must not hide the setup error
                 self.logger.warning("Error stopping SlimProto server during cleanup: %s", err)
             finally:
                 self.slimproto = None
@@ -323,3 +346,16 @@ class SqueezelitePlayerProvider(PlayerProvider):
             key=player_id, provider=self.instance_id, category=CACHE_CATEGORY_PREV_STATE
         )
         return cast("int", last_state[1]) if last_state else DEFAULT_PLAYER_VOLUME
+
+    async def _get_initial_power(self, client: SlimClient) -> bool | None:
+        """
+        Return the power state a slimproto player starts in on connect, None for the default (off).
+
+        A player that was on, or is new, starts on; one that was switched off stays off.
+
+        :param client: The connecting client, with its player id and device model known.
+        """
+        if is_protocol_only_device(client.device_model):
+            # audio protocols are powered on with the stream (see SqueezelitePlayer)
+            return None
+        return self.mass.config.get_protocol_value(client.player_id, CONF_STORED_POWER, True)

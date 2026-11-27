@@ -342,6 +342,9 @@ def use_player_registry(mass: MagicMock | MusicAssistant) -> MagicMock:
         "get_output_protocol",
         "iter_players",
         "iter_protocols",
+        "get_audio_source_owner",
+        "get_audio_source_name",
+        "may_use_audio_source",
     ):
         setattr(players, lookup, MethodType(getattr(PlayerController, lookup), players))
     players.get_audio_source_session = MagicMock(return_value=None)
@@ -790,7 +793,7 @@ def make_group_snapshot(
     :param state: The state the group player publishes.
     :param values: The values that differ from that group player.
     """
-    defaults: dict[str, Any] = {"powered": None, "is_active_session": False}
+    defaults: dict[str, Any] = {"powered": None, "is_active_session": False, "counts_in": False}
     return GroupSnapshot(
         player_id=player_id,
         state=state or make_player_state(player_id),
@@ -848,6 +851,8 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "protocols": [],
         "active_output_protocol": None,
         "active_mass_source": None,
+        "fake_paused": False,
+        "fake_pause_ending": False,
         "sleep_timer_expires_at": None,
         "sleep_timer_mode": None,
         "extra_attributes": {},
@@ -859,7 +864,11 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "mass_sources": frozenset(),
         "session": None,
         "session_image_url": None,
+        "followed_sessions": {},
+        "followed_source_names": {},
         "standing_sources": (),
+        "input_sources": (),
+        "source_names": {},
     }
     return StateInputs(**(defaults | values))
 

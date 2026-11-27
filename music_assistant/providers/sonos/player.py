@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -27,13 +28,14 @@ from aiosonos.api.models import (
     SonosCapability,
 )
 from aiosonos.client import SonosLocalApiClient
+from aiosonos.const import LOCAL_API_PORT, SonosEvent
 from aiosonos.const import EventType as SonosEventType
-from aiosonos.const import SonosEvent
 from aiosonos.exceptions import (
     CannotConnect,
     CommandTimeout,
     ConnectionFailed,
     FailedCommand,
+    NotAPlayer,
     SonosException,
 )
 from music_assistant_models.config_entries import ConfigEntry
@@ -41,6 +43,7 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ChannelLayout,
     ConfigEntryType,
+    ContentType,
     EventType,
     IdentifierType,
     MediaType,
@@ -54,6 +57,7 @@ from music_assistant_models.player import PlayerMedia, PlayerOptionValueType
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    CONF_OUTPUT_CODEC,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -64,7 +68,9 @@ from music_assistant.models.player import PlayerSource
 from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.providers.sonos.const import (
     AMP_MODEL,
+    AUDIO_IN_SERVICE,
     CONF_SHOW_DEVICE_SETTINGS,
+    DEVICE_FEATURE_PORTABLE,
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
     OPTION_EVENT_VARIABLES,
@@ -74,14 +80,17 @@ from music_assistant.providers.sonos.const import (
     PLAYBACK_STATE_MAP,
     PLAYER_SOURCE_MAP,
     PREVIOUS_ITEMS,
+    RENDERING_CONTROL_SERVICE,
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
+    SOURCE_LINE_IN_OF,
     SOURCE_MUSIC_ASSISTANT,
     SOURCE_RADIO,
     SOURCE_SPOTIFY,
     SOURCE_TV,
     UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
     UPCOMING_ITEMS,
+    UPNP_PORT,
 )
 from music_assistant.providers.sonos.helpers import get_channel_layout
 from music_assistant.providers.sonos.options import (
@@ -162,6 +171,7 @@ FINISHED_CLIP_STATES = (
 # playback states in which a session holds its speaker
 RENDERING_STATES = (PlaybackState.PLAYING, PlaybackState.PAUSED)
 SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
+REPEAT_ROUND_SUFFIX = re.compile(r"~r(\d+)")
 
 
 class SonosPlayer(PlayerProtocol):
@@ -178,23 +188,42 @@ class SonosPlayer(PlayerProtocol):
         prov: SonosPlayerProvider,
         protocol_id: str,
         discovery_info: SonosDiscoveryInfo,
+        api_port: int = LOCAL_API_PORT,
+        upnp_port: int = UPNP_PORT,
     ) -> None:
-        """Initialize the SonosPlayer."""
+        """
+        Initialize the SonosPlayer.
+
+        :param prov: The Sonos provider.
+        :param protocol_id: The Sonos player ID.
+        :param discovery_info: The discovery info the speaker returned.
+        :param api_port: The port of the speaker's local API.
+        :param upnp_port: The port of the speaker's UPnP services.
+        """
         super().__init__(prov, protocol_id)
         self.discovery_info = discovery_info
+        self._api_port = api_port
+        self._upnp_port = upnp_port
         self.connected: bool = False
         self._listen_task: asyncio.Task[None] | None = None
         self._connect_lock = asyncio.Lock()
         mac_address = self._extract_mac_from_player_id()
         self._wol_mac = mac_address if mac_address and is_valid_mac_address(mac_address) else None
-        self._wakeable = self._wol_mac is not None and _is_wakeable(discovery_info)
+        # a speaker on mains power can be wakeable too, but does not go to sleep
+        self._sleeps = (
+            self._wol_mac is not None
+            and _has_device_feature(discovery_info, DEVICE_FEATURE_WAKEABLE)
+            and _has_device_feature(discovery_info, DEVICE_FEATURE_PORTABLE)
+        )
         # a dropped connection confirmed as sleep, as opposed to a passing blip
         self._marked_asleep = False
         # the connection followed a sleep; the speaker then restores its session paused
         self._woken_from_sleep = False
-        # the MA queue the loaded cloud queue serves, and the version the speaker
-        # compares against to decide whether its cached copy is still valid
+        # the MA queue the loaded cloud queue serves, the playback session of it that was
+        # loaded, and the version the speaker compares against to decide whether its cached
+        # copy is still valid
         self.cloud_queue_id: str | None = None
+        self._loaded_session_id: str | None = None
         self.cloud_queue_version: float = time.time()
         # advanced on every play_media: item ids are served suffixed with it, so a
         # reload of the item the speaker is already playing gets a fresh identity.
@@ -226,22 +255,37 @@ class SonosPlayer(PlayerProtocol):
         self._own_airplay_session = False
         # the other speakers of this speaker's set, as last reported to the players controller
         self._reported_bonded_ids: set[str] = set()
+        # whether something is connected to the line-in, None until the speaker reported it
+        self._line_in_connected: bool | None = None
 
     @property
     def source_list(self) -> list[PlayerSource]:
-        """Return this player's sources; a service we did not map is listed only while it plays."""
+        """
+        Return this player's sources, with the line-in of the speakers of its household.
+
+        A service we did not map is listed only while it plays, and so is the line-in of
+        another speaker that has nothing connected to it.
+        """
         # the entry of such a service can outlive the source it stands for: once a paused
         # session is given up on, the speaker keeps reporting it and rebuilds the entry
         return [
-            x
-            for x in self._attr_source_list
-            if x.id in PLAYER_SOURCE_MAP or x.id == self._attr_active_source
+            *(
+                x
+                for x in self._attr_source_list
+                if x.id in PLAYER_SOURCE_MAP or x.id == self._attr_active_source
+            ),
+            *self._household_line_ins(),
         ]
 
     @property
     def announcement_features(self) -> set[AnnouncementFeature]:
         """Return SUPPORTS_VOLUME and COORDINATES_START: clips honour the level and start in step."""
         return {AnnouncementFeature.SUPPORTS_VOLUME, AnnouncementFeature.COORDINATES_START}
+
+    @property
+    def fetches_files(self) -> bool:
+        """Return True: a speaker pauses, resumes and seeks by asking for a part of a track."""
+        return True
 
     @property
     def group_controller(self) -> SonosGroup:
@@ -271,10 +315,12 @@ class SonosPlayer(PlayerProtocol):
         assert self.device_info.ip_address is not None  # for type checking
         # connect the player first so we can fail early
         self.client = SonosLocalApiClient(
-            self.device_info.ip_address, self.mass.http_session_no_ssl
+            self.device_info.ip_address, self.mass.http_session_no_ssl, self._api_port
         )
         provider = cast("SonosPlayerProvider", self._provider)
-        self.upnp = SonosSpeakerUpnp(provider.upnp, self.device_info.ip_address, self.logger)
+        self.upnp = SonosSpeakerUpnp(
+            provider.upnp, self.device_info.ip_address, self._upnp_port, self.logger
+        )
         await self._connect(False)
 
         # collect supported features
@@ -293,7 +339,7 @@ class SonosPlayer(PlayerProtocol):
         _supported_features.add(PlayerFeature.OPTIONS)
         # the speaker sends no event when its settings change; the first poll reads them
         self._attr_needs_poll = True
-        if self._wakeable:
+        if self._sleeps:
             _supported_features.add(PlayerFeature.POWER)
             self._attr_powered = True
         self._attr_supported_features = _supported_features
@@ -316,8 +362,6 @@ class SonosPlayer(PlayerProtocol):
         if mac_address and is_valid_mac_address(mac_address):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
 
-        if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
-            self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_LINE_IN])
         if SonosCapability.HT_PLAYBACK in self.discovery_info["device"]["capabilities"]:
             self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_TV])
         if SonosCapability.AIRPLAY in self.discovery_info["device"]["capabilities"]:
@@ -450,6 +494,7 @@ class SonosPlayer(PlayerProtocol):
         if self.player is None:
             return
         listener = self._listen_task
+        not_a_player = False
         try:
             # from what a power cut leaves: a connection to the speaker as it was answers
             # nothing, and a reconnect that still runs may hang on it
@@ -462,8 +507,11 @@ class SonosPlayer(PlayerProtocol):
             if await self._is_reachable() and self.player is not None:
                 with contextlib.suppress(ConnectionFailed, CannotConnect, ClientError):
                     await self._connect()
+        except NotAPlayer:
+            # part of another player's set: connecting again fails the same way
+            not_a_player = True
         finally:
-            if self.player is not None and not self.connected:
+            if self.player is not None and not self.connected and not not_a_player:
                 # not up yet, or the wait for it was ended before it answered
                 self.reconnect(5)
         if not self.connected:
@@ -533,7 +581,7 @@ class SonosPlayer(PlayerProtocol):
         """Follow (renew) the speaker's events, and poll the options they do not cover."""
         if not self.connected:
             return
-        await self.upnp.follow(self._on_rendering_change)
+        await self.upnp.follow(self._on_upnp_change, self._event_services)
         if not self.upnp.follows:
             await self._update_options()
         elif polled := [option for option in self._offered_options if option.polled]:
@@ -577,6 +625,9 @@ class SonosPlayer(PlayerProtocol):
         await self.group_controller.stop()
         self._forget_queue()
         self._announcement_media = None
+        if self._attr_playback_state == PlaybackState.PAUSED:
+            # a paused speaker has no change of state to report for the stop
+            self.update_attributes()
         self.update_state()
 
     async def pause(self) -> None:
@@ -589,13 +640,15 @@ class SonosPlayer(PlayerProtocol):
             self.logger.debug("Ignore PAUSE command: Player is synced to another player.")
             return
         active_source = self.player.active_source if self.player is not None else None
-        if active_source and self.mass.player_queues.get(active_source):
-            # Sonos seems to be bugged when playing our queue tracks and we send pause,
-            # it can't resume the current track and simply aborts/skips it
+        if (
+            active_source
+            and self.mass.player_queues.get(active_source)
+            and not self._plays_file(self.group_controller)
+        ):
+            # Sonos resumes a paused track by asking for the rest of it, which only a track
+            # served as a file answers: any other queue item starts over and is skipped,
             # so we stop the player instead.
             # https://github.com/music-assistant/support/issues/3758
-            # TODO: revisit this later once we implemented support for range requests
-            # as I have the feeling the pause issue is related to seek support (=range requests)
             await self.stop()
             return
         if not self.group_controller.playback_actions.can_pause:
@@ -737,6 +790,10 @@ class SonosPlayer(PlayerProtocol):
         self.bump_cloud_queue_version()
         # a new load serves fresh positions; what the old one fetched says nothing about it
         self._served_bindings.clear()
+        if (reported := self._attr_current_media) is not None and reported.queue_item_id:
+            # the item reported last belongs to the replaced load: until the speaker reports
+            # on this one, it would move the queue back to the item that played before
+            self._attr_current_media = replace(reported, queue_item_id=None)
 
         if media.media_type == MediaType.ANNOUNCEMENT:
             # We cannot use play_stream_url for announcements because Sonos treats those
@@ -764,11 +821,16 @@ class SonosPlayer(PlayerProtocol):
             self._queue_session_id = None
             self._flow_queue_id = None
             self.cloud_queue_id = media.source_id
+
+            def _load_starts(_sonos_session_id: str) -> None:
+                self._loaded_session_id = media.queue_session_id
+
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.protocol_id}/v2.3/"
             try:
                 await self.group_controller.play_cloud_queue(
                     cloud_queue_url,
                     item_id=self.wire_item_id(media.queue_item_id),
+                    on_session=_load_starts,
                 )
             except (Exception, asyncio.CancelledError) as err:
                 self._settle_failed_load(err, media.source_id, previous_queue_id)
@@ -800,8 +862,12 @@ class SonosPlayer(PlayerProtocol):
         # whatever the source turns out to be, it is not our queue any more
         self._forget_queue()
         self._announcement_media = None
-        if source == SOURCE_LINE_IN:
-            await self.group_controller.load_line_in(play_on_completion=True)
+        if device_id := _line_in_device_id(source):
+            # the speaker's own line-in is the one it loads by default
+            await self.group_controller.load_line_in(
+                device_id=None if device_id == self.protocol_id else device_id,
+                play_on_completion=True,
+            )
         elif source == SOURCE_TV:
             await self.client.player.load_home_theater_playback()
         else:
@@ -828,6 +894,7 @@ class SonosPlayer(PlayerProtocol):
         """
         if media.source_id:
             self.cloud_queue_id = media.source_id
+            self._loaded_session_id = media.queue_session_id
         await self.refresh_cloud_queue()
 
     def wire_item_id(self, queue_item_id: str | None, generation: int | None = None) -> str | None:
@@ -895,6 +962,21 @@ class SonosPlayer(PlayerProtocol):
             and self.from_current_load(wire_item_id)
             and self.served_item_id(wire_item_id) == self.current_media.queue_item_id
         )
+
+    def is_served_as_file(self, queue_item_id: str | None) -> bool:
+        """
+        Return whether an item of the loaded cloud queue is served to the speaker as a file.
+
+        The speaker pauses, resumes and seeks in such an item by itself.
+
+        :param queue_item_id: The MA queue item id.
+        """
+        if not queue_item_id or not (queue_id := self.cloud_queue_id):
+            return False
+        if (queue_item := self.mass.player_queues.get_item(queue_id, queue_item_id)) is None:
+            return False
+        output_codec = ContentType.try_parse(self.get_config_value(CONF_OUTPUT_CODEC, "flac"))
+        return self.mass.streams.serves_as_file(self, queue_item, output_codec)
 
     def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:
         """
@@ -980,7 +1062,8 @@ class SonosPlayer(PlayerProtocol):
         Return the requested item, the one before it and the items after it, as the queue is now.
 
         The items are addressed by queue position, each under an id the speaker reports back;
-        an item the speaker already holds an id for at another position gets an id of its own.
+        an item the speaker already holds an id for at another position gets an id of its own,
+        and so does every round of a queue (or track) that repeats.
 
         :param item_id: The id the speaker asked about, as it reports it; an omitted or empty
             one asks for the start of the queue.
@@ -1026,6 +1109,7 @@ class SonosPlayer(PlayerProtocol):
         # the speaker discards a window without the id it asked about and plays on out of the
         # one it holds: the position it asked about goes out under that id, whatever sits there
         asked = (center_index, item_id) if item_id and self.from_current_load(item_id) else None
+        repeat_round = self._repeat_round(asked[1]) if asked else 0
 
         items: list[PlayerMedia] = []
         wire_ids: list[str] = []
@@ -1035,12 +1119,16 @@ class SonosPlayer(PlayerProtocol):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
                 items.append(await self._player_media_for_speaker(queue_item, idx))
-                wire_ids.append(self._wire_id_at(queue_item.queue_item_id, idx, generation, asked))
+                wire_ids.append(
+                    self._wire_id_at(queue_item.queue_item_id, idx, generation, asked, repeat_round)
+                )
                 positions[idx] = wire_ids[-1]
 
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
+        upcoming_positions: dict[int, str] = {}
         last_index: int | str = center_index
+        last_position = center_index
         for _ in range(min(UPCOMING_ITEMS, max_upcoming)):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
@@ -1048,17 +1136,25 @@ class SonosPlayer(PlayerProtocol):
             next_index = self.mass.player_queues.index_by_id(queue_id, next_item.queue_item_id)
             if next_index is None:
                 break
+            if next_index <= last_position:
+                # repeat starts the queue (or the track) over
+                repeat_round += 1
             items.append(await self._player_media_for_speaker(next_item, next_index))
             wire_ids.append(
-                self._wire_id_at(next_item.queue_item_id, next_index, generation, asked)
+                self._wire_id_at(
+                    next_item.queue_item_id, next_index, generation, asked, repeat_round
+                )
             )
-            positions[next_index] = wire_ids[-1]
+            # the speaker fetches ahead of the item it plays: a position this window lists
+            # again in a later round is fetched for the round it reaches first
+            upcoming_positions.setdefault(next_index, wire_ids[-1])
             if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
                 # a track or a pair that repeats itself gets one more round, not a window
                 # full: the speaker is never refused the track it plays or the one before
                 # it, so it would keep repeating them after repeat was switched off
                 break
             last_index = next_item.queue_item_id
+            last_position = next_index
 
         window = SonosQueueWindow(
             items=items,
@@ -1067,7 +1163,7 @@ class SonosPlayer(PlayerProtocol):
             # check after the loop in case the window filled exactly up to the last item
             includes_end=self.mass.player_queues.get_next_item(queue_id, last_index) is None,
         )
-        self._window_item_ids = positions
+        self._window_item_ids = positions | upcoming_positions
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Serving Sonos queue window for %s on player %s: %s",
@@ -1079,9 +1175,9 @@ class SonosPlayer(PlayerProtocol):
 
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
-        Return whether the last cloud queue window the speaker read holds the given item.
+        Return whether the last cloud queue window the speaker read holds the item's position.
 
-        Only the item at its own queue position, served for the current load, counts.
+        Only a window served for the current load counts.
 
         :param queue_item: The queue item that follows the one playing out.
         """
@@ -1090,10 +1186,8 @@ class SonosPlayer(PlayerProtocol):
         index = self.mass.player_queues.index_by_id(queue_item.queue_id, queue_item.queue_item_id)
         if index is None or (wire_id := self._window_item_ids.get(index)) is None:
             return False
-        return (
-            self.from_current_load(wire_id)
-            and self.bare_item_id(wire_id) == queue_item.queue_item_id
-        )
+        # whichever item it read there: a held position gets the audio the queue has there now
+        return self.from_current_load(wire_id)
 
     async def set_members(
         self,
@@ -1313,7 +1407,9 @@ class SonosPlayer(PlayerProtocol):
             # an AirPlay sender of its own, such as a phone, started playing on the speaker
             self._own_airplay_session = False
         if container_type == ContainerType.LINEIN:
-            self._attr_active_source = SOURCE_LINE_IN
+            # Sonos names the speaker whose line-in plays; a member reads it from the group of
+            # its coordinator
+            self._attr_active_source = _playing_line_in(container)
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
             self._attr_active_source = SOURCE_TV
         elif container_type == ContainerType.AIRPLAY:
@@ -1354,10 +1450,15 @@ class SonosPlayer(PlayerProtocol):
 
         self._reflect_source_play_modes(active_group)
 
-        # special case: Sonos reports PAUSED state when MA stopped playback
-        if (
-            active_service == MusicService.MUSIC_ASSISTANT or self._own_airplay_session
-        ) and self._attr_playback_state == PlaybackState.PAUSED:
+        # special case: Sonos reports PAUSED state when MA stopped playback, and only
+        # plays on by itself from a pause in a track it gets as a file
+        if self._attr_playback_state == PlaybackState.PAUSED and (
+            self._own_airplay_session
+            or (
+                active_service == MusicService.MUSIC_ASSISTANT
+                and not (group_parent or self)._paused_in_file(active_group)
+            )
+        ):
             self._attr_playback_state = PlaybackState.IDLE
 
         # parse current media
@@ -1381,7 +1482,10 @@ class SonosPlayer(PlayerProtocol):
             )
             if active_service == MusicService.MUSIC_ASSISTANT and not foreign_session:
                 current_media.source_id = self._attr_active_source
-                current_media.queue_item_id = self._playing_item_id(current_item["id"])
+                # an item of a replaced load says nothing about the queue position; the
+                # coordinator made the load the group plays
+                if (group_parent or self).from_current_load(current_item["id"]):
+                    current_media.queue_item_id = self._playing_item_id(current_item["id"])
         # radio stream info
         if container and container.get("name") and active_group.playback_metadata.get("streamInfo"):
             images = container.get("images", [])
@@ -1406,6 +1510,11 @@ class SonosPlayer(PlayerProtocol):
                 current_media.title = container["name"]
             if not current_media.uri:
                 current_media.uri = container["id"]["objectId"]
+
+        if current_media and self._own_airplay_session:
+            # the speaker drops the artwork of our own AirPlay session as soon as our stream
+            # stops, while it still names it
+            current_media.image_url = None
 
         self._attr_current_media = current_media
 
@@ -1457,43 +1566,65 @@ class SonosPlayer(PlayerProtocol):
             self.mass.create_task(self.upnp.unfollow())
             if self.upnp.player_ip != self.client.player_ip:
                 provider = cast("SonosPlayerProvider", self._provider)
-                self.upnp = SonosSpeakerUpnp(provider.upnp, self.client.player_ip, self.logger)
+                self.upnp = SonosSpeakerUpnp(
+                    provider.upnp, self.client.player_ip, self._upnp_port, self.logger
+                )
             if self._marked_asleep:
                 self._attr_powered = True
                 self._marked_asleep = False
                 self._woken_from_sleep = True
             self.logger.debug("Connected to player API")
             init_ready = asyncio.Event()
-
-            async def _listener() -> None:
-                try:
-                    await self.client.start_listening(init_ready)
-                except Exception as err:
-                    if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
-                        self.logger.exception("Error in Sonos player listener")
-                finally:
-                    self.logger.info("Disconnected from player API")
-                    if self.connected and not self.mass.closing:
-                        # we didn't explicitly disconnect, try to reconnect
-                        # this should simply try to reconnect once and if that fails
-                        # we rely on mdns to pick it up again later
-                        await self._disconnect()
-                        self._attr_available = False
-                        self.update_state()
-                        self.reconnect(5)
-
             self._listen_task = self.mass.create_task(
-                _listener(), task_name=f"sonos_listener_{self.protocol_id}"
+                self._listen(init_ready),
+                task_name=f"sonos_listener_{self.protocol_id}",
+                # the listener logs its own errors, so only an expected NotAPlayer ends it
+                # with one
+                log_exceptions=False,
             )
             listen_task = self._listen_task
         # wait for the initial state fetch outside the lock: a listener that dies mid-init
         # never sets init_ready, and the reconnect it schedules needs the lock again
         await self._wait_for_listener_init(init_ready, listen_task, retry_on_fail)
 
+    async def _listen(self, init_ready: asyncio.Event) -> None:
+        """
+        Listen to the speaker's events until the connection ends.
+
+        :param init_ready: Set once the initial state of the speaker is fetched.
+        :raises NotAPlayer: The speaker is part of another player's set.
+        """
+        reconnect = True
+        try:
+            await self.client.start_listening(init_ready)
+        except NotAPlayer:
+            # part of another player's set: connecting again fails the same way
+            reconnect = False
+            raise
+        except Exception as err:
+            if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
+                self.logger.exception("Error in Sonos player listener")
+        finally:
+            self.logger.info("Disconnected from player API")
+            if self.connected and not self.mass.closing:
+                await self._disconnect()
+                self._attr_available = False
+                self.update_state()
+                if reconnect:
+                    # we didn't explicitly disconnect, try to reconnect
+                    # this should simply try to reconnect once and if that fails
+                    # we rely on mdns to pick it up again later
+                    self.reconnect(5)
+
     async def _wait_for_listener_init(
         self, init_ready: asyncio.Event, listen_task: asyncio.Task[None], retry_on_fail: int
     ) -> None:
-        """Wait for the listener's initial state fetch, raising when the listener dies first."""
+        """
+        Wait for the listener's initial state fetch, raising when the listener dies first.
+
+        :raises NotAPlayer: The speaker is part of another player's set, such as the second
+            speaker of a stereo pair.
+        """
         init_ready_wait = self.mass.create_task(init_ready.wait())
         try:
             await asyncio.wait({init_ready_wait, listen_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -1502,8 +1633,10 @@ class SonosPlayer(PlayerProtocol):
         if init_ready.is_set():
             return
         if retry_on_fail and self.provider.get_protocol(self.protocol_id):
-            # the listener's own cleanup schedules the retry
+            # the listener's own cleanup schedules the retry, if it is worth one
             return
+        if not listen_task.cancelled() and isinstance(err := listen_task.exception(), NotAPlayer):
+            raise err
         msg = f"Sonos player {self.protocol_id} disconnected during initialization"
         raise ConnectionFailed(ConnectionError(msg))
 
@@ -1544,9 +1677,11 @@ class SonosPlayer(PlayerProtocol):
             None,
         )
         if source_index is None:
-            if self._attr_active_source in PLAYER_SOURCE_MAP:
+            if self._attr_active_source in PLAYER_SOURCE_MAP or _line_in_device_id(
+                self._attr_active_source
+            ):
                 # a mapped source this player does not offer itself, such as the line-in of
-                # the coordinator it is synced to
+                # the coordinator it is synced to, or a line-in, listed for the household
                 return
             # a service we did not map: the user can not start it from MA and its transport
             # is whatever the speaker reports for it
@@ -1818,12 +1953,35 @@ class SonosPlayer(PlayerProtocol):
         # stop or an eviction
         return group.active_session_id is not None or self._playing_queue_id() is not None
 
+    def _plays_file(self, group: SonosGroup) -> bool:
+        """
+        Return whether the item a group plays out of our cloud queue is served to it as a file.
+
+        :param group: The group, as this player's connection reports it.
+        """
+        current_item = group.playback_metadata.get("currentItem")
+        if not current_item or not (wire_item_id := current_item.get("id")):
+            return False
+        return self.is_served_as_file(self.served_item_id(wire_item_id))
+
+    def _paused_in_file(self, group: SonosGroup) -> bool:
+        """
+        Return whether a group that reports PAUSED was paused in a track it gets as a file.
+
+        :param group: The group, as this player's connection reports it.
+        """
+        # a stop is reported as a pause too, also while the stop command still runs
+        if self.player is None or self.player.stop_called:
+            return False
+        return self._plays_file(group)
+
     def _wire_id_at(
         self,
         queue_item_id: str,
         index: int,
         generation: int | None,
         asked: tuple[int, str] | None,
+        repeat_round: int,
     ) -> str:
         """
         Return the id to serve a queue item under at a queue position.
@@ -1832,11 +1990,16 @@ class SonosPlayer(PlayerProtocol):
         :param index: The queue position.
         :param generation: The load generation to serve under; the current one when omitted.
         :param asked: The position the speaker asked about and the id it asked about there,
-            which that position is served under.
+            which that position is served under in the repeat round of that id.
+        :param repeat_round: How many times repeat started the queue over before this item.
         """
-        if asked is not None and asked[0] == index:
+        if asked is not None and asked[0] == index and self._repeat_round(asked[1]) == repeat_round:
             return asked[1]
         wire_id = self.wire_item_id(queue_item_id, generation) or queue_item_id
+        if repeat_round:
+            # the speaker keys what it fetched on the item id: a round that repeats the id of
+            # the round before is not fetched cleanly (skipped, or fetched twice at once)
+            wire_id = f"{wire_id}~r{repeat_round}"
         binding = self._served_bindings.get(wire_id)
         if binding is None or binding[0] == index:
             return wire_id
@@ -1844,6 +2007,12 @@ class SonosPlayer(PlayerProtocol):
         # moved the item since): the item itself gets an identity of its own where it sits now,
         # so a report on either cannot be read as the other
         return f"{wire_id}~{index}"
+
+    @staticmethod
+    def _repeat_round(wire_item_id: str) -> int:
+        """Return the repeat round an id the speaker reports was served in, 0 for the first."""
+        match = REPEAT_ROUND_SUFFIX.search(wire_item_id)
+        return int(match.group(1)) if match else 0
 
     def _playing_item_id(self, wire_item_id: str) -> str:
         """Return the queue item the speaker plays under a reported id, logging a stale one once."""
@@ -1996,6 +2165,11 @@ class SonosPlayer(PlayerProtocol):
     ) -> PlayerMedia:
         """Return the media for a queue item, with a position-based stream URL for this player."""
         media = await self.mass.player_queues.player_media_from_queue_item(queue_item)
+        # a start moves the queue to a new session before the speaker gets to load it, and the
+        # speaker acts on no load while an item it fetched waits for audio (the started track
+        # can hold the only stream slot). Under the session it loaded the stream server refuses
+        # such a fetch right away.
+        media.queue_session_id = self._loaded_session_id
         media.uri = await self.mass.streams.resolve_stream_url(
             self.protocol_id, media, queue_index=queue_index
         )
@@ -2290,7 +2464,7 @@ class SonosPlayer(PlayerProtocol):
     def _sleeps_as_power_off(self) -> bool:
         """Return whether the player reports sleep as powered off, MA controlling power natively."""
         return (
-            self._wakeable
+            self._sleeps
             and self.player is not None
             and self.player.power_control == PLAYER_CONTROL_NATIVE
         )
@@ -2328,8 +2502,10 @@ class SonosPlayer(PlayerProtocol):
         """Return whether the player API port answers a TCP connect."""
         try:
             async with asyncio.timeout(1):
-                # 1443 is the port aiosonos' websocket connects to
-                _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
+                # the port aiosonos' websocket connects to
+                _, writer = await asyncio.open_connection(
+                    self.device_info.ip_address, self.client.port
+                )
         except OSError, TimeoutError:
             return False
         writer.close()
@@ -2419,16 +2595,88 @@ class SonosPlayer(PlayerProtocol):
             task_id=f"sonos_options_{self.protocol_id}",
         )
 
-    def _on_rendering_change(self, changes: dict[str, str]) -> None:
+    def _on_upnp_change(self, changes: dict[str, str]) -> None:
+        if (line_in_connected := changes.get("LineInConnected")) is not None:
+            self._on_line_in_connected(line_in_connected == "1")
         if self.connected and not OPTION_EVENT_VARIABLES.isdisjoint(changes):
             self._schedule_options_read()
 
+    def _on_line_in_connected(self, connected: bool) -> None:
+        if connected == self._line_in_connected:
+            return
+        self._line_in_connected = connected
+        # the other speakers list this line-in only while something is connected to it
+        for speaker in self._household_speakers():
+            if speaker is not self:
+                speaker.update_state()
 
-def _is_wakeable(discovery_info: SonosDiscoveryInfo) -> bool:
-    """Return whether the discovered device features advertise Wake-on-LAN support."""
+    @property
+    def _has_line_in(self) -> bool:
+        return SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]
+
+    @property
+    def _event_services(self) -> tuple[str, ...]:
+        if self._has_line_in:
+            return (RENDERING_CONTROL_SERVICE, AUDIO_IN_SERVICE)
+        return (RENDERING_CONTROL_SERVICE,)
+
+    def _household_speakers(self) -> list[SonosPlayer]:
+        """Return the speakers of this speaker's household, itself included."""
+        household_id = self.discovery_info.get("householdId")
+        protocols = cast("list[SonosPlayer]", self.provider.protocols)
+        return [x for x in protocols if x.discovery_info.get("householdId") == household_id]
+
+    def _household_line_ins(self) -> list[PlayerSource]:
+        """
+        Return the line-in of the speakers of the household, its own first.
+
+        The line-in of another speaker is listed while something is connected to it, which is
+        not known before that speaker reported it, or while it plays here.
+        """
+        others = (x for x in self._household_speakers() if x is not self)
+        return [
+            replace(
+                PLAYER_SOURCE_MAP[SOURCE_LINE_IN],
+                id=_line_in_source_id(speaker.protocol_id),
+                owner_player_id=None if speaker is self else speaker.protocol_id,
+            )
+            for speaker in (self, *sorted(others, key=lambda x: x.display_name))
+            if speaker._has_line_in
+            and (
+                speaker is self
+                or speaker._line_in_connected
+                or _line_in_source_id(speaker.protocol_id) == self._attr_active_source
+            )
+        ]
+
+
+def _line_in_source_id(device_id: str) -> str:
+    """Return the source id of the line-in of a speaker."""
+    return f"{SOURCE_LINE_IN_OF}{device_id}"
+
+
+def _line_in_device_id(source_id: str) -> str | None:
+    """Return the speaker whose line-in a source id names, None for another source."""
+    if source_id.startswith(SOURCE_LINE_IN_OF):
+        return source_id.removeprefix(SOURCE_LINE_IN_OF)
+    return None
+
+
+def _playing_line_in(container: Container | None) -> str:
+    """Return the source id of the line-in a group plays, by the speaker Sonos names for it."""
+    # aiosonos does not declare the field yet
+    device_id = cast("dict[str, Any]", container or {}).get("lineInSource")
+    # without it, the line-in of no speaker in particular
+    return _line_in_source_id(device_id) if device_id else SOURCE_LINE_IN
+
+
+def _has_device_feature(discovery_info: SonosDiscoveryInfo, feature: str) -> bool:
+    """
+    Return whether a discovered speaker advertises a device feature.
+
+    :param discovery_info: The discovery info of the speaker.
+    :param feature: Name of the feature, as the speaker advertises it.
+    """
     # deviceFeatures is not modeled in aiosonos
     features = cast("dict[str, Any]", discovery_info["device"]).get("deviceFeatures", [])
-    return any(
-        isinstance(feature, dict) and feature.get("name") == DEVICE_FEATURE_WAKEABLE
-        for feature in features
-    )
+    return any(isinstance(x, dict) and x.get("name") == feature for x in features)

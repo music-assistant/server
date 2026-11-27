@@ -4,6 +4,7 @@ import re
 from unittest.mock import AsyncMock
 
 import pytest
+from auntie_sounds.models import Podcast, PodcastEpisode, Synopses, Titles
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
@@ -176,3 +177,20 @@ class TestBrowse:
         provider.browse_manager._get_playlist = AsyncMock()  # type: ignore[method-assign]
         await provider.browse_manager.browse(f"{path_prefix}playlists/pid")
         provider.browse_manager._get_playlist.assert_awaited_once_with("pid")
+
+    @pytest.mark.usefixtures("cache_tasks")
+    async def test_playlist_items_are_named_briefly(self, provider: BBCSoundsProvider) -> None:
+        """Test a playlist's episodes are named without a date or synopsis, like its clips."""
+        provider.client.content.get_playlist_contents.return_value = [  # type: ignore[attr-defined]
+            PodcastEpisode(
+                id="vpid",
+                pid="pid",
+                titles=Titles(primary="Newscast", entity_title="The Summit"),
+                synopses=Synopses(short="Leaders meet."),
+                container=Podcast(id="brand", title="Newscast", titles=Titles(primary="Newscast")),
+            )
+        ]
+
+        items = await provider.browse_manager._get_playlist("playlist_pid")
+
+        assert [item.name for item in items] == ["Newscast • The Summit"]

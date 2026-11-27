@@ -470,6 +470,9 @@ class TestFinalActiveGroupNewModel:
         group, member = self._group_of(controller, powered=None, protocol_class=_SessionedGroup)
 
         assert member.active_group == group.player_id
+        assert group.own_protocol is not None
+        assert group.own_protocol.counts_in(member.player_id)
+        assert not group.own_protocol.counts_in("other")
 
 
 class _LockingGroup(MockProtocol):
@@ -979,6 +982,8 @@ class TestPlayerBaseIsActiveSession:
         provider = MockProvider("test", instance_id="test", mass=mock_mass)
         _, protocol = attach_mock(provider, "p1", "P1")
         assert protocol.is_active_session is False
+        protocol._attr_group_members = ["p1", "p2"]
+        assert not protocol.counts_in("p2")
 
 
 def _attach(provider: MockProvider, player_id: str, name: str, **kwargs: Any) -> MockProtocol:
@@ -1246,7 +1251,7 @@ class TestAdHocLeadershipTransfer:
         leader_protocol.set_members.assert_awaited_once_with(
             player_ids_to_add=None, player_ids_to_remove=[_device("visualizer")]
         )
-        queue_stop.assert_awaited_once_with("leader")
+        queue_stop.assert_awaited_once_with("leader", keep_sleep_timer=False)
         controller._handle_cmd_stop.assert_not_awaited()
 
     async def test_handle_set_members_dissolves_leader_when_idle(
@@ -1273,7 +1278,7 @@ class TestAdHocLeadershipTransfer:
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         # an idle queue is where leftovers hide: its session and item buffers outlive
         # the playback that already ended, so the dissolve tears them down too
-        queue_stop.assert_awaited_once_with("leader")
+        queue_stop.assert_awaited_once_with("leader", keep_sleep_timer=False)
         controller._handle_cmd_stop.assert_not_awaited()
 
     async def test_transfer_stops_nothing_on_the_way_out(self, mock_mass: MagicMock) -> None:
@@ -1339,7 +1344,7 @@ class TestDissolvedLeaderEndsTheQueue:
 
         await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
 
-        queue_stop.assert_awaited_once_with("leader")
+        queue_stop.assert_awaited_once_with("leader", keep_sleep_timer=False)
         # the queue stop issues the device stop itself
         device_stop.assert_not_awaited()
 

@@ -14,6 +14,7 @@ from music_assistant.helpers import audio as audio_helper
 from music_assistant.helpers.audio import (
     build_concat_filelist,
     calculate_content_length,
+    create_streaming_wave_header,
     get_output_format_key,
     parse_loudnorm,
     realtime_pcm_pacer,
@@ -45,6 +46,16 @@ def test_mp3_content_length_uses_encoder_bitrate() -> None:
         AudioFormat(content_type=ContentType.MP3),
         seconds,
     ) == int(((DEFAULT_MP3_BIT_RATE * 1000) / 8) * seconds)
+
+
+def test_wav_content_length_counts_its_header() -> None:
+    """A WAV stream is its samples behind a header of 44 bytes."""
+    wav = AudioFormat(content_type=ContentType.WAV, sample_rate=48000, bit_depth=24)
+    pcm = AudioFormat(content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=24)
+
+    assert calculate_content_length(wav, 10) == 44 + 10 * 48000 * 6
+    assert calculate_content_length(pcm, 10) == 10 * 48000 * 6
+    assert len(create_streaming_wave_header(wav)) == 44
 
 
 def test_build_concat_filelist_plain_paths() -> None:

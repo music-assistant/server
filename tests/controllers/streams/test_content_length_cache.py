@@ -62,6 +62,7 @@ def _controller(queue_item: QueueItem) -> MagicMock:
         return_value=AudioFormat(content_type=ContentType.FLAC, sample_rate=44100)
     )
     ctrl.audio.fade_into_pending.return_value = False
+    ctrl.serves_as_file.return_value = False
     return ctrl
 
 

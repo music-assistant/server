@@ -14,7 +14,11 @@ from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import PlayerFeature, PlayerType, ProtocolRole
 
-from music_assistant.constants import CONF_MUTE_CONTROL, CONF_VOLUME_CONTROL
+from music_assistant.constants import (
+    CONF_MUTE_CONTROL,
+    CONF_VOLUME_CONTROL,
+    PLAYER_CONTROL_PROTOCOL,
+)
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.player import SnapCastPlayer
 from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
@@ -150,10 +154,21 @@ class TestSnapCastVolumeFeatureExposure:
         assert player._mute_control == sendspin_player.protocol_id
 
     def test_volume_control_for_output_is_that_output_before_it_is_marked_active(
-        self, snapcast_player: SnapCastPlayer, sendspin_player: MockProtocol
+        self, mock_mass: MagicMock, snapcast_player: SnapCastPlayer, sendspin_player: MockProtocol
     ) -> None:
-        """The volume of an output that is about to play is owned by it, not by the snapclient."""
+        """
+        The volume of an output that is about to play is owned by it, not by the snapclient.
+
+        The user selected "auto" as the volume and mute control of the player.
+        """
         player = _player(snapcast_player)
+        mock_mass.config.get_player_value = MagicMock(
+            side_effect=lambda player_id, key, default=None: (
+                PLAYER_CONTROL_PROTOCOL
+                if player_id == player.player_id and key in (CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
+                else default
+            )
+        )
 
         assert player.active_output_protocol in (None, "native")
         assert (

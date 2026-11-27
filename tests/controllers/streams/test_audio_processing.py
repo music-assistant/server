@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+import cmath
+import math
+from collections.abc import AsyncGenerator, Sequence
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, cast
@@ -48,6 +50,12 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import (
+    CONF_CROSSOVER_FREQUENCY,
+    CONF_HIGH_PASS_MAIN_SPEAKERS,
+    CONF_SUBWOOFER_LEVEL,
+    CONF_SUBWOOFER_OWN_CROSSOVER,
+)
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import (
     AudioOutputPlan,
@@ -295,6 +303,36 @@ def test_float_headroom_alone_does_not_break_the_bit_perfect_claim() -> None:
 
     chain = cast("AudioProcessingChain", streamdetails.audio_processing)
     assert chain.outputs[0].fidelity.bit_perfect is True
+
+
+@pytest.mark.parametrize("alters_audio", [False, True])
+def test_an_output_with_a_hidden_transform_is_not_bit_perfect(alters_audio: bool) -> None:
+    """An output whose plan alters the samples with a transform it does not list is not bit perfect."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    streamdetails.audio_format = _format(ContentType.FLAC, 44100, 24)
+    headroom = _format(ContentType.PCM_F32LE, 44100, 32)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=headroom,
+        pcm_format=headroom,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = headroom
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 44100, 24)
+    lossless_plan.alters_audio = alters_audio
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.outputs[0].fidelity.bit_perfect is not alters_audio
 
 
 def test_shared_output_destinations_are_registered_atomically() -> None:
@@ -1017,6 +1055,259 @@ def test_player_output_plan_plays_the_channel_of_a_speaker(
     assert plan.filter_params == ["volume=-2.0dB", pan]
     assert plan.dsp_config_id == "set-1"
     assert plan.output_details.source_channel is None
+    assert not plan.alters_audio
+
+
+MONO_SUM = "pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"
+LOW_PASS_80 = "low-pass 80 Hz Q 0.707"
+HIGH_PASS_80 = "high-pass 80 Hz Q 0.707"
+
+
+def _set_mass(values: dict[str, Any], *, input_gain: float = 0.0) -> MagicMock:
+    """
+    Return a mocked server whose multi-channel player stores these settings.
+
+    :param values: The stored values of the protocol of the player, by key.
+    :param input_gain: The input gain of the DSP of the player, which is off without one.
+    """
+    mass = MagicMock()
+    mass.players.get_output_protocol.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(
+        enabled=bool(input_gain), input_gain=input_gain
+    )
+    mass.config.get_protocol_value.side_effect = lambda _id, key, default=None: values.get(
+        key, default
+    )
+    return mass
+
+
+def _biquad(param: str | ComplexFilter) -> dict[str, float] | None:
+    """Return the coefficients of a biquad filter, None for another filter."""
+    if not isinstance(param, str) or not param.startswith("biquad="):
+        return None
+    pairs = (part.split("=") for part in param.removeprefix("biquad=").split(":"))
+    return {name: float(value) for name, value in pairs}
+
+
+def _describe(params: Sequence[str | ComplexFilter], sample_rate: int) -> list[str | ComplexFilter]:
+    """
+    Return the filters, with each biquad told by its kind, corner frequency and Q.
+
+    :param params: The filter params of an output plan.
+    :param sample_rate: The sample rate the filters run at.
+    """
+    described: list[str | ComplexFilter] = []
+    for param in params:
+        if (c := _biquad(param)) is None:
+            described.append(param)
+            continue
+        w_0 = math.acos(-c["a1"] / 2)
+        q = math.sin(w_0) / (2 * (c["a0"] - 1))
+        kind = "high-pass" if c["b1"] < 0 else "low-pass"
+        described.append(f"{kind} {w_0 * sample_rate / (2 * math.pi):.0f} Hz Q {q:.3f}")
+    return described
+
+
+def _response(params: Sequence[str | ComplexFilter], sample_rate: int, frequency: float) -> complex:
+    """Return the complex response of the biquads among the filters at a frequency."""
+    z_1 = cmath.exp(-2j * math.pi * frequency / sample_rate)
+    response = complex(1)
+    for param in params:
+        if (c := _biquad(param)) is not None:
+            response *= (c["b0"] + c["b1"] * z_1 + c["b2"] * z_1**2) / (
+                c["a0"] + c["a1"] * z_1 + c["a2"] * z_1**2
+            )
+    return response
+
+
+def _db(value: complex) -> float:
+    """Return the level of a response in dB."""
+    return 20 * math.log10(abs(value))
+
+
+@pytest.mark.parametrize(
+    ("channel", "with_subwoofer", "values", "filters"),
+    [
+        pytest.param(
+            SpeakerChannel.LFE, True, {}, [MONO_SUM, LOW_PASS_80, LOW_PASS_80], id="subwoofer"
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_SUBWOOFER_LEVEL: -3},
+            [MONO_SUM, LOW_PASS_80, LOW_PASS_80, "volume=-3dB"],
+            id="subwoofer at its own level",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_SUBWOOFER_LEVEL: 6},
+            [MONO_SUM, LOW_PASS_80, LOW_PASS_80],
+            id="subwoofer at a stored level above 0 dB",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_CROSSOVER_FREQUENCY: 120},
+            [MONO_SUM, "low-pass 120 Hz Q 0.707", "low-pass 120 Hz Q 0.707"],
+            id="subwoofer at another crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_SUBWOOFER_OWN_CROSSOVER: True, CONF_SUBWOOFER_LEVEL: -4},
+            [MONO_SUM, "volume=-4dB"],
+            id="subwoofer with its own crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.LFE,
+            True,
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False},
+            [MONO_SUM, LOW_PASS_80],
+            id="subwoofer next to main speakers at full range",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {},
+            ["pan=stereo|c0=FL|c1=FL", HIGH_PASS_80, HIGH_PASS_80],
+            id="main speaker",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {CONF_SUBWOOFER_OWN_CROSSOVER: True, CONF_CROSSOVER_FREQUENCY: 150},
+            ["pan=stereo|c0=FL|c1=FL", "high-pass 150 Hz Q 0.707", "high-pass 150 Hz Q 0.707"],
+            id="main speaker next to a subwoofer with its own crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False},
+            ["pan=stereo|c0=FL|c1=FL"],
+            id="main speaker at full range",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            True,
+            {CONF_HIGH_PASS_MAIN_SPEAKERS: False, CONF_SUBWOOFER_OWN_CROSSOVER: True},
+            ["pan=stereo|c0=FL|c1=FL"],
+            id="main speaker at full range next to a subwoofer with its own crossover",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_LEFT,
+            False,
+            {},
+            ["pan=stereo|c0=FL|c1=FL"],
+            id="main speaker while the subwoofer is away",
+        ),
+        pytest.param(
+            None,
+            True,
+            {},
+            [HIGH_PASS_80, HIGH_PASS_80],
+            id="main speaker that plays every channel",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_CENTER,
+            True,
+            {},
+            [MONO_SUM, HIGH_PASS_80, HIGH_PASS_80],
+            id="center speaker",
+        ),
+        pytest.param(
+            SpeakerChannel.FRONT_CENTER,
+            False,
+            {},
+            [MONO_SUM],
+            id="center speaker while the subwoofer is away",
+        ),
+    ],
+)
+def test_player_output_plan_splits_the_bass_between_a_subwoofer_and_the_main_speakers(
+    channel: SpeakerChannel | None,
+    with_subwoofer: bool,
+    values: dict[str, Any],
+    filters: list[str],
+) -> None:
+    """
+    The subwoofer of a multi-channel player plays the bass, and its main speakers the rest.
+
+    The DSP of the player runs first. The subwoofer gets the mono sum, low-passed at the
+    crossover unless it has a crossover of its own, at its own level. A main speaker is
+    high-passed at the crossover while the subwoofer plays, unless the user lets it play the
+    full range. The crossover is no filter the user set, so it is not reported as one, but it
+    alters the audio of the player: every speaker reports that, also one it leaves as it is.
+    The mono sum is reported as one.
+    """
+    audio = StreamsAudio(cast("Any", _set_mass(values, input_gain=-2.0)))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=channel, with_subwoofer=with_subwoofer
+    )
+
+    assert _describe(plan.filter_params, 48000) == ["volume=-2.0dB", *filters]
+    assert plan.output_details.dsp.filters == []
+    assert plan.output_details.source_channel == (AudioChannel.ALL if MONO_SUM in filters else None)
+    splits_bass = (channel == SpeakerChannel.LFE or with_subwoofer) and (
+        values.get(CONF_HIGH_PASS_MAIN_SPEAKERS, True)
+        or not values.get(CONF_SUBWOOFER_OWN_CROSSOVER, False)
+        or values.get(CONF_SUBWOOFER_LEVEL, 0) < 0
+    )
+    assert plan.alters_audio == splits_bass
+
+
+@pytest.mark.parametrize("sample_rate", [44100, 48000, 96000, 192000])
+def test_the_crossover_of_a_subwoofer_and_its_main_speakers_sums_flat(sample_rate: int) -> None:
+    """
+    The low-pass of the subwoofer and the high-pass of the main speakers add up to a flat level.
+
+    Each is 6 dB down at the crossover; an octave away from it, on its own side, each is more
+    than 24 dB down.
+    """
+    audio = StreamsAudio(cast("Any", _set_mass({})))
+    audio_format = _format(ContentType.PCM_F32LE, sample_rate, 32)
+
+    subwoofer = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=SpeakerChannel.LFE, with_subwoofer=True
+    ).filter_params
+    main = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=SpeakerChannel.FRONT_LEFT, with_subwoofer=True
+    ).filter_params
+
+    for frequency in (20, 30, 40, 60, 80, 100, 120, 160, 200, 300, 440, 1000):
+        summed = _response(subwoofer, sample_rate, frequency) + _response(
+            main, sample_rate, frequency
+        )
+        assert _db(summed) == pytest.approx(0.0, abs=0.01), frequency
+    assert _db(_response(subwoofer, sample_rate, 80)) == pytest.approx(-6.02, abs=0.05)
+    assert _db(_response(main, sample_rate, 80)) == pytest.approx(-6.02, abs=0.05)
+    assert _db(_response(subwoofer, sample_rate, 160)) < -24
+    assert _db(_response(main, sample_rate, 40)) < -24
+    assert _db(_response(subwoofer, sample_rate, 440)) < -55
+    assert _db(_response(subwoofer, sample_rate, 20)) == pytest.approx(0.0, abs=0.05)
+    assert _db(_response(main, sample_rate, 1000)) == pytest.approx(0.0, abs=0.05)
+
+
+def test_a_subwoofer_next_to_main_speakers_at_full_range_leaves_no_dip_at_the_crossover() -> None:
+    """
+    With main speakers that play the full range, the subwoofer adds bass without a dip.
+
+    Its gentler low-pass is 3 dB down at the crossover, and is still well down an octave
+    above it.
+    """
+    audio = StreamsAudio(cast("Any", _set_mass({CONF_HIGH_PASS_MAIN_SPEAKERS: False})))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    subwoofer = audio.get_player_output_plan(
+        "set-1", audio_format, audio_format, channel=SpeakerChannel.LFE, with_subwoofer=True
+    ).filter_params
+
+    assert _db(_response(subwoofer, 48000, 80)) == pytest.approx(-3.01, abs=0.05)
+    assert _db(_response(subwoofer, 48000, 440)) < -29
+    assert _db(1 + _response(subwoofer, 48000, 80)) == pytest.approx(1.76, abs=0.05)
+    assert min(_db(1 + _response(subwoofer, 48000, f)) for f in range(20, 1001, 5)) > -2
 
 
 def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:
@@ -1940,7 +2231,7 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
         uri="test://track",
         seek_position=0,
         seconds_streamed=0,
-        duration=300,
+        duration=4,
         is_realtime=False,
     )
     queue_track = SimpleNamespace(
@@ -1950,7 +2241,7 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
         media_type=MediaType.TRACK,
         media_item=None,
         streamdetails=streamdetails,
-        duration=300,
+        duration=4,
         extra_attributes={},
     )
     queue = SimpleNamespace(
@@ -2005,20 +2296,526 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
         assert streamdetails.seconds_streamed == 3
         assert entry.seconds_streamed == 3
         mass.player_queues.queue_buffer_completed.assert_called_once()
-    expected_duration = 300 if source_cancelled else 3
+    # a clean source delivered the 4 s item within tolerance, so its 3 s is the length;
+    # a released one stopped short and the item keeps its declared length
+    expected_duration = 4 if source_cancelled else 3
     assert streamdetails.duration == expected_duration
     assert queue_track.duration == expected_duration
     assert entry.duration == (None if source_cancelled else 3)
 
 
+def _flow_track(
+    pcm_format: AudioFormat,
+    item_id: str,
+    *,
+    duration: int = 300,
+    still_delivering: bool = False,
+    aborted: bool = False,
+) -> SimpleNamespace:
+    """
+    Return a queue item a flow stream plays.
+
+    :param pcm_format: PCM format the flow stream is rendered in.
+    :param item_id: Id the item streams under.
+    :param duration: The item's declared length.
+    :param still_delivering: Whether the source is still delivering instead of having ended.
+    :param aborted: Whether a stop released the source mid-item instead.
+    """
+    item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id=item_id,
+        name=item_id,
+        media_type=MediaType.TRACK,
+        media_item=None,
+        origin=None,
+        streamdetails=SimpleNamespace(
+            audio_format=pcm_format,
+            # the source has delivered all it ever will, so its tail may be held back
+            buffer=_bare_buffer(cancelled=False, eof=True, has_error=False),
+            fade_in=False,
+            stream_error=False,
+            tail_overlap=None,
+            uri=f"test://{item_id}",
+            seek_position=0,
+            seconds_streamed=0,
+            duration=duration,
+            is_realtime=False,
+        ),
+        duration=duration,
+        extra_attributes={},
+    )
+    if still_delivering:
+        ready = asyncio.Event()
+        ready.set()
+        item.streamdetails.buffer = _bare_buffer(
+            cancelled=False,
+            has_error=False,
+            is_valid=lambda *_args: True,
+            duration_available=duration,
+            eof=False,
+            ready=ready,
+        )
+    elif aborted:
+        # a stop released the buffer: it ends cleanly after what it delivered, and no
+        # new fade may be planned against it
+        ready = asyncio.Event()
+        ready.set()
+        item.streamdetails.buffer = _bare_buffer(
+            cancelled=True,
+            eof=True,
+            has_error=False,
+            is_valid=lambda *_args: False,
+            duration_available=duration,
+            ready=ready,
+        )
+    return item
+
+
+def _flow_context(
+    *,
+    announced_item: SimpleNamespace,
+    load_next: list[Any] | Exception | type[Exception],
+) -> tuple[StreamsAudio, MagicMock, Any, Any]:
+    """
+    Return a crossfading flow stream and the play log it writes to.
+
+    :param announced_item: The item the queue announces after the one that plays.
+    :param load_next: What loading the next queue item returns, in order, or the error
+        that ends the queue.
+    """
+    mass = MagicMock()
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=load_next)
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.get_next_item.return_value = announced_item
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    mass.config.get_raw_core_config_value.return_value = 8
+    protocol = MagicMock()
+    protocol.config.get_value.return_value = "fixed_48000"
+    protocol.get_supported_sample_rates.return_value = []
+    mass.players.get_output_protocol.return_value = protocol
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    return audio, mass, queue, queue_data
+
+
+def _flow_smart_fade(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: StreamsAudio,
+    *,
+    fadein_trimmed: float = 0.0,
+    crossfade: float = 8.0,
+    pre_crossfade: float = 0.0,
+) -> AsyncMock:
+    """
+    Stub the smart fade the flow's boundary plans, trimmed and overlapping as asked.
+
+    :param fadein_trimmed: Head of the incoming item the plan trims away.
+    :param crossfade: Overlap the plan blends.
+    :param pre_crossfade: Outgoing audio the blend plays before the overlap.
+    """
+    build = AsyncMock(
+        return_value=SimpleNamespace(
+            timing_info=SimpleNamespace(
+                fadein_trimmed_duration=fadein_trimmed,
+                crossfade_duration=crossfade,
+                pre_crossfade_duration=pre_crossfade,
+            )
+        )
+    )
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+    return build
+
+
+def _flow_mixer(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: StreamsAudio,
+    *,
+    plays_the_incoming_audio: bool = True,
+) -> list[int]:
+    """
+    Stub the boundary mix with a lossless stand-in, so the emitted total stays checkable.
+
+    :param plays_the_incoming_audio: Whether the blend passes the incoming audio on; a mix
+        that swallows it stands in for a head the plan trimmed away.
+    :return: Length of the incoming audio each blend consumed, per mix call.
+    """
+    consumed: list[int] = []
+
+    async def _mix(
+        _smart_fade: object,
+        *,
+        fade_in_part: bytes | AsyncGenerator[bytes],
+        fade_out_part: bytes,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        # the outgoing side first, like a blend that starts before the incoming audio lands
+        yield fade_out_part
+        incoming = (
+            [fade_in_part]
+            if isinstance(fade_in_part, bytes)
+            else [chunk async for chunk in fade_in_part]
+        )
+        consumed.append(sum(len(chunk) for chunk in incoming))
+        if plays_the_incoming_audio:
+            for chunk in incoming:
+                yield chunk
+
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _mix)
+    return consumed
+
+
+def _flow_source(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: StreamsAudio,
+    pcm_format: AudioFormat,
+    delivered_seconds: int | dict[str, int],
+) -> None:
+    """
+    Serve the flow's item streams with audible PCM.
+
+    :param delivered_seconds: Audio each item's source delivers, or one length per item id.
+    """
+
+    async def _item_stream(
+        queue_item: Any, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        seconds = (
+            delivered_seconds[queue_item.queue_item_id]
+            if isinstance(delivered_seconds, dict)
+            else delivered_seconds
+        )
+        # audible PCM: the holdback reads zero-filled bytes as trailing silence
+        for _ in range(seconds):
+            yield b"\x10\x20" * (pcm_format.pcm_sample_size // 2)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+
+
+@pytest.mark.asyncio
+async def test_flow_crossfade_keeps_the_length_of_an_item_whose_source_ends_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crossfaded item whose source ends mid-track keeps its own length in the play log."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 300
+    delivered_seconds = 40
+    first_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    second_item = _flow_track(
+        pcm_format, "item-2", duration=declared_duration, still_delivering=True
+    )
+    audio, mass, queue, queue_data = _flow_context(
+        announced_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    build = _flow_smart_fade(monkeypatch, audio)
+    mix_calls = _flow_mixer(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, delivered_seconds)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    # the item really was blended into the next one, so this is the overlap path
+    build.assert_awaited_once()
+    assert len(mix_calls) == 1
+    faded = {
+        (call.kwargs["queue_item_id"], call.kwargs["queue_processing"].crossfade_mode)
+        for call in mass.streams.audio_processing.update_item_context.call_args_list
+    }
+    assert faded >= {
+        ("item-1", CrossfadeMode.STANDARD_CROSSFADE),
+        ("item-2", CrossfadeMode.STANDARD_CROSSFADE),
+    }
+    # 40 s of a 300 s item is a source that stopped, not the item's end
+    assert first_item.streamdetails.duration == first_item.duration == declared_duration
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.queue_item_id == "item-1"
+    assert entry.seconds_streamed == delivered_seconds
+    assert entry.duration is None
+
+
+@pytest.mark.asyncio
+async def test_flow_end_does_not_hand_the_held_tail_a_duration_for_a_short_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tail held at the flow end is played out, but does not invent a length for it."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 300
+    delivered_seconds = 40
+    first_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    # the queue still announces an item after this one, so its tail is held back for a fade
+    queued_item = _flow_track(
+        pcm_format, "item-2", duration=declared_duration, still_delivering=True
+    )
+    # the announced item turns out unplayable while loading, so the queue ends here, with a
+    # tail of the last played item still in hand
+    audio, mass, queue, queue_data = _flow_context(announced_item=queued_item, load_next=QueueEmpty)
+    build = _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, delivered_seconds)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    total_bytes = 0
+    async for chunk in stream:
+        total_bytes += len(chunk)
+
+    # no second item ever played, so nothing was blended
+    build.assert_not_awaited()
+    # the tail was held back (only 32 s of the 40 s source went out during the item) and
+    # played out at the flow end instead of being dropped with the stream
+    assert total_bytes == delivered_seconds * pcm_format.pcm_sample_size
+    assert mass.player_queues.queue_buffer_completed.call_args.args == ("queue-1", True)
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.queue_item_id == "item-1"
+    assert entry.seconds_streamed == delivered_seconds
+    # the source stopped mid-track, so the tail is not the item's length and may not
+    # become its duration now that it has played out
+    assert entry.duration is None
+    assert first_item.streamdetails.duration == first_item.duration == declared_duration
+
+
+@pytest.mark.asyncio
+async def test_flow_keeps_the_declared_length_of_a_resumed_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resumed item's length is not rebuilt from a seek that the source did not take."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 4
+    first_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    # the source did not take the seek, so it serves the whole item from its start
+    first_item.streamdetails.seek_position = 100
+    queued_item = _flow_track(
+        pcm_format, "item-2", duration=declared_duration, still_delivering=True
+    )
+    audio, _mass, queue, queue_data = _flow_context(
+        announced_item=queued_item, load_next=QueueEmpty
+    )
+    _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, declared_duration)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.seek_position == 100
+    assert entry.duration is None
+    assert first_item.streamdetails.duration == first_item.duration == declared_duration
+
+
+@pytest.mark.asyncio
+async def test_flow_measures_an_item_that_is_longer_than_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An item that was not resumed and plays on past a too short declared length is measured."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    delivered_seconds = 6
+    first_item = _flow_track(pcm_format, "item-1", duration=1)
+    queued_item = _flow_track(pcm_format, "item-2", duration=1, still_delivering=True)
+    audio, _mass, queue, queue_data = _flow_context(
+        announced_item=queued_item, load_next=QueueEmpty
+    )
+    _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, delivered_seconds)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    assert queue_data.flow_mode_stream_log[0].duration == delivered_seconds
+    assert first_item.streamdetails.duration == first_item.duration == delivered_seconds
+
+
+@pytest.mark.asyncio
+async def test_flow_end_hands_the_held_tail_to_the_item_it_belongs_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tail held for a fade is credited to its own item, not to a later one without audio."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    delivered_seconds = 40
+    first_item = _flow_track(pcm_format, "item-1", duration=300)
+    silent_item = _flow_track(pcm_format, "item-2", duration=300, still_delivering=True)
+    queued_item = _flow_track(pcm_format, "item-3", duration=300, still_delivering=True)
+    audio, _mass, queue, _queue_data = _flow_context(
+        announced_item=queued_item, load_next=[silent_item, QueueEmpty]
+    )
+    _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, {"item-1": delivered_seconds, "item-2": 0})
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    assert first_item.streamdetails.seconds_streamed == delivered_seconds
+    assert silent_item.streamdetails.seconds_streamed == 0
+
+
+@pytest.mark.asyncio
+async def test_flow_end_does_not_give_an_aborted_last_item_the_previous_items_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An aborted last item does not inherit the previous item's measured length."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 300
+    delivered_seconds = 40
+    measured_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    # a stop released this item's source after 40 s, so it ends short of its own length
+    aborted_item = _flow_track(pcm_format, "item-2", duration=declared_duration, aborted=True)
+    # the queue still announces an item after it, so its tail is held back for a fade, but
+    # loading that item ends the queue, leaving the held tail to the flow's end
+    queued_item = _flow_track(
+        pcm_format, "item-3", duration=declared_duration, still_delivering=True
+    )
+    audio, mass, queue, queue_data = _flow_context(
+        announced_item=queued_item, load_next=[aborted_item, QueueEmpty]
+    )
+    build = _flow_smart_fade(monkeypatch, audio)
+    _flow_source(
+        monkeypatch,
+        audio,
+        pcm_format,
+        {
+            "item-1": declared_duration,
+            "item-2": delivered_seconds,
+            "item-3": delivered_seconds,
+        },
+    )
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", measured_item), pcm_format, session_id="session-1"
+    )
+
+    total_bytes = 0
+    async for chunk in stream:
+        total_bytes += len(chunk)
+
+    # the aborted item's buffer refuses a fade, so neither the boundary into it nor the
+    # one after it blended anything
+    build.assert_not_awaited()
+    entries = queue_data.flow_mode_stream_log
+    assert [entry.queue_item_id for entry in entries] == ["item-1", "item-2"]
+    # item-1 played out and was measured, so its entry carries its length
+    assert entries[0].duration == declared_duration
+    # the aborted item did not: the flow end plays its held tail out, but the length
+    # measured for item-1 must not stand in for item-2's
+    assert entries[1].duration is None
+    assert aborted_item.streamdetails.duration == aborted_item.duration == declared_duration
+    assert measured_item.streamdetails.duration == declared_duration
+    # the aborted item's held tail was played out at the flow's end, not dropped: every
+    # second either source delivered reached the player
+    assert total_bytes == (declared_duration + delivered_seconds) * pcm_format.pcm_sample_size
+    # the flow's end folded that tail into the aborted item's streamed time
+    assert aborted_item.streamdetails.seconds_streamed == delivered_seconds
+    assert mass.player_queues.queue_buffer_completed.call_args.args == ("queue-1", True)
+
+
+@pytest.mark.asyncio
+async def test_flow_keeps_the_declared_length_of_a_trimmed_but_fully_delivered_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track whose head the mixer trims keeps its own length, and the trim stays out of it."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 180
+    # the plan trims 5 s of the incoming head and blends 3 s: more than the guard's tolerance
+    fadein_trimmed = 5
+    crossfade = 3
+    pre_crossfade = 5
+    first_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    trimmed_item = _flow_track(
+        pcm_format, "item-2", duration=declared_duration, still_delivering=True
+    )
+    audio, mass, queue, queue_data = _flow_context(
+        announced_item=trimmed_item, load_next=[trimmed_item, QueueEmpty]
+    )
+    build = _flow_smart_fade(
+        monkeypatch,
+        audio,
+        fadein_trimmed=fadein_trimmed,
+        crossfade=crossfade,
+        pre_crossfade=pre_crossfade,
+    )
+    mix_calls = _flow_mixer(monkeypatch, audio, plays_the_incoming_audio=False)
+    # the item before the trim reaches its end a little short, as a full playthrough does,
+    # and the trimmed item delivers its whole source despite the trimmed head
+    _flow_source(
+        monkeypatch,
+        audio,
+        pcm_format,
+        {"item-1": declared_duration - 1, "item-2": declared_duration},
+    )
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    # the boundary really happened, and the mixer took the trimmed head plus the blend
+    # window out of the incoming item
+    build.assert_awaited_once()
+    assert mix_calls == [pcm_format.pcm_sample_size * (fadein_trimmed + crossfade)]
+    entries = queue_data.flow_mode_stream_log
+    assert [entry.queue_item_id for entry in entries] == ["item-1", "item-2"]
+    # a delivery that ends a little short is still the item's end: the tolerance takes it,
+    # so its measured length stands
+    assert entries[0].duration == declared_duration - 1
+    assert first_item.streamdetails.duration == declared_duration - 1
+    # the trimmed head is gone from what listeners hear; the item's media-time still starts
+    # where the trim put it, so the delivery reaches the item's own length
+    trimmed_entry = entries[1]
+    assert trimmed_entry.seek_position == fadein_trimmed + crossfade
+    assert trimmed_entry.seconds_streamed == declared_duration - (fadein_trimmed + crossfade)
+    assert trimmed_entry.duration == declared_duration
+    assert trimmed_item.streamdetails.duration == trimmed_item.duration == declared_duration
+    # the queue itself played out: the trim changed what was heard, not the arithmetic
+    assert mass.player_queues.queue_buffer_completed.call_args.args == ("queue-1", True)
+
+
 @pytest.mark.parametrize(
-    ("released_by_stop", "expected_duration"),
-    [(False, 3), (True, 180)],
-    ids=["clean_source", "source_released_by_a_stop"],
+    ("released_by_stop", "declared_duration", "expected_duration", "seek_position", "delivered"),
+    [
+        (False, 4, 3, 0, 3),
+        (True, 4, 4, 0, 3),
+        (False, 10, 10, 0, 3),
+        (False, 102, 103, 100, 3),
+        (False, 4, 4, 100, 3),
+        (False, 1, 5, 0, 5),
+        (False, 1, 1, 100, 5),
+    ],
+    ids=[
+        "clean_source",
+        "source_released_by_a_stop",
+        "clean_end_far_short_of_the_item",
+        "resumed_item_played_to_its_end",
+        "resumed_item_whose_seek_was_not_taken",
+        "item_longer_than_declared_is_measured",
+        "resumed_item_longer_than_declared_keeps_it",
+    ],
 )
 @pytest.mark.asyncio
 async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
-    monkeypatch: pytest.MonkeyPatch, released_by_stop: bool, expected_duration: int
+    monkeypatch: pytest.MonkeyPatch,
+    released_by_stop: bool,
+    declared_duration: int,
+    expected_duration: int,
+    seek_position: int,
+    delivered: int,
 ) -> None:
     """A single item whose buffer a stop released keeps its length, as in the flow."""
     mass = MagicMock()
@@ -2030,9 +2827,9 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
         stream_error=False,
         tail_overlap=None,
         uri="test://track",
-        seek_position=0,
+        seek_position=seek_position,
         seconds_streamed=0,
-        duration=180,
+        duration=declared_duration,
         is_realtime=False,
     )
     queue_item = SimpleNamespace(
@@ -2042,7 +2839,7 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
         media_type=MediaType.TRACK,
         media_item=None,
         streamdetails=streamdetails,
-        duration=180,
+        duration=declared_duration,
         extra_attributes={},
     )
     mass.player_queues.get.return_value = SimpleNamespace(
@@ -2052,7 +2849,7 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
     audio.setup()
 
     async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
-        for _ in range(3):
+        for _ in range(delivered):
             yield bytes(pcm_format.pcm_sample_size)
         if released_by_stop:
             # a stop detaches the buffer from the details before it releases it
@@ -2070,10 +2867,68 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
 
     chunks = [chunk async for chunk in stream]
 
-    assert len(chunks) == 3
-    assert streamdetails.seconds_streamed == 3
+    assert len(chunks) == delivered
+    assert streamdetails.seconds_streamed == delivered
+    # a source that delivered the item within tolerance measures its length, one that
+    # stopped short of it, released or not, leaves the declared length
     assert streamdetails.duration == expected_duration
     assert queue_item.duration == expected_duration
+
+
+@pytest.mark.asyncio
+async def test_item_stream_keeps_its_duration_when_a_repeat_loads_the_item_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass started by a seek writes back the full length after its repeat was loaded."""
+    mass = MagicMock()
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+
+    def _details(seek_position: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            audio_format=pcm_format,
+            buffer=SimpleNamespace(cancelled=False, eof=False),
+            fade_in=False,
+            stream_error=False,
+            tail_overlap=None,
+            uri="test://track",
+            seek_position=seek_position,
+            seconds_streamed=0,
+            duration=434,
+            is_realtime=False,
+        )
+
+    queue_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="track",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=_details(431),
+        duration=434,
+        extra_attributes={},
+    )
+    mass.player_queues.get.return_value = SimpleNamespace(
+        queue_id="queue-1", display_name="Queue", index_in_buffer=0
+    )
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+
+    async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        for _ in range(3):
+            yield bytes(pcm_format.pcm_sample_size)
+        # the repeat of the item is loaded from its start while this pass still streams
+        queue_item.streamdetails = _details(0)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        MagicMock(),
+        cast("Any", queue_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.DISABLED,
+    )
+
+    assert len([chunk async for chunk in stream]) == 3
+    assert queue_item.duration == 434
 
 
 def _manager_context(

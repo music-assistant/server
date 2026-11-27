@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import EventType, PlayerType
 
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
+
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
     from music_assistant_models.player import PlayerMedia
@@ -122,6 +124,31 @@ def get_available_player(mass: MusicAssistant, player_id: str) -> Player | None:
     if player is None or not player.available:
         return None
     return player
+
+
+def can_start_playback(mass: MusicAssistant, player_id: str) -> bool:
+    """
+    Return whether a playback start on the player has a speaker to play on now.
+
+    That is the player itself while it is available (see get_available_player). A group
+    player plays on its members, so it needs one that is available and can render audio:
+    a display or lighting member follows the group's playback but cannot play it.
+
+    :param mass: The MusicAssistant instance.
+    :param player_id: Id of the player to check.
+    """
+    if (player := get_available_player(mass, player_id)) is None:
+        return False
+    if player.type != PlayerType.GROUP:
+        return True
+    # the static members count too: a group can leave the ones that were off out of its
+    # current members until it stops
+    return any(
+        (member := get_available_player(mass, member_id)) is not None
+        and member.type in PLAYBACK_TARGET_TYPES
+        for member_id in {*player.group_members, *player.static_group_members}
+        if member_id != player.player_id
+    )
 
 
 class PlayerAvailabilityTracker:

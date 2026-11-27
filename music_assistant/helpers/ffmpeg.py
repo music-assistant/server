@@ -140,6 +140,8 @@ class FFMpeg(AsyncProcess):
         # Source duration in (whole) seconds as detected from the ffmpeg input log line,
         # or None if not yet parsed / not reported (e.g. live radio streams).
         self.parsed_duration: int | None = None
+        # ffmpeg only guessed the duration from the bitrate, as it does without a header
+        self.duration_estimated = False
         self._stdin_feeder_task: asyncio.Task[None] | None = None
         self._stdin_feeder_exception: Exception | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
@@ -263,6 +265,8 @@ class FFMpeg(AsyncProcess):
 
             # Source duration is reported separately from the stream info. Useful when
             # the provider didn't supply one (some podcast feeds report total_time=0).
+            if "Estimating duration from bitrate" in line:
+                self.duration_estimated = True
             if self.parsed_duration is None:
                 duration = parse_ffmpeg_duration(line)
                 if duration is not None:
@@ -335,8 +339,9 @@ class FFMpeg(AsyncProcess):
     def _is_expected_task_error(self, err: BaseException) -> bool:
         """Return whether a helper task error is an expected outcome rather than a failure."""
         # a provider with no free source-stream slot is a normal outcome of a
-        # speculative prefetch: the caller retries once the current stream releases it
-        return _is_stream_limit_error(err)
+        # speculative prefetch: the caller retries once the current stream releases it;
+        # a live source that refuses the consumer is logged by the streams controller
+        return _is_expected_source_error(err)
 
 
 def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
@@ -513,6 +518,16 @@ async def get_ffmpeg_stream(
     :param pass_fds: Descriptors ffmpeg needs to open its input(s).
     :param verify_ssl: Whether the certificate of an https source must be verified.
     """
+    wave_header = b""
+    if output_format.content_type == ContentType.WAV:
+        # ffmpeg writes a WAVE_FORMAT_EXTENSIBLE header above 16 bit or 48 kHz, which not
+        # every player accepts (a Sonos reports a corrupt file), so the plain header is
+        # written here and ffmpeg only delivers the samples that follow it
+        from .audio import create_streaming_wave_header  # noqa: PLC0415
+
+        wave_header = create_streaming_wave_header(output_format)
+        output_format = copy(output_format)
+        output_format.content_type = ContentType.from_bit_depth(output_format.bit_depth)
     async with FFMpeg(
         audio_input=audio_input,
         input_format=input_format,
@@ -527,6 +542,11 @@ async def get_ffmpeg_stream(
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
+            if wave_header:
+                # sent with the first audio, so a stream without audio stays empty
+                yield wave_header + chunk
+                wave_header = b""
+                continue
             yield chunk
         # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
         # excessive decode errors) closes stdout early, which ends the loop above before
@@ -685,10 +705,7 @@ def get_ffmpeg_args(
                 # that would trigger Range-less restarts from byte 0. MA-initiated seeks
                 # still work via -ss decode-and-discard.
                 input_args += ["-seekable", "0"]
-            if "-ss" in input_args and {
-                input_format.content_type,
-                input_format.codec_type,
-            } & {ContentType.MP3, ContentType.MPEG}:
+            if seeks_by_byte_offset(input_path, input_format, extra_input_args):
                 # without a Xing TOC ffmpeg parses every frame up to the target; fastseek
                 # jumps there by byte offset via a Range request instead
                 add_input_fflag(input_args, "+fastseek")
@@ -809,6 +826,30 @@ def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
     if layout := _get_channel_layout_name(audio_format.channels):
         args += ["-channel_layout", layout]
     return args
+
+
+def seeks_by_byte_offset(
+    input_path: str, input_format: AudioFormat, extra_input_args: Sequence[str]
+) -> bool:
+    """
+    Return whether ffmpeg jumps to a seek position by byte offset.
+
+    :param input_path: The path ffmpeg reads from, or "-" for stdin.
+    :param input_format: The format of the input.
+    :param extra_input_args: The input args of the launch, including the seek.
+    """
+    if "-ss" not in extra_input_args:
+        return False
+    if any("+fastseek" in arg for arg in extra_input_args):
+        return True
+    return (
+        "-f" not in extra_input_args
+        and input_path.startswith("http")
+        and bool(
+            {input_format.content_type, input_format.codec_type}
+            & {ContentType.MP3, ContentType.MPEG}
+        )
+    )
 
 
 def add_input_fflag(input_args: list[str], flag: str) -> None:
@@ -1056,21 +1097,23 @@ def _raise_feeder_error(feeder_exception: Exception) -> NoReturn:
 
     :param feeder_exception: The exception raised by the FFmpeg stdin feeder.
     :raises ProviderStreamLimitError: When the source had no free stream slot.
+    :raises AudioSourceRefusedError: When the live source refused the consumer.
     :raises AudioError: For any other feeder failure, caused by the feeder exception.
     """
-    # keep the capacity error's type so callers can tell a busy source apart
-    if _is_stream_limit_error(feeder_exception):
+    # keep the type of a busy or refusing source's error so callers can tell it apart
+    if _is_expected_source_error(feeder_exception):
         raise feeder_exception
     raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
 
 
-def _is_stream_limit_error(err: BaseException) -> bool:
-    """Return whether the error means a provider had no free source-stream slot."""
-    # deferred import: the provider models pull the controller graph in at
+def _is_expected_source_error(err: BaseException) -> bool:
+    """Return whether the error means a source had no free stream slot or refused the consumer."""
+    # deferred imports: the provider models pull the controller graph in at
     # import time, which this low-level helper must stay clear of
+    from music_assistant.models.media_capabilities import AudioSourceRefusedError  # noqa: PLC0415
     from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
 
-    return isinstance(err, ProviderStreamLimitError)
+    return isinstance(err, ProviderStreamLimitError | AudioSourceRefusedError)
 
 
 def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:

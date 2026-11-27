@@ -69,13 +69,13 @@ def get_control_capabilities(state: State, logger: logging.Logger) -> ControlCap
     )
 
 
-def get_control_name(entity_id: str, state: State | None) -> str:
+def get_control_name(entity_id: str, friendly_name: str | None) -> str:
     """
     Return the human readable name to present a Home Assistant entity control under.
 
     :param entity_id: The entity the control is based on.
-    :param state: The entity's current state, if known.
+    :param friendly_name: The entity's friendly name, if known.
     """
-    if state and (friendly_name := state["attributes"].get("friendly_name")):
+    if friendly_name:
         return f"{friendly_name} ({entity_id})"
     return entity_id

@@ -717,7 +717,7 @@ def _run_app_bump(tmp_path: Path, version: str) -> tuple[int, str]:
         check=False,
         cwd=tmp_path,
         env={
-            **_git_env(),
+            **os.environ,
             # the step runs the release script, which needs this interpreter, not the system's
             "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
             "APP_SLUG": "musicassistant-bot",
@@ -735,12 +735,6 @@ def _git(cwd: Path, *args: str) -> str:
         capture_output=True,
         check=True,
         cwd=cwd,
-        env=_git_env(),
         text=True,
     )
     return result.stdout.strip()
-
-
-def _git_env() -> dict[str, str]:
-    # the developer's own git configuration (signing, hooks, identity) stays out of the tests
-    return {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}

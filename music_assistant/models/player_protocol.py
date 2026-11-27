@@ -240,6 +240,17 @@ class PlayerProtocol(ABC):
         """
         return False
 
+    @property
+    def fetches_files(self) -> bool:
+        """
+        Return if the player is built around files rather than streams.
+
+        Such a player wants to know the length of a track up front, and pauses, resumes and
+        seeks by asking for a part of it. It gets a track as a file where that is possible,
+        see `StreamsController.serves_as_file`.
+        """
+        return False
+
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
         Return whether the player already holds the given queue item as the one it plays next.
@@ -528,6 +539,7 @@ class PlayerProtocol(ABC):
         always return ``False``. Group implementations should return ``True`` while
         a session is being formed, while it is actively playing/paused, and during
         any idle grace period; and ``False`` once the group is fully dormant.
+        While it is ``True``, a STOP command calls ``stop()`` also when the group is idle.
         """
         return False
 
@@ -704,6 +716,16 @@ class PlayerProtocol(ABC):
         Will only be called if the player reports PlayerFeature.PAUSE is supported.
         """
         raise NotImplementedError("pause needs to be implemented when PlayerFeature.PAUSE is set")
+
+    async def hold(self) -> None:
+        """
+        Silence the player while what it plays is paused, ready for a play_media to play on.
+
+        Called instead of pause for a stream that ends with the pause, so the player does not
+        have to support pausing. A player that can stay connected meanwhile keeps its connection;
+        by default it is stopped.
+        """
+        await self.stop()
 
     async def next_track(self) -> None:
         """
@@ -1164,6 +1186,24 @@ class PlayerProtocol(ABC):
         elif self.group_members:
             await self.set_members(player_ids_to_remove=self.group_members)
 
+    def rejoins_group(self, group_id: str) -> bool:
+        """
+        Return whether this protocol brings itself back to a group player it fell out of.
+
+        :param group_id: Id of the group player.
+        """
+        return False
+
+    def counts_in(self, player_id: str) -> bool:
+        """
+        Return whether a player belongs to the session of this group player.
+
+        A member that fell out of playback still does, as it is part of it again once it is back.
+
+        :param player_id: Id of the player.
+        """
+        return self.is_active_session and player_id in self.group_members
+
     def on_group_member_updated(
         self, member_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
@@ -1179,6 +1219,18 @@ class PlayerProtocol(ABC):
         # optional callback
         # default implementation will simply trigger an update for the state of the player
         self._trigger_player_update()
+
+    async def on_session_leader_lost(self, leader: PlayerProtocol) -> bool:
+        """
+        Handle callback when the leader of the session of this group player lost its stream.
+
+        Runs under the playback locks of the group player and of the player of the leader.
+
+        :param leader: The protocol that lost its stream.
+        :return: Whether the session plays on, led by another member.
+        """
+        # optional callback for group players that can hand their session over
+        return False
 
     def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:  # noqa: B027
         """

@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     from music_assistant.models.media_capabilities import MusicDiscoveryMixin
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz.models import MusicBrainzRelease
+    from music_assistant.providers.musicbrainz.provider import IdentifiedArtist
 
 # how many reference albums and tracks an artist is identified on MusicBrainz through
 MAX_MUSICBRAINZ_REF_ITEMS = 3
@@ -102,6 +103,7 @@ _LOCAL_METADATA, _LOCAL_MUSIC, _MUSIC_SERVICE, _ONLINE_METADATA = range(4)
 _ARTIST_FIELDS = ("style", "mood", "life_span", "artist_entity_type", "label")
 _ALBUM_FIELDS = ("review", "label", "release_date", "copyright", "explicit", "style", "mood")
 _TRACK_FIELDS = ("copyright", "explicit", "grouping", "release_date", "style", "mood")
+_LYRICS_ONLY = {ProviderFeature.TRACK_METADATA, ProviderFeature.LYRICS}
 
 
 class MetadataEnrichmentMixin:
@@ -192,7 +194,7 @@ class MetadataEnrichmentMixin:
         retry_soon = False
         if not artist.mbid:
             try:
-                found = await self._get_artist_mbid(artist)
+                found = await self._get_artist_mbid(artist, force_refresh=force_refresh)
             except _TEMPORARY_ERRORS as err:
                 found = None
                 retry_soon = True
@@ -208,7 +210,9 @@ class MetadataEnrichmentMixin:
         # a failed identification leaves the MusicBrainz lookup marker unset for a later retry
         if not retry_soon:
             own_mbid = artist.mbid
-            retry_soon = await self._link_artist_to_musicbrainz(artist, follow_merged=reliable)
+            retry_soon = await self._link_artist_to_musicbrainz(
+                artist, follow_merged=reliable, force_refresh=force_refresh
+            )
             if own_mbid and artist.mbid != own_mbid:
                 # the id an artist merged on MusicBrainz led to is as reliable as the old one
                 merge_mbid = artist.mbid
@@ -494,7 +498,7 @@ class MetadataEnrichmentMixin:
                     album.album_type = prov_item.album_type
 
         # identify the album on MusicBrainz before the metadata providers need its id
-        retry_soon = await self._link_album_to_musicbrainz(album)
+        retry_soon = await self._link_album_to_musicbrainz(album, force_refresh=force_refresh)
 
         # don't merge online genres on top of source-supplied ones; propagation-derived
         # genres also count as a local source so they survive metadata refreshes
@@ -574,6 +578,7 @@ class MetadataEnrichmentMixin:
         self.logger.debug("Updating metadata for Track %s", track.name)
         sources: list[tuple[int, MediaItemMetadata]] = []
         source_missing = False
+        local_source_has_lyrics = False
 
         prev_lyrics = (track.metadata.lyrics, track.metadata.lrc_lyrics)
         if force_refresh:
@@ -607,6 +612,9 @@ class MetadataEnrichmentMixin:
                 # a provider miss hands back the stored library item, which is not fresh
                 if prov_item.provider != "library":
                     sources.append((_music_source_rank(prov), prov_item.metadata))
+                    local_source_has_lyrics |= not prov.is_streaming_provider and bool(
+                        prov_item.metadata.lyrics or prov_item.metadata.lrc_lyrics
+                    )
                 track.metadata.update(_without_description(prov_item.metadata))
                 # a provider's full track carries the ISRCs its album listing may leave out
                 for id_type, value in prov_item.external_ids:
@@ -614,7 +622,7 @@ class MetadataEnrichmentMixin:
                         track.add_external_id(ExternalID.ISRC, value)
 
         # identify the track on MusicBrainz before the metadata providers need its id
-        retry_soon = await self._link_track_to_musicbrainz(track)
+        retry_soon = await self._link_track_to_musicbrainz(track, force_refresh=force_refresh)
 
         # don't merge online genres on top of source-supplied ones
         prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and bool(
@@ -628,6 +636,8 @@ class MetadataEnrichmentMixin:
         if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
+                    continue
+                if local_source_has_lyrics and provider.supported_features <= _LYRICS_ONLY:
                     continue
 
                 try:
@@ -653,6 +663,8 @@ class MetadataEnrichmentMixin:
                     )
                     continue
                 if metadata:
+                    if local_source_has_lyrics:
+                        metadata = replace(metadata, lyrics=None, lrc_lyrics=None)
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     sources.append((_metadata_source_rank(provider), metadata))
@@ -857,13 +869,16 @@ class MetadataEnrichmentMixin:
         podcast.metadata.last_refresh = int(time())
         await self.mass.music.podcasts.update_item_in_library(podcast.item_id, podcast)
 
-    async def _link_artist_to_musicbrainz(self, artist: Artist, follow_merged: bool = True) -> bool:
+    async def _link_artist_to_musicbrainz(
+        self, artist: Artist, follow_merged: bool = True, force_refresh: bool = False
+    ) -> bool:
         """
         Fill in an artist's Discogs id and link it to the music providers MusicBrainz knows.
 
         :param artist: The library artist to link.
         :param follow_merged: Give an artist MusicBrainz merged into another the other's id; not
             for an id only a name search found, which may belong to a namesake.
+        :param force_refresh: Whether to ask MusicBrainz again rather than read a cached answer.
         :return: Whether the lookup failed temporarily, which makes the item due for a refresh
             again soon.
         """
@@ -872,7 +887,9 @@ class MetadataEnrichmentMixin:
         # the Various Artists entity is nobody's discography, so it is not linked anywhere
         if artist.mbid and artist.mbid != VARIOUS_ARTISTS_MBID:
             try:
-                details = await musicbrainz.get_artist_details(artist.mbid)
+                # a forced refresh asks MusicBrainz again, rather than reading a cached result
+                async with self.mass.cache.handle_refresh(force_refresh):
+                    details = await musicbrainz.get_artist_details(artist.mbid)
                 if follow_merged:
                     # MusicBrainz answers a merged artist's old id with the artist it was merged into
                     await self._follow_merged_id(artist, details.id)
@@ -909,11 +926,12 @@ class MetadataEnrichmentMixin:
         artist.metadata.last_musicbrainz_lookup = int(time())
         return False
 
-    async def _link_album_to_musicbrainz(self, album: Album) -> bool:
+    async def _link_album_to_musicbrainz(self, album: Album, force_refresh: bool = False) -> bool:
         """
         Identify an album on MusicBrainz, fill in what it knows and link it and its tracks.
 
         :param album: The library album to link.
+        :param force_refresh: Whether to ask MusicBrainz again rather than read a cached answer.
         :return: Whether the lookup failed temporarily, which makes the item due for a refresh
             again soon.
         """
@@ -921,14 +939,16 @@ class MetadataEnrichmentMixin:
             return False
         try:
             db_tracks = await self.mass.music.albums.get_library_album_tracks(album.item_id)
-            release = await musicbrainz.resolve_release(
-                album, library_track_count=len(db_tracks) or None
-            )
+            # a forced refresh asks MusicBrainz again, rather than reading a cached result
+            async with self.mass.cache.handle_refresh(force_refresh):
+                release = await musicbrainz.resolve_release(
+                    album, library_track_count=len(db_tracks) or None
+                )
             if release is None:
                 self.logger.debug("Album %s was not found on MusicBrainz", album.name)
             else:
                 if album.mbid and album.mbid.casefold() != release.id.casefold():
-                    await self._follow_merged_release(musicbrainz, album, release.id)
+                    await self._follow_merged_release(musicbrainz, album, release.id, force_refresh)
                 urls = relation_urls(release.relations)
                 _fill_album_from_release(album, release, urls)
                 link_providers = self.link_providers_via_musicbrainz
@@ -957,18 +977,21 @@ class MetadataEnrichmentMixin:
         album.metadata.last_musicbrainz_lookup = int(time())
         return False
 
-    async def _link_track_to_musicbrainz(self, track: Track) -> bool:
+    async def _link_track_to_musicbrainz(self, track: Track, force_refresh: bool = False) -> bool:
         """
         Identify a track on MusicBrainz, fill in its recording id and ISRCs and link it.
 
         :param track: The library track to link.
+        :param force_refresh: Whether to ask MusicBrainz again rather than read a cached answer.
         :return: Whether the lookup failed temporarily, which makes the item due for a refresh
             again soon.
         """
         if not (musicbrainz := self._musicbrainz_provider()):
             return False
         try:
-            recording = await musicbrainz.resolve_recording(track)
+            # a forced refresh asks MusicBrainz again, rather than reading a cached result
+            async with self.mass.cache.handle_refresh(force_refresh):
+                recording = await musicbrainz.resolve_recording(track)
             if recording is None:
                 self.logger.debug("Track %s was not found on MusicBrainz", track.name)
             else:
@@ -998,7 +1021,7 @@ class MetadataEnrichmentMixin:
         return False
 
     async def _follow_merged_release(
-        self, musicbrainz: MusicbrainzProvider, album: Album, release_id: str
+        self, musicbrainz: MusicbrainzProvider, album: Album, release_id: str, force_refresh: bool
     ) -> None:
         """
         Give an album the release its stored release was merged into on MusicBrainz.
@@ -1009,10 +1032,13 @@ class MetadataEnrichmentMixin:
         :param musicbrainz: The MusicBrainz provider.
         :param album: The library album, stored with the new id.
         :param release_id: The id of the release the album was identified as.
+        :param force_refresh: Whether to ask MusicBrainz again rather than read a cached answer.
         """
         try:
-            # the identify step looked the stored release up first, so this reads its answer again
-            stored = await musicbrainz.get_release_details(album.mbid or "")
+            # the identify step looked the stored release up first, so this reads its answer
+            # again, except on a forced refresh, whose fresh answer may not be cached yet
+            async with self.mass.cache.handle_refresh(force_refresh):
+                stored = await musicbrainz.get_release_details(album.mbid or "")
         except InvalidDataError:
             return
         await self._follow_merged_id(album, stored.id)
@@ -1062,7 +1088,9 @@ class MetadataEnrichmentMixin:
         """Return the MusicBrainz provider, if it is loaded."""
         return cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
 
-    async def _get_artist_mbid(self, artist: Artist) -> tuple[str, bool] | None:
+    async def _get_artist_mbid(
+        self, artist: Artist, force_refresh: bool = False
+    ) -> tuple[str, bool] | None:
         """Fetch the artist's MusicBrainz id and whether only its name identified it."""
         if artist.mbid:
             return artist.mbid, False
@@ -1073,7 +1101,7 @@ class MetadataEnrichmentMixin:
             return None
         # the artist's own streaming service links cost neither a database read nor a
         # provider request, so they are tried on their own first
-        if identified := await musicbrainz.identify_artist(artist, [], []):
+        if identified := await self._identify_artist(musicbrainz, artist, [], [], force_refresh):
             return identified.artist.id, identified.by_name
         # the library's own albums and tracks carry the MusicBrainz ids, barcodes and ISRCs
         # the lookup keys on, so those come before anything a provider has to be asked for
@@ -1084,7 +1112,9 @@ class MetadataEnrichmentMixin:
             artist.item_id, artist.provider, limit=None
         )
         ref_tracks = _identifying_first(library_tracks)
-        if identified := await musicbrainz.identify_artist(artist, ref_albums, ref_tracks):
+        if identified := await self._identify_artist(
+            musicbrainz, artist, ref_albums, ref_tracks, force_refresh
+        ):
             return identified.artist.id, identified.by_name
         # last resort for library items without identifiers: the artist's top tracks
         tried = {track.uri for track in ref_tracks}
@@ -1103,18 +1133,24 @@ class MetadataEnrichmentMixin:
                 ]
             )
             if top_tracks and (
-                identified := await musicbrainz.identify_artist(artist, ref_albums, top_tracks)
+                identified := await self._identify_artist(
+                    musicbrainz, artist, ref_albums, top_tracks, force_refresh
+                )
             ):
                 return identified.artist.id, identified.by_name
             tried.update(track.uri for track in top_tracks)
         if titles := await self._top_track_titles(artist):
             popular = _identifying_first(_tracks_named(library_tracks, titles, tried))
             if popular and (
-                identified := await musicbrainz.identify_artist(artist, ref_albums, popular)
+                identified := await self._identify_artist(
+                    musicbrainz, artist, ref_albums, popular, force_refresh
+                )
             ):
                 return identified.artist.id, identified.by_name
             # a title search matches the artist by name only
-            if mb_artist := await musicbrainz.get_artist_by_track_titles(artist.name, titles):
+            async with self.mass.cache.handle_refresh(force_refresh):
+                mb_artist = await musicbrainz.get_artist_by_track_titles(artist.name, titles)
+            if mb_artist:
                 return mb_artist.id, True
 
         # lookup failed
@@ -1127,6 +1163,18 @@ class MetadataEnrichmentMixin:
             ref_tracks_str,
         )
         return None
+
+    async def _identify_artist(
+        self,
+        musicbrainz: MusicbrainzProvider,
+        artist: Artist,
+        ref_albums: Sequence[Album],
+        ref_tracks: Sequence[Track],
+        force_refresh: bool,
+    ) -> IdentifiedArtist | None:
+        """Identify an artist on MusicBrainz, asking again when the refresh is forced."""
+        async with self.mass.cache.handle_refresh(force_refresh):
+            return await musicbrainz.identify_artist(artist, ref_albums, ref_tracks)
 
     def _ranking_music_providers(self, artist: Artist) -> list[str]:
         """Return the visible instances of the artist's music providers that rank its top tracks."""

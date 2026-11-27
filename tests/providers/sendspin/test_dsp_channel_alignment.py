@@ -146,7 +146,7 @@ class _SessionHarness:
         self.session = SendspinPlaybackSession(player)
         session = self.session
         monkeypatch.setattr(playback, "import_module_in_thread", AsyncMock())
-        monkeypatch.setattr(session, "_get_start_streamdetails", MagicMock(return_value=None))
+        monkeypatch.setattr(session, "_get_item_streamdetails", MagicMock(return_value=None))
         monkeypatch.setattr(session, "_follow_session_sample_rate", AsyncMock())
         monkeypatch.setattr(
             session,

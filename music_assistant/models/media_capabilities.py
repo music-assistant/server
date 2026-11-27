@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import SearchResults, UniqueList
 
 from .provider import Provider
@@ -297,6 +298,10 @@ class AudioStreamMixin(Provider):
         return None
 
 
+class AudioSourceRefusedError(AudioError):
+    """Raised when the plugin of a live source refuses a consumer; the refusal is logged already."""
+
+
 class AudioSourceMixin(AudioStreamMixin):
     """Methods of a provider that delivers live AudioSources."""
 
@@ -309,6 +314,10 @@ class AudioSourceMixin(AudioStreamMixin):
         May change over time (e.g. when a paired hardware device adds/removes
         favorites). Each AudioSource is a regular MediaItem, playable via the standard
         play_media flow.
+
+        A source carries its own name, without the name of a player. One that belongs to
+        a player names it in ``owner_player_id``, and the server adds the name of that
+        player where the source is shown elsewhere.
 
         Streaming contract for AudioSources: ``get_stream_details`` must stay side-effect-free
         (MA also calls it from queue preload), so an exclusive source is claimed in

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+from io import BytesIO
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import EventType, ExternalID
@@ -14,6 +16,7 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from PIL import Image
 
 ISRC = "USRC17607839"
 
@@ -131,3 +134,10 @@ def media_item_events(signal_event: MagicMock) -> list[EventType]:
         for call in signal_event.call_args_list
         if call.args[0] != EventType.TASKS_UPDATED
     ]
+
+
+def png_base64() -> str:
+    """Return a minimal valid PNG as base64 string."""
+    buf = BytesIO()
+    Image.new("RGB", (4, 4), "red").save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()

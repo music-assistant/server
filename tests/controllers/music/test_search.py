@@ -14,6 +14,7 @@ from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSharing, ProviderType
 from music_assistant_models.errors import (
     MusicAssistantError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -30,11 +31,18 @@ from music_assistant.controllers.music.constants import (
     SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
     SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER,
 )
+from music_assistant.helpers.throttle_retry import _give_up
 from music_assistant.models.music_provider import MusicProvider
 from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+# a rate limit as a provider raises it, and as the retry helper gives up on a long one
+_RATE_LIMIT_ERRORS = [
+    pytest.param(RateLimited("Rate limited", backoff_time=90), id="rate-limited"),
+    pytest.param(_give_up(RateLimited("Rate limited", backoff_time=90), 90), id="given-up"),
+]
 
 
 def _make_track(item_id: str, provider: str, name: str) -> Track:
@@ -76,6 +84,7 @@ def _make_search_provider(instance_id: str, domain: str | None = None) -> Mock:
     prov.domain = domain or instance_id
     prov.name = instance_id
     prov.available = True
+    prov.type = ProviderType.MUSIC
     prov.supported_features = {ProviderFeature.SEARCH}
     prov.is_streaming_provider = True
     prov.search = AsyncMock(return_value=SearchResults())
@@ -85,6 +94,7 @@ def _make_search_provider(instance_id: str, domain: str | None = None) -> Mock:
 def _make_controller(providers: list[Mock]) -> MusicController:
     """Return a music controller wired to the given mocked providers."""
     mass = Mock()
+    mass.providers = providers
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock(return_value=None)
     mass.get_providers_supporting_feature.return_value = []
@@ -120,9 +130,6 @@ def _make_controller(providers: list[Mock]) -> MusicController:
     controller.mass = mass
     controller.domain = "music"
     controller.logger = logging.getLogger(__name__)
-    controller.get_unique_providers = Mock(  # type: ignore[method-assign]
-        return_value=[p.instance_id for p in providers]
-    )
     controller.search_library = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
     return controller
 
@@ -163,6 +170,7 @@ async def test_search_provider_uses_centralized_provider_search() -> None:
         [MediaType.TRACK],
         limit=5,
         strict_provider_instance=True,
+        raise_rate_limited=True,
     )
 
 
@@ -189,6 +197,7 @@ async def test_search_provider_resolves_domain_within_explicit_scope() -> None:
         [MediaType.TRACK],
         limit=5,
         strict_provider_instance=True,
+        raise_rate_limited=True,
     )
 
 
@@ -268,6 +277,7 @@ async def test_search_provider_unscoped_domain_skips_unavailable_sibling() -> No
         [MediaType.TRACK],
         limit=10,
         strict_provider_instance=True,
+        raise_rate_limited=True,
     )
 
 
@@ -319,14 +329,47 @@ async def test_search_provider_returns_none_on_provider_error() -> None:
         assert result is None
 
 
-async def test_global_search_returns_partial_results_when_provider_fails() -> None:
-    """One failing provider must not break the entire global search."""
+@pytest.mark.parametrize("error", _RATE_LIMIT_ERRORS)
+async def test_search_provider_raises_a_rate_limit_only_when_asked(
+    error: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A rate limit is no result for a plain search, and raised for a caller that asks."""
+    prov = _make_search_provider("prov_a")
+    prov.search.side_effect = error
+    controller = _make_controller([prov])
+
+    assert await controller._search_provider("query", "prov_a", [MediaType.TRACK]) is None
+    with pytest.raises(type(error)) as raised:
+        await controller._search_provider(
+            "query", "prov_a", [MediaType.TRACK], raise_rate_limited=True
+        )
+    assert raised.value is error
+    # the lookup used for matching raises it rather than "failed or timed out"
+    with pytest.raises(type(error)) as raised:
+        await controller.search_provider(
+            "query", "prov_a", [MediaType.TRACK], allowed_provider_instances={"prov_a"}
+        )
+    assert raised.value is error
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+    # the caller reports the rate limit, so the search task does not log it again
+    create_task = cast("Mock", controller.mass.create_task)
+    assert create_task.call_args.kwargs["log_exceptions"] is False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [pytest.param(MusicAssistantError("provider down"), id="error"), *_RATE_LIMIT_ERRORS],
+)
+async def test_global_search_returns_partial_results_when_provider_fails(
+    error: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One failing or rate limited provider must not break the entire global search."""
     prov_ok = _make_search_provider("prov_ok")
     prov_ok.search.return_value = SearchResults(
         tracks=[_make_track("track1", "prov_ok", "My Song")]
     )
     prov_bad = _make_search_provider("prov_bad")
-    prov_bad.search.side_effect = MusicAssistantError("provider down")
+    prov_bad.search.side_effect = error
     controller = _make_controller([prov_ok, prov_bad])
 
     result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
@@ -335,6 +378,7 @@ async def test_global_search_returns_partial_results_when_provider_fails() -> No
     prov_bad.search.assert_awaited_once()
     # an incomplete result may not be cached so the failed provider is retried
     assert not _cache_writes(controller, "music")
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
 
 
 async def test_global_search_soft_timeout_returns_partial_and_caches_late(
@@ -483,10 +527,12 @@ async def test_search_provider_without_streaming_attribute_gets_local_expiration
     """Providers lacking is_streaming_provider (e.g. plugins) get the short cache expiration."""
     prov = _make_search_provider("prov_plugin")
     del prov.is_streaming_provider
+    prov.type = ProviderType.PLUGIN
     prov.search.return_value = SearchResults(
         tracks=[_make_track("track1", "prov_plugin", "My Song")]
     )
     controller = _make_controller([prov])
+    cast("Mock", controller.mass.get_providers_supporting_feature).return_value = [prov]
 
     result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
 
@@ -768,11 +814,17 @@ async def test_plugin_search_leaves_out_tracks_on_hidden_sources(mock_get_user: 
     )
     plugin.search.return_value = results
     sources = [
-        Mock(instance_id=source, type=ProviderType.MUSIC, is_streaming_provider=False)
+        Mock(
+            instance_id=source,
+            type=ProviderType.MUSIC,
+            is_streaming_provider=False,
+            available=True,
+            supported_features=set(),
+            domain=source,
+        )
         for source in ("open_1", "hidden_1")
     ]
     controller = _make_controller([plugin, *sources])
-    controller.get_unique_providers = Mock(return_value=[])  # type: ignore[method-assign]
     cast("Mock", controller.mass.get_providers_supporting_feature).return_value = [plugin]
     set_music_source_access(
         controller.mass,
@@ -845,3 +897,23 @@ async def test_search_shareable_url_skipped_when_media_type_excluded(
 
     assert result == SearchResults()
     controller.get_item.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        ["service--second"],
+        ["service--first", "service--second"],
+    ],
+)
+async def test_search_keeps_requested_account_instances(requested: list[str]) -> None:
+    """Search every explicitly requested account, even if it shares a service."""
+    first = _make_search_provider("service--first", domain="service")
+    second = _make_search_provider("service--second", domain="service")
+    controller = _make_controller([first, second])
+
+    await controller.search("My Song", media_types=[MediaType.TRACK], providers=requested)
+
+    assert {
+        p.instance_id for p in (first, second) if cast("AsyncMock", p.search).await_count
+    } == set(requested)

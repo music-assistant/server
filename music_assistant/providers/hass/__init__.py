@@ -14,13 +14,14 @@ import logging
 import os
 import secrets
 from functools import partial
+from ipaddress import IPv6Address, ip_address
 from itertools import batched
 from sys import intern
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, TypedDict, cast
 from urllib.parse import unquote, urlsplit
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientConnectionError, ClientResponseError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import (
     BaseHassClientError,
@@ -55,6 +56,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_VERIFY_SSL, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
+from music_assistant.helpers.hassio import SupervisorError, supervisor_request
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError, match_tts_language
 from music_assistant.helpers.util import lock, try_parse_int
@@ -193,13 +195,11 @@ class HomeAssistantProvider(PluginProvider):
     _player_controls: dict[str, PlayerControl] | None = None
     _unsubscribe_controls: Callable[[], None] | None = None
     _unsubscribe_entity_registry: Callable[[], None] | None = None
+    _unsubscribe_core_config: Callable[[], None] | None = None
     _engine_refresh_task: asyncio.Task[None] | None = None
     _ai_engines: list[AIEngine]
     _image_engines: list[ImageEngine]
     _tts_engines: list[TTSEngine]
-    # languages per TTS entity, as Home Assistant reports them; an entity whose list could
-    # not be read is absent and gets the requested language passed through unchanged
-    _tts_languages: dict[str, tuple[str, ...]]
     _startup_complete: bool = False
     _entity_registry: Mapping[str, HassRegistryEntity] | None = None
     _entity_registry_generation: int = 0
@@ -280,7 +280,6 @@ class HomeAssistantProvider(PluginProvider):
         self._ai_engines = []
         self._image_engines = []
         self._tts_engines = []
-        self._tts_languages = {}
         url = get_websocket_url(cast("str", self.get_setup_value(CONF_URL)))
         token = self.get_setup_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
@@ -311,10 +310,11 @@ class HomeAssistantProvider(PluginProvider):
             raise
         self._listen_task = self.mass.create_task(self._hass_listener())
         try:
-            # the registry subscription must be live before the first registry read, so no
-            # registry change can slip through unnoticed; _disconnect_hass tears the
-            # subscription down again on the failure paths below
+            # the subscriptions must be live before the first registry read, so no change
+            # can slip through unnoticed; _disconnect_hass tears them down again on the
+            # failure paths below
             await self._subscribe_entity_registry()
+            await self._subscribe_core_config()
             await self._resolve_startup_features()
         except asyncio.CancelledError:
             await self._cleanup_failed_init()
@@ -612,7 +612,7 @@ class HomeAssistantProvider(PluginProvider):
                         if not display_name:
                             display_name = user.get("name")
                         break
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - optional detail, HA errors vary
                 self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA user list: %s", err)
 
             # Get external URL for building avatar URL
@@ -621,7 +621,7 @@ class HomeAssistantProvider(PluginProvider):
                 network_urls = await self.hass.send_command("network/url")
                 if network_urls:
                     ha_url = network_urls.get("external") or network_urls.get("internal")
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - optional detail, HA errors vary
                 self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA network URLs: %s", err)
 
             # Find person linked to this HA user ID for display name and avatar
@@ -637,7 +637,7 @@ class HomeAssistantProvider(PluginProvider):
                         if (person_picture := person.get("picture")) and ha_url:
                             avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
                         break
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - optional detail, HA errors vary
                 self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA person details: %s", err)
 
             self.logger.log(
@@ -649,7 +649,7 @@ class HomeAssistantProvider(PluginProvider):
                 avatar_url,
             )
             return username, display_name, avatar_url
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure means no user details
             self.logger.warning("Failed to get HA user details: %s", err)
             return None, None, None
 
@@ -768,9 +768,8 @@ class HomeAssistantProvider(PluginProvider):
             msg = f"AI Task returned an unexpected image link: {parts.path}"
             raise MusicAssistantError(msg)
         try:
-            return await self._fetch_image(
-                f"{parts.path}?{parts.query}" if parts.query else parts.path
-            )
+            path = f"{parts.path}?{parts.query}" if parts.query else parts.path
+            return await self._fetch_image(path)
         except ClientResponseError as err:
             # its message names the full (signed) URL
             msg = f"Home Assistant answered the image request with {err.status}"
@@ -782,6 +781,10 @@ class HomeAssistantProvider(PluginProvider):
                 # Home Assistant is down or overloaded, rather than refusing this image
                 raise ProviderUnavailableError(msg) from None
             raise MusicAssistantError(msg) from None
+        except ClientConnectionError, TimeoutError:
+            raise ProviderUnavailableError(
+                "Home Assistant could not be reached to fetch the generated image"
+            ) from None
 
     async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
         """
@@ -820,7 +823,8 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._tts_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("TTS entity is not available")
-        if language and (supported := self._tts_languages.get(entity_id)) is not None:
+        # an engine whose languages cannot be read gets the requested language unchanged
+        if language and (supported := await self._fetch_tts_languages(entity_id)) is not None:
             # Home Assistant only accepts a language spelled exactly as the entity lists it
             country = self.mass.metadata.locale.partition("_")[2] or None
             matched = match_tts_language(language, supported, country)
@@ -969,7 +973,9 @@ class HomeAssistantProvider(PluginProvider):
         control = PlayerControl(
             id=entity_id,
             provider=self.instance_id,
-            name=get_control_name(entity_id, hass_state),
+            name=get_control_name(
+                entity_id, hass_state["attributes"].get("friendly_name") if hass_state else None
+            ),
         )
         if capabilities.power:
             control.supports_power = True
@@ -1077,6 +1083,8 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_volume and entity_platform != "media_player":
                 player_control.volume_level = try_parse_int(state["s"]) or 0
         if "a" in state and (attributes := state["a"]):
+            if "friendly_name" in attributes:
+                player_control.name = get_control_name(entity_id, attributes["friendly_name"])
             if player_control.supports_volume and "volume_level" in attributes:
                 player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
             if player_control.supports_mute and "is_volume_muted" in attributes:
@@ -1120,7 +1128,7 @@ class HomeAssistantProvider(PluginProvider):
         # the HTTP client resolves percent-encoded dot segments, so check the decoded form
         if ".." in unquote(path.split("?", 1)[0]).split("/"):
             raise FileNotFoundError("Image not found")
-        ha_url, headers, http_session = self._get_ha_http()
+        ha_url, headers, http_session = await self._get_ha_http_for(path)
         async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
             response.raise_for_status()
             if not response.content_type.startswith("image/"):
@@ -1134,6 +1142,31 @@ class HomeAssistantProvider(PluginProvider):
                 if len(data) > IMAGE_MAX_BYTES:
                     raise FileNotFoundError("Image too large")
             return bytes(data)
+
+    async def _get_ha_http_for(self, path: str) -> tuple[str, dict[str, str], ClientSession]:
+        """Return the HA connection that can serve the image path."""
+        if not self.mass.running_as_hass_addon or path.startswith("/api/"):
+            return self._get_ha_http()
+        try:
+            core = await supervisor_request(self.mass, "GET", "/core/info")
+        except SupervisorError as err:
+            msg = f"Supervisor could not report Home Assistant's address: {err.message}"
+            raise ProviderUnavailableError(msg) from err
+        if not isinstance(core, dict):
+            raise ProviderUnavailableError("Supervisor returned invalid Home Assistant address")
+        try:
+            address = ip_address(core["ip_address"])
+            port = core["port"]
+            ssl = core["ssl"]
+        except KeyError, TypeError, ValueError:
+            raise ProviderUnavailableError(
+                "Supervisor returned invalid Home Assistant address"
+            ) from None
+        if type(port) is not int or not 0 < port <= 65535 or type(ssl) is not bool:
+            raise ProviderUnavailableError("Supervisor returned invalid Home Assistant address")
+        host = f"[{address}]" if isinstance(address, IPv6Address) else str(address)
+        scheme = "https" if ssl else "http"
+        return f"{scheme}://{host}:{port}", {}, self.mass.http_session_no_ssl
 
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
@@ -1191,6 +1224,9 @@ class HomeAssistantProvider(PluginProvider):
         if unsubscribe := self._unsubscribe_entity_registry:
             self._unsubscribe_entity_registry = None
             unsubscribe()
+        if unsubscribe := self._unsubscribe_core_config:
+            self._unsubscribe_core_config = None
+            unsubscribe()
         if refresh_task := self._engine_refresh_task:
             self._engine_refresh_task = None
             refresh_task.cancel()
@@ -1202,7 +1238,7 @@ class HomeAssistantProvider(PluginProvider):
                 await listen_task
             except asyncio.CancelledError:
                 pass
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the task can fail in any way, logged here
                 self.logger.warning("Home Assistant listener stopped with error: %s", err)
         await self.hass.disconnect()
 
@@ -1210,7 +1246,7 @@ class HomeAssistantProvider(PluginProvider):
         """Clean up the Home Assistant connection after initialization fails."""
         try:
             await self._disconnect_hass()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - cleanup must not hide the init error
             self.logger.warning("Failed to disconnect from Home Assistant: %s", err)
 
     async def _resolve_startup_features(self) -> None:
@@ -1267,14 +1303,12 @@ class HomeAssistantProvider(PluginProvider):
         tts_engines.sort(key=lambda engine: engine.name)
         ai_engines.sort(key=lambda engine: engine.name)
         image_engines.sort(key=lambda engine: engine.name)
-        tts_languages = await self._fetch_tts_languages() if tts_engines else {}
         changed = (self._tts_engines, self._ai_engines, self._image_engines) != (
             tts_engines,
             ai_engines,
             image_engines,
         )
         self._tts_engines = tts_engines
-        self._tts_languages = tts_languages
         self._ai_engines = ai_engines
         self._image_engines = image_engines
         self._supported_features.discard(ProviderFeature.TTS)
@@ -1290,20 +1324,20 @@ class HomeAssistantProvider(PluginProvider):
         if changed and self._startup_complete:
             self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
-    async def _fetch_tts_languages(self) -> dict[str, tuple[str, ...]]:
-        """Return the languages each TTS entity accepts, leaving out the ones without a list."""
+    # read when speaking rather than mirrored: Home Assistant announces neither an entity that
+    # loads long after its restart nor a language that is added to an engine
+    async def _fetch_tts_languages(self, entity_id: str) -> list[str] | None:
+        """
+        Return the languages a TTS entity accepts, or None when they cannot be read.
+
+        :param entity_id: The TTS entity to read the languages of.
+        """
         try:
-            result = await self.hass.send_command("tts/engine/list")
+            result = await self.hass.send_command("tts/engine/get", engine_id=entity_id)
         except BaseHassClientError as err:
-            self.logger.debug("Could not read the languages of the TTS engines: %s", err)
-            return {}
-        providers = result.get("providers") if isinstance(result, dict) else None
-        languages: dict[str, tuple[str, ...]] = {}
-        for provider in providers or ():
-            supported = provider.get("supported_languages")
-            if isinstance(supported, list):
-                languages[str(provider["engine_id"])] = tuple(str(code) for code in supported)
-        return languages
+            self.logger.debug("Could not read the languages of TTS engine %s: %s", entity_id, err)
+            return None
+        return cast("list[str]", result["provider"]["supported_languages"])
 
     async def _subscribe_entity_registry(self) -> None:
         """Watch the Home Assistant entity registry to keep the engine lists up to date."""
@@ -1335,6 +1369,24 @@ class HomeAssistantProvider(PluginProvider):
             return
         self._schedule_engine_refresh()
 
+    async def _subscribe_core_config(self) -> None:
+        """Watch the Home Assistant core config to learn that Home Assistant has started."""
+        # register for core config updates, replacing any earlier subscription
+        if unsubscribe := self._unsubscribe_core_config:
+            self._unsubscribe_core_config = None
+            unsubscribe()
+        # an already registered entity gets its state during the startup of Home Assistant
+        # without a registry update. Home Assistant ends its startup with a core config update,
+        # once every registered entity has a state; its homeassistant_started event is only
+        # available to administrators
+        self._unsubscribe_core_config = await self.hass.subscribe_events(
+            self._on_core_config_update, "core_config_updated"
+        )
+
+    def _on_core_config_update(self, _event: Event) -> None:
+        """Handle a core config update event."""
+        self._schedule_engine_refresh()
+
     def _schedule_engine_refresh(self) -> None:
         """(Re)schedule the debounced rebuild of the engine lists."""
         if refresh_task := self._engine_refresh_task:
@@ -1347,7 +1399,7 @@ class HomeAssistantProvider(PluginProvider):
         await asyncio.sleep(ENGINE_REFRESH_DEBOUNCE)
         try:
             await self._refresh_engines()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - background task, any failure is logged
             self.logger.warning("Failed to refresh Home Assistant engines: %s", err)
 
     # unlike _fetch_device_registry, this listing is mirrored for the lifetime of the

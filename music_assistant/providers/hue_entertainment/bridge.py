@@ -23,6 +23,7 @@ from aiosendspin.models.visualizer import (
     ClientHelloVisualizerSupport,
     VisualizerStatePayload,
 )
+from hue_entertainment import LightColorCommand
 from music_assistant_models.enums import PlayerType
 
 from music_assistant.providers.sendspin.bridge_role import (
@@ -31,9 +32,10 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgeColorRole,
     BridgeVisualizerRole,
 )
+from music_assistant.providers.sendspin_lights.analyzer import AudioAnalyzer
 
-from .analyzer import HueAudioAnalyzer
 from .constants import (
+    PALETTE_CEILING,
     SPECTRUM_BINS,
     SPECTRUM_F_MAX,
     SPECTRUM_F_MIN,
@@ -94,7 +96,7 @@ class HueEntertainmentBridge:
         self.sendspin_server = sendspin_server
         self.logger = LOGGER.getChild(f"bridge.{target.name}")
 
-        self._analyzer: HueAudioAnalyzer | None = None
+        self._analyzer: AudioAnalyzer | None = None
         self._sendspin_client: SendspinClient | None = None
         self._is_streaming = False
         self._stop_debounce_task: asyncio.Task[None] | None = None
@@ -105,10 +107,11 @@ class HueEntertainmentBridge:
 
     async def start(self) -> None:
         """Start the bridge — register as an in-process Sendspin visualizer client."""
-        self._analyzer = HueAudioAnalyzer(
+        self._analyzer = AudioAnalyzer(
             channels=self.target.channels,
             color_mode=get_color_mode(self.provider.config),
             brightness=get_brightness(self.provider.config),
+            palette_ceiling=PALETTE_CEILING,
         )
 
         client_id = self.target.client_id
@@ -243,7 +246,7 @@ class HueEntertainmentBridge:
                         "Cannot start entertainment for '%s': %s", self.target.name, err
                     )
                     return
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - any other failure is retried
                     self.logger.warning(
                         "Entertainment start attempt %d failed for '%s': %s",
                         attempt + 1,
@@ -391,9 +394,11 @@ class HueEntertainmentBridge:
             if self._analyzer is not None and self.target.is_streaming:
                 # Render slightly ahead of the playhead to compensate for the light lag.
                 server_now = self.sendspin_server.clock.now_us() + self._hue_latency_us
-                commands = self._analyzer.render(server_now)
-                if commands:
-                    self.target.send(commands)
+                colors = self._analyzer.render(server_now)
+                if colors:
+                    self.target.send(
+                        [LightColorCommand(c.channel_id, c.red, c.green, c.blue) for c in colors]
+                    )
         except Exception:
             # One bad tick must not kill the loop: log and reschedule below.
             self.logger.exception("Hue render tick failed for '%s'", self.target.name)
@@ -444,7 +449,7 @@ class HueEntertainmentBridgeManager:
             bridge = HueEntertainmentBridge(self.provider, target, sendspin_server)
             try:
                 await bridge.start()
-            except Exception:
+            except Exception:  # noqa: BLE001 - one failing bridge must not stop the others
                 self.logger.warning("Failed to start bridge for '%s'", target.name)
                 with suppress(Exception):
                     await bridge.stop()

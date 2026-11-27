@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
+from ipaddress import ip_address
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiosonos.exceptions import CannotConnect
+from aiosonos.exceptions import CannotConnect, NotAPlayer
 from zeroconf import ServiceStateChange
 
 from music_assistant.mass import MusicAssistant
@@ -112,6 +113,68 @@ async def test_a_player_set_up_in_the_meantime_is_not_set_up_again(
 
     get_discovery_info.assert_not_awaited()
     assert "in discovery as it is already set up" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("properties", "upnp_port"),
+    [
+        ({"location": "http://192.168.1.62:1500/xml/device_description.xml"}, 1500),
+        ({"location": "http://192.168.1.62/xml/device_description.xml"}, 1400),
+        ({}, 1400),
+    ],
+    ids=["announced", "location without port", "no location"],
+)
+async def test_a_discovered_zone_is_set_up_on_the_ports_it_announces(
+    monkeypatch: pytest.MonkeyPatch, properties: dict[str, str], upnp_port: int
+) -> None:
+    """Test a zone of an Amp Multi is reached on its own API and UPnP port."""
+    provider, _ = _make_provider(enabled=True)
+    info = _make_discovery_info()
+    info.port = 1444
+    info.decoded_properties.update(properties)
+    info.ip_addresses_by_version.return_value = [ip_address("192.168.1.62")]
+    discovery_info = {"device": {"id": PLAYER_ID, "capabilities": ["PLAYBACK"]}}
+    get_discovery_info = AsyncMock(return_value=discovery_info)
+    monkeypatch.setattr(
+        "music_assistant.providers.sonos.provider.get_discovery_info", get_discovery_info
+    )
+    player_class = MagicMock()
+    player_class.return_value.setup = AsyncMock()
+    monkeypatch.setattr("music_assistant.providers.sonos.provider.SonosPlayer", player_class)
+
+    await provider._setup_player(PLAYER_ID, SERVICE_NAME, info)
+
+    get_discovery_info.assert_awaited_once_with(
+        provider.mass.http_session_no_ssl, "192.168.1.62", 1444
+    )
+    player_class.assert_called_once_with(
+        provider, PLAYER_ID, discovery_info=discovery_info, api_port=1444, upnp_port=upnp_port
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_discovered_speaker_that_is_part_of_a_set_is_skipped(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test a speaker that turns out to be part of another player's set is skipped quietly."""
+    provider, _ = _make_provider(enabled=True)
+    info = _make_discovery_info()
+    info.port = 1443
+    info.ip_addresses_by_version.return_value = [ip_address("192.168.1.62")]
+    monkeypatch.setattr(
+        "music_assistant.providers.sonos.provider.get_discovery_info",
+        AsyncMock(return_value={"device": {"id": PLAYER_ID, "capabilities": ["PLAYBACK"]}}),
+    )
+    player_class = MagicMock()
+    player_class.return_value.setup = AsyncMock(side_effect=NotAPlayer("not a player"))
+    monkeypatch.setattr("music_assistant.providers.sonos.provider.SonosPlayer", player_class)
+
+    with caplog.at_level(logging.DEBUG, logger=provider.logger.name):
+        await provider._setup_player(PLAYER_ID, SERVICE_NAME, info)
+
+    player_class.return_value.setup.assert_awaited_once()
+    assert "in discovery as it is part of another player's set" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -302,3 +365,24 @@ async def test_discovery_goes_on_when_a_manual_speaker_can_not_be_connected(
     await provider.discover_players()
 
     player_class.return_value.setup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discovery_skips_a_manual_speaker_that_is_part_of_a_set(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A speaker entered by IP address that is part of another player's set is no player."""
+    provider = _manual_ip_provider()
+    monkeypatch.setattr(
+        "music_assistant.providers.sonos.provider.get_discovery_info",
+        AsyncMock(return_value={"device": {"id": PLAYER_ID, "capabilities": ["PLAYBACK"]}}),
+    )
+    player_class = MagicMock()
+    player_class.return_value.setup = AsyncMock(side_effect=NotAPlayer("not a player"))
+    monkeypatch.setattr("music_assistant.providers.sonos.provider.SonosPlayer", player_class)
+
+    with caplog.at_level(logging.DEBUG, logger=provider.logger.name):
+        await provider.discover_players()
+
+    player_class.return_value.setup.assert_awaited_once()
+    assert "(manual IP) as it is part of another player's set" in caplog.text

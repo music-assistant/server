@@ -115,14 +115,15 @@ class AirPlaySpeaker(AirPlayPlayer):
             return
         owner.set_state_from_stream(state, elapsed_time)
 
-    def update_volume_from_device(self, volume: int) -> None:
+    def update_volume_from_device(self, volume: int, airplay_volume: float | None = None) -> None:
         """
         Hand a volume the device reported to its set.
 
-        :param volume: The level the device reported.
+        :param volume: The level the device reported, on the 0-100 scale.
+        :param airplay_volume: The AirPlay volume (dB) the device reported, if it gave one.
         """
         if owner := self.owner:
-            owner.update_volume_from_device(volume)
+            owner.update_volume_from_device(volume, airplay_volume)
 
     def release_foreign_mute_latch(self) -> None:
         """Clear the mute latch of the set when another control owns its mute."""

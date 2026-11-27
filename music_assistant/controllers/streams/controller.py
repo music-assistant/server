@@ -13,7 +13,7 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
-from functools import wraps
+from functools import partial, wraps
 from ipaddress import ip_address
 from math import ceil
 from typing import TYPE_CHECKING, Any, cast
@@ -32,6 +32,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlayerFeature,
     ProviderType,
+    RepeatMode,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import (
@@ -70,6 +71,7 @@ from music_assistant.constants import (
     DEFAULT_HOST,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES,
+    DLNA_CONTENT_FEATURES_FILE,
     DLNA_CONTENT_FEATURES_REALTIME,
     ICY_HEADERS,
     VERBOSE_LOG_LEVEL,
@@ -108,10 +110,23 @@ from music_assistant.controllers.streams.constants import (
     get_available_buffer_sizes,
     output_pacing_args,
 )
+from music_assistant.controllers.streams.file_stream import (
+    FILE_CODECS,
+    MAX_MIXED_FILES_PER_PLAYER,
+    FileKey,
+    FileStream,
+    FileStreams,
+    declared_frames,
+    is_connected,
+    parse_range,
+    player_hangs_up,
+)
 from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
     LiveAnnouncementManager,
 )
+from music_assistant.controllers.streams.mixed_track import SMART_FADE_STRETCH, MixedTrack
+from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.stream_sources import StreamSourceMode, UpgradeQuality
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
@@ -143,7 +158,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.media_capabilities import AudioSourceMixin
+from music_assistant.models.media_capabilities import AudioSourceMixin, AudioSourceRefusedError
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
@@ -177,7 +192,7 @@ def _volume_normalization_preference_options() -> list[ConfigValueOption]:
     ]
 
 
-def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -> dict[str, str]:
+def _audio_source_headers(source_name: str, output_format_str: str) -> dict[str, str]:
     """
     Return the response headers for a live audio source stream.
 
@@ -185,12 +200,12 @@ def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -
     flags. ``icy-name`` is sanitized of every control character, not just
     newlines, because aiohttp rejects the rest as a header injection attempt.
 
-    :param session: The session whose source is being streamed.
+    :param source_name: Name of the source as shown on the player it plays on.
     :param output_format_str: Output format to derive the content type from.
     """
     return {
         **DEFAULT_STREAM_HEADERS,
-        "icy-name": sanitize_http_header_value(session.source.name),
+        "icy-name": sanitize_http_header_value(source_name),
         "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
         "Content-Type": get_mime_type(output_format_str),
     }
@@ -326,7 +341,7 @@ class AudioSourceStream:
                 streamdetails=self.streamdetails,
                 pcm_format=pcm_format,
                 raise_on_error=False,
-                display_name=session.source.name,
+                display_name=players.get_audio_source_name(session.source, session.player_id),
                 source_session=session,
                 stream_session_id=self._stream_session_id,
             ):
@@ -376,6 +391,8 @@ class StreamsController(CoreController):
         # load the new session, and a response blocked in a write never notices
         # on its own that its session is gone
         self._open_item_streams: dict[str, list[tuple[str, web.Request]]] = {}
+        # The tracks that players fetch as a file
+        self._file_streams = FileStreams()
         # Per queue, the session and the items whose GET requests ended in it since the
         # player last asked for another item, which that next request checks
         self._ended_item_streams: dict[str, tuple[str, set[str]]] = {}
@@ -958,6 +975,83 @@ class StreamsController(CoreController):
         session_id, queue_id = url_parts[:2]
         return self.mass.player_queues.restart_lost_flow_stream(queue_id, session_id)
 
+    def serves_as_file(
+        self, player: PlayerProtocol, queue_item: QueueItem, output_codec: ContentType
+    ) -> bool:
+        """
+        Return whether the single item stream of a queue item is served to a player as a file.
+
+        A file has a declared length and answers requests for a part of it, so the player
+        can pause, resume and seek by itself.
+
+        :param player: The player that fetches the stream.
+        :param queue_item: The queue item the stream carries.
+        :param output_codec: The codec the stream is encoded in for the player.
+        """
+        if not (
+            player.fetches_files
+            and output_codec in FILE_CODECS
+            and queue_item.media_type == MediaType.TRACK
+            and queue_item.duration
+            and queue_item.extra_attributes.get("playback_speed", 1.0) == 1.0
+            and (queue := self.mass.player_queues.get(queue_item.queue_id))
+        ):
+            return False
+        # an overlay is mixed into the stream as it plays, and is made only once
+        if overlay_mixed_in(queue, queue_item, flow_mode=False):
+            return False
+        # a track that comes around again while its file is kept would get that file again,
+        # with the mixes of the play before in it
+        returns_soon = queue.repeat_mode == RepeatMode.ONE or (
+            queue.repeat_mode == RepeatMode.ALL and queue.items <= MAX_MIXED_FILES_PER_PLAYER
+        )
+        if returns_soon and (
+            self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
+            or self.audio.fade_into_pending(queue.queue_id, queue_item.queue_item_id)
+        ):
+            return False
+        streamdetails = queue_item.streamdetails
+        return streamdetails is None or (
+            streamdetails.allow_seek
+            and not streamdetails.fade_in
+            and streamdetails.tail_overlap is None
+        )
+
+    def stream_url_serves_as_file(self, stream_url: str) -> bool:
+        """
+        Return whether a stream URL that is handed to a player is answered as a file.
+
+        :param stream_url: A URL from `resolve_stream_url`.
+        """
+        single_url_prefix = f"{self.base_url}/single/"
+        if not stream_url.startswith(single_url_prefix):
+            return False
+        # <session_id>/<queue_id>/<queue_item_id>/<player_id>.<fmt>, or with the item named
+        # by its position in the queue: <session_id>/<queue_id>/pos/<index>/<player_id>.<fmt>
+        url_parts = stream_url.removeprefix(single_url_prefix).split("/")
+        item: str | int
+        if len(url_parts) == 4:
+            item = url_parts[2]
+        elif len(url_parts) == 5 and url_parts[2] == "pos" and url_parts[3].isdecimal():
+            item = int(url_parts[3])
+        else:
+            return False
+        player_id, _, fmt = url_parts[-1].partition(".")
+        player = self.mass.players.get_output_protocol(player_id)
+        queue_item = self.mass.player_queues.get_item(url_parts[1], item)
+        if player is None or queue_item is None:
+            return False
+        return self.serves_as_file(player, queue_item, ContentType.try_parse(fmt))
+
+    def release_file_streams(self, queue_id: str, current_session_id: str | None) -> None:
+        """
+        Release the files that players fetched of tracks in sessions the queue has moved past.
+
+        :param queue_id: The queue whose files to release.
+        :param current_session_id: The session that owns playback now, if any.
+        """
+        self._file_streams.release(queue_id, current_session_id)
+
     @_log_not_found
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: C901, PLR0912, PLR0915
         """Stream single queueitem audio to a player."""
@@ -1112,7 +1206,7 @@ class StreamsController(CoreController):
                     queue_item.streamdetails = await self.audio.get_stream_details(
                         queue_item=queue_item
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - provider code, any failure is answered as not found
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )
@@ -1137,33 +1231,7 @@ class StreamsController(CoreController):
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
-            if queue_item.streamdetails.tail_overlap is not None:
-                # a declared overlap plays into the item it was planned against,
-                # whatever the queue's crossfade setting
-                crossfade_mode = CrossfadeMode.VOICE_OVER
-            elif queue_item.media_type != MediaType.TRACK:
-                crossfade_mode = CrossfadeMode.DISABLED
-            else:
-                # a realtime source gets a fade decided from what its boundary
-                # can actually deliver (see _select_buffered_crossfade)
-                crossfade_mode = self.get_crossfade_mode(queue)
-            if (
-                crossfade_mode != CrossfadeMode.DISABLED
-                and PlayerFeature.GAPLESS_PLAYBACK not in player.supported_features
-            ):
-                if crossfade_mode == CrossfadeMode.VOICE_OVER:
-                    self.logger.debug(
-                        "Ignoring the tail overlap of %s: player %s does not play gapless",
-                        queue_item.name,
-                        player.display_name,
-                    )
-                else:
-                    self.logger.warning(
-                        "Crossfade disabled: Player %s does not support gapless playback, "
-                        "consider enabling flow mode to enable crossfade on this player.",
-                        player.display_name,
-                    )
-                crossfade_mode = CrossfadeMode.DISABLED
+            crossfade_mode = self._select_item_crossfade_mode(queue, queue_item, player)
             # the item before may have mixed (or be mixing) a fade into this one,
             # which only the smart fade stream plays
             fade_in_pending = self.audio.fade_into_pending(queue_id, queue_item.queue_item_id)
@@ -1202,6 +1270,21 @@ class StreamsController(CoreController):
                 "contentFeatures.dlna.org": dlna_features,
                 "Content-Type": get_mime_type(output_format.output_format_str),
             }
+
+            if self.serves_as_file(player, queue_item, output_format.content_type):
+                return await self._serve_file(
+                    request,
+                    queue,
+                    queue_item,
+                    player,
+                    pcm_format,
+                    output_format,
+                    headers,
+                    crossfade_mode
+                    if crossfade_mode != CrossfadeMode.DISABLED or fade_in_pending
+                    else None,
+                    standard_crossfade_duration,
+                )
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
@@ -1496,7 +1579,7 @@ class StreamsController(CoreController):
         # on_source_selected fires (stopping the previous player, redirecting a
         # disallowed switch), so answer it without touching the plugin.
         if request.method != "GET":
-            return await self._serve_audio_source_head(request, session)
+            return await self._serve_audio_source_head(request, session, player)
 
         stream_session_id = uuid4().hex
         # wire the provider in before awaiting the hook: a plugin that claims the
@@ -1591,7 +1674,10 @@ class StreamsController(CoreController):
                         exc_info=True,
                     )
             if not serving:
-                await self._release_unstarted_audio_source(session, playback_session_id)
+                self.mass.create_task(
+                    self._release_unstarted_audio_source(session, playback_session_id),
+                    task_name=f"release_unstarted_audio_source_{source_player_id}",
+                )
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream Queue Flow audio to player."""
@@ -2024,12 +2110,11 @@ class StreamsController(CoreController):
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
             assert queue  # the item was found in that queue's data, so the queue exists
-            if queue_item.streamdetails and queue_item.streamdetails.tail_overlap is not None:
-                self.logger.debug(
-                    "Ignoring the tail overlap of %s: a direct PCM stream of a single item "
-                    "never mixes its boundary",
-                    queue_item.name,
-                )
+            crossfade_mode = (
+                self._select_item_crossfade_mode(queue, queue_item, protocol_player)
+                if protocol_player is not None and queue_item.streamdetails is not None
+                else CrossfadeMode.DISABLED
+            )
             mix_overlay = overlay_mixed_in(queue, queue_item, flow_mode=False)
             self._update_audio_processing_context(
                 queue=queue,
@@ -2038,17 +2123,37 @@ class StreamsController(CoreController):
                 overlay_enabled=mix_overlay,
                 session_id=queue_session_id,
             )
-            inner_stream = self.audio.get_queue_item_stream(
-                queue_item=queue_item,
-                pcm_format=pcm_format,
-                seek_position=(
-                    int(queue_item.streamdetails.seek_position) if queue_item.streamdetails else 0
-                ),
-                playback_speed=cast(
-                    "float", queue_item.extra_attributes.get("playback_speed", 1.0)
-                ),
-                session_id=queue_session_id,
-            )
+            inner_stream: AsyncGenerator[bytes]
+            if protocol_player is not None and (
+                crossfade_mode != CrossfadeMode.DISABLED
+                # the item before may have mixed (or be mixing) a fade into this one,
+                # which only the smart fade stream plays
+                or self.audio.fade_into_pending(queue_id, queue_item.queue_item_id)
+            ):
+                inner_stream = self.audio.get_queue_item_stream_with_smartfade(
+                    player=protocol_player,
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    crossfade_mode=crossfade_mode,
+                    standard_crossfade_duration=self.mass.config.get_raw_core_config_value(
+                        CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
+                    ),
+                    session_id=queue_session_id,
+                )
+            else:
+                inner_stream = self.audio.get_queue_item_stream(
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    seek_position=(
+                        int(queue_item.streamdetails.seek_position)
+                        if queue_item.streamdetails
+                        else 0
+                    ),
+                    playback_speed=cast(
+                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                    ),
+                    session_id=queue_session_id,
+                )
             if mix_overlay:
                 inner_stream = self.audio.get_overlay_mixed_stream(queue, inner_stream, pcm_format)
             # mirror the on_source_selected/unselected lifecycle the HTTP route
@@ -2066,8 +2171,12 @@ class StreamsController(CoreController):
             # the HTTP route and the flow stream record the first chunk that goes out to the
             # player; this stream is handed to the player provider itself, so record it here, on
             # the final stream: an overlay mix that fails before emitting audio served nothing
-            inner_stream = self._mark_served_on_first_chunk(
-                inner_stream, queue_item, queue_session_id
+            inner_stream = self._follow_single_item_stream(
+                inner_stream,
+                queue_item,
+                queue_session_id,
+                loads_next=protocol_player is not None
+                and protocol_player.supports_feature(PlayerFeature.ENQUEUE),
             )
             return self._count_as_output_stream(inner_stream)
         # assume url or some other direct path
@@ -2089,6 +2198,7 @@ class StreamsController(CoreController):
         :param media: The media about to be played.
         :param consumer_player_id: The id of the output protocol that will consume the stream.
         :return: None when ``media`` is not a live source playing on a player.
+        :raises AudioSourceRefusedError: When the plugin of the source refuses this consumer.
         """
         if not (session := self._get_live_audio_source_session(media)):
             return None
@@ -2219,9 +2329,10 @@ class StreamsController(CoreController):
         """
         Take a source that never started off the player holding it.
 
-        The command that pointed the renderer here has already returned, so nothing
-        else will clear the session: without this the player goes on publishing a
-        source that never played, with its own queue held inactive behind it.
+        Without this the player goes on publishing a source that never played, with
+        its own queue held inactive behind it. Run it as a task of its own: it waits
+        for the player's lock, which the command that started the source can still
+        hold while its consumer waits for the stream.
 
         :param session: The session whose stream failed before any audio flowed.
         :param playback_session_id: Playback session active when stream setup started.
@@ -2256,21 +2367,23 @@ class StreamsController(CoreController):
             )
 
     async def _serve_audio_source_head(
-        self, request: web.Request, session: AudioSourceSession
+        self, request: web.Request, session: AudioSourceSession, player: PlayerProtocol
     ) -> web.StreamResponse:
         """
         Answer a HEAD probe for a live audio source without touching its provider.
 
         :param request: The probe to answer.
         :param session: The session whose source is being probed.
+        :param player: The player probing the stream.
         """
         head_fmt = request.match_info["fmt"]
         if ContentType.try_parse(head_fmt).is_pcm():
             # most DLNA renderers pick a decoder from the HEAD content type and
             # cannot handle raw PCM
             head_fmt = ContentType.WAV.value
+        source_name = self._audio_source_name(session, player)
         resp = web.StreamResponse(
-            status=200, reason="OK", headers=_audio_source_headers(session, head_fmt)
+            status=200, reason="OK", headers=_audio_source_headers(source_name, head_fmt)
         )
         await resp.prepare(request)
         return resp
@@ -2308,10 +2421,11 @@ class StreamsController(CoreController):
             content_bit_depth=pcm_format.bit_depth,
             media_type=MediaType.AUDIO_SOURCE,
         )
+        source_name = self._audio_source_name(session, player)
         resp = web.StreamResponse(
             status=200,
             reason="OK",
-            headers=_audio_source_headers(session, output_format.output_format_str),
+            headers=_audio_source_headers(source_name, output_format.output_format_str),
         )
         resp.content_type = get_mime_type(output_format.output_format_str)
         if player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False):
@@ -2323,7 +2437,7 @@ class StreamsController(CoreController):
             streamdetails=streamdetails,
             pcm_format=pcm_format,
             raise_on_error=False,
-            display_name=session.source.name,
+            display_name=source_name,
             source_session=session,
             stream_session_id=stream_session_id,
         )
@@ -2355,6 +2469,16 @@ class StreamsController(CoreController):
             # source's latency is whatever is buffered between it and the player
             extra_input_args=output_pacing_args(PacingProfile.LOW_LATENCY),
         )
+
+    def _audio_source_name(self, session: AudioSourceSession, player: PlayerProtocol) -> str:
+        """
+        Return the name of the source of a session as shown on the player fetching its stream.
+
+        :param session: The session whose source is streamed.
+        :param player: The protocol fetching the stream.
+        """
+        shown_on = player.player.player_id if player.player else session.player_id
+        return self.mass.players.get_audio_source_name(session.source, shown_on)
 
     async def _get_audio_source_session_stream(
         self,
@@ -2401,7 +2525,13 @@ class StreamsController(CoreController):
                 )
             except RuntimeError as err:
                 # the plugin refuses this consumer, e.g. it just redirected playback
-                raise AudioError(str(err)) from err
+                self.logger.info(
+                    "AudioSource %s aborted stream for player %s: %s",
+                    session.source_id,
+                    consumer_player_id,
+                    err,
+                )
+                raise AudioSourceRefusedError(str(err)) from err
             if not self.mass.players.claim_audio_source_session(
                 session, playback_session_id, stream_session_id
             ):
@@ -2445,7 +2575,10 @@ class StreamsController(CoreController):
                 exc_info=True,
             )
         if not served:
-            await self._release_unstarted_audio_source(session, playback_session_id)
+            self.mass.create_task(
+                self._release_unstarted_audio_source(session, playback_session_id),
+                task_name=f"release_unstarted_audio_source_{session.player_id}",
+            )
 
     def _get_live_audio_source_session(self, media: PlayerMedia) -> AudioSourceSession | None:
         """Return the session of the live source ``media`` plays on a player, if it is one."""
@@ -2535,28 +2668,335 @@ class StreamsController(CoreController):
         finally:
             self._active_output_streams -= 1
 
-    async def _mark_served_on_first_chunk(
-        self, inner: AsyncGenerator[bytes], queue_item: QueueItem, session_id: str | None
+    async def _follow_single_item_stream(
+        self,
+        inner: AsyncGenerator[bytes],
+        queue_item: QueueItem,
+        session_id: str | None,
+        *,
+        loads_next: bool,
     ) -> AsyncGenerator[bytes]:
         """
-        Forward a single-item stream, recording the item as served to the player on its first chunk.
+        Forward a single-item stream, reporting its first chunk to the queue.
 
         :param inner: The queue item stream to forward.
         :param queue_item: The queue item the stream carries.
         :param session_id: The queue session the stream was requested for, if the request named
-            one; a stream left over from a superseded load records nothing.
+            one; a stream left over from a superseded load records nothing. The stream ends once
+            its session is no longer current.
+        :param loads_next: Report the item as loaded in the player's buffer, so the queue hands
+            the player the item after it.
         """
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_item.queue_id)
         served = False
         async with aclosing(inner):
             async for chunk in inner:
+                if (
+                    session_id is not None
+                    and queue_data is not None
+                    and queue_data.session_id != session_id
+                ):
+                    self.logger.debug(
+                        "Ending stream for %s: session %s is no longer current",
+                        queue_item.name,
+                        session_id,
+                    )
+                    break
                 if not served:
                     served = True
-                    queue_data = self.mass.player_queues.queue_data_or_none(queue_item.queue_id)
-                    if queue_data is not None and session_id in (None, queue_data.session_id):
-                        self.mass.player_queues.mark_item_served(
+                    if queue_data is not None:
+                        if loads_next:
+                            self.mass.player_queues.track_loaded_in_buffer(
+                                queue_item.queue_id, queue_item.queue_item_id
+                            )
+                        else:
+                            self.mass.player_queues.mark_item_served(
+                                queue_item.queue_id, queue_item.queue_item_id
+                            )
+                yield chunk
+
+    async def _serve_file(
+        self,
+        request: web.Request,
+        queue: PlayerQueue,
+        queue_item: QueueItem,
+        player: PlayerProtocol,
+        pcm_format: AudioFormat,
+        output_format: AudioFormat,
+        headers: dict[str, str],
+        mix_mode: CrossfadeMode | None,
+        standard_crossfade_duration: int,
+    ) -> web.StreamResponse:
+        """
+        Answer a request for a queue item that is served as a file.
+
+        :param request: The request of the player.
+        :param queue: The queue the item plays on.
+        :param queue_item: The queue item, with its stream details resolved.
+        :param player: The player that fetches the file.
+        :param pcm_format: PCM format a new file reads its audio in.
+        :param output_format: Format of a new file.
+        :param headers: The headers of a stream response for this item.
+        :param mix_mode: How the stream of a new file mixes its end into the next item, or
+            None for a stream that is only the track; DISABLED only plays the fade the
+            item before mixed into this one.
+        :param standard_crossfade_duration: Configured standard crossfade duration.
+        """
+        assert queue_item.streamdetails is not None
+        session_id = request.match_info["session_id"]
+        start_position = int(queue_item.streamdetails.seek_position)
+        key = FileKey(session_id, queue.queue_id, queue_item.queue_item_id, start_position)
+        if (file := self._file_streams.get(player.protocol_id, key)) is None:
+            frames = declared_frames(queue_item, output_format.sample_rate)
+            end_ms = start_position * 1000 + -(-frames * 1000 // output_format.sample_rate)
+            # what a mix is made from at most; a declared length can be a second too long
+            tail_ms = end_ms - (standard_crossfade_duration + 1) * 1000
+            if mix_mode == CrossfadeMode.SMART_CROSSFADE:
+                tail_ms = end_ms - (SMART_CROSSFADE_DURATION + 1) * 1000
+                frames += SMART_FADE_STRETCH * output_format.sample_rate
+                end_ms += SMART_FADE_STRETCH * 1000
+            file = FileStream(pcm_format, output_format, frames)
+            if mix_mode is not None:
+                file.mix = MixedTrack(
+                    pcm_format,
+                    end_ms,
+                    tail_ms,
+                    partial(
+                        self.audio.get_queue_item_stream_with_smartfade,
+                        player=player,
+                        queue_item=queue_item,
+                        pcm_format=pcm_format,
+                        crossfade_mode=mix_mode,
+                        standard_crossfade_duration=standard_crossfade_duration,
+                        session_id=session_id,
+                    ),
+                    partial(
+                        self.audio.get_queue_item_stream,
+                        queue_item=queue_item,
+                        pcm_format=pcm_format,
+                        session_id=session_id,
+                    ),
+                )
+            self._file_streams.add(player.protocol_id, key, file)
+        if file.mix is not None and (max_size := file.mix.max_size) is not None:
+            # what the mixes left of the track is known before a request reaches its end
+            file.end_at(file.offset_of(max_size))
+
+        headers = {
+            **headers,
+            "Accept-Ranges": "bytes",
+            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_FILE,
+        }
+        range_header = request.headers.get("Range")
+        size = file.size_for(range_header)
+        part = parse_range(range_header, size)
+        if part is None:
+            part = range(size)
+            resp = web.StreamResponse(status=200, reason="OK", headers=headers)
+        elif part:
+            headers["Content-Range"] = f"bytes {part.start}-{part.stop - 1}/{size}"
+            resp = web.StreamResponse(status=206, headers=headers)
+        else:
+            raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{size}"})
+        resp.content_length = len(part)
+        await resp.prepare(request)
+        if request.method != "GET":
+            return resp
+
+        self._update_audio_processing_context(
+            queue=queue,
+            queue_item=queue_item,
+            pcm_format=file.pcm_format,
+            overlay_enabled=False,
+            session_id=session_id,
+        )
+        if await self._send_file_part(request, resp, file, part, queue_item, player) < part.stop:
+            # the body stops short of the announced content length, and aiohttp relays
+            # the 'Connection: close' we advertise without applying it - so the player
+            # waits out a stream that already ended
+            resp.force_close()
+        return resp
+
+    async def _send_file_part(
+        self,
+        request: web.Request,
+        resp: web.StreamResponse,
+        file: FileStream,
+        part: range,
+        queue_item: QueueItem,
+        player: PlayerProtocol,
+    ) -> int:
+        """
+        Send a part of a file to a player: its start from memory, the rest from an encode.
+
+        :param request: The request of the player.
+        :param resp: The prepared response to that request.
+        :param file: The file.
+        :param part: The bytes of the file the player asks for.
+        :param queue_item: The queue item the file carries.
+        :param player: The player that fetches the file.
+        :return: The offset in the file up to where the part was sent.
+        """
+        assert queue_item.streamdetails is not None
+        session_id = request.match_info["session_id"]
+        pq_data = self.mass.player_queues.queue_data(queue_item.queue_id)
+        offset = part.start
+        if memory := file.head(part):
+            try:
+                await resp.write(memory)
+            except ConnectionError:
+                return offset
+            offset += len(memory)
+            if offset == part.stop:
+                return offset
+            if part.start == 0 and file.has_audio_in_memory:
+                # a player asks for the start of a file again before it resumes or seeks,
+                # and leaves that request for the part it really wants. An encode is only
+                # worth starting for a player that stays and reads on
+                running = file.request
+                if await player_hangs_up(request) or file.request not in (running, None):
+                    return offset
+
+        # one encode at a time per file: a player that asks for another part has left the
+        # one it was reading. Aborted rather than closed, as a graceful close waits for
+        # the very send buffer the player stopped reading
+        if (running := file.request) is not None and (transport := running.transport) is not None:
+            transport.abort()
+        file.request = request
+        self.logger.debug(
+            "Serving %s as a file to %s from byte %s of %s",
+            queue_item.name,
+            player.display_name,
+            offset,
+            file.size,
+        )
+        stream_failure: AudioError | None = None
+        loaded = False
+        self._active_output_streams += 1
+        try:
+            async with aclosing(
+                self._encode_file(request, file, queue_item, player, offset)
+            ) as audio_bytes:
+                async for chunk in audio_bytes:
+                    if pq_data.session_id != session_id:
+                        self.logger.debug(
+                            "Ending stream for %s: session %s is no longer current",
+                            queue_item.name,
+                            session_id,
+                        )
+                        break
+                    # more audio than the file declared is cut off
+                    data = chunk[: part.stop - offset]
+                    try:
+                        await resp.write(data)
+                    except ConnectionError:
+                        # a player that pauses or seeks hangs up, and asks for the rest later
+                        break
+                    file.keep(offset, data)
+                    offset += len(data)
+                    if not loaded:
+                        loaded = True
+                        # inform the queue that the track is now loaded in the buffer
+                        # so for example the next track can be enqueued. Told for every
+                        # part that is encoded: a player that seeks, or that plays the
+                        # track again, needs its next track handed over again
+                        self.mass.player_queues.track_loaded_in_buffer(
                             queue_item.queue_id, queue_item.queue_item_id
                         )
-                yield chunk
+                    if offset == part.stop:
+                        break
+        except AudioError as err:
+            stream_failure = err
+        finally:
+            self._active_output_streams -= 1
+            if file.request is request:
+                file.request = None
+        if stream_failure is not None or queue_item.streamdetails.stream_error:
+            self.logger.error(
+                "Error streaming QueueItem %s (%s) to %s: %s",
+                queue_item.name,
+                queue_item.uri,
+                player.display_name,
+                _root_cause(stream_failure) if stream_failure else "see the preceding log",
+            )
+        return offset
+
+    async def _encode_file(
+        self,
+        request: web.Request,
+        file: FileStream,
+        queue_item: QueueItem,
+        player: PlayerProtocol,
+        offset: int,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Encode a file from an offset to the end of its audio.
+
+        Audio that ends before the declared size of the file sets its real size.
+
+        :param request: The request the encode runs for.
+        :param file: The file to encode.
+        :param queue_item: The queue item the file carries.
+        :param player: The player that fetches the file.
+        :param offset: Offset in the file of the first byte to deliver, past the header.
+        """
+        assert queue_item.streamdetails is not None
+        session_id = request.match_info["session_id"]
+        start_ms, run_in = file.encode_start(offset)
+        if file.mix is not None:
+            audio_input = file.mix.read(
+                start_ms * file.pcm_format.pcm_sample_size // 1000, lambda: is_connected(request)
+            )
+        else:
+            audio_input = self.audio.get_queue_item_stream(
+                queue_item=queue_item,
+                pcm_format=file.pcm_format,
+                seek_position_ms=int(queue_item.streamdetails.seek_position) * 1000 + start_ms,
+                session_id=session_id,
+                consumer_connected=lambda: is_connected(request),
+            )
+        output_plan = self.audio.get_player_output_plan(
+            protocol_id=player.protocol_id,
+            input_format=file.pcm_format,
+            output_format=file.output_format,
+            shared_player_ids=player.group_members,
+            queue_id=queue_item.queue_id,
+            session_id=session_id,
+            queue_item_id=queue_item.queue_item_id,
+        )
+        # the audio that is dropped comes on top of the head start, so it costs the player none
+        burst = file.take_head_start() + run_in / file.byte_rate
+        position = offset - run_in
+        async with aclosing(
+            get_ffmpeg_stream(
+                audio_input=audio_input,
+                input_format=file.pcm_format,
+                output_format=file.encode_format,
+                filter_params=output_plan.filter_params,
+                extra_input_args=output_pacing_args(burst=burst),
+                extra_output_args=file.encoder_args,
+            )
+        ) as encoded:
+            async for chunk in encoded:
+                position += len(chunk)
+                if position > offset:
+                    yield chunk[offset - position :]
+                    offset = position
+        # an encode also ends when its audio is taken away or its player has gone, so only
+        # a source that was read out for a player that stayed tells where the file ends
+        if file.mix is not None:
+            read_out = file.mix.size is not None
+        else:
+            buffer = queue_item.streamdetails.buffer
+            read_out = buffer is not None and buffer.eof and not buffer.has_error
+        if is_connected(request) and read_out and position < file.size:
+            self.logger.debug(
+                "%s ends at byte %s of the %s its file declared",
+                queue_item.name,
+                position,
+                file.size,
+            )
+            file.end_at(position)
 
     def _served_by(self, queue_item: QueueItem | None, provider_instance: str) -> bool:
         """
@@ -2576,6 +3016,46 @@ class StreamsController(CoreController):
             mapping.provider_instance == provider_instance
             for mapping in media_item.provider_mappings
         )
+
+    def _select_item_crossfade_mode(
+        self, queue: PlayerQueue, queue_item: QueueItem, player: PlayerProtocol
+    ) -> CrossfadeMode:
+        """
+        Return how the stream of a single queue item mixes its end into the next item.
+
+        :param queue: The queue the item plays on.
+        :param queue_item: The item about to be streamed, with its stream details resolved.
+        :param player: The player that plays the item.
+        """
+        assert queue_item.streamdetails is not None
+        if queue_item.streamdetails.tail_overlap is not None:
+            # a declared overlap plays into the item it was planned against,
+            # whatever the queue's crossfade setting
+            crossfade_mode = CrossfadeMode.VOICE_OVER
+        elif queue_item.media_type != MediaType.TRACK:
+            crossfade_mode = CrossfadeMode.DISABLED
+        else:
+            # a realtime source gets a fade decided from what its boundary
+            # can actually deliver (see _select_buffered_crossfade)
+            crossfade_mode = self.get_crossfade_mode(queue)
+        if (
+            crossfade_mode != CrossfadeMode.DISABLED
+            and PlayerFeature.GAPLESS_PLAYBACK not in player.supported_features
+        ):
+            if crossfade_mode == CrossfadeMode.VOICE_OVER:
+                self.logger.debug(
+                    "Ignoring the tail overlap of %s: player %s does not play gapless",
+                    queue_item.name,
+                    player.display_name,
+                )
+            else:
+                self.logger.warning(
+                    "Crossfade disabled: Player %s does not support gapless playback, "
+                    "consider enabling flow mode to enable crossfade on this player.",
+                    player.display_name,
+                )
+            crossfade_mode = CrossfadeMode.DISABLED
+        return crossfade_mode
 
     def _update_audio_processing_context(
         self,

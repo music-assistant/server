@@ -125,24 +125,19 @@ Its nqptp and MA's PTP engine both need UDP 319/320, so the native lane can't wo
 The only user override is the advanced per-player `streaming_mode` selector. It
 pins the protocol/timing lane for a device whose automatic route misbehaves, and
 each option is offered only when the device can actually use it: the AirPlay 2
-lanes need AirPlay 2 support, legacy RAOP needs an advertised `_raop` service,
-and Apple receivers get every lane except NTP timing (they render silence on an
-NTP-timed realtime stream). The modes map
-onto the binary's `--protocol`/`--timing` arguments. Music Assistant never
-writes the setting itself: when an automatic route conclusively fails (a device
-that advertises PTP but never answers a clock probe, or a native control
-channel that fails after its keepalive retries) it logs a warning pointing at
-this selector and leaves the choice to the user. The usual cause of a control
-channel failure is a network dropout, and a persisted automatic switch would
-outlive it and pin the player to a lane the device may not even accept.
+lanes need AirPlay 2 support and legacy RAOP needs an advertised `_raop`
+service. The modes map onto the binary's `--protocol`/`--timing` arguments.
+Music Assistant never writes the setting itself: when an automatic route
+conclusively fails (a device that advertises PTP but never answers a clock
+probe, or a native control channel that fails after its keepalive retries) it
+logs a warning pointing at this selector and leaves the choice to the user. The
+usual cause of a control channel failure is a network dropout, and a persisted
+automatic switch would outlive it and pin the player to a lane the device may
+not even accept.
 
 The selector is hidden only for RAOP-only devices (no alternative lane; a
-stray persisted value is ignored). Apple devices (HomePod / Apple TV) get
-every lane except NTP timing — they render silence on an NTP-timed realtime
-stream (hardware-measured) — leaving pinned PTP, the compatibility flow and
-legacy RAOP as escape hatches for networks where the PTP ports are blocked.
-AirPlay-2-only devices get the AirPlay 2 lanes without RAOP: they are the
-class the NTP escape exists for.
+stray persisted value is ignored). AirPlay-2-only devices get the AirPlay 2
+lanes without RAOP: they are the class the NTP escape exists for.
 
 ## Discovery and Player Setup
 
@@ -205,6 +200,11 @@ pair), and the HomePods are fed directly as its speakers.
   Apple TV, which then reports another sender (measured), so right after a speaker joined that
   report does not keep it out. Power and wake act on the Apple TV, as for a plain Apple TV,
   which needs to be paired for this.
+- The volume of the set is the one of its HomePods, which is not the native volume of the
+  Apple TV. The Apple TV's protocol keeps a transient MRP tunnel to one of them, the first that
+  answers, whether or not the Apple TV itself is paired: each HomePod reports and sets the one
+  volume of the whole set (measured). Over it the set follows changes made elsewhere, also while
+  it plays, and while it is idle its volume and mute go to the HomePods.
 - The player option "Play on HomePods only" leaves the Apple TV out: no session to it, no
   wake and no power control (the players controller powers a player on before it plays), and
   no pairing needed.
@@ -481,13 +481,15 @@ A volume is still sent when the AirPlay output itself is the resolved volume con
 
 ### Volume Feedback
 
-Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. Genuine Apple devices are auto-set to ignore these reports (they manage volume internally).
+Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set, and sets that level on the device over AirPlay whichever control owns the volume: a Sonos holds a change made with its own controls (app, buttons, its API) until the sender sets it. The level goes back exactly as reported (`VOLUME_DB`), because a level rounded to a whole percent can move a device a step on its own scale. The DACP volume reports of Apple devices are always ignored: a HomePod holds its reports back for 5 seconds for every connected sender whose DACP service it can not find, such as the control connection, so an old level can arrive long after a newer one.
+
+The volume of a HomePod is followed over its control connection (MRP) instead, idle and while it plays from Music Assistant. That is the volume the stream plays at, and its reports arrive in order. They are only taken over, never sent back to the device, and a 0 never mutes the player. A home theater set is followed, and set while it is idle, through the control connection to one of its HomePods (see [Home Theater Sets](#home-theater-sets)). On an Apple TV outside a set the native volume is separate from the one of the stream, and is ignored while it plays from Music Assistant.
 
 A receiver also echoes back every level it is handed, and an echo that arrives after the next level was sent would be read as the user reaching for the volume and written straight back to the device. Reports are therefore ignored for a short window after Music Assistant sends a volume itself, and for the whole span of an announcement.
 
-**Config option**: `ignore_volume` (default: `False`, auto-enabled for Apple devices)
+**Config option**: `ignore_volume` (default: `False`)
 - Useful when device volume reports are unreliable
-- Apple devices always ignore volume feedback (handled internally)
+- On a HomePod or a home theater set it ignores the reports that arrive while it plays from Music Assistant
 
 ### Device Source Switching
 
@@ -670,6 +672,9 @@ and control connections:
   and volume independently of Music Assistant streaming.
 - **AirPlay MRP tunnel** tracks external playback, including the active app,
   metadata, elapsed time, and transport state.
+- **HomePod MRP tunnel** of an Apple TV that carries a home theater set tracks and
+  controls the volume of the set on one of its HomePods (see
+  [Home Theater Sets](#home-theater-sets)).
 - Music Assistant explicitly wakes a sleeping device before starting or
   resuming an AirPlay stream.
 - AirPlay streaming, Companion control, and MRP playback monitoring keep
@@ -719,7 +724,10 @@ keeps the way they are combined with the other protocols of the device stable.
    individually, so they can resume sample-aligned; a member that has lost its
    connection falls back to stop. The park belongs to the session rather than to
    the group membership, so breaking up a paused group leaves the remaining
-   player parked, and only a queue-driven re-anchor revives it
+   player parked, and only a queue-driven re-anchor revives it. A paused live
+   source (such as Spotify Connect) parks the session the same way, for a single
+   speaker too (`hold()`), so the speaker stays connected until it plays on or
+   the pause timeout stops it
 3. **HomePod power control**: Current HomePod firmware does not advertise
    Companion PIN pairing, so explicit power/wake control is unavailable
 4. **Apple TV artwork for non-public images**: Cover art only reachable through
@@ -804,7 +812,7 @@ The bridge consists of:
 
 ### Transport Loss
 
-The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing.
+The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing. The fresh stream starts on the audio the bridge still holds, from where a late joiner starts: the chunks Sendspin delivers run up to its whole buffer ahead of what the group plays, so the chunk that exposed the loss would start it that far ahead. A speaker that comes back into a set that plays starts the same way.
 
 Giving up on a stream — a start that raised, a protocol that never became ready, or a transport that dropped again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of a recovery — takes the speaker out of the Sendspin session; for a set, any of its speakers giving up takes the whole set out, while its Apple TV, and a speaker that came back while the set played and never joined, only leave the stream. Sendspin reports playback from the group's own state, and the protocol gives a player no way to report that it went silent, so a bridge that merely stopped feeding its speaker would hold the visible player on PLAYING for the rest of the stream. Leaving is what surfaces that silence: a shared group plays on without this speaker, a solo one stops.
 

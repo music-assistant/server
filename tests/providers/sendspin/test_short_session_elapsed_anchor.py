@@ -47,6 +47,9 @@ def _short_session(monkeypatch: pytest.MonkeyPatch) -> SendspinPlaybackSession:
     session._produced_audio_us = 0
     session._timeline_start_us = None
     session._cancel_requested = False
+    session._item_starts = []
+    session._next_media = None
+    session._next_media_ready = asyncio.Event()
 
     async def audio_source() -> AsyncIterator[bytes]:
         # 2s of silence: well inside the 30s producer buffer
@@ -59,7 +62,7 @@ def _short_session(monkeypatch: pytest.MonkeyPatch) -> SendspinPlaybackSession:
     push_stream.sleep_to_limit_buffer = AsyncMock()
     push_stream.now_us = MagicMock(return_value=CLOCK_NOW_US)
 
-    monkeypatch.setattr(session, "_get_start_streamdetails", MagicMock(return_value=None))
+    monkeypatch.setattr(session, "_get_item_streamdetails", MagicMock(return_value=None))
     monkeypatch.setattr(session, "_follow_session_sample_rate", AsyncMock())
     monkeypatch.setattr(
         session, "_select_session_pcm_formats", MagicMock(return_value=(PCM_FORMAT, MagicMock()))

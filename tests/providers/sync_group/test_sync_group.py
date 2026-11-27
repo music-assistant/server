@@ -41,6 +41,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
+from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -50,7 +51,11 @@ from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import PlayerProtocol
-from music_assistant.providers.sync_group.constants import REFORM_DEBOUNCE_SECONDS
+from music_assistant.providers.sync_group.constants import (
+    PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
+    REFORM_DEBOUNCE_SECONDS,
+    STUCK_MEMBER_TIMEOUT,
+)
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 from tests.common import (
     MockProtocol,
@@ -107,6 +112,7 @@ def _make_mock_mass() -> MagicMock:
     players._handle_play_media = AsyncMock()
     players.cmd_set_members = AsyncMock()
     players._handle_set_members = AsyncMock()
+    players._activate_output_protocol = AsyncMock()
     players.get_player_lock = MagicMock(return_value=_noop_context())
     # a member's lock is free unless a test says otherwise
     free = _noop_context()
@@ -783,6 +789,164 @@ class TestDynamicLeaderSwitch:
             player_ids_to_add=["airplay_ap_only"]
         )
 
+    @staticmethod
+    def _group_with_native_followers(
+        mass: MagicMock, domain: str, *followers: str
+    ) -> tuple[SyncGroupPlayer, Player, list[str]]:
+        """
+        Return a group whose leader plays to one member, and the calls its leader gets.
+
+        :param domain: Domain of the protocol the leader plays on.
+        :param followers: The players that follow the leader on its own protocol.
+        """
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader", audio=[domain], active_output=domain)
+        member = _make_member(mass, "member", None, audio=[domain])
+        session = _protocol(leader, domain)
+        session._attr_group_members = [f"{domain}_leader", f"{domain}_member"]
+        leader.state.group_members = UniqueList(["leader", *followers, "member"])
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", *followers, "member"]
+        calls: list[str] = []
+
+        def _note(call: str) -> None:
+            calls.append(f"{call} under {sgp.sync_leader.player_id if sgp.sync_leader else None}")
+
+        mass.players._handle_set_members.side_effect = lambda *_a, **_k: _note("release")
+        session.set_members = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda **_k: _note("step out")
+        )
+        _protocol(member, domain).set_members = AsyncMock()  # type: ignore[method-assign]
+        return sgp, leader, calls
+
+    @pytest.mark.parametrize("domain", PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH)
+    async def test_dynamic_leader_switch_releases_native_followers_first(self, domain: str) -> None:
+        """The members the leader holds outside the session leave it before its stream ends."""
+        mass = _make_mock_mass()
+        sgp, leader, calls = self._group_with_native_followers(mass, domain, "f1", "f2")
+        _make_member(mass, "f1")
+        _make_member(mass, "f2", audio=[domain], offline=[domain])
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_remove=["f1", "f2"]
+        )
+        assert calls == ["release under leader", "step out under member"]
+        # neither can be reached on the protocol of the session
+        assert sgp._attr_group_members == ["member"]
+        member = mass.players.get_player("member")
+        _member_changes(_protocol(member, domain)).assert_not_awaited()
+
+    @pytest.mark.parametrize("domain", PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH)
+    async def test_dynamic_leader_switch_takes_native_followers_along(self, domain: str) -> None:
+        """A released member joins the session that plays on when it can be reached on it."""
+        mass = _make_mock_mass()
+        sgp, _leader, calls = self._group_with_native_followers(mass, domain, "f1")
+        follower = _make_member(mass, "f1", audio=[domain])
+        member = mass.players.get_player("member")
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        assert calls == ["release under leader", "step out under member"]
+        mass.players._activate_output_protocol.assert_awaited_with(follower, f"{domain}_f1")
+        _member_changes(_protocol(member, domain)).assert_awaited_once_with(
+            player_ids_to_add=[f"{domain}_f1"]
+        )
+        assert sgp._attr_group_members == ["member", "f1"]
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            {"synced_to": "other"},
+            {"active_group": "other"},
+            {"powered": False},
+            {"playback_state": PlaybackState.PLAYING},
+        ],
+        ids=lambda state: next(iter(state)),
+    )
+    async def test_dynamic_leader_switch_leaves_a_follower_that_is_not_free_alone(
+        self, state: dict[str, Any]
+    ) -> None:
+        """A released member that is in use for something else by then does not join."""
+        mass = _make_mock_mass()
+        sgp, _leader, _calls = self._group_with_native_followers(mass, "airplay", "f1")
+        follower = _make_member(mass, "f1", audio=["airplay"])
+        for key, value in state.items():
+            setattr(follower.state, key, value)
+        member = mass.players.get_player("member")
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        _member_changes(_protocol(member, "airplay")).assert_not_awaited()
+        assert sgp._attr_group_members == ["member", "f1"]
+
+    async def test_dynamic_leader_switch_carries_on_when_a_follower_can_not_join(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A released member whose join fails does not fail the departure of the leader."""
+        mass = _make_mock_mass()
+        sgp, _leader, _calls = self._group_with_native_followers(mass, "airplay", "f1")
+        _make_member(mass, "f1", audio=["airplay"])
+        member = mass.players.get_player("member")
+        _member_changes(_protocol(member, "airplay")).side_effect = PlayerCommandFailed("no")
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        assert "Could not add f1 to group" in caplog.text
+        assert sgp.sync_leader is member
+        assert sgp._attr_group_members == ["member", "f1"]
+
+    async def test_dynamic_leader_switch_carries_on_when_the_release_fails(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A leader that can not let go of its followers leaves all the same."""
+        mass = _make_mock_mass()
+        sgp, _leader, calls = self._group_with_native_followers(mass, "airplay", "f1")
+        _make_member(mass, "f1", audio=["airplay"])
+        mass.players._handle_set_members.side_effect = TimeoutError
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        assert calls == ["step out under member"]
+        assert "Could not release" in caplog.text
+
+    async def test_dynamic_leader_switch_does_not_wait_for_an_offline_leader(self) -> None:
+        """A leader that is offline is not asked to let go of its followers."""
+        mass = _make_mock_mass()
+        sgp, leader, calls = self._group_with_native_followers(mass, "airplay", "f1")
+        _make_member(mass, "f1", audio=["airplay"])
+        leader.state.available = False
+        member = mass.players.get_player("member")
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        assert calls == ["step out under member"]
+        _member_changes(_protocol(member, "airplay")).assert_awaited_once_with(
+            player_ids_to_add=["airplay_f1"]
+        )
+
+    @pytest.mark.parametrize("domain", PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH)
+    async def test_dynamic_leader_switch_without_native_followers_releases_nobody(
+        self, domain: str
+    ) -> None:
+        """A leader that only holds members in its session gets no extra command."""
+        mass = _make_mock_mass()
+        sgp, _leader, calls = self._group_with_native_followers(mass, domain)
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        assert calls == ["step out under member"]
+        mass.players.wait_for_player_update.assert_not_called()
+        assert sgp._attr_group_members == ["member"]
+
     async def test_dynamic_leader_switch_dissolves_when_new_leader_not_in_session(
         self,
     ) -> None:
@@ -797,6 +961,7 @@ class TestDynamicLeaderSwitch:
         _make_member(mass, "fresh_player", "sonos", audio=["airplay"])
         # the old leader was streaming on its own, so its session holds nobody else
         session = _protocol(old_leader, "airplay")
+        session._attr_playback_state = PlaybackState.PLAYING
         session.set_members = AsyncMock()  # type: ignore[method-assign]
         sgp.sync_leader = old_leader
         sgp._attr_group_members = ["old_leader", "fresh_player"]
@@ -810,6 +975,17 @@ class TestDynamicLeaderSwitch:
         _member_changes(session).assert_not_awaited()
         mass.players.wait_for_player_update.assert_called()
         assert "old_leader" not in sgp._attr_group_members
+
+    async def test_a_silent_departing_leader_is_stopped_without_waiting(self) -> None:
+        """A leader whose output is silent already reports nothing new, so nothing waits."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader")
+
+        await sgp._stop_departing_leader(leader)
+
+        mass.players._handle_cmd_stop.assert_awaited_once_with("leader")
+        mass.players.wait_for_player_update.assert_not_called()
 
     async def test_dynamic_leader_switch_follows_live_session_order(self) -> None:
         """
@@ -1065,6 +1241,245 @@ class TestDynamicLeaderSwitch:
 
         sgp._align_members_with_session(stranger)
         assert sgp._attr_group_members == ["living_room", "bathroom"]
+
+
+class TestLeaderLost:
+    """Test what becomes of the group when the leader of its live session lost its stream."""
+
+    def _playing_group(
+        self, *, dynamic: bool = True, domain: str = "airplay"
+    ) -> tuple[MagicMock, SyncGroupPlayer, dict[str, Player]]:
+        """
+        Return a playing group of three, led by the first, and its members by id.
+
+        :param dynamic: Whether the members of the group can change.
+        :param domain: The domain of the protocol that carries the session.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass, dynamic=dynamic, members=["a", "b", "c"])
+        members = {
+            name: _make_member(
+                mass,
+                name,
+                None,
+                audio=[domain],
+                active_output=domain,
+                playback_state=PlaybackState.PLAYING,
+            )
+            for name in ("a", "b", "c")
+        }
+        for member in members.values():
+            _protocol(member, domain).set_members = AsyncMock()  # type: ignore[method-assign]
+        _protocol(members["a"], domain)._attr_group_members = [
+            f"{domain}_{name}" for name in members
+        ]
+        self._feed(members, "b", "c", domain=domain)
+        sgp.sync_leader = members["a"]
+        sgp._attr_group_members = list(members)
+        sgp._attr_static_group_members = [] if dynamic else list(members)
+        sgp._attr_playback_state = PlaybackState.PLAYING
+        return mass, sgp, members
+
+    def _feed(self, members: dict[str, Player], *fed: str, domain: str = "airplay") -> None:
+        """
+        Feed the session to these members only, as the members report it.
+
+        :param members: The members of the group by id.
+        :param fed: Ids of the members the session feeds.
+        :param domain: The domain of the protocol that carries the session.
+        """
+        for name, member in members.items():
+            if name == "a":
+                continue
+            _protocol(member, domain).live_session = (
+                [f"{domain}_{x}" for x in fed] if name in fed else []
+            )
+
+    @pytest.mark.parametrize("dynamic", [True, False])
+    async def test_a_remaining_member_leads_and_the_lost_leader_stays_a_member(
+        self, dynamic: bool
+    ) -> None:
+        """The session is handed over, and the lost leader is last in line to lead again."""
+        mass, sgp, members = self._playing_group(dynamic=dynamic)
+        lost = _protocol(members["a"], "airplay")
+
+        assert await sgp.on_session_leader_lost(lost)
+
+        assert sgp.sync_leader is members["b"]
+        assert sgp._attr_group_members == ["b", "c", "a"]
+        _member_changes(lost).assert_awaited_once_with(player_ids_to_remove=["airplay_a"])
+        _member_changes(_protocol(members["b"], "airplay")).assert_awaited_once_with(
+            player_ids_to_add=["airplay_c"]
+        )
+        mass.players._handle_cmd_stop.assert_not_awaited()
+        mass.players.schedule_active_output_protocol_clear.assert_called_once_with(members["a"])
+
+    async def test_a_member_that_is_not_heard_is_not_handed_over(self) -> None:
+        """A member without a live stream is left out of the handover and stays a member."""
+        _mass, sgp, members = self._playing_group()
+        lost = _protocol(members["a"], "airplay")
+        lost.live_session = ["airplay_c"]
+        self._feed(members, "c")
+
+        assert await sgp.on_session_leader_lost(lost)
+
+        assert sgp.sync_leader is members["c"]
+        assert set(sgp._attr_group_members) == {"a", "b", "c"}
+        _member_changes(_protocol(members["c"], "airplay")).assert_not_awaited()
+
+    async def test_a_lost_leader_that_is_still_heard_in_part_does_not_lead_again(self) -> None:
+        """A set that lost one speaker is fed on the others, but gives up the lead as a whole."""
+        _mass, sgp, members = self._playing_group(dynamic=False)
+        lost = _protocol(members["a"], "airplay")
+        lost.live_session = ["airplay_a", "airplay_b"]
+        self._feed(members, "b")
+
+        assert await sgp.on_session_leader_lost(lost)
+
+        assert sgp.sync_leader is members["b"]
+
+    async def test_the_new_leader_plays_on_the_protocol_of_the_session(self) -> None:
+        """A member that was put back into the session does not have it as its output."""
+        mass, sgp, members = self._playing_group()
+        back = members["b"] = _make_member(mass, "b", "sonos", audio=["airplay"])
+        _protocol(back, "airplay").set_members = AsyncMock()  # type: ignore[method-assign]
+        self._feed(members, "b", "c")
+
+        assert await sgp.on_session_leader_lost(_protocol(members["a"], "airplay"))
+
+        assert sgp.sync_leader is back
+        mass.players._activate_output_protocol.assert_awaited_once_with(back, "airplay_b")
+
+    @pytest.mark.parametrize(
+        ("fed", "leader", "added"),
+        [
+            (["c"], "c", None),
+            (["b"], "b", None),
+            # one that came back joined the session meanwhile
+            (["b", "c", "d"], "b", ["airplay_c", "airplay_d"]),
+        ],
+    )
+    async def test_the_handover_goes_by_who_is_heard_once_the_lost_leader_is_out(
+        self, fed: list[str], leader: str, added: list[str] | None
+    ) -> None:
+        """
+        A member that is lost, or is back, while the lost leader steps out counts as such.
+
+        :param fed: Ids of the members the session feeds once the lost leader is out of it.
+        :param leader: Id of the member that leads.
+        :param added: Ids of the protocols that are handed over to it.
+        """
+        _mass, sgp, members = self._playing_group()
+        lost = _protocol(members["a"], "airplay")
+
+        async def _step_out(**_kwargs: Any) -> None:
+            self._feed(members, *fed)
+
+        lost.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+
+        assert await sgp.on_session_leader_lost(lost)
+
+        assert sgp.sync_leader is members[leader]
+        assert sgp._attr_group_members[0] == leader
+        assert set(sgp._attr_group_members) == {"a", "b", "c"}
+        assert sgp._attr_playback_state == PlaybackState.PLAYING
+        for name in ("b", "c"):
+            changes = _member_changes(_protocol(members[name], "airplay"))
+            if name == leader and added:
+                changes.assert_awaited_once_with(player_ids_to_add=added)
+            else:
+                changes.assert_not_awaited()
+
+    async def test_a_member_lost_while_it_takes_the_lead_does_not_lead(self) -> None:
+        """The next member that is still heard leads, and the session is handed to it."""
+        mass, sgp, members = self._playing_group()
+        for name in ("c", "d"):
+            # put back into the session, so the lead has to switch its output first
+            members[name] = _make_member(mass, name, "sonos", audio=["airplay"])
+            _protocol(members[name], "airplay").set_members = AsyncMock()  # type: ignore[method-assign]
+        members["e"] = _make_member(mass, "e", None, audio=["airplay"], active_output="airplay")
+        sgp._attr_group_members = list(members)
+        self._feed(members, "b", "c", "d", "e")
+        lost = _protocol(members["a"], "airplay")
+
+        async def _step_out(**_kwargs: Any) -> None:
+            self._feed(members, "c", "d", "e")
+
+        async def _activate(player: Player, _protocol_id: str) -> None:
+            if player is members["c"]:
+                self._feed(members, "d", "e")
+
+        lost.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+        mass.players._activate_output_protocol.side_effect = _activate
+
+        assert await sgp.on_session_leader_lost(lost)
+
+        assert sgp.sync_leader is members["d"]
+        _member_changes(_protocol(members["c"], "airplay")).assert_not_awaited()
+        _member_changes(_protocol(members["d"], "airplay")).assert_awaited_once_with(
+            player_ids_to_add=["airplay_e"]
+        )
+
+    async def test_a_handover_that_finds_nobody_left_is_none(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """With nobody heard once the lost leader is out, the caller ends the group."""
+        _mass, sgp, members = self._playing_group()
+        lost = _protocol(members["a"], "airplay")
+
+        async def _step_out(**_kwargs: Any) -> None:
+            self._feed(members)
+
+        lost.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.INFO):
+            assert not await sgp.on_session_leader_lost(lost)
+
+        assert sgp.sync_leader is members["a"]
+        assert set(sgp._attr_group_members) == {"a", "b", "c"}
+        assert "keep playing" not in caplog.text
+
+    @pytest.mark.parametrize("dynamic", [True, False])
+    @pytest.mark.parametrize("live", [[], ["airplay_a"]])
+    async def test_without_a_member_that_is_heard_the_group_is_left_as_it_is(
+        self, dynamic: bool, live: list[str]
+    ) -> None:
+        """With nobody to play on, the caller ends the group."""
+        _mass, sgp, members = self._playing_group(dynamic=dynamic)
+        lost = _protocol(members["a"], "airplay")
+        lost.live_session = live
+
+        assert not await sgp.on_session_leader_lost(lost)
+
+        assert sgp.sync_leader is members["a"]
+        assert sgp._attr_group_members == ["a", "b", "c"]
+        _member_changes(lost).assert_not_awaited()
+
+    @pytest.mark.parametrize("state", [PlaybackState.PAUSED, PlaybackState.IDLE])
+    async def test_a_group_that_does_not_play_is_left_as_it_is(self, state: PlaybackState) -> None:
+        """Only a session that plays is handed over."""
+        _mass, sgp, members = self._playing_group()
+        sgp._attr_playback_state = state
+
+        assert not await sgp.on_session_leader_lost(_protocol(members["a"], "airplay"))
+
+        assert sgp.sync_leader is members["a"]
+
+    async def test_a_protocol_that_can_not_hand_over_is_left_as_it_is(self) -> None:
+        """Only the protocols that keep a session going without its leader hand it over."""
+        _mass, sgp, members = self._playing_group(domain="squeezelite")
+
+        assert not await sgp.on_session_leader_lost(_protocol(members["a"], "squeezelite"))
+
+        assert sgp.sync_leader is members["a"]
+
+    async def test_the_loss_of_a_protocol_that_does_not_carry_the_session_is_ignored(self) -> None:
+        """A protocol that leads members, but not the session the group plays, hands over nothing."""
+        _mass, sgp, members = self._playing_group()
+
+        assert not await sgp.on_session_leader_lost(_protocol(members["b"], "airplay"))
+
+        assert sgp.sync_leader is members["a"]
 
 
 class TestPowerLifecycle:
@@ -1337,6 +1752,117 @@ class TestFormationAndACommandOnItsLeader:
         assert not players._lock_holders
 
 
+def _group_with_the_line_in_of_its_leader(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    playing: bool = False,
+    sources: list[PlayerSource] | None = None,
+) -> tuple[PlayerController, SyncGroupPlayer, Player]:
+    """
+    Build a sync group formed around speaker L, which has a line-in, on a real players controller.
+
+    :param playing: The group plays its own queue on L.
+    :param sources: The sources the speaker of L lists, by default its own line-in only.
+    :return: The controller, the group and speaker L.
+    """
+    players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+    native = _protocol(leader, "sonos")
+    native._attr_source_list = sources or [
+        PlayerSource(id="line_in", name="Line-in", is_input=True)
+    ]
+    native.select_source = AsyncMock()  # type: ignore[method-assign]
+    native.stop = AsyncMock()  # type: ignore[method-assign]
+    group.sync_leader = leader
+    if playing:
+        native._attr_playback_state = PlaybackState.PLAYING
+        native._attr_active_source = _group_id(group)
+        group._attr_playback_state = PlaybackState.PLAYING
+        group._attr_active_source = _group_id(group)
+    for player in (group.player, leader, member):
+        assert player is not None
+        player.refresh_state(signal_event=False)
+    return players, group, leader
+
+
+def _source_menu(group: SyncGroupPlayer) -> list[tuple[str, str, str | None]]:
+    """Return the inputs in the source menu of a group: id, name and the player of each."""
+    assert group.player is not None
+    return [(x.id, x.name, x.owner_player_id) for x in group.player.source_list if x.is_input]
+
+
+async def _live_sources(
+    players: PlayerController, group: SyncGroupPlayer
+) -> list[tuple[str, str, str | None]]:
+    """Return the live sources listed for a group: id, name and the player of each."""
+    music = MusicController.__new__(MusicController)
+    music.mass = players.mass
+    return [(x.id, x.name, x.owner_player_id) for x in await music.live_sources(_group_id(group))]
+
+
+class TestTheLineInOfTheLeaderOnItsGroup:
+    """A group offers the line-in of its sync leader as the leader's, and plays it there."""
+
+    async def test_the_group_lists_the_line_in_as_the_one_of_its_leader(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        The group names the leader for its line-in, not the group.
+
+        The source menu of the group shows the name of the leader after it; the list of live
+        sources gives the plain name, with the leader as the player it belongs to.
+        """
+        players, group, _leader = _group_with_the_line_in_of_its_leader(monkeypatch)
+
+        assert _source_menu(group) == [("line_in", "Line-in (L)", "L")]
+        assert await _live_sources(players, group) == [("line_in", "Line-in", "L")]
+
+    async def test_the_line_ins_of_a_sonos_household_keep_their_speakers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        The leader's own line-in belongs to the leader on the group, another speaker's to that one.
+
+        A Sonos speaker lists the line-in of each speaker of its household under that speaker's
+        id: its own without a player, another one with the protocol of that speaker.
+        """
+        players, group, _leader = _group_with_the_line_in_of_its_leader(
+            monkeypatch,
+            sources=[
+                PlayerSource(id="line_in@sonos_L", name="Line-in", is_input=True),
+                PlayerSource(
+                    id="line_in@sonos_B", name="Line-in", is_input=True, owner_player_id="sonos_B"
+                ),
+            ],
+        )
+
+        assert _source_menu(group) == [
+            ("line_in@sonos_L", "Line-in (L)", "L"),
+            ("line_in@sonos_B", "Line-in (B)", "B"),
+        ]
+        assert await _live_sources(players, group) == [
+            ("line_in@sonos_L", "Line-in", "L"),
+            ("line_in@sonos_B", "Line-in", "B"),
+        ]
+
+    @pytest.mark.parametrize("playing", [False, True])
+    async def test_selecting_it_switches_the_leader_and_keeps_the_group(
+        self, monkeypatch: pytest.MonkeyPatch, playing: bool
+    ) -> None:
+        """
+        The leader stops what it plays and switches to its line-in; the group stays formed.
+
+        The group is not stopped first: that would dissolve it, and release its members.
+        """
+        players, group, leader = _group_with_the_line_in_of_its_leader(monkeypatch, playing=playing)
+        native = _protocol(leader, "sonos")
+
+        await players.select_source(_group_id(group), "line_in")
+
+        assert group.sync_leader is leader
+        cast("AsyncMock", native.select_source).assert_awaited_once_with("line_in")
+        assert cast("AsyncMock", native.stop).await_count == int(playing)
+
+
 def _queue_resume_plays(players: PlayerController) -> None:
     """Let a queue resume play the queue's next item on its player, as a play action does."""
 
@@ -1465,6 +1991,8 @@ class TestRejoinLeavesABusyMemberAlone:
         """
         players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
         group._attr_static_group_members = ["L", "B"]
+        # the leader could not group with B when the group formed, which leaves B free
+        group._attr_group_members = ["L"]
         group.sync_leader = leader
         leader_protocol = cast("MockProtocol", leader.own_protocol)
         member_protocol = cast("MockProtocol", member.own_protocol)
@@ -1491,7 +2019,7 @@ class TestRejoinLeavesABusyMemberAlone:
     async def test_a_play_on_the_member_queue_plays_while_the_member_is_left_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The play reaches the member; the member is re-added at the leader's next report."""
+        """The play reaches the member, and the group does not take it back meanwhile."""
         players, group, _leader, member, join = self._group_playing_without_a_member(monkeypatch)
         queue = _LoadingQueue(cast("MagicMock", players.mass), "B")
 
@@ -1503,8 +2031,6 @@ class TestRejoinLeavesABusyMemberAlone:
 
         member.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
         join.assert_not_awaited()
-        await group._rejoin_members()
-        join.assert_awaited_once()
 
     async def test_a_power_on_that_plays_plays_while_the_member_is_left_out(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2328,6 +2854,22 @@ class TestPowerlessLifecycle:
         # session stays intact
         assert sgp.sync_leader is leader
 
+    async def test_hold_silences_the_leader_and_keeps_the_group(self) -> None:
+        """hold() silences the output of the leader and leaves the group formed."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader")
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        output = _protocol(leader, "sonos")
+
+        with patch.object(output, "hold", AsyncMock()) as hold:
+            await sgp.hold()
+
+        hold.assert_awaited_once()
+        mass.players._handle_cmd_stop.assert_not_awaited()
+        assert sgp.sync_leader is leader
+
 
 @pytest.mark.parametrize("active_output", [None, "native", "sendspin_leader", "missing"])
 def test_group_media_uses_active_session(active_output: str | None) -> None:
@@ -2892,6 +3434,30 @@ class TestWaitMemberUnsynced:
             old_leader, player_ids_to_remove=["m1"]
         )
 
+    async def test_a_member_whose_release_failed_is_still_waited_for(self) -> None:
+        """A leader that does not answer the release can let its member go later."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_member(mass, "m1")
+        member.state.synced_to = "old_leader"
+        _make_member(mass, "old_leader")
+        mass.players._handle_set_members = AsyncMock(side_effect=TimeoutError)
+        waits: list[float] = []
+
+        @asynccontextmanager
+        async def _wait(*_args: Any, timeout: float, **_kwargs: Any) -> AsyncIterator[None]:
+            yield
+            waits.append(timeout)
+            if timeout == STUCK_MEMBER_TIMEOUT:
+                member.state.synced_to = None
+
+        mass.players.wait_for_player_update = MagicMock(side_effect=_wait)
+
+        assert await sgp._wait_member_unsynced("m1", release_timeout=STUCK_MEMBER_TIMEOUT) is True
+
+        mass.players._handle_set_members.assert_awaited_once()
+        assert waits == [5.0, STUCK_MEMBER_TIMEOUT]
+
     @pytest.mark.parametrize("parent_registered", [True, False])
     async def test_member_leaves_on_its_own_when_stale_parent_is_offline(
         self, parent_registered: bool
@@ -3167,6 +3733,47 @@ class TestLeaderTransportForwarding:
         mass.players._handle_cmd_play.assert_not_awaited()
         mass.players.cmd_resume.assert_awaited_once()
         assert mass.players.cmd_resume.await_args.args[0] == _group_id(sgp)
+
+    def test_an_input_of_the_leader_belongs_to_the_leader(self) -> None:
+        """
+        The group lists an input of the leader's device as the leader's.
+
+        An input of another player keeps that player, and a source that is no input names none.
+        """
+        sgp, leader, _mass = self._make_group_with_leader()
+        _protocol(leader, "sonos")._attr_source_list = [
+            PlayerSource(id="line_in", name="Line-in", is_input=True),
+            PlayerSource(id="line_in@den", name="Line-in", is_input=True, owner_player_id="den"),
+            PlayerSource(id="spotify", name="Spotify", passive=True),
+        ]
+
+        assert [(x.id, x.owner_player_id) for x in sgp.source_list] == [
+            ("line_in", leader.player_id),
+            ("line_in@den", "den"),
+            ("spotify", None),
+        ]
+
+    async def test_a_source_selected_on_the_group_is_selected_on_the_leader(self) -> None:
+        """The leader switches to the source, under its own playback lock."""
+        sgp, leader, mass = self._make_group_with_leader()
+        mass.players._handle_select_source = AsyncMock()
+
+        await sgp.select_source("line_in")
+
+        mass.players.get_player_lock.assert_called_once_with(
+            leader.player_id, PlayerLockPurpose.PLAYBACK
+        )
+        mass.players._handle_select_source.assert_awaited_once_with(leader.player_id, "line_in")
+
+    async def test_a_group_that_is_not_formed_selects_no_source(self) -> None:
+        """Without a sync leader the group has no sources to select."""
+        mass = _make_mock_mass()
+        mass.players._handle_select_source = AsyncMock()
+        sgp = _make_sync_group(mass)
+
+        with pytest.raises(PlayerCommandFailed):
+            await sgp.select_source("line_in")
+        mass.players._handle_select_source.assert_not_awaited()
 
 
 def _recording_wait(order: list[str]) -> MagicMock:
@@ -3810,6 +4417,115 @@ class TestDebouncedReform:
         )
 
 
+class TestOrderOfStopAndRelease:
+    """A leader that leaves is stopped before its members are released, or right after."""
+
+    @staticmethod
+    def _group(mass: MagicMock, output: str, holder: str) -> tuple[SyncGroupPlayer, list[str]]:
+        """
+        Return a playing group with one follower, and the calls its leader gets.
+
+        :param output: Domain of the protocol its leader plays on.
+        :param holder: Domain of the protocol that holds its follower.
+        """
+        sgp = _make_sync_group(mass)
+        leader = _make_member(
+            mass,
+            "leader",
+            audio=["airplay"],
+            active_output=output,
+            playback_state=PlaybackState.PLAYING,
+        )
+        _make_member(mass, "m2", audio=["airplay"])
+        _protocol(leader, holder)._attr_group_members = [f"{holder}_leader", f"{holder}_m2"]
+        leader.state.group_members = UniqueList(["leader", "m2"])
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+        sgp._attr_playback_state = PlaybackState.PLAYING
+        calls: list[str] = []
+
+        def _stop(_player_id: str) -> None:
+            calls.append("stop")
+            leader.state.playback_state = PlaybackState.IDLE
+            sgp._update_attributes()
+
+        players = mass.players
+        players._handle_cmd_stop.side_effect = _stop
+        players._handle_set_members.side_effect = lambda *_a, **_k: calls.append("release")
+        players.schedule_active_output_protocol_clear = MagicMock(
+            side_effect=lambda _player: calls.append("clear")
+        )
+        _run_scheduled_tasks(mass)
+        return sgp, calls
+
+    @pytest.mark.parametrize(
+        ("output", "holder", "expected"),
+        [
+            ("airplay", "sonos", ["release", "stop", "clear"]),
+            ("airplay", "airplay", ["stop", "release", "clear"]),
+            ("sonos", "sonos", ["stop", "release", "clear"]),
+        ],
+    )
+    async def test_members_outside_the_session_are_released_first(
+        self, output: str, holder: str, expected: list[str]
+    ) -> None:
+        """Only members that the protocol that plays does not hold are released first."""
+        mass = _make_mock_mass()
+        sgp, calls = self._group(mass, output, holder)
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_and_reform("leader")
+
+        assert calls == expected
+        assert sgp.sync_leader is None
+        # the stop leaves no idle grace behind, and the re-form is pending
+        assert sgp._idle_grace_task is None
+        assert sgp._reform_task is not None
+        sgp._cancel_reform_timer()
+
+    async def test_a_group_no_member_can_lead_ends_in_the_same_order(self) -> None:
+        """A leader that leaves only offline members behind releases them first as well."""
+        mass = _make_mock_mass()
+        sgp, calls = self._group(mass, "airplay", "sonos")
+        member = mass.players.get_player("m2")
+        _set_reachable(member, False)
+        member.state.available = False
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        assert calls == ["release", "stop", "clear"]
+        assert sgp.sync_leader is None
+        assert sgp.is_active_session is False
+
+    async def test_a_leader_without_a_member_to_take_over_releases_once(self) -> None:
+        """A leader whose stream nobody inherits releases its members as part of the dissolve."""
+        mass = _make_mock_mass()
+        sgp, calls = self._group(mass, "airplay", "sonos")
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("leader")
+
+        assert calls == ["release", "stop", "clear"]
+        assert sgp._reform_task is not None
+        sgp._cancel_reform_timer()
+
+    async def test_a_leader_whose_release_fails_is_stopped_all_the_same(self) -> None:
+        """A leader that does not answer the release stops, and the group re-forms."""
+        mass = _make_mock_mass()
+        sgp, calls = self._group(mass, "airplay", "sonos")
+        mass.players._handle_set_members.side_effect = TimeoutError
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_and_reform("leader")
+
+        mass.players._handle_set_members.assert_awaited_once()
+        assert calls == ["stop", "clear"]
+        assert sgp.sync_leader is None
+        assert sgp._reform_task is not None
+        sgp._cancel_reform_timer()
+
+
 def _lock_with_side_effect(on_enter: Callable[[], None]) -> MagicMock:
     """Build a get_player_lock mock that mutates state while the lock is being awaited."""
     ctx = AsyncMock()
@@ -3969,7 +4685,7 @@ class TestReformResumeGate:
         ):
             await sgp.set_members(player_ids_to_remove=["leader"])
 
-        dyn_switch.assert_awaited_once_with("leader")
+        dyn_switch.assert_awaited_once_with("leader", [])
         reform.assert_not_awaited()
 
 
@@ -4066,6 +4782,18 @@ class TestStaticMemberRejoin:
 
         mass.call_later.assert_not_called()
 
+    def test_a_member_that_comes_back_by_itself_is_not_rejoined(self) -> None:
+        """A member whose own protocol brings it back is left to that protocol."""
+        mass = _make_mock_mass()
+        sgp, leader, display = _static_group_with_a_member_away(mass)
+        protocol = next(iter(display.attached_protocols.values()))
+
+        with patch.object(protocol, "rejoins_group", MagicMock(return_value=True)) as rejoins:
+            sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+
+        mass.call_later.assert_not_called()
+        rejoins.assert_called_with(_group_id(sgp))
+
     def test_a_member_this_group_holds_is_rejoined(self) -> None:
         """A member that names this group as its active group is still recovered."""
         mass = _make_mock_mass()
@@ -4075,6 +4803,48 @@ class TestStaticMemberRejoin:
         sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
 
         mass.call_later.assert_called_once()
+
+    def test_a_member_that_fell_out_still_counts_in(self) -> None:
+        """A member the leader does not hold belongs to the session while the group is formed."""
+        mass = _make_mock_mass()
+        sgp, leader, _display = _static_group_with_a_member_away(mass)
+        assert leader.group_members == ["leader"]
+        assert sgp.counts_in("display")
+
+        # a form drops a member the leader can not group with
+        sgp._attr_group_members = ["leader"]
+        assert not sgp.counts_in("display")
+
+        sgp._attr_group_members = ["leader", "display"]
+        sgp.sync_leader = None
+        assert not sgp.counts_in("display")
+
+    async def test_a_member_that_plays_on_its_own_is_not_rejoined(self) -> None:
+        """A member is left alone for as long as it plays something of its own."""
+        mass = _make_mock_mass()
+        sgp, _leader, display = _static_group_with_a_member_away(mass)
+        display.state.playback_state = PlaybackState.PLAYING
+        await sgp._rejoin_members()
+        mass.players._handle_set_members.assert_not_awaited()
+
+        display.state.playback_state = PlaybackState.IDLE
+        await sgp._rejoin_members()
+        mass.players._handle_set_members.assert_awaited_once()
+
+    @pytest.mark.parametrize("attribute", ["synced_to", "active_group"])
+    async def test_a_member_that_plays_what_the_group_plays_is_rejoined(
+        self, attribute: str
+    ) -> None:
+        """A member that plays along, while its leader does not list it, is re-added."""
+        mass = _make_mock_mass()
+        sgp, leader, display = _static_group_with_a_member_away(mass)
+        display.state.playback_state = PlaybackState.PLAYING
+        held_by = {"synced_to": leader.player_id, "active_group": _group_id(sgp)}
+        setattr(display.state, attribute, held_by[attribute])
+
+        await sgp._rejoin_members()
+
+        mass.players._handle_set_members.assert_awaited_once()
 
     def test_a_dynamic_or_leaderless_group_does_not_rejoin(self) -> None:
         """Only a static group with a live leader has configured members to recover."""

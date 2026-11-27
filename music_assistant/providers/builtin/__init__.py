@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -53,6 +54,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
+    CUSTOM_IMAGES_DIRNAME,
     EXTERNAL_ID_PROVIDER,
     GENRE_ICONS_DIR_NAME,
     MASS_LOGO,
@@ -63,6 +65,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.favorites import with_user_favorites
+from music_assistant.controllers.music.media.tracks import (
+    ProviderMatchFailures,
+    rate_limit_issue,
+)
 from music_assistant.controllers.tasks.context import (
     get_current_task_id,
     report_current_task_failure,
@@ -188,6 +194,7 @@ class _ImportTrackMatchResult:
     confidence: TrackMatchConfidence = TrackMatchConfidence.NO_MATCH
     ambiguous_providers: tuple[str, ...] = ()
     failed_providers: tuple[str, ...] = ()
+    rate_limited_providers: tuple[str, ...] = ()
     error: str | None = None
     # True when the error came from provider communication, not local validation.
     error_is_provider_issue: bool = False
@@ -737,7 +744,7 @@ class BuiltinProvider(MusicProvider):
             if search_provider_instances is None
             else set(search_provider_instances)
         )
-        failed_provider_instances: set[str] = set()
+        provider_failures = ProviderMatchFailures()
         # Cache transient source-verification failures for the rest of this pass.
         failed_source_instances: set[str] = set()
         total = len(parsed_items)
@@ -777,7 +784,7 @@ class BuiltinProvider(MusicProvider):
                     minimum_confidence,
                     allowed_provider_instance_map,
                     search_provider_instance_set,
-                    failed_provider_instances,
+                    provider_failures,
                     failed_source_instances,
                 )
                 resolved_by_entry[entry_key] = result
@@ -906,9 +913,10 @@ class BuiltinProvider(MusicProvider):
         """
         Resolve an image from an image path.
 
-        Returns the file path of a bundled image, a remote URL / data URI as is, or a
-        bundled provider asset inside our own package directory. Any other local path is
-        user-supplied and refused: it would let the image route read an arbitrary server file.
+        Returns the file path of a bundled image, the raw bytes of a custom uploaded image,
+        a remote URL / data URI as is, or a bundled provider asset inside our own package
+        directory. Any other local path is user-supplied and refused: it would let the image
+        route read an arbitrary server file.
         """
         if path == "logo.png":
             return MASS_LOGO
@@ -922,6 +930,15 @@ class BuiltinProvider(MusicProvider):
             if not is_safe_path(icon_name, str(icons_base)):
                 raise FileNotFoundError(f"Invalid genre icon reference: {path}")
             return str(icons_base.joinpath(icon_name))
+        if path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/"):
+            file_name = path[len(CUSTOM_IMAGES_DIRNAME) + 1 :]
+            images_base = os.path.join(self.mass.storage_path, CUSTOM_IMAGES_DIRNAME)
+            if not is_safe_path(file_name, images_base):
+                raise FileNotFoundError(f"Invalid custom image reference: {path}")
+            # return raw bytes (instead of the local path) so the format is not
+            # restricted by the extension allowlist of the local file handling
+            async with aiofiles.open(os.path.join(images_base, file_name), "rb") as imgfile:
+                return cast("bytes", await imgfile.read())
         if path.startswith(REMOTE_IMAGE_PREFIXES):
             return path
         # bundled provider assets (e.g. the AI Radio cover) are local files served through
@@ -1065,6 +1082,10 @@ class BuiltinProvider(MusicProvider):
             issue = f"Ambiguous match on {provider_name}"
             report_current_task_failure(f"{result.label}: {issue.lower()}")
             provider_issues.append((result.label, issue))
+        for provider_name in result.rate_limited_providers:
+            issue = rate_limit_issue(provider_name)
+            report_current_task_failure(f"{result.label}: {issue.lower()}")
+            provider_issues.append((result.label, issue))
         if result.retained:
             counts["retained"] += 1
             if result.entry is not None:
@@ -1081,6 +1102,9 @@ class BuiltinProvider(MusicProvider):
             if result.ambiguous_providers:
                 counts["ambiguous"] += 1
                 reason = "Ambiguous match"
+            elif result.rate_limited_providers:
+                counts["unmatched"] += 1
+                reason = "; ".join(map(rate_limit_issue, result.rate_limited_providers))
             else:
                 counts["unmatched"] += 1
                 reason = "No acceptable match"
@@ -1101,7 +1125,7 @@ class BuiltinProvider(MusicProvider):
         minimum_confidence: TrackMatchConfidence,
         allowed_provider_instances: Mapping[str, str],
         search_provider_instances: set[str],
-        failed_provider_instances: set[str],
+        provider_failures: ProviderMatchFailures,
         failed_source_instances: set[str],
     ) -> _ImportTrackMatchResult:
         """Resolve one imported playlist entry against the allowed providers."""
@@ -1163,7 +1187,7 @@ class BuiltinProvider(MusicProvider):
                 provider_instance_ids=search_provider_instances,
                 # Imported playlist metadata is untrusted.
                 trust_track_mappings=False,
-                failed_provider_instances=failed_provider_instances,
+                provider_failures=provider_failures,
                 # Skip source mappings already force-refreshed and confirmed dead.
                 known_dead_mappings=confirmed_dead_mappings,
                 # Keep album-evidence hydration scoped to the full allowed set.
@@ -1188,6 +1212,7 @@ class BuiltinProvider(MusicProvider):
                 label=label,
                 ambiguous_providers=enrichment.ambiguous_providers,
                 failed_providers=enrichment.failed_providers,
+                rate_limited_providers=enrichment.rate_limited_providers,
             )
         best_confidence = max(match.confidence for match in enrichment.matches)
         tier_matches = [
@@ -1221,6 +1246,7 @@ class BuiltinProvider(MusicProvider):
             confidence=best_confidence,
             ambiguous_providers=enrichment.ambiguous_providers,
             failed_providers=enrichment.failed_providers,
+            rate_limited_providers=enrichment.rate_limited_providers,
         )
 
     async def _original_source_is_playable(
@@ -1308,6 +1334,7 @@ class BuiltinProvider(MusicProvider):
                 continue
             except (
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 ProviderUnavailableError,
                 ClientError,
                 OSError,

@@ -159,32 +159,35 @@ async def test_play_url_mime_type_follows_the_url_extension(url: str, expected: 
 
 
 @pytest.mark.parametrize(
-    ("url", "duration"),
+    ("media_type", "duration", "stream_duration", "expected"),
     [
-        ("http://127.0.0.1:8097/single/s1/queue_1/q2/p1.flac", 4),
-        ("http://127.0.0.1:8097/flow/s1/queue_1/q2/p1.flac", 198),
+        (MediaType.TRACK, 198, 4, 198),
+        (MediaType.TRACK, None, 4, 4),
+        (MediaType.RADIO, None, None, None),
     ],
-    ids=["single_item", "flow"],
+    ids=["track_after_a_seek", "stream_length_only", "radio"],
 )
-async def test_only_a_single_item_stream_gets_the_seconds_left_after_a_seek(
-    url: str, duration: int
+async def test_a_stream_gets_the_whole_tracks_duration_also_after_a_seek(
+    media_type: MediaType, duration: int | None, stream_duration: int | None, expected: int | None
 ) -> None:
-    """A flow stream carries on into the next track."""
+    """The position reported is the one in the track, so the duration is the track's."""
     player, mass = _player_with_mocked_mass()
     mass.player_queues.get.return_value = None
     player.client = slimplayer = MagicMock()
     slimplayer.play_url = AsyncMock()
     media = PlayerMedia(
         uri="fake://x",
-        media_type=MediaType.TRACK,
+        media_type=media_type,
         source_id="queue_1",
-        duration=198,
-        stream_duration=4,
+        duration=duration,
+        stream_duration=stream_duration,
     )
 
-    await player._handle_play_url_for_slimplayer(url=url, media=media)
+    await player._handle_play_url_for_slimplayer(
+        url="http://127.0.0.1:8097/single/s1/queue_1/q2/p1.flac", media=media
+    )
 
-    assert slimplayer.play_url.call_args.kwargs["metadata"]["duration"] == duration
+    assert slimplayer.play_url.call_args.kwargs["metadata"]["duration"] == expected
 
 
 async def test_play_media_resets_elapsed_anchor() -> None:
@@ -388,31 +391,17 @@ def _saved_power_states(mass: MagicMock) -> list[object]:
     ]
 
 
-@pytest.mark.parametrize("saved_power", [True, None])
-async def test_a_player_that_was_on_or_is_new_comes_up_powered_on(
-    saved_power: bool | None,
-) -> None:
-    """After a boot or a server restart a player that was on, or is new, comes up on."""
+@pytest.mark.parametrize("saved_power", [True, False, None])
+async def test_setting_up_a_player_sends_no_power_command(saved_power: bool | None) -> None:
+    """The player connected in its saved power state already, so setup leaves it as it is."""
     player, mass = _connecting_player({PlayerFeature.POWER}, saved_power)
     await player.setup()
-    cast("MagicMock", player.client).power.assert_awaited_once_with(True)
-    mass.players.register.assert_awaited_once_with(player)
-
-
-async def test_powering_on_after_connecting_starts_no_playback() -> None:
-    """The device is powered on itself: Music Assistant's power command would run its auto play."""
-    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=True)
-    await player.setup()
+    cast("MagicMock", player.client).power.assert_not_awaited()
+    # Music Assistant's power command would also run its auto play
     mass.players.cmd_power.assert_not_awaited()
     mass.player_queues.resume.assert_not_called()
-
-
-async def test_a_player_that_was_switched_off_stays_off_after_connecting() -> None:
-    """Rebooting a player does not turn on one that was off, as on LMS."""
-    player, mass = _connecting_player({PlayerFeature.POWER}, saved_power=False)
-    await player.setup()
-    cast("MagicMock", player.client).power.assert_not_awaited()
     mass.players.register.assert_awaited_once_with(player)
+    assert player._power_tracking
 
 
 async def test_a_player_without_power_control_is_not_powered_on() -> None:

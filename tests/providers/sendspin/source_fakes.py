@@ -183,6 +183,8 @@ class _FakePlayers:
         self.players: dict[str, _FakePlayer] = {}
         # the Sendspin protocols of the clients, by client id
         self.protocols: dict[str, _FakeProtocol] = {}
+        # the clients whose player the user disabled, by client id
+        self.disabled: set[str] = set()
         self.stop_started: asyncio.Event | None = None
         self.release_stop: asyncio.Event | None = None
         # live source sessions, keyed on the player playing one
@@ -197,6 +199,9 @@ class _FakePlayers:
 
     def get_protocol(self, protocol_id: str) -> _FakeProtocol | None:
         return self.protocols.get(protocol_id)
+
+    def wants_protocol(self, protocol_id: str, protocol: Any = None) -> bool:
+        return protocol_id not in self.disabled
 
     def get_active_queue(self, player: _FakePlayer) -> _FakeQueue:
         return player.queue

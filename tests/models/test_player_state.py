@@ -465,6 +465,54 @@ class TestActiveGroup:
 
         assert state.active_group == "group_1"
 
+    @pytest.mark.parametrize(
+        ("group_values", "values", "active"),
+        [
+            ({}, {}, True),
+            ({"counts_in": False}, {}, False),
+            ({"static_group_members": ["other"]}, {}, False),
+            ({"powered": False}, {}, False),
+            ({}, {"own": {"synced_to": "leader"}}, False),
+            ({}, {"own": {"group_members": [PLAYER_ID, "member"]}}, False),
+            ({}, {"own": {"group_members": [PLAYER_ID]}}, True),
+            ({}, {"own": {"available": False}}, False),
+            ({}, {"own": {"playback_state": PlaybackState.PLAYING}}, False),
+            ({}, {"own": {"playback_state": PlaybackState.PAUSED}}, True),
+            ({}, {"linked": {"playback_state": PlaybackState.PLAYING}}, False),
+        ],
+    )
+    def test_a_fixed_group_holds_a_member_that_fell_out_of_it(
+        self, group_values: dict[str, Any], values: dict[str, Any], active: bool
+    ) -> None:
+        """A member of a fixed group that fell out of it is free once it is gone or in use."""
+        fell_out: dict[str, Any] = {
+            "group_members": ["other"],
+            "static_group_members": ["other", PLAYER_ID],
+            "counts_in": True,
+        }
+        group = _group(**(fell_out | group_values))
+        inputs: dict[str, Any] = {"own": make_protocol_snapshot(PLAYER_ID, **values.get("own", {}))}
+        if "linked" in values:
+            inputs["linked"] = [make_protocol_snapshot("airplay", **values["linked"])]
+
+        state = _derive(groups=(group,), peers={"group_1": _group_peer(group)}, **inputs)
+
+        assert state.active_group == ("group_1" if active else None)
+
+    def test_a_group_the_player_plays_in_comes_before_one_it_fell_out_of(self) -> None:
+        """A player that plays in another group belongs to that one."""
+        fell_out_of = _group(
+            "group_1", group_members=["other"], static_group_members=[PLAYER_ID], counts_in=True
+        )
+        plays_in = _group("group_2")
+
+        state = _derive(
+            groups=(fell_out_of, plays_in),
+            peers={"group_1": _group_peer(fell_out_of), "group_2": _group_peer(plays_in)},
+        )
+
+        assert state.active_group == "group_2"
+
     def test_group_does_not_hold_itself(self) -> None:
         """A group player listing its own id is not its own active group."""
         group = _group(PLAYER_ID)
@@ -774,6 +822,74 @@ class TestPlaybackPosition:
         assert state.playback_state == PlaybackState.IDLE
 
 
+class TestFakePause:
+    """The pause a player shows while its output is idle."""
+
+    @pytest.mark.parametrize(
+        ("own", "shown"),
+        [
+            (PlaybackState.IDLE, PlaybackState.PAUSED),
+            (PlaybackState.PAUSED, PlaybackState.PAUSED),
+            (PlaybackState.PLAYING, PlaybackState.PLAYING),
+        ],
+    )
+    def test_only_an_idle_output_shows_as_paused(
+        self, own: PlaybackState, shown: PlaybackState
+    ) -> None:
+        """What the output plays outranks the pause."""
+        state = _derive(fake_paused=True, own=_own(playback_state=own))
+
+        assert state.playback_state == shown
+
+    def test_the_active_output_shows_as_paused(self) -> None:
+        """A player that plays through an audio protocol shows the pause of that."""
+        state = _derive(
+            fake_paused=True,
+            active_output_protocol="airplay_1",
+            active_protocol=make_protocol_snapshot("airplay_1"),
+        )
+
+        assert state.playback_state == PlaybackState.PAUSED
+
+    @pytest.mark.parametrize("leader_paused", [True, False])
+    def test_a_synced_player_shows_the_pause_of_its_leader(self, leader_paused: bool) -> None:
+        """A player synced over an audio protocol pauses with its leader, not by itself."""
+        state = _derive(
+            fake_paused=not leader_paused,
+            linked=(make_protocol_snapshot("airplay_1", synced_to="leader_1"),),
+            active_output_protocol="airplay_1",
+            active_protocol=make_protocol_snapshot("airplay_1", synced_to="leader_1"),
+            peers={"leader_1": _peer("leader_1", fake_paused=leader_paused)},
+        )
+
+        assert state.synced_to == "leader_1"
+        assert state.playback_state == (
+            PlaybackState.PAUSED if leader_paused else PlaybackState.IDLE
+        )
+
+    @pytest.mark.parametrize("group_paused", [True, False])
+    def test_a_group_member_shows_the_pause_of_its_group(self, group_paused: bool) -> None:
+        """A player a group holds pauses with that group, not by itself."""
+        group = _group("group_1")
+        state = _derive(
+            fake_paused=not group_paused,
+            groups=(group,),
+            peers={"group_1": make_peer_snapshot("group_1", group.state, fake_paused=group_paused)},
+        )
+
+        assert state.active_group == "group_1"
+        assert state.playback_state == (
+            PlaybackState.PAUSED if group_paused else PlaybackState.IDLE
+        )
+
+    @pytest.mark.parametrize("values", [{"offline_by_power_control": True}, {"powered": False}])
+    def test_a_player_switched_off_shows_as_idle(self, values: dict[str, Any]) -> None:
+        """A device without power is not paused."""
+        state = _derive(fake_paused=True, **values)
+
+        assert state.playback_state == PlaybackState.IDLE
+
+
 class TestActiveSource:
     """The active source of a player."""
 
@@ -1078,9 +1194,36 @@ class TestSourceList:
         """A source reported both as bound and as a device input gets a single entry."""
         source = _audio_source(can_initiate=True)
 
-        state = _derive(standing_sources=(source, source))
+        state = _derive(standing_sources=(source,), input_sources=(source,))
 
-        assert [x.id for x in state.source_list].count(SOURCE_URI) == 1
+        entries = [x for x in state.source_list if x.id == SOURCE_URI]
+        assert len(entries) == 1
+        assert entries[0].is_input is True
+
+    def test_input_of_the_device_is_marked_as_input(self) -> None:
+        """An input of the player's own device is listed as an input."""
+        source = _source(_derive(input_sources=(_audio_source(can_initiate=True),)), SOURCE_URI)
+
+        assert source is not None
+        assert source.is_input is True
+
+    def test_bound_source_is_not_an_input(self) -> None:
+        """A receiver bound to the player is listed, but not as an input."""
+        source = _source(_derive(standing_sources=(_audio_source(can_initiate=True),)), SOURCE_URI)
+
+        assert source is not None
+        assert source.is_input is False
+
+    @pytest.mark.parametrize("own_input", [True, False])
+    def test_playing_source_is_an_input_on_its_own_device_only(self, own_input: bool) -> None:
+        """While an input plays, its entry stays an input on its own device and not elsewhere."""
+        source = _audio_source(can_initiate=True)
+
+        state = _derive(session=_session(source), input_sources=(source,) if own_input else ())
+
+        entry = _source(state, SOURCE_URI)
+        assert entry is not None
+        assert entry.is_input is own_input
 
 
 class TestSupportedFeatures:
@@ -1431,6 +1574,51 @@ class TestCurrentMedia:
             groups=(group,),
             peers={"group_1": _group_peer(group)},
             own=_own(current_media=PlayerMedia(uri="own://media")),
+        )
+
+        assert state.current_media is media
+
+    def test_member_names_the_live_source_of_its_group_for_itself(self) -> None:
+        """A source that reports no title shows on a member by the name that holds there."""
+        group = _group(current_media=PlayerMedia(uri=SOURCE_URI, title="Spotify Connect (Den)"))
+
+        state = _derive(
+            groups=(group,),
+            peers={"group_1": _group_peer(group)},
+            followed_sessions={"group_1": _session()},
+            followed_source_names={"group_1": "Spotify Connect"},
+        )
+
+        assert state.current_media is not None
+        assert state.current_media.title == "Spotify Connect"
+
+    def test_member_shares_group_media_that_is_not_of_its_session(self) -> None:
+        """Media of the group that its session does not play stays the very object."""
+        media = PlayerMedia(uri="group://media", title="Group song")
+        group = _group(current_media=media)
+
+        state = _derive(
+            groups=(group,),
+            peers={"group_1": _group_peer(group)},
+            followed_sessions={"group_1": _session()},
+            followed_source_names={"group_1": "Spotify Connect"},
+        )
+
+        assert state.current_media is media
+
+    def test_member_of_a_loop_of_groups_keeps_the_media_of_its_group(self) -> None:
+        """A chain of followed players that loops ends the search for the live source."""
+        media = PlayerMedia(uri=SOURCE_URI, title="Spotify Connect (Den)")
+        group = _group(current_media=media, active_group="group_2")
+
+        state = _derive(
+            groups=(group,),
+            peers={
+                "group_1": _group_peer(group),
+                "group_2": _peer("group_2", active_group="group_1"),
+            },
+            followed_sessions={"group_1": _session(), "group_2": _session()},
+            followed_source_names={"group_1": "Spotify Connect", "group_2": "Spotify Connect"},
         )
 
         assert state.current_media is media
@@ -2277,6 +2465,24 @@ class TestEffects:
         assert effects.clear_active_output is clears
         assert state.active_output_protocol == (None if clears else active_output)
 
+    @pytest.mark.parametrize(
+        ("ending", "own", "ended"),
+        [
+            (True, PlaybackState.PLAYING, True),
+            (True, PlaybackState.IDLE, False),
+            # its output still has to stop for the pause
+            (False, PlaybackState.PLAYING, False),
+        ],
+        ids=["plays_on", "starts", "still_stopping"],
+    )
+    def test_a_fake_pause_ends_once_the_player_plays_on(
+        self, ending: bool, own: PlaybackState, ended: bool
+    ) -> None:
+        """Playback that started ends the pause, not the playback before it."""
+        effects = _effects(fake_paused=True, fake_pause_ending=ending, own=_own(playback_state=own))
+
+        assert effects.fake_pause_ended is ended
+
     def test_nothing_to_do_for_an_idle_player(self) -> None:
         """Deriving the state of a player nothing happens on asks for nothing."""
         assert _effects() == StateEffects(
@@ -2285,6 +2491,7 @@ class TestEffects:
             default_name=None,
             left_idle=False,
             went_idle=False,
+            fake_pause_ended=False,
             foreign_protocol_id=None,
             clear_active_output=False,
         )

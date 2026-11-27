@@ -109,7 +109,7 @@ def pcm_to_mono(data: bytes, pcm_format: AudioFormat) -> np.ndarray:
     bit_depth = pcm_format.bit_depth
     if bit_depth == 24:
         # No numpy dtype covers packed 24-bit, so assemble the samples by byte.
-        packed = np.frombuffer(data, dtype=np.uint8)
+        packed: np.ndarray = np.frombuffer(data, dtype=np.uint8)
         packed = packed[: packed.size - packed.size % 3].reshape(-1, 3).astype(np.int32)
         raw = packed[:, 0] | packed[:, 1] << 8 | packed[:, 2] << 16
         raw[raw >= 1 << 23] -= 1 << 24
@@ -349,7 +349,7 @@ class TapManager:
         while True:
             try:
                 cursor = await self._read_once(tap, cursor)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # a source that failed mid-track is a playback problem, not a
                 # reason for this tap to stop following the player
                 self.logger.debug("Tap for %s could not read: %s", tap.player_id, err)

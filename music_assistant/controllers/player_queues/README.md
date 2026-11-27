@@ -228,7 +228,8 @@ it computes the next index, pre-resolves that item's stream details via the Stre
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
 of this enqueue path — it is triggered by the Streams Controller near the end of the streamed track,
 via a callback into the queue controller, and always targets the item after the streamed one.
-Buffers and crossfade data are released when the queue stops or is cleared; what the queue moves
+Buffers and crossfade data are released when the queue stops or is cleared, or its player refuses
+a start; what the queue moves
 away from while it plays goes when it leaves the queue's scope (below). Every
 buffer records the session that claimed it, and a stop leaves alone only what the session playing
 *now* claimed, so playback that restarted before the stop got that far keeps its audio. Everything
@@ -293,8 +294,9 @@ track prepared ahead of time) while it is open who keeps the slot (it is reserve
 or another queue's realtime source has it and no audio yet) waits in the provider's line, in the
 order it asked, within its budget. It looks again each time a source takes a slot or a holder gets
 its first audio: once a realtime source of another queue holds the slot with audio the start is
-refused, naming the player to a user who may control it, and a paused queue's source that got its
-audio hands its slot over as at any other moment. A source that is being given up holds nothing
+refused, naming the player to a user who may control it, and the source of a queue that gives its
+slot up (a paused one, or one that borrows the account, see below) hands it over once it got its
+audio, as at any other moment. A source that is being given up holds nothing
 here. When the slot comes free for the start
 it stays reserved for its queue, so its source takes it next, unless the queue no longer wants that
 track or its consumer is gone: then it goes on to whoever waits next.
@@ -311,14 +313,25 @@ and when a start has loaded its track without using it.
 
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
-buffer releases its audio). The watcher leaves the queue alone while a command still waits for
-players to start up before it acts on the player of the queue, and counts again from the end of
-that wait: only then can a pause outlast the buffer.
+buffer releases its audio). That goes for a pause command and for a pause its player reports by
+itself while it plays the queue's stream, not for another source paused on the player. The
+watcher leaves the queue alone while a command still waits for players to start up before it
+acts on the player of the queue, and counts again from the end of that wait: only then can a
+pause outlast the buffer.
 When playback on another queue finds no free provider stream slot and one of those buffers holds
 one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
 source stream. Preparing the next track ahead of time never stops a paused queue. A player that
 could not be told to stop still shows paused on a stream its queue has ended, so play starts the
 queue again there rather than unpausing the player.
+
+The owner of a streaming account goes first. When playback for the user who owns the account finds
+no free slot of it, and a queue that plays it for someone else (another user, a guest, or anonymous
+playback) holds the slot with a source that delivers at playback pace, that queue gives way, whether
+or not the owner may control its player. It is stopped, and once the slot is kept for the owner's
+queue it resumes where it was on another source its own playback user may use that has a free
+slot; without one it stays stopped at its position. A play command of the owner is not refused over
+such a queue. The owner's own playback on another player keeps its slot as before, and preparing
+the next track ahead of time never makes a queue give way.
 
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
 (Next-track audio-buffer warming is driven separately by the streams pipeline, relative to the

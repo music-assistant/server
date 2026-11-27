@@ -48,6 +48,7 @@ if TYPE_CHECKING:
         PlayerSoundMode,
     )
     from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamMetadata
 
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
@@ -55,6 +56,10 @@ if TYPE_CHECKING:
 # corrected-position jumps larger than this (in seconds) are treated as a discrete
 # position change (seek/buffer correction) instead of regular playback progression
 POSITION_JUMP_THRESHOLD = 1.0
+
+# how many players up the chain of groups and sync leaders a player looks for the live
+# source it hears: a group in a group is as deep as it gets
+FOLLOW_DEPTH_LIMIT = 5
 
 
 @dataclass(slots=True, kw_only=True)
@@ -118,6 +123,7 @@ class PeerSnapshot:
     :param state: The state it publishes.
     :param available_for_playback: Whether it is enabled, reachable and set up. Only
         given where it counts: for the players grouped to the player.
+    :param fake_paused: Whether it shows as paused while its output is idle.
     """
 
     player_id: str
@@ -126,6 +132,7 @@ class PeerSnapshot:
     grouping_locked: bool
     state: PlayerState
     available_for_playback: bool | None = None
+    fake_paused: bool = False
 
 
 @dataclass(slots=True)
@@ -136,12 +143,14 @@ class GroupSnapshot:
     :param player_id: Id of the group player.
     :param powered: Power state its own protocol reports.
     :param is_active_session: Whether it is holding its members.
+    :param counts_in: Whether the player belongs to its session, also while it fell out of it.
     :param state: The state it publishes.
     """
 
     player_id: str
     powered: bool | None
     is_active_session: bool
+    counts_in: bool
     state: PlayerState
 
 
@@ -223,6 +232,8 @@ class StateInputs:
     :param active_output_protocol: Id of the active output: an audio protocol,
         "native" or None.
     :param active_mass_source: Id of the last active Music Assistant source.
+    :param fake_paused: Show the player as paused while its output is idle.
+    :param fake_pause_ending: Playback started since, the pause ends once the player plays.
     :param sleep_timer_expires_at: Timestamp the sleep timer stops playback at.
     :param sleep_timer_mode: Point at which the sleep timer stops playback.
     :param extra_attributes: Extra attributes of the player.
@@ -236,8 +247,17 @@ class StateInputs:
     :param session: Live audio source playing on the player.
     :param session_image_url: Url of the image of that audio source. Only given where
         it counts: for a source that reports no image of what it is playing.
-    :param standing_sources: Audio sources that are selectable on the player without
-        a session being active.
+    :param followed_sessions: Live audio sources playing on the players it can follow:
+        the group players and the player it is synced to, by the id of the player each
+        plays on.
+    :param followed_source_names: Names of the sources of those sessions as shown on
+        the player, by the same id.
+    :param standing_sources: Audio sources bound to the player, selectable without a
+        session being active.
+    :param input_sources: Audio sources that are inputs of the player's own device,
+        selectable without a session being active.
+    :param source_names: Names of the standing sources, the inputs and the source of its
+        own session as shown on the player, by uri.
     """
 
     player_id: str
@@ -282,6 +302,8 @@ class StateInputs:
     protocols: list[PlayerProtocolInfo]
     active_output_protocol: str | None
     active_mass_source: str | None
+    fake_paused: bool
+    fake_pause_ending: bool
     sleep_timer_expires_at: float | None
     sleep_timer_mode: SleepTimerMode | None
     extra_attributes: dict[str, EXTRA_ATTRIBUTES_TYPES]
@@ -293,7 +315,11 @@ class StateInputs:
     mass_sources: frozenset[str]
     session: AudioSourceSession | None
     session_image_url: str | None
+    followed_sessions: Mapping[str, AudioSourceSession]
+    followed_source_names: Mapping[str, str]
     standing_sources: tuple[AudioSource, ...]
+    input_sources: tuple[AudioSource, ...]
+    source_names: Mapping[str, str]
 
 
 @dataclass(slots=True, kw_only=True)
@@ -307,6 +333,7 @@ class StateEffects:
     :param default_name: Device name to store as the default name of the player.
     :param left_idle: Playback started on an idle player.
     :param went_idle: Playback ended, the player is idle now.
+    :param fake_pause_ended: The player plays on from the pause it was shown in.
     :param foreign_protocol_id: Id of the audio protocol whose app the state shows,
         which is where its transport commands have to go.
     :param clear_active_output: The active output is no longer the playback path: the
@@ -318,6 +345,7 @@ class StateEffects:
     default_name: str | None
     left_idle: bool
     went_idle: bool
+    fake_pause_ended: bool
     foreign_protocol_id: str | None
     clear_active_output: bool
 
@@ -340,12 +368,15 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
     if follows_native_leader:
         inputs = replace(inputs, active_protocol=None, active_output_protocol=None)
     synced_to = resolve_synced_to(own, inputs.linked, inputs.peers)
-    active_group = _active_group(inputs)
+    active_group = _active_group(inputs, synced_to)
     setup_protocol = _protocol_needing_setup(inputs)
     foreign_app = _shown_foreign_app(inputs, synced_to, active_group)
-    playback_state, elapsed_time, elapsed_time_last_updated = _playback_position(
+    output_state, elapsed_time, elapsed_time_last_updated = _playback_position(
         inputs, synced_to, active_group, foreign_app
     )
+    playback_state = output_state
+    if _shows_fake_pause(inputs, output_state, synced_to, active_group):
+        playback_state = PlaybackState.PAUSED
     active_source = _active_source(inputs, synced_to, active_group, foreign_app)
     source_list = _source_list(inputs, foreign_app)
     state = PlayerState(
@@ -453,6 +484,7 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         default_name=device_name if device_name and inputs.default_name != device_name else None,
         left_idle=was_idle and not is_idle,
         went_idle=is_idle and not was_idle,
+        fake_pause_ended=inputs.fake_pause_ending and output_state == PlaybackState.PLAYING,
         foreign_protocol_id=foreign_app.protocol_id if foreign_app else None,
         clear_active_output=follows_native_leader,
     )
@@ -492,7 +524,7 @@ def resolve_media_queue(inputs: StateInputs) -> QueueSnapshot | None:
     :param inputs: Everything the state is derived from.
     """
     synced_to = resolve_synced_to(inputs.own, inputs.linked, inputs.peers)
-    active_group = _active_group(inputs)
+    active_group = _active_group(inputs, synced_to)
     foreign_app = _shown_foreign_app(inputs, synced_to, active_group)
     if synced_to or active_group or foreign_app or inputs.session is not None:
         # the media is that of another player, an app or a live external source
@@ -552,6 +584,88 @@ def reconcile_position_anchor(
     return prev_position, prev_timestamp, False
 
 
+def queue_item_media(
+    queue: PlayerQueue,
+    queue_item: QueueItem,
+    stream_metadata: StreamMetadata | None,
+    item_image_url: str | None,
+    media_item_image_url: str | None,
+) -> PlayerMedia:
+    """
+    Return a queue item as the media a player shows while it plays it, without a palette.
+
+    :param queue: The queue the item belongs to.
+    :param queue_item: The queue item to describe.
+    :param stream_metadata: What the stream of the item plays, as shown.
+    :param item_image_url: Url of the image of the queue item.
+    :param media_item_image_url: Url of the image of the media item it holds.
+    """
+    if stream_metadata:
+        # handle stream metadata (e.g. for radio stream)
+        image_url = stream_metadata.image_url or item_image_url
+        elapsed_time, elapsed_time_last_updated = _resolve_position(
+            stream_metadata.elapsed_time,
+            stream_metadata.elapsed_time_last_updated,
+            # a duration is the song's, and how long the stream has played is no
+            # position in that song
+            None if stream_metadata.duration else queue.elapsed_time,
+            queue.elapsed_time_last_updated,
+        )
+        return PlayerMedia(
+            uri=queue_item.uri,
+            media_type=queue_item.media_type,
+            title=stream_metadata.title or queue_item.name,
+            artist=stream_metadata.artist,
+            album=stream_metadata.album or stream_metadata.description or queue_item.name,
+            image_url=image_url,
+            duration=stream_metadata.duration or queue_item.duration,
+            source_id=queue.queue_id,
+            queue_item_id=queue_item.queue_item_id,
+            elapsed_time=elapsed_time,
+            elapsed_time_last_updated=elapsed_time_last_updated,
+        )
+    if media_item := queue_item.media_item:
+        # normal media item
+        # we use getattr here to avoid issues with different media item types
+        version = getattr(media_item, "version", None)
+        album = getattr(media_item, "album", None)
+        podcast = getattr(media_item, "podcast", None)
+        metadata = getattr(media_item, "metadata", None)
+        description = getattr(metadata, "description", None) if metadata else None
+        if description:
+            # descriptions may contain HTML markup; the OSD shows plain text
+            description = html_to_markdown(description)
+        image_url = media_item_image_url or item_image_url
+        return PlayerMedia(
+            uri=str(media_item.uri),
+            media_type=media_item.media_type,
+            title=f"{media_item.name} ({version})" if version else media_item.name,
+            # a podcast episode has no artists, the podcast name takes the artist line
+            artist=getattr(media_item, "artist_str", None) or (podcast.name if podcast else None),
+            album=album.name if album else None if podcast else description,
+            album_artist=getattr(album, "artist_str", None),
+            image_url=image_url,
+            duration=media_item.duration,
+            source_id=queue.queue_id,
+            queue_item_id=queue_item.queue_item_id,
+            elapsed_time=int(queue.elapsed_time),
+            elapsed_time_last_updated=queue.elapsed_time_last_updated,
+        )
+
+    # fallback to basic current item details
+    return PlayerMedia(
+        uri=queue_item.uri,
+        media_type=queue_item.media_type,
+        title=queue_item.name,
+        image_url=item_image_url,
+        duration=queue_item.duration,
+        source_id=queue.queue_id,
+        queue_item_id=queue_item.queue_item_id,
+        elapsed_time=int(queue.elapsed_time),
+        elapsed_time_last_updated=queue.elapsed_time_last_updated,
+    )
+
+
 def _reachable(inputs: StateInputs) -> bool:
     """Return whether a protocol of the player that can render audio reaches its device."""
     own = inputs.own
@@ -598,8 +712,9 @@ def _protocols(
     ]
 
 
-def _active_group(inputs: StateInputs) -> str | None:
+def _active_group(inputs: StateInputs, synced_to: str | None) -> str | None:
     """Return the id of the group player that currently holds the player, if any."""
+    fell_out_of: str | None = None
     for group in inputs.groups:
         if group.player_id == inputs.player_id:
             continue
@@ -618,7 +733,18 @@ def _active_group(inputs: StateInputs) -> str | None:
             continue
         if inputs.player_id in group.state.group_members:
             return group.player_id
-    return None
+        if group.counts_in and inputs.player_id in group.state.static_group_members:
+            fell_out_of = fell_out_of or group.player_id
+    # a fixed group keeps a member that fell out of its playback, unless that is gone or in
+    # use for something else
+    if (
+        synced_to
+        or not _reachable(inputs)
+        or any(x != inputs.own.protocol_id for x in inputs.own.group_members)
+        or any(x.playback_state == PlaybackState.PLAYING for x in (inputs.own, *inputs.linked))
+    ):
+        return None
+    return fell_out_of
 
 
 def _shown_foreign_app(
@@ -699,6 +825,26 @@ def _playback_position(
         playback_state = PlaybackState.IDLE
 
     return playback_state, elapsed_time, elapsed_time_last_updated
+
+
+def _shows_fake_pause(
+    inputs: StateInputs,
+    output_state: PlaybackState,
+    synced_to: str | None,
+    active_group: str | None,
+) -> bool:
+    """Return whether the player is shown as paused although its output is idle."""
+    if (
+        output_state != PlaybackState.IDLE
+        or inputs.offline_by_power_control
+        or inputs.powered is False
+    ):
+        return False
+    if holder := active_group or synced_to:
+        # the output of a member stopped along with that of its group or leader
+        parent = inputs.peers.get(holder)
+        return parent is not None and parent.fake_paused
+    return inputs.fake_paused
 
 
 def _active_source(
@@ -786,6 +932,7 @@ def _source_list(
     """Return the sources of the player."""
     player_id = inputs.player_id
     sources = UniqueList(inputs.own.source_list)
+    input_uris = {x.uri for x in inputs.input_sources}
     # always ensure the Music Assistant Queue is in the source list
     mass_source = next((x for x in sources if x.id == player_id), None)
     if mass_source is None:
@@ -812,8 +959,9 @@ def _source_list(
         sources.append(
             PlayerSource(
                 id=source_uri,
-                name=session.source.name,
+                name=inputs.source_names.get(source_uri, session.source.name),
                 passive=not session.source.can_initiate,
+                is_input=source_uri in input_uris,
                 can_play_pause=session.source.can_play_pause,
                 can_seek=session.source.can_seek,
                 can_next_previous=session.source.can_next_previous,
@@ -837,15 +985,16 @@ def _source_list(
     # an already listed uri is skipped: the live session entry above carries the
     # live shuffle/repeat state and must win
     present_ids = {x.id for x in sources}
-    for source in inputs.standing_sources:
+    for source in (*inputs.standing_sources, *inputs.input_sources):
         if not (uri := source.uri) or uri in present_ids:
             continue
         present_ids.add(uri)
         sources.append(
             PlayerSource(
                 id=uri,
-                name=source.name,
+                name=inputs.source_names.get(uri, source.name),
                 passive=not source.can_initiate,
+                is_input=uri in input_uris,
                 can_play_pause=source.can_play_pause,
                 can_seek=source.can_seek,
                 can_next_previous=source.can_next_previous,
@@ -1048,7 +1197,7 @@ def _current_media(
     # if the player is grouped/synced, use the current_media of the group/parent player
     if parent_id := (active_group or synced_to):
         if parent_id != inputs.player_id and (parent := inputs.peers.get(parent_id)):
-            return parent.state.current_media
+            return _followed_media(inputs, parent.state.current_media, parent_id)
         return None  # if parent player not found, return None for current media
     # a live external source reports what it plays itself
     if inputs.session is not None:
@@ -1102,74 +1251,15 @@ def _queue_media(inputs: StateInputs, active_queue: QueueSnapshot) -> PlayerMedi
     if not (current_item := queue.current_item):
         # queue is active but no current item
         return None
-    item_image_url = active_queue.item_image_url
-    if stream_metadata := active_queue.stream_metadata:
-        # handle stream metadata (e.g. for radio stream)
-        image_url = stream_metadata.image_url or item_image_url
-        elapsed_time, elapsed_time_last_updated = _resolve_position(
-            stream_metadata.elapsed_time,
-            stream_metadata.elapsed_time_last_updated,
-            # a duration is the song's, and how long the stream has played is no
-            # position in that song
-            None if stream_metadata.duration else queue.elapsed_time,
-            queue.elapsed_time_last_updated,
-        )
-        return PlayerMedia(
-            uri=current_item.uri,
-            media_type=current_item.media_type,
-            title=stream_metadata.title or current_item.name,
-            artist=stream_metadata.artist,
-            album=stream_metadata.album or stream_metadata.description or current_item.name,
-            image_url=image_url,
-            palette=_resolved_palette(inputs, image_url),
-            duration=stream_metadata.duration or current_item.duration,
-            source_id=queue.queue_id,
-            queue_item_id=current_item.queue_item_id,
-            elapsed_time=elapsed_time,
-            elapsed_time_last_updated=elapsed_time_last_updated,
-        )
-    if media_item := current_item.media_item:
-        # normal media item
-        # we use getattr here to avoid issues with different media item types
-        version = getattr(media_item, "version", None)
-        album = getattr(media_item, "album", None)
-        podcast = getattr(media_item, "podcast", None)
-        metadata = getattr(media_item, "metadata", None)
-        description = getattr(metadata, "description", None) if metadata else None
-        if description:
-            # descriptions may contain HTML markup; the OSD shows plain text
-            description = html_to_markdown(description)
-        image_url = active_queue.media_item_image_url or item_image_url
-        return PlayerMedia(
-            uri=str(media_item.uri),
-            media_type=media_item.media_type,
-            title=f"{media_item.name} ({version})" if version else media_item.name,
-            # a podcast episode has no artists, the podcast name takes the artist line
-            artist=getattr(media_item, "artist_str", None) or (podcast.name if podcast else None),
-            album=album.name if album else None if podcast else description,
-            album_artist=getattr(album, "artist_str", None),
-            image_url=image_url,
-            palette=_resolved_palette(inputs, image_url),
-            duration=media_item.duration,
-            source_id=queue.queue_id,
-            queue_item_id=current_item.queue_item_id,
-            elapsed_time=int(queue.elapsed_time),
-            elapsed_time_last_updated=queue.elapsed_time_last_updated,
-        )
-
-    # fallback to basic current item details
-    return PlayerMedia(
-        uri=current_item.uri,
-        media_type=current_item.media_type,
-        title=current_item.name,
-        image_url=item_image_url,
-        palette=_resolved_palette(inputs, item_image_url),
-        duration=current_item.duration,
-        source_id=queue.queue_id,
-        queue_item_id=current_item.queue_item_id,
-        elapsed_time=int(queue.elapsed_time),
-        elapsed_time_last_updated=queue.elapsed_time_last_updated,
+    media = queue_item_media(
+        queue,
+        current_item,
+        active_queue.stream_metadata,
+        active_queue.item_image_url,
+        active_queue.media_item_image_url,
     )
+    media.palette = _resolved_palette(inputs, media.image_url)
+    return media
 
 
 def _session_media(
@@ -1181,9 +1271,9 @@ def _session_media(
     """
     Describe what a live external source is playing on the player.
 
-    Falls back to the source's own name and artwork for the parts it has not
-    reported, so a source that reports nothing still shows as itself rather
-    than as an empty player.
+    Falls back to the source's own name (as shown on the player) and artwork for the
+    parts it has not reported, so a source that reports nothing still shows as itself
+    rather than as an empty player.
 
     :param session: The live source session on the player.
     :param elapsed_time: Playback position the player publishes.
@@ -1191,10 +1281,11 @@ def _session_media(
     """
     metadata = session.stream_metadata
     image_url = (metadata.image_url if metadata else None) or inputs.session_image_url
+    source_uri = session.source_uri
     return PlayerMedia(
-        uri=session.source_uri or session.source_id,
+        uri=source_uri or session.source_id,
         media_type=MediaType.AUDIO_SOURCE,
-        title=(metadata.title if metadata else None) or session.source.name,
+        title=_session_title(session, inputs.source_names.get(source_uri) if source_uri else None),
         artist=metadata.artist if metadata else None,
         album=(metadata.album or metadata.description) if metadata else None,
         image_url=image_url,
@@ -1211,6 +1302,58 @@ def _session_media(
         elapsed_time=int(elapsed_time) if elapsed_time is not None else None,
         elapsed_time_last_updated=elapsed_time_last_updated,
     )
+
+
+def _followed_media(
+    inputs: StateInputs, media: PlayerMedia | None, parent_id: str
+) -> PlayerMedia | None:
+    """
+    Return the current media of the player the player follows, as shown on the player.
+
+    :param media: The current media of the player it follows.
+    :param parent_id: Id of the player it follows.
+    """
+    if media is None or (holder_id := _session_holder(inputs, parent_id)) is None:
+        return media
+    session = inputs.followed_sessions[holder_id]
+    if session.source_uri != media.uri:
+        return media
+    # a live source that reports no title shows by its name, which differs per player
+    title = _session_title(session, inputs.followed_source_names.get(holder_id))
+    return media if title == media.title else replace(media, title=title)
+
+
+def _session_holder(inputs: StateInputs, parent_id: str) -> str | None:
+    """
+    Return the id of the player whose live source the player hears, None for none.
+
+    Walks up from the player it follows the way media is taken: from the player that one
+    follows in turn, else from its own session.
+
+    :param parent_id: Id of the player it follows.
+    """
+    player_id = parent_id
+    seen: set[str] = set()
+    while player_id not in seen and len(seen) < FOLLOW_DEPTH_LIMIT:
+        seen.add(player_id)
+        state = peer.state if (peer := inputs.peers.get(player_id)) else None
+        next_id = (state.active_group or state.synced_to) if state else None
+        if not next_id or next_id == player_id:
+            return player_id if player_id in inputs.followed_sessions else None
+        player_id = next_id
+    return None
+
+
+def _session_title(session: AudioSourceSession, name: str | None) -> str:
+    """
+    Return the title the live source reports, else its name.
+
+    :param session: The live source session.
+    :param name: Name of its source as shown on the player, if known.
+    """
+    if (metadata := session.stream_metadata) is not None and metadata.title:
+        return metadata.title
+    return name or session.source.name
 
 
 def _resolved_palette(inputs: StateInputs, image_url: str | None) -> MediaItemPalette | None:

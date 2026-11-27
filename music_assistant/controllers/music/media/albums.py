@@ -42,6 +42,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT
 from music_assistant.controllers.music.helpers import (
     fill_track_from_recording,
     metadata_for_update,
@@ -1208,6 +1209,11 @@ class AlbumsController(MediaControllerBase[Album]):
             return False
         return True
 
+    def _is_musicbrainz_duplicate(self, db_item: Album, holder: Album) -> bool:
+        """Return True if the album holding a linked album is not identified as another release."""
+        # an identified album is the release whose links are being added
+        return bool(db_item.mbid) and holder.mbid in (None, db_item.mbid)
+
     async def _link_tracks_to_release(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
     ) -> set[str]:
@@ -1429,7 +1435,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 if db_album.artists
                 else db_album.name
             )
-            search_results = await self.search(search_str, provider.instance_id)
+            search_results = await self.search(
+                search_str, provider.instance_id, limit=MATCH_SEARCH_LIMIT
+            )
         for search_result_item in search_results:
             if not search_result_item.available:
                 continue
@@ -1815,34 +1823,7 @@ class AlbumsController(MediaControllerBase[Album]):
         An empty set of artists never clears the stored rows: an album that lost its
         artists disappears from their discography and is skipped by provider matching.
         """
-        all_artists = list(artists)
-        if not all_artists:
-            if overwrite:
-                # a caller asking to replace all artists with none is a bug,
-                # so keep the stored rows and make the attempt visible
-                self.logger.warning("Ignoring request to clear all artists of album id %s", db_id)
-            return
-        if overwrite:
-            # on overwrite, clear the album_artists table first
-            await self.mass.music.database.delete(
-                DB_TABLE_ALBUM_ARTISTS,
-                {
-                    "album_id": db_id,
-                },
-            )
-        for artist in all_artists:
-            await self._set_album_artist(db_id, artist=artist)
-
-    async def _set_album_artist(self, db_id: int, artist: Artist | ItemMapping) -> None:
-        """Store Album Artist info."""
-        # write (or update) record in album_artists table
-        await self.mass.music.database.insert_or_replace(
-            DB_TABLE_ALBUM_ARTISTS,
-            {
-                "album_id": db_id,
-                "artist_id": await self.mass.music.artists.get_or_add_library_artist_id(artist),
-            },
-        )
+        await self._set_main_artists(DB_TABLE_ALBUM_ARTISTS, "album_id", db_id, artists, overwrite)
 
     async def _set_album_track(self, db_id: int, db_track_id: int, track: Track) -> None:
         """Store Album Track info."""

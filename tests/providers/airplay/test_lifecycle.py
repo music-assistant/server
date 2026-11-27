@@ -32,7 +32,6 @@ from music_assistant.providers.airplay.stream import AirPlayStream
 from tests.scenarios.harness import Scenario
 
 if TYPE_CHECKING:
-    import pathlib
     from collections.abc import AsyncGenerator, Iterator
 
     from music_assistant.models.player import Player
@@ -41,63 +40,6 @@ DEVICE_ID = "00:11:22:33:44:55"
 PROTOCOL_ID = "ap001122334455"
 ADDRESS = "192.168.1.50"
 MEMBER_MAC = "00:11:22:33:44:66"
-
-
-@pytest.fixture
-async def scenario(tmp_path: pathlib.Path) -> AsyncGenerator[Scenario]:
-    """
-    Boot a real server with fake player providers; nothing reaches the network.
-
-    :param tmp_path: Temporary directory for the server's storage.
-    """
-    scenario = Scenario(tmp_path)
-    with (
-        patch(
-            "music_assistant.controllers.discovery.controller.DiscoveryController"
-            ".async_find_mdns_service",
-            AsyncMock(return_value=None),
-        ),
-        patch(
-            "music_assistant.providers.airplay.provider.probe_audio_formats",
-            AsyncMock(return_value=0),
-        ),
-    ):
-        try:
-            await scenario.start()
-            yield scenario
-        finally:
-            await scenario.close()
-
-
-@pytest.fixture
-async def provider(scenario: Scenario) -> AirPlayProvider:
-    """
-    Return a real AirPlay provider loaded in the server, without its network services.
-
-    :param scenario: The running server.
-    """
-    fake = await scenario.add_provider("airplay")
-    provider = AirPlayProvider(scenario.mass, fake.manifest, fake.config)
-    provider._bridge_manager = MagicMock(
-        evaluate_bridge=AsyncMock(),
-        remove_bridge=AsyncMock(),
-        close=AsyncMock(),
-        get_transport_command_target=MagicMock(return_value=None),
-        get_bridge=MagicMock(return_value=None),
-        stop_streaming=MagicMock(return_value=False),
-    )
-    provider.dashboards = MagicMock(unload=AsyncMock())
-    provider._companion_info_by_address = {}
-    provider._mrp_info_by_address = {}
-    provider._speakers = {}
-    provider._set_carriers = {}
-    provider._pair_records = {}
-    provider._pair_carriers = {}
-    provider._announce_plans = {}
-    provider._dacp_server = MagicMock()
-    provider._dacp_info = None  # type: ignore[assignment]
-    scenario.mass._providers[fake.instance_id] = provider
-    return provider
 
 
 def _service(
@@ -512,6 +454,20 @@ async def test_an_apple_tv_and_its_homepod_are_one_player_named_after_the_room(
     assert state.setup_reason == "pairing_required"
     assert state.available is False
     assert [player.name for player in scenario.visible_players()] == ["Study"]
+
+
+async def test_an_apple_tv_connects_to_a_homepod_that_is_found_after_it(
+    scenario: Scenario, provider: AirPlayProvider, apple_controls: AsyncMock
+) -> None:
+    """The Apple TV, which controls the volume of its HomePod, connects once it is found."""
+    await _announce(scenario, provider, _apple_tv())
+    await scenario.idle()
+    apple_controls.reset_mock()
+
+    await _announce(scenario, provider, _homepod())
+    await scenario.idle()
+
+    apple_controls.assert_awaited_once()
 
 
 @pytest.mark.usefixtures("apple_controls")

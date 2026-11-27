@@ -12,6 +12,8 @@ import pytest
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
+from music_assistant.helpers.timeline_clock import TimelineClock
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ANCHOR_SEAT_LEAD_MS,
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -70,6 +72,8 @@ def _make_session(
     :param seconds_streamed: How many seconds of audio have been streamed.
     """
     prov = MagicMock()
+    # a fresh clock reads as wall-clock time on the cliairplay timeline
+    prov.mass.timeline_clock = TimelineClock()
 
     pcm_format = MagicMock()
     pcm_format.pcm_sample_size = PCM_SAMPLE_SIZE
@@ -397,7 +401,7 @@ async def _start_group(
         patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
         patch(
             "music_assistant.providers.airplay.stream_session.cli_clock_time",
-            side_effect=lambda: clock[0],
+            side_effect=lambda _clock: clock[0],
         ),
     ):
         await session.start(MagicMock())
@@ -1189,6 +1193,118 @@ async def test_a_source_that_dies_settles_the_feed_question() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "logged"),
+    [
+        (AudioSourceRefusedError("No AirPlay client is streaming to this receiver"), False),
+        (AudioError("source died"), True),
+    ],
+    ids=["refused", "failed"],
+)
+async def test_only_a_source_that_fails_is_logged_as_an_error(
+    error: AudioError, logged: bool
+) -> None:
+    """Only a failure is logged here: the streams controller logs a source refusing the player."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    no_chunks: list[bytes] = []
+
+    async def failing_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+        raise error
+
+    await session._audio_streamer(failing_source())
+
+    logger = cast("MagicMock", session.prov.logger)
+    assert logger.error.called is logged
+    assert logger.warning.called is logged
+
+
+@pytest.mark.asyncio
+async def test_a_source_refusing_the_members_ends_the_start_at_once_and_quietly() -> None:
+    """
+    A refusal ends the start as soon as the source gives it, and is not logged here.
+
+    The streams controller logs the refusal itself, and no member can report audio the
+    source never handed over, so none is waited for. The stop that ends the start is what
+    ends the members' ffmpeg, also one that would not exit by itself.
+    """
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.wait_for_connection = AsyncMock()
+    player.stream.session = session
+    player.stream.stop = AsyncMock()
+    refusal = AudioSourceRefusedError("No AirPlay client is streaming to this receiver")
+    no_chunks: list[bytes] = []
+
+    async def refusing_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+        raise refusal
+
+    async def never_exits(*_args: Any) -> int:
+        await asyncio.Event().wait()
+        return 0
+
+    ffmpeg = MagicMock(closed=False, kill=AsyncMock(), write_eof=AsyncMock())
+    ffmpeg.wait_with_timeout = AsyncMock(side_effect=never_exits)
+
+    async def start_client(airplay_player: Any, _use_shared_ptp: bool) -> None:
+        session._player_ffmpeg[airplay_player.protocol_id] = ffmpeg
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        pytest.raises(AudioSourceRefusedError) as raised,
+    ):
+        await session.start(refusing_source())
+
+    assert raised.value is refusal
+    player.stream.wait_audio_present.assert_not_awaited()
+    ffmpeg.write_eof.assert_not_awaited()
+    ffmpeg.kill.assert_awaited_once()
+    player.stream.stop.assert_awaited_once_with(force=True)
+    assert not session.sync_clients
+    logger = cast("MagicMock", session.prov.logger)
+    logger.warning.assert_not_called()
+    logger.error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_source_refusing_a_warm_replacement_stops_the_session_quietly() -> None:
+    """A refused replacement is not answered with a cold restart, which would be refused too."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.sync_offset_ms = 0
+    player.stream.flush = AsyncMock(return_value=True)
+    refusal = AudioSourceRefusedError("No AirPlay client is streaming to this receiver")
+    no_chunks: list[bytes] = []
+
+    async def refusing_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+        raise refusal
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "stop", new_callable=AsyncMock) as stop_session,
+        pytest.raises(AudioSourceRefusedError) as raised,
+    ):
+        await session.replace(
+            refusing_source(), MagicMock(elapsed_time=0, source_id=None, queue_session_id=None)
+        )
+
+    assert raised.value is refusal
+    stop_session.assert_awaited_once()
+    player.stream.wait_audio_present.assert_not_awaited()
+    player.stream.start.assert_not_awaited()
+    cast("MagicMock", session.prov.logger).warning.assert_not_called()
+    assert session._audio_source_task is not None
+    await session._audio_source_task
+
+
+@pytest.mark.asyncio
 async def test_warm_replace_rearms_the_feed_question() -> None:
     """The new source answers for its own feed; what the old one delivered does not count."""
     session = _make_session(0, 0)
@@ -1196,6 +1312,8 @@ async def test_warm_replace_rearms_the_feed_question() -> None:
     player.sync_offset_ms = 0
     player.stream.flush = AsyncMock(return_value=True)
     session._feed_settled.set()
+    # nor does the old one refusing to play
+    session._source_refusal = AudioSourceRefusedError("No AirPlay client is streaming")
 
     with (
         patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),

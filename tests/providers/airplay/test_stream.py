@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
@@ -19,6 +19,7 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
@@ -35,7 +36,6 @@ from music_assistant.providers.airplay.constants import (
     ClockReadiness,
     StreamingProtocol,
 )
-from music_assistant.providers.airplay.helpers import CLI_CLOCK_OFFSET_NS
 from music_assistant.providers.airplay.stream import AirPlayStream, CliError
 
 START_UNIX_MS = 1_750_000_000_000
@@ -69,6 +69,7 @@ def _make_player() -> MagicMock:
     player.protocol = StreamingProtocol.AIRPLAY2
     player.protocol_override = None
     player.volume_level = 40
+    player.native_start_volume = None
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"
     player.device_info.manufacturer = "Acme, Inc."
@@ -118,6 +119,7 @@ def _make_player() -> MagicMock:
     prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
     prov.mass.streams.get_publish_ip = MagicMock(return_value=None)
     prov.mass.runtime_path = "/ma-runtime"
+    prov.mass.timeline_clock = TimelineClock()
     prov.get_protocol = lambda pid: prov.mass.players.get_protocol(pid)
     player.provider = prov
     return player
@@ -142,22 +144,24 @@ def _acking_write_cli_command(
     stream: AirPlayStream, at_unix_ms: int | None = None
 ) -> Callable[[str], Coroutine[Any, Any, bool]]:
     """
-    Build a ``_write_cli_command`` replacement that acks a START like the binary.
+    Build a ``_write_cli_command`` replacement that acks a START and a STOP like the binary.
 
-    :param stream: The stream whose START commands are answered.
+    :param stream: The stream whose START and STOP commands are answered.
     :param at_unix_ms: Scheduled audible instant to report back; defaults to the
         commanded instant, i.e. the binary found it feasible.
     """
 
     async def write_command(command: str) -> bool:
-        # A START nothing acks otherwise pays the real ack timeout in wall clock;
-        # feeding the ack here leaves start()'s wait already released.
+        # A START or STOP nothing acks otherwise pays the real ack timeout in wall
+        # clock; feeding the ack here leaves the wait for it already released.
         if "ACTION=START" in command:
             requested = int(command.split("START_UNIX_MS=")[1].split("\n", 1)[0])
             stream._handle_status_line(
                 f"[STATUS] started requested_unix_ms={requested} "
                 f"at_unix_ms={requested if at_unix_ms is None else at_unix_ms}"
             )
+        elif "ACTION=STOP" in command:
+            stream._handle_status_line("[STATUS] stopped")
         return True
 
     return write_command
@@ -190,7 +194,9 @@ async def test_cli_args_default_auto() -> None:
     # default format
     assert _arg_value(args, "--samplerate") == "44100"
     assert _arg_value(args, "--bitdepth") == "16"
-    assert _arg_value(args, "--clock-offset-ns") == str(CLI_CLOCK_OFFSET_NS)
+    clock = player.provider.mass.timeline_clock
+    assert _arg_value(args, "--clock-offset-ns") == str(clock.offset_ns + clock.unix_offset_ns)
+    assert _arg_value(args, "--clock-rate-ppb") == str(clock.rate_ppb)
     # no explicit latency override configured
     assert "--latency" not in args
     # PTP daemon is running: stream attaches to the shared clock
@@ -1312,7 +1318,8 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delivered_volume_command_arms_the_echo_grace() -> None:
+@pytest.mark.parametrize("command", ["VOLUME=40", "VOLUME_DB=-28.650000"])
+async def test_delivered_volume_command_arms_the_echo_grace(command: str) -> None:
     """
     A delivered volume command makes the player ignore the echo of it.
 
@@ -1324,7 +1331,7 @@ async def test_delivered_volume_command_arms_the_echo_grace() -> None:
     stream._cli_proc = _make_cli_proc()
 
     with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)):
-        assert await stream.send_cli_command("VOLUME=40") is True
+        assert await stream.send_cli_command(command) is True
 
     player.suppress_volume_reports.assert_called_once_with()
 
@@ -1469,7 +1476,8 @@ async def test_raop_repeated_starts_anchor_progress_without_metadata() -> None:
             side_effect=_acking_write_cli_command(stream, START_UNIX_MS + 3000),
         ) as write_command,
         patch(
-            "music_assistant.providers.airplay.stream.time.time", return_value=START_UNIX_MS / 1000
+            "music_assistant.providers.airplay.stream.cli_clock_time",
+            return_value=START_UNIX_MS / 1000,
         ),
         patch(
             "music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock
@@ -1495,13 +1503,39 @@ async def test_start_progress_anchor_uses_rebased_position() -> None:
         patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send,
         patch("music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock),
         patch(
-            "music_assistant.providers.airplay.stream.time.time",
+            "music_assistant.providers.airplay.stream.cli_clock_time",
             return_value=START_UNIX_MS / 1000 + 2,
         ),
     ):
         await stream._send_start_progress_anchor(START_UNIX_MS, 0)
     send.assert_awaited_once_with("PROGRESS=14")
     assert stream._last_progress_sent == 14
+
+
+@pytest.mark.asyncio
+async def test_start_progress_anchor_runs_on_the_cliairplay_timeline() -> None:
+    """The anchor waits for and measures the audible start on the timeline, not the wall clock."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    stream._start_position = 12.0
+    audible = START_UNIX_MS / 1000
+    with (
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send,
+        patch(
+            "music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep,
+        # audible 1.5 s from now, and played for 3 s once the wait is over
+        patch(
+            "music_assistant.providers.airplay.stream.cli_clock_time",
+            side_effect=[audible - 1.5, audible + 3],
+        ),
+        # a host clock off the true rate has put the wall clock minutes apart
+        patch("music_assistant.providers.airplay.stream.time.time", return_value=audible + 239),
+    ):
+        await stream._send_start_progress_anchor(START_UNIX_MS, 0)
+    sleep.assert_awaited_once_with(pytest.approx(1.6))
+    send.assert_awaited_once_with("PROGRESS=15")
 
 
 @pytest.mark.asyncio
@@ -1515,7 +1549,7 @@ async def test_start_progress_anchor_without_an_acked_instant() -> None:
         patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send,
         patch("music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock),
         patch(
-            "music_assistant.providers.airplay.stream.time.time",
+            "music_assistant.providers.airplay.stream.cli_clock_time",
             return_value=START_UNIX_MS / 1000,
         ),
     ):
@@ -2982,6 +3016,80 @@ async def test_wait_for_connection_sends_volume_when_muted_without_ownership() -
 
 
 @pytest.mark.asyncio
+async def test_wait_for_connection_sends_the_native_level_read_before_connecting() -> None:
+    """
+    A device that sets a level of its own when a session starts gets its native level.
+
+    The level is the one read before the device was reached, not the one it jumped to while
+    the session was set up, and it goes out again 2 seconds later.
+    """
+    player = _make_player()
+    player.owns_volume = False
+    player.volume_muted = False
+    player.native_start_volume = 7
+    stream = AirPlayStream(player)
+    process = MagicMock(closed=False)
+
+    async def start_process() -> None:
+        # the device jumps to a level of its own as the session is set up
+        player.native_start_volume = 60
+
+    def consume_task(awaitable: Any) -> MagicMock:
+        awaitable.close()
+        return MagicMock()
+
+    process.start = AsyncMock(side_effect=start_process)
+    player.provider.mass.create_task.side_effect = consume_task
+    player.provider.mass.call_later = MagicMock()
+    with (
+        patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
+        patch("music_assistant.providers.airplay.stream.AsyncProcess", return_value=process),
+        patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.connect()
+        stream._connected.set()
+        await stream.wait_for_connection()
+
+    send_command.assert_awaited_once_with("VOLUME=7")
+    player.provider.mass.call_later.assert_called_once_with(
+        2, stream._resend_native_start_volume, 7, ANY
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("native_level", "commanded", "resent"),
+    [
+        (7, False, True),  # nothing changed
+        (60, False, True),  # the device set a level of its own after the first command
+        (25, True, False),  # a volume command went through Music Assistant meanwhile
+        (None, False, False),  # the player was muted meanwhile
+    ],
+)
+async def test_native_start_volume_goes_out_again_unless_overruled(
+    native_level: int | None, commanded: bool, resent: bool
+) -> None:
+    """The repeat corrects the device itself, but never undoes a volume set meanwhile."""
+    player = _make_player()
+    player.native_start_volume = native_level
+    player.volume_commanded_since = MagicMock(return_value=commanded)
+    stream = AirPlayStream(player)
+
+    with patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command:
+        await stream._resend_native_start_volume(7, 123.0)
+
+    if resent:
+        send_command.assert_awaited_once_with("VOLUME=7")
+    else:
+        send_command.assert_not_awaited()
+    if native_level is not None:
+        player.volume_commanded_since.assert_called_once_with(123.0)
+
+
+@pytest.mark.asyncio
 async def test_wait_for_connection_fails_on_an_unread_command_pipe() -> None:
     """A binary that never attaches to the command pipe can never be anchored: fail the connect."""
     player = _make_player()
@@ -3349,7 +3457,7 @@ async def test_unexpected_death_of_synced_child_schedules_rejoin() -> None:
     leader.set_members.assert_not_called()
     players_controller.cmd_set_members.assert_not_called()
     players_controller.cmd_ungroup.assert_not_called()
-    player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
+    player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"], None)
     player.set_state_from_stream.assert_called_once_with(
         state=PlaybackState.IDLE, elapsed_time=0, stream=stream
     )
@@ -3367,7 +3475,10 @@ async def test_unexpected_death_of_leader_schedules_rejoin_to_members() -> None:
     # the controller transfers the leadership of the player, so it gets the player id
     stream._leave_group.assert_called_once_with(player.player, "plplayera0001")  # type: ignore[attr-defined]
     player.provider.mass.players.cmd_ungroup.assert_not_called()
-    player.schedule_group_rejoin.assert_called_once_with(["child1", "child2"])
+    # it leads its members until the controller is done with it
+    player.schedule_group_rejoin.assert_called_once_with(
+        ["child1", "child2"], None, after=player.provider.mass.create_task.return_value
+    )
     # the controller sets the leader's final state (transfer or dissolve)
     player.set_state_from_stream.assert_not_called()
 
@@ -3452,7 +3563,7 @@ async def test_unexpected_death_of_static_group_member_drops_member_only() -> No
     leader.set_members.assert_not_called()
     players_controller.cmd_set_members.assert_not_called()
     players_controller.cmd_ungroup.assert_not_called()
-    player.schedule_group_rejoin.assert_called_once_with(["leader"])
+    player.schedule_group_rejoin.assert_called_once_with(["leader"], "syncgroup1")
 
 
 @pytest.mark.asyncio
@@ -4654,6 +4765,7 @@ async def test_unexpected_death_of_a_speaker_takes_its_set_out_of_the_group() ->
     speaker.player = None
     airplay_set = MagicMock(protocol_id="apset", synced_to="leader", group_members=[])
     airplay_set.player.player_id = "plset"
+    airplay_set.player.active_group = "syncgroup1"
     airplay_set.provider = speaker.provider
     speaker.owner = airplay_set
     leader = MagicMock()
@@ -4663,7 +4775,7 @@ async def test_unexpected_death_of_a_speaker_takes_its_set_out_of_the_group() ->
     stream = await _run_unexpected_process_death(speaker)
 
     stream._leave_group.assert_called_once_with(leader.player, "plset")  # type: ignore[attr-defined]
-    airplay_set.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
+    airplay_set.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"], "syncgroup1")
     speaker.schedule_group_rejoin.assert_not_called()
     speaker.set_state_from_stream.assert_called_once_with(
         state=PlaybackState.IDLE, elapsed_time=0, stream=stream

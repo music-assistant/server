@@ -49,7 +49,9 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
   Starting it from MA resumes the last known Spotify context on this device.
 - **Externally triggered playback**: a `PLAYING` event fires a debounced `play_media` on
   the target player (an explicitly selected player, else the daemon's own connected
-  player).
+  player). When that player is not available (and no power control wakes it), the
+  Spotify session is released instead, so the app does not show playback on a silent
+  speaker.
 - **Taking playback back**: when the user moved the active device away in the Spotify app
   and presses play in MA, the last seen context is (re)started on this device — the
   backend's `play()` contract includes claiming active device status.
@@ -72,7 +74,7 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 | Accounts | Free (with ads) or Premium | Premium-family accounts created before Dec 2024 |
 | Max quality | Lossless up to 24-bit/44.1 kHz (Premium; actual quality opaque) | Ogg Vorbis 320 kbps |
 | Audio delivery | PulseAudio pipe-sink → FIFO (`NAMED_PIPE`) | Daemon stdout pipe (`CUSTOM` stream) |
-| Pause behavior | Pipe delivers silence → provider stops the player | Stream ends cleanly (EOF) |
+| Pause behavior | Pipe delivers silence → provider has the player paused | Stream ends cleanly (EOF) → provider has the player paused |
 | Queue control | Session-side queue verbs (add-to-queue, shuffle, repeat) + queue/options events | Transport only |
 | Volume | Two modes: pin at 100% (default) or sync with compensation | `external_volume`: MA owns volume |
 | Risk profile | Binary downloaded from Spotify's CDN, 90-day build expiry | May break when Spotify changes the protocol |

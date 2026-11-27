@@ -88,6 +88,7 @@ def _controller(queue_item: QueueItem, fixed_content_length: bool) -> MagicMock:
     ctrl.audio.select_flow_pcm_format = AsyncMock(return_value=pcm_format)
     ctrl.audio.get_output_format = AsyncMock(return_value=OUTPUT_FORMAT)
     ctrl.audio.fade_into_pending.return_value = False
+    ctrl.serves_as_file.return_value = False
     return ctrl
 
 

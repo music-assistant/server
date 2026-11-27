@@ -1417,16 +1417,18 @@ class PlayerConfigMixin:
                 disabled=PlayerFeature.VOLUME_MUTE not in own_features,
             )
         ]
-        # add audio protocols as volume controls if the native protocol has no volume control
+        # "follow protocol" hands the control to the protocol that renders. It comes after
+        # "native", so it is only the default for a player without a native control.
         for protocol in player.audio_protocols:
-            if has_native_volume_control:
-                break
             if not protocol.available_for_playback:
                 continue
             if protocol.supports_feature(PlayerFeature.VOLUME_SET):
                 if auto_option not in volume_options:
                     volume_options.append(auto_option)
-                if protocol.provider.domain in ("chromecast", "dlna"):
+                if not has_native_volume_control and protocol.provider.domain in (
+                    "chromecast",
+                    "dlna",
+                ):
                     # for chromecast/dlna we can use the protocol for volume control
                     # even if it is not the active protocol
                     volume_options.append(
@@ -1435,7 +1437,10 @@ class PlayerConfigMixin:
             if protocol.supports_feature(PlayerFeature.VOLUME_MUTE):
                 if auto_option not in mute_options:
                     mute_options.append(auto_option)
-                if protocol.provider.domain in ("chromecast", "dlna"):
+                if not has_native_volume_control and protocol.provider.domain in (
+                    "chromecast",
+                    "dlna",
+                ):
                     # for chromecast/dlna we can use the protocol for volume control
                     # even if it is not the active protocol
                     mute_options.append(

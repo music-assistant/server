@@ -35,6 +35,8 @@ from music_assistant_models.media_items.metadata import LifeSpan, MediaItemMetad
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
+from music_assistant.controllers.cache import BYPASS_CACHE
+from music_assistant.controllers.cache.controller import CacheController
 from music_assistant.controllers.metadata.constants import (
     CONF_ENABLE_ONLINE_METADATA,
     REFRESH_INTERVAL,
@@ -317,11 +319,9 @@ def _lyrics_provider(lyrics: MediaItemMetadata | Exception | None) -> MagicMock:
     if isinstance(lyrics, Exception):
         provider.get_track_metadata = AsyncMock(side_effect=lyrics)
     else:
-        # like LRCLIB, a track that already has lyrics is not looked up
+        # like LRCLIB, a track that already has synchronized lyrics is not looked up
         provider.get_track_metadata = AsyncMock(
-            side_effect=lambda track: (
-                None if track.metadata.lyrics or track.metadata.lrc_lyrics else lyrics
-            )
+            side_effect=lambda track: None if track.metadata.lrc_lyrics else lyrics
         )
     return provider
 
@@ -378,21 +378,68 @@ async def test_track_refresh_that_is_not_forced_keeps_the_stored_lyrics() -> Non
 
 
 @pytest.mark.asyncio
+async def test_track_refresh_that_is_not_forced_adds_lrc_to_stored_plain_lyrics() -> None:
+    """A refresh reads the lookup cache and adds synchronized lyrics to stored plain lyrics."""
+    enrichment = _enrichment()
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics("stored plain", None)
+
+    await enrichment._update_track_metadata(track, force_refresh=False)
+
+    _mass(enrichment).cache.handle_refresh.assert_called_once_with(False)
+    lyrics_provider.get_track_metadata.assert_awaited_once()
+    _replaced_lyrics(enrichment).assert_not_awaited()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (
+        "stored plain",
+        "[00:01.00]sync",
+    )
+
+
+@pytest.mark.asyncio
+async def test_recent_track_refresh_skips_lyrics_lookup() -> None:
+    """A recent non-forced refresh skips providers even when synchronized lyrics are missing."""
+    enrichment = _enrichment()
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics("stored plain", None)
+    track.metadata.last_refresh = NOW - 1
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_track_metadata(track, force_refresh=False)
+
+    lyrics_provider.get_track_metadata.assert_not_awaited()
+    _replaced_lyrics(enrichment).assert_not_awaited()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == ("stored plain", None)
+
+
+@pytest.mark.asyncio
 async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -> None:
     """The lyrics are read again from the music providers, a local file first."""
     enrichment = _enrichment()
     local = ProviderMapping(
-        item_id="local", provider_domain="filesystem_local", provider_instance="local_1"
+        item_id="local",
+        provider_domain="filesystem_local",
+        provider_instance="local_1",
     )
     streaming = ProviderMapping(item_id="tidal", provider_domain="tidal", provider_instance="t_1")
+    providers = {
+        "local_1": MagicMock(is_streaming_provider=False),
+        "t_1": MagicMock(is_streaming_provider=True),
+    }
+    _mass(enrichment).get_provider = MagicMock(
+        side_effect=lambda provider_instance, **_kwargs: providers.get(provider_instance)
+    )
     prov_items = {
         "local": _track_with_lyrics("local plain", None),
         "tidal": _track_with_lyrics("tidal plain", None),
     }
+    prov_items["local"].provider = "local_1"
+    prov_items["tidal"].provider = "t_1"
     _mass(enrichment).music.tracks.get_provider_item = AsyncMock(
         side_effect=lambda item_id, _instance, **_kwargs: prov_items[item_id]
     )
-    lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="lrclib"))
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
     enrichment.providers = [lyrics_provider]  # type: ignore[misc]
     track = _track_with_lyrics("wrong", None, streaming, local)
 
@@ -400,6 +447,84 @@ async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -
 
     _replaced_lyrics(enrichment).assert_awaited_once_with(
         "1", {"lyrics": "local plain", "lrc_lyrics": None}
+    )
+    lyrics_provider.get_track_metadata.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_refresh", [True, False])
+@pytest.mark.parametrize(
+    ("local_lyrics", "local_lrc_lyrics"),
+    [("local plain", None), (None, "[00:01.00]local sync"), (None, None)],
+)
+async def test_track_refresh_keeps_local_lyrics_but_updates_other_metadata(
+    force_refresh: bool, local_lyrics: str | None, local_lrc_lyrics: str | None
+) -> None:
+    """Local lyrics are kept while other metadata from providers is still updated."""
+    enrichment = _enrichment()
+    local = ProviderMapping(
+        item_id="local", provider_domain="filesystem_local", provider_instance="local_1"
+    )
+    local_provider = MagicMock(
+        instance_id="local_1", domain="filesystem_local", is_streaming_provider=False
+    )
+    _mass(enrichment).get_provider = MagicMock(return_value=local_provider)
+    local_item = _track_with_lyrics(local_lyrics, local_lrc_lyrics)
+    local_item.provider = "local_1"
+    _mass(enrichment).music.tracks.get_provider_item = AsyncMock(return_value=local_item)
+    provider_metadata = MediaItemMetadata(
+        lyrics="online plain", lrc_lyrics="[00:02.00]online sync", mood="online mood"
+    )
+    mixed_provider = _metadata_provider("mixed", ProviderFeature.TRACK_METADATA)
+    mixed_provider.supported_features.add(ProviderFeature.LYRICS)
+    mixed_provider.supported_features.add(ProviderFeature.ALBUM_METADATA)
+    mixed_provider.get_track_metadata = AsyncMock(return_value=provider_metadata)
+    enrichment.providers = [mixed_provider]  # type: ignore[misc]
+    track = _track_with_lyrics(None, None, local)
+
+    await enrichment._update_track_metadata(track, force_refresh=force_refresh)
+
+    mixed_provider.get_track_metadata.assert_awaited_once()
+    assert track.metadata.mood == "online mood"
+    if local_lyrics or local_lrc_lyrics:
+        assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (
+            local_lyrics,
+            local_lrc_lyrics,
+        )
+        assert (provider_metadata.lyrics, provider_metadata.lrc_lyrics) == (
+            "online plain",
+            "[00:02.00]online sync",
+        )
+    else:
+        assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (
+            "online plain",
+            "[00:02.00]online sync",
+        )
+
+
+@pytest.mark.asyncio
+async def test_track_refresh_does_not_treat_library_fallback_as_local_lyrics() -> None:
+    """A library item returned for a local mapping is not fresh local-file metadata."""
+    enrichment = _enrichment()
+    local = ProviderMapping(
+        item_id="local", provider_domain="filesystem_local", provider_instance="local_1"
+    )
+    local_provider = MagicMock(
+        instance_id="local_1", domain="filesystem_local", is_streaming_provider=False
+    )
+    _mass(enrichment).get_provider = MagicMock(return_value=local_provider)
+    fallback = _track_with_lyrics("stored plain", None)
+    _mass(enrichment).music.tracks.get_provider_item = AsyncMock(return_value=fallback)
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics(None, None, local)
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    lyrics_provider.get_track_metadata.assert_awaited_once()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (
+        "stored plain",
+        "[00:01.00]sync",
     )
 
 
@@ -507,7 +632,7 @@ async def test_local_artist_provider_runs_when_musicbrainz_is_unavailable() -> N
     ):
         await enrichment._update_artist_metadata(artist, force_refresh=True)
 
-    identify.assert_awaited_once_with(artist)
+    identify.assert_awaited_once_with(artist, force_refresh=True)
     local.get_artist_metadata.assert_awaited_once_with(artist)
     assert artist.metadata.style == "Grunge"
     assert artist.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
@@ -2426,3 +2551,176 @@ async def test_track_identity_with_linking_disabled_fills_ids_but_links_nothing(
     assert (ExternalID.ISRC, "GBSTK0700001") in track.external_ids
     assert track.metadata.last_musicbrainz_lookup is not None
     _mass(enrichment).music.tracks.link_musicbrainz_mappings.assert_not_awaited()
+
+
+def _bypass_recorded(enrichment: MetadataEnrichmentMixin, *stubs: AsyncMock) -> list[bool]:
+    """
+    Let the cache bypass work for real and record it on every call of the given stubs.
+
+    :param enrichment: The enrichment mixin whose cache bypass is wired up.
+    :param stubs: The stubs to record the state of the cache bypass on, each keeping its answer.
+    :return: The list the recorded states are appended to.
+    """
+    _mass(enrichment).cache.handle_refresh = lambda bypass: CacheController.handle_refresh(
+        cast("Any", None), bypass
+    )
+    seen: list[bool] = []
+    for stub in stubs:
+        answers = iter(stub.side_effect) if stub.side_effect else None
+
+        async def record(
+            *_args: Any, answers: Any = answers, answer: Any = stub.return_value, **_kwargs: Any
+        ) -> Any:
+            seen.append(BYPASS_CACHE.get())
+            return next(answers) if answers else answer
+
+        stub.side_effect = record
+    return seen
+
+
+async def _link_with_bypass_recorded(kind: str, force_refresh: bool) -> list[bool]:
+    """
+    Link an item through MusicBrainz and return the cache bypass state of each lookup it made.
+
+    :param kind: Artist, album, track or artist_mbid.
+    :param force_refresh: Whether the link is forced.
+    """
+    musicbrainz = _musicbrainz(
+        release=_release(),
+        recording=MusicBrainzRecording(id=RECORDING_ID, title="15 Step"),
+        artist=MusicBrainzArtist(id=OTHER_MBID, name="Radiohead", sort_name="Radiohead"),
+    )
+    musicbrainz.identify_artist.return_value = IdentifiedArtist(MB_ARTIST, False)
+    enrichment = _enrichment(musicbrainz)
+    seen = _bypass_recorded(
+        enrichment,
+        musicbrainz.get_artist_details,
+        musicbrainz.resolve_release,
+        musicbrainz.resolve_recording,
+        musicbrainz.identify_artist,
+    )
+    if kind == "artist":
+        artist = _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)})
+        await enrichment._link_artist_to_musicbrainz(artist, force_refresh=force_refresh)
+    elif kind == "album":
+        await enrichment._link_album_to_musicbrainz(_album(), force_refresh=force_refresh)
+    elif kind == "track":
+        await enrichment._link_track_to_musicbrainz(_track(), force_refresh=force_refresh)
+    else:
+        await enrichment._get_artist_mbid(_merged_artist(), force_refresh=force_refresh)
+    return seen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_refresh", [True, False])
+@pytest.mark.parametrize("kind", ["artist", "album", "track", "artist_mbid"])
+async def test_musicbrainz_lookup_bypasses_the_cache_only_when_forced(
+    kind: str, force_refresh: bool
+) -> None:
+    """The MusicBrainz lookup of a link asks again when forced and may read the cache otherwise."""
+    assert await _link_with_bypass_recorded(kind, force_refresh) == [force_refresh]
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_bypasses_the_cache_for_every_lookup_but_nothing_else() -> None:
+    """A forced artist identification asks MusicBrainz again each time, the library and providers not."""
+    albums = [_library_album("a")]
+    tracks = [_library_track(f"t{i}") for i in range(1, 5)]
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
+        albums, tracks, [_library_track("top")], None, None, None, None
+    )
+    _with_title_providers(enrichment, _title_provider(["Track t4"]))
+    musicbrainz = _musicbrainz_of(enrichment)
+    seen = _bypass_recorded(
+        enrichment,
+        identify_artist,
+        musicbrainz.get_artist_by_track_titles,
+        _library(enrichment).albums,
+        _library(enrichment).tracks,
+        _library(enrichment).get_library_artist_toptracks,
+        *(
+            provider.get_artist_toptrack_titles
+            for provider in _mass(enrichment).get_providers_supporting_feature.return_value
+        ),
+    )
+
+    await enrichment._get_artist_mbid(_artist(ranked=True), force_refresh=True)
+
+    assert identify_artist.await_count == 4
+    # the library listings, top tracks and title listing read without the bypass, the five
+    # MusicBrainz lookups with it
+    assert seen == [True, False, False, True, False, True, False, True, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["artist", "album", "track"])
+async def test_forced_link_does_not_force_the_work_after_the_lookup(kind: str) -> None:
+    """The work after a forced lookup, which can reach the music providers, reads the cache as usual."""
+    relations = [_relation(SPOTIFY_ARTIST_URL)]
+    musicbrainz = _musicbrainz(
+        release=_release(),
+        recording=MusicBrainzRecording(id=RECORDING_ID, title="15 Step", relations=relations),
+        artist=MusicBrainzArtist(
+            id=OTHER_MBID, name="Radiohead", sort_name="Radiohead", relations=relations
+        ),
+    )
+    musicbrainz.get_release_details = AsyncMock(return_value=_release())
+    enrichment = _enrichment(musicbrainz)
+    _stored_item(enrichment, _album({(ExternalID.MB_ALBUM, OTHER_MBID)}))
+    music = _mass(enrichment).music
+    followers = {
+        "artist": [music.artists.link_musicbrainz_mappings],
+        "album": [
+            music.albums.link_musicbrainz_mappings,
+            music.albums.link_album_tracks,
+        ],
+        "track": [
+            music.tracks.merge_recording_duplicates,
+            music.tracks.link_musicbrainz_mappings,
+        ],
+    }[kind]
+    seen = _bypass_recorded(enrichment, *followers)
+    merged_lookup = _bypass_recorded(enrichment, musicbrainz.get_release_details)
+
+    if kind == "artist":
+        artist = _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)})
+        await enrichment._link_artist_to_musicbrainz(artist, force_refresh=True)
+    elif kind == "album":
+        # a stored release that differs from the identified one is looked up again
+        await enrichment._link_album_to_musicbrainz(
+            _album({(ExternalID.MB_ALBUM, OTHER_MBID)}), force_refresh=True
+        )
+    else:
+        await enrichment._link_track_to_musicbrainz(_track(), force_refresh=True)
+
+    assert seen == [False] * len(followers)
+    # the lookup of a merged release is a MusicBrainz lookup too, so it is forced as well
+    assert merged_lookup == ([True] if kind == "album" else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_refresh", [True, False])
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_update_hands_the_forced_refresh_to_the_musicbrainz_link(
+    media_type: MediaType, force_refresh: bool
+) -> None:
+    """A metadata update asks MusicBrainz again exactly when the update itself is forced."""
+    enrichment = _enrichment()
+    link = AsyncMock(return_value=False)
+    item = _item(media_type, MediaItemMetadata())
+    if media_type == MediaType.ARTIST:
+        enrichment._link_artist_to_musicbrainz = link  # type: ignore[method-assign]
+        item.external_ids.clear()
+        enrichment._get_artist_mbid = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    elif media_type == MediaType.ALBUM:
+        enrichment._link_album_to_musicbrainz = link  # type: ignore[method-assign]
+    else:
+        enrichment._link_track_to_musicbrainz = link  # type: ignore[method-assign]
+
+    await _update(enrichment, item, force_refresh)
+
+    link.assert_awaited_once()
+    assert link.await_args_list[0].kwargs["force_refresh"] is force_refresh
+    if media_type == MediaType.ARTIST:
+        mbid_lookup = cast("AsyncMock", enrichment._get_artist_mbid)
+        assert mbid_lookup.await_args_list[0].kwargs["force_refresh"] is force_refresh

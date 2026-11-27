@@ -772,7 +772,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             )
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # CLAP inference runs torch ops off-thread; the failure surface is broad and
             # version-dependent, so any failure just drops this window's contribution.
             self.logger.debug("CLAP single-window inference failed: %s", err)

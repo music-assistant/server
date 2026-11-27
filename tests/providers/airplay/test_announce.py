@@ -14,6 +14,7 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.airplay import announce
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ANNOUNCE_AT_MARGIN_MS,
@@ -34,6 +35,7 @@ ANNOUNCE_DATA = {
     "announce_player_id": None,
 }
 HIRES_PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S32LE, sample_rate=48000, bit_depth=24)
+CLOCK = TimelineClock()
 
 
 def _make_render(duration: float = 1.5) -> MagicMock:
@@ -92,6 +94,7 @@ def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
     player.endpoints = [player]
     player._lock = asyncio.Lock()
     player.logger = logging.getLogger("test.airplay.announce")
+    player.mass.timeline_clock = CLOCK
     player.mass.create_task = MagicMock(
         side_effect=lambda coro, *_args, **_kwargs: asyncio.get_running_loop().create_task(coro)
     )
@@ -116,6 +119,16 @@ def _make_playing_group(*streams: MagicMock) -> list[MagicMock]:
     for member in members:
         member.stream.session = member.session = session
     return members
+
+
+def _make_playing_set(*streams: MagicMock) -> MagicMock:
+    """Build a playing set heard on one speaker per given stream; the first one carries it."""
+    speakers = _make_playing_group(*streams)
+    carrier = speakers[0]
+    carrier.endpoints = speakers
+    for speaker in speakers:
+        speaker.owner = carrier
+    return carrier
 
 
 def _make_announcement() -> MagicMock:
@@ -157,7 +170,7 @@ def _timeline(player: MagicMock) -> Iterator[list[tuple[str, float]]]:
     """
     events: list[tuple[str, float]] = []
 
-    async def hold_until(unix_ms: float) -> None:
+    async def hold_until(unix_ms: float, _clock: TimelineClock) -> None:
         events.append(("hold", unix_ms))
 
     player.mass.players.cmd_volume_set = AsyncMock(
@@ -197,9 +210,9 @@ def test_shared_instant_covers_the_slowest_member() -> None:
     slow.latency_lead_ms = 1900
     unreported = _make_stream()
 
-    before_ms = int(cli_clock_time() * 1000)
-    at_unix_ms = announce._shared_announce_instant([fast, slow, unreported])
-    after_ms = cli_clock_time() * 1000
+    before_ms = int(cli_clock_time(CLOCK) * 1000)
+    at_unix_ms = announce._shared_announce_instant([fast, slow, unreported], CLOCK)
+    after_ms = cli_clock_time(CLOCK) * 1000
 
     # the unreported member's fallback span (2000) is the largest of the three
     expected_lead = AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
@@ -207,38 +220,79 @@ def test_shared_instant_covers_the_slowest_member() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_announcement_arms_every_member_at_one_shared_instant() -> None:
-    """A playing session arms every member with the same instant, duck and clip file."""
+async def test_live_announcement_arms_every_speaker_of_a_set_at_one_shared_instant() -> None:
+    """A playing set arms every speaker with the same instant, duck and clip file."""
     streams = [_make_stream(), _make_stream()]
-    members = _make_playing_group(*streams)
-    leader = members[0]
+    airplay_set = _make_playing_set(*streams)
 
-    await announce.play_announcement(leader, _make_announcement(), None)
+    await announce.play_announcement(airplay_set, _make_announcement(), None)
 
     arms = [stream.announce.call_args for stream in streams]
     for arm in arms:
         assert arm is not None
-    # one shared instant and the default duck for every member
+    # one shared instant and the default duck for every speaker
     assert len({arm.args[1] for arm in arms}) == 1
     assert {arm.args[2] for arm in arms} == {AIRPLAY_ANNOUNCE_DUCK_DB}
-    # both members share one stdin format, so they share one clip file
+    # both speakers share one stdin format, so they share one clip file
     assert len({arm.args[0] for arm in arms}) == 1
     assert arms[0].args[0].endswith(".pcm")
     for stream in streams:
         stream.wait_announce_done.assert_awaited_once()
-    leader.mass.streams.announcement_renderer.release.assert_awaited_once()
+    airplay_set.mass.streams.announcement_renderer.release.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_live_announcement_renders_one_clip_per_distinct_format() -> None:
-    """Members on different stdin formats each get a clip in exactly their format."""
+    """Speakers on different stdin formats each get a clip in exactly their format."""
     streams = [_make_stream(), _make_stream(pcm_format=HIRES_PCM_FORMAT)]
-    members = _make_playing_group(*streams)
+    airplay_set = _make_playing_set(*streams)
 
-    await announce.play_announcement(members[0], _make_announcement(), None)
+    await announce.play_announcement(airplay_set, _make_announcement(), None)
 
     clip_paths = {stream.announce.call_args.args[0] for stream in streams}
     assert len(clip_paths) == 2
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_leader_announces_alone() -> None:
+    """
+    A session leader without a group entity above it, addressed individually, announces alone.
+
+    Its members play on untouched: their streams are not armed, nor waited for.
+    """
+    leader_stream, member_stream = _make_stream(), _make_stream()
+    leader, member = _make_playing_group(leader_stream, member_stream)
+    member.synced_to = leader.protocol_id
+
+    await announce.play_announcement(leader, _make_announcement(), None)
+
+    leader_stream.announce.assert_awaited_once()
+    leader_stream.wait_announce_done.assert_awaited_once()
+    member_stream.announce.assert_not_awaited()
+    member_stream.wait_announce_started.assert_not_awaited()
+    member_stream.wait_announce_done.assert_not_awaited()
+
+
+@pytest.mark.parametrize("target", ["leader", "member"])
+def test_ad_hoc_announcement_is_timed_on_the_player_alone(target: str) -> None:
+    """
+    A player of an ad-hoc session is timed on its own span, not on its session's.
+
+    Nothing else announces in its session at once, so a member that runs far ahead does
+    not delay the clip on the player that announces.
+    """
+    leader, member = _make_playing_group(_make_stream(), _make_stream())
+    member.synced_to = leader.protocol_id
+    player, other = (leader, member) if target == "leader" else (member, leader)
+    other.stream.latency_lead_ms = 60_000
+
+    members = announce._live_members(player)
+    with patch("music_assistant.providers.airplay.announce.cli_clock_time", return_value=100.0):
+        at_unix_ms = announce._resolve_announce_instant(player, members, "clip")
+
+    assert members == [player]
+    assert at_unix_ms == 100_000 + AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
+    assert player.provider._announce_plans == {}
 
 
 @pytest.mark.asyncio
@@ -278,18 +332,18 @@ async def test_no_member_arming_fails_without_killing_the_music() -> None:
     the session every member is playing from is left exactly as it was.
     """
     streams = [_make_stream(ack=None), _make_stream(ack=None)]
-    members = _make_playing_group(*streams)
+    airplay_set = _make_playing_set(*streams)
     live_session = streams[0].session
     live_session.stop = AsyncMock()
 
     with pytest.raises(PlayerCommandFailed, match="may not support announcements"):
-        await announce.play_announcement(members[0], _make_announcement(), None)
+        await announce.play_announcement(airplay_set, _make_announcement(), None)
 
     for stream in streams:
         stream.announce.assert_awaited_once()
         stream.wait_announce_done.assert_not_awaited()
     live_session.stop.assert_not_awaited()
-    members[0].mass.streams.announcement_renderer.release.assert_awaited_once()
+    airplay_set.mass.streams.announcement_renderer.release.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -298,10 +352,10 @@ async def test_partial_success_warns_about_the_members_that_stayed_silent(
 ) -> None:
     """One member playing the clip is a success; the members that did not are named."""
     streams = [_make_stream(), _make_stream(ack=None)]
-    members = _make_playing_group(*streams)
+    airplay_set = _make_playing_set(*streams)
 
     with caplog.at_level(logging.WARNING):
-        await announce.play_announcement(members[0], _make_announcement(), None)
+        await announce.play_announcement(airplay_set, _make_announcement(), None)
 
     assert "member_1" in caplog.text
     streams[0].wait_announce_done.assert_awaited_once()
@@ -399,13 +453,13 @@ async def test_armed_members_ignore_their_own_volume_echoes() -> None:
     """
     # taken WITH the clock the ack is built from, so the window below is
     # bracketed exactly however slow the run itself is
-    now_ms = int(cli_clock_time() * 1000)
+    now_ms = int(cli_clock_time(CLOCK) * 1000)
     file_ms = 3000
     (member,) = _make_playing_group(_make_stream(ack=(now_ms + 300, file_ms)))
 
     with _timeline(member):
         await announce.play_announcement(member, _make_announcement(), 55)
-    elapsed = cli_clock_time() - now_ms / 1000
+    elapsed = cli_clock_time(CLOCK) - now_ms / 1000
 
     audible_end_s = (300 + file_ms) / 1000
     window = member.suppress_volume_reports.call_args.args[0]
@@ -500,7 +554,7 @@ async def test_cancelled_announcement_hands_the_bumped_volume_back() -> None:
     parked = asyncio.Event()
     member.mass.players.cmd_volume_set = AsyncMock(side_effect=lambda *_args: raised.set())
 
-    async def hold_until(_unix_ms: float) -> None:
+    async def hold_until(_unix_ms: float, _clock: TimelineClock) -> None:
         if not raised.is_set():
             return
         # the hold in the ducked tail, where the cancel lands
@@ -599,13 +653,13 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
     streams[1].latency_lead_ms = largest_span_ms
     announcement = _make_announcement()
 
-    before_ms = int(cli_clock_time() * 1000)
+    before_ms = int(cli_clock_time(CLOCK) * 1000)
     await asyncio.gather(
         announce.play_announcement(leader, announcement, None),
         announce.play_announcement(member_1, announcement, None),
         announce.play_announcement(member_2, announcement, None),
     )
-    after_ms = cli_clock_time() * 1000
+    after_ms = cli_clock_time(CLOCK) * 1000
 
     instants = set()
     for stream in streams:
@@ -687,7 +741,7 @@ async def test_return_holds_until_the_audible_end() -> None:
     # taken WITH the clock the ack is built from, so the hold is measured
     # from that same instant however slow the setup below runs
     started = time.monotonic()
-    now_unix_ms = int(cli_clock_time() * 1000)
+    now_unix_ms = int(cli_clock_time(CLOCK) * 1000)
     stream = _make_stream(ack=(now_unix_ms + 250, 100))
     members = _make_playing_group(stream)
 
@@ -816,13 +870,15 @@ def test_the_apple_tv_of_a_set_takes_no_announcement() -> None:
     """
     A set that leads its session announces on its speakers only, timed by them alone.
 
-    The Apple TV is not heard, and the clip is mixed in after its silenced feed.
+    The Apple TV is not heard, and the clip is mixed in after its silenced feed - also
+    under a group entity, whose members are timed on the heard members of the session.
     """
     speaker, apple_tv = _make_playing_group(_make_stream(), _make_stream())
     speaker.renders_audio = True
     apple_tv.renders_audio = False
     apple_tv.endpoints = [speaker]
     apple_tv.has_live_audio = True
+    apple_tv.player.active_group = "syncgroup_1"
     # the Apple TV runs far ahead: its span must not move the instant of the speakers
     apple_tv.stream.latency_lead_ms = 60_000
 
