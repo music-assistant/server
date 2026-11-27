@@ -15,6 +15,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from soco.core import SoCo
 from soco.exceptions import SoCoException
 
+from music_assistant.constants import PlaybackQuality
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sonos_s1 import player as player_module
@@ -128,6 +129,98 @@ async def test_play_media_builds_didl_from_stream_url(sonos_player: SonosPlayer)
     assert call_args.args[0] == STREAM_URL
     assert STREAM_URL in call_args.kwargs["meta"]
     assert "library://track/123" not in call_args.kwargs["meta"]
+
+
+BASE_URL = "http://192.168.1.2:8097"
+RADIO = PlayerMedia(
+    uri="library://radio/1",
+    media_type=MediaType.RADIO,
+    title="Radio A",
+    source_id="queue1",
+    queue_item_id="item1",
+)
+LIVE_SOURCE = PlayerMedia(
+    uri="source://line_in",
+    media_type=MediaType.AUDIO_SOURCE,
+    title="Line-in",
+    source_id="line_in",
+    queue_session_id="sessionabc",
+)
+GROUP_STREAM = PlayerMedia(
+    uri=f"{BASE_URL}/ugp/ugp_a.mp3?player_id=player1",
+    media_type=MediaType.FLOW_STREAM,
+    title="Syncgroup Z",
+    source_id="ugp_a",
+)
+ENDLESS_STREAMS = [
+    pytest.param(RADIO, "/single/sessionabc/queue1/item1/player1", "", id="radio"),
+    pytest.param(_make_media(), "/flow/sessionabc/queue1/item1/player1", "", id="flow"),
+    pytest.param(LIVE_SOURCE, "/source/sessionabc/line_in/player1", "", id="live_source"),
+    pytest.param(GROUP_STREAM, "/ugp/ugp_a", "?player_id=player1", id="group_stream"),
+]
+
+
+async def _play(sonos_player: SonosPlayer, media: PlayerMedia, stream_url: str) -> MagicMock:
+    """Play the media on a stream URL as `resolve_stream_url` gives it; return the play call."""
+    resolve_stream_url = cast("AsyncMock", sonos_player.provider.mass.streams.resolve_stream_url)
+    resolve_stream_url.return_value = stream_url
+    with patch.object(sonos_player, "schedule_poll"):
+        await sonos_player.play_media(media)
+    return cast("MagicMock", sonos_player.soco.play_uri.call_args)
+
+
+@pytest.mark.parametrize(("media", "path", "query"), ENDLESS_STREAMS)
+async def test_an_endless_mp3_stream_is_played_as_radio(
+    sonos_player: SonosPlayer, media: PlayerMedia, path: str, query: str
+) -> None:
+    """A stream without an end that is compressed to MP3 reaches the speaker as radio."""
+    stream_url = f"{BASE_URL}{path}.mp3{query}"
+
+    call_args = await _play(sonos_player, media, stream_url)
+
+    assert call_args.args[0] == stream_url
+    assert call_args.kwargs["force_radio"] is True
+
+
+@pytest.mark.parametrize("extension", [".wav", ".flac"])
+@pytest.mark.parametrize(("media", "path", "query"), ENDLESS_STREAMS)
+async def test_an_endless_lossless_stream_is_played_as_it_is(
+    sonos_player: SonosPlayer, media: PlayerMedia, path: str, query: str, extension: str
+) -> None:
+    """A lossless stream without an end reaches the speaker in its own codec, not as radio."""
+    stream_url = f"{BASE_URL}{path}{extension}{query}"
+
+    call_args = await _play(sonos_player, media, stream_url)
+
+    assert call_args.args[0] == stream_url
+    assert call_args.kwargs["force_radio"] is False
+
+
+@pytest.mark.parametrize("extension", [".mp3", ".wav", ".flac"])
+async def test_a_track_is_not_played_as_radio(sonos_player: SonosPlayer, extension: str) -> None:
+    """A track with a duration reaches the speaker in its own codec, not as radio."""
+    stream_url = f"{BASE_URL}/single/sessionabc/queue1/item1/player1{extension}"
+
+    call_args = await _play(sonos_player, _make_media(), stream_url)
+
+    assert call_args.args[0] == stream_url
+    assert call_args.kwargs["force_radio"] is False
+
+
+async def test_an_announcement_is_not_played_as_radio(sonos_player: SonosPlayer) -> None:
+    """An announcement reaches the speaker as it is, not as radio."""
+    stream_url = f"{BASE_URL}/announcement/player1.mp3"
+    media = PlayerMedia(uri=stream_url, media_type=MediaType.ANNOUNCEMENT, title="Announcement")
+
+    call_args = await _play(sonos_player, media, stream_url)
+
+    assert call_args.args[0] == stream_url
+    assert call_args.kwargs["force_radio"] is False
+
+
+def test_a_speaker_defaults_to_lossless_uncompressed(sonos_player: SonosPlayer) -> None:
+    """A speaker the user picked no playback quality for is streamed lossless, uncompressed."""
+    assert sonos_player.default_playback_quality is PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
 
 def test_pause_is_advertised_as_a_supported_feature(sonos_player: SonosPlayer) -> None:
