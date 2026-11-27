@@ -1,16 +1,18 @@
-"""Tests for player-specific live source output codec selection."""
+"""Tests for the codec of the stream URL of a player, from its playback quality and live sources."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
-    CONF_OUTPUT_CODEC,
+    CONF_PLAYBACK_QUALITY,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
 )
 from music_assistant.controllers.streams import StreamsController
@@ -18,6 +20,7 @@ from music_assistant.models.player import DeviceInfo
 from music_assistant.providers.chromecast.constants import CAST_PLAYER_CONFIG_ENTRIES
 from music_assistant.providers.sonos.player import SonosPlayer
 from music_assistant.providers.sonos_s1.player import SonosPlayer as SonosS1Player
+from tests.common import MockProtocol, MockProvider
 
 
 def _controller(output_codec: str, prefer_wav_for_live_sources: bool) -> StreamsController:
@@ -28,11 +31,9 @@ def _controller(output_codec: str, prefer_wav_for_live_sources: bool) -> Streams
     controller._boundary_mix_owners = {}
     controller.mass = mass = MagicMock()
     protocol = MagicMock()
-    values = {
-        CONF_OUTPUT_CODEC: output_codec,
-        CONF_PREFER_WAV_FOR_LIVE_SOURCES: prefer_wav_for_live_sources,
-    }
+    values = {CONF_PREFER_WAV_FOR_LIVE_SOURCES: prefer_wav_for_live_sources}
     protocol.config.get_value.side_effect = lambda key, default=None: values.get(key, default)
+    protocol.output_codec = ContentType(output_codec)
     protocol.flow_mode = False
     protocol.supports_feature.return_value = True
     mass.players.get_output_protocol.return_value = protocol
@@ -80,6 +81,30 @@ async def test_wav_preference_does_not_change_regular_tracks() -> None:
     url = await controller.resolve_stream_url("player-1", _media(MediaType.TRACK))
 
     assert url == "http://mass:8097/single/session-1/queue-1/item-1/player-1.aac"
+
+
+@pytest.mark.parametrize(
+    ("playback_quality", "expected_extension"),
+    [("lossless_uncompressed", "wav"), ("lossless_compressed", "flac"), ("compressed", "mp3")],
+)
+async def test_track_url_takes_the_codec_of_the_playback_quality(
+    playback_quality: str, expected_extension: str
+) -> None:
+    """A track is streamed in the codec of the playback quality its protocol is set to."""
+    controller = _controller("flac", False)
+    mass = cast("MagicMock", controller.mass)
+    protocol = MockProtocol(MockProvider("test", mass=mass), "player-1", "Player 1")
+    protocol._attr_supported_features.add(PlayerFeature.ENQUEUE)
+    entry = ConfigEntry(key=CONF_PLAYBACK_QUALITY, type=ConfigEntryType.STRING)
+    raw = {"player_id": "player-1", "provider": "test", "values": {entry.key: playback_quality}}
+    protocol.set_config(cast("PlayerConfig", PlayerConfig.parse([entry], raw)))
+    mass.players.get_output_protocol.return_value = protocol
+
+    url = await controller.resolve_stream_url("player-1", _media(MediaType.TRACK))
+
+    assert url == (
+        f"http://mass:8097/single/session-1/queue-1/item-1/player-1.{expected_extension}"
+    )
 
 
 def test_chromecast_prefers_wav_for_live_sources_by_default() -> None:

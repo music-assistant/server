@@ -219,6 +219,8 @@ class FileStream:
         # the sizes the file had before its audio ended short of them
         self._earlier_sizes: list[int] = []
         self._head_start = HEAD_START_PER_FILE
+        # the head start the latest encode took and has not handed to its player yet
+        self._head_start_held = 0
         # the request an encode of this file runs for
         self.request: web.Request | None = None
         # the stream the file is cut from, for a track that is mixed with its neighbours
@@ -251,10 +253,21 @@ class FileStream:
             self._head += data[: HEAD_SIZE - offset]
 
     def take_head_start(self) -> int:
-        """Return the seconds of head start a new encode gets, out of what the file has left."""
+        """
+        Return the seconds of head start a new encode gets, out of what the file has left.
+
+        The head start of the encode before it goes back to the file when that one handed
+        no audio to its player.
+        """
+        self._head_start += self._head_start_held
         seconds = min(HEAD_START_PER_ENCODE, self._head_start)
         self._head_start -= seconds
+        self._head_start_held = seconds
         return seconds
+
+    def head_start_handed_out(self) -> None:
+        """Mark that the latest encode handed audio to its player, so it keeps its head start."""
+        self._head_start_held = 0
 
     def encode_start(self, offset: int) -> tuple[int, int]:
         """
@@ -351,7 +364,7 @@ class FileStreams:
         """
         Return the file a player fetches a track as, if it exists.
 
-        :param player_id: The player that fetches the file.
+        :param player_id: The id the player fetches the file under.
         :param key: The track and the playback it belongs to.
         """
         files = self._files.get(player_id, {})
@@ -371,7 +384,7 @@ class FileStreams:
         """
         Add the file a player fetches a track as, in place of the oldest it has too many.
 
-        :param player_id: The player that fetches the file.
+        :param player_id: The id the player fetches the file under.
         :param key: The track and the playback it belongs to.
         :param file: The file.
         """

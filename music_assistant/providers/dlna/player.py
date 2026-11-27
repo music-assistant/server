@@ -19,7 +19,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
-from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL, PlaybackQuality
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -103,6 +103,8 @@ class DLNAPlayer(PlayerProtocol):
         # the first position the device reported for this track, and whether it moved since
         self._first_position: float | None = None
         self._position_moved = False
+        # a position the device was polled at before this time predates a stop or new media
+        self._position_valid_from = 0.0
 
         # Track BOOTID in SSDP advertisements for device changes
         self.bootid: int | None = None
@@ -111,8 +113,22 @@ class DLNAPlayer(PlayerProtocol):
 
     @property
     def fetches_files(self) -> bool:
-        """Return if the renderer is built around files, which its user tells."""
-        return self.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False, return_type=bool)
+        """Return if the renderer is built around files."""
+        return True
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_UNCOMPRESSED
+
+    @property
+    def stops_on_pause(self) -> bool:
+        """Return whether a pause stops the renderer, as its user set it to."""
+        return (
+            self.device is not None
+            and self.device.can_stop
+            and self.get_config_value("replace_pause_with_stop", return_type=bool)
+        )
 
     def set_available(self, available: bool) -> None:
         """Set the availability of the player."""
@@ -296,6 +312,7 @@ class DLNAPlayer(PlayerProtocol):
         self.set_current_media(uri=url, clear_all=True)
         self._first_position = None
         self._position_moved = False
+        self._position_valid_from = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
@@ -332,9 +349,7 @@ class DLNAPlayer(PlayerProtocol):
         """Send PAUSE command to given player."""
         assert self.device is not None  # for type checking
 
-        replace_pause_with_stop = self.get_config_value("replace_pause_with_stop", return_type=bool)
-
-        if replace_pause_with_stop and self.device.can_stop:
+        if self.stops_on_pause:
             await self.stop()
             return
 
@@ -374,6 +389,12 @@ class DLNAPlayer(PlayerProtocol):
         """Send SEEK command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_seek_rel_time(timedelta(seconds=position))
+        self._schedule_state_refresh()
+
+    def on_file_requested_again(self) -> None:
+        """Read the state back after the renderer resumed or seeked by itself."""
+        # a renderer need not send an event for that, which would leave the old position on
+        # display until the next regular poll
         self._schedule_state_refresh()
 
     @catch_request_errors
@@ -526,9 +547,15 @@ class DLNAPlayer(PlayerProtocol):
             return
         poll_first = False
         if service.service_id == "urn:upnp-org:serviceId:AVTransport":
+            current_uri = self._attr_current_media.uri if self._attr_current_media else ""
             for state_variable in state_variables:
-                # Force a state refresh when player begins or pauses playback
-                # to update the position info.
+                # Force a state refresh when player begins or pauses playback, or moves on
+                # to another track by itself, to update the position info.
+                # A device may repeat the uri of the playing track in every event.
+                if state_variable.name == "CurrentTrackURI" and (
+                    (state_variable.value or "") != current_uri
+                ):
+                    poll_first = True
                 if state_variable.name == "TransportState" and state_variable.value in (
                     TransportState.PLAYING,
                     TransportState.PAUSED_PLAYBACK,
@@ -707,12 +734,18 @@ class DLNAPlayer(PlayerProtocol):
         # and is adopted instead of being discarded as 'not reported'.
         assert self.device is not None  # for type checking
         media_position = self.device.media_position
+        position_updated_at = self.device.media_position_updated_at
+        if playback_state == PlaybackState.IDLE:
+            # the position is only polled while the device plays or is paused, so the one
+            # it had at a stop stays behind until the next start has been polled
+            self._position_valid_from = time.time()
         if (
             media_position is not None
-            and not self._position_moved
-            # a stopped device may still report where it was, which is not this track's start
-            and playback_state != PlaybackState.IDLE
+            and position_updated_at is not None
+            and position_updated_at.timestamp() < self._position_valid_from
         ):
+            media_position = None
+        if media_position is not None and not self._position_moved:
             # some renderers (e.g. LinkPlay) keep reporting 00:00:00 while they play, which
             # would restart the elapsed time at every resume: until the position has moved
             # on this track, it is only adopted once and MA keeps its own clock after that
@@ -724,7 +757,7 @@ class DLNAPlayer(PlayerProtocol):
                 media_position = None
         if media_position is not None:
             self._attr_elapsed_time = float(media_position)
-            if (position_updated_at := self.device.media_position_updated_at) is not None:
+            if position_updated_at is not None:
                 anchor = position_updated_at.timestamp()
                 if self._playing_since is not None:
                     # a device only re-stamps a position that actually changed, so shortly

@@ -29,7 +29,7 @@ from music_assistant_models.player import DeviceInfo, OutputProtocol, PlayerMedi
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
+from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, PlaybackQuality
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
@@ -72,6 +72,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._marked_asleep = False
     player._woken_from_sleep = False
     player.cloud_queue_id = None
+    player.group_queue_id = None
     player.cloud_queue_item_generation = 0
     player._window_item_ids = {}
     player._served_bindings = {}
@@ -972,7 +973,7 @@ async def test_a_jump_is_not_undone_by_the_report_on_the_replaced_load() -> None
     queues = _real_queues("queue1", ["track0", "track1", "track2"])
     mass.player_queues = queues
     queue = queues._queue_data["queue1"].queue
-    reporting = MagicMock(corrected_elapsed_time=0.0)
+    reporting = MagicMock(corrected_elapsed_time=0.0, fake_paused=False)
     reporting.resolve_output_protocol.return_value = player
     _report_playing_our_queue(group, cast("str", player.wire_item_id("track0")))
     player.on_player_event(None)
@@ -1734,6 +1735,39 @@ async def test_pause_stops_a_speaker_playing_the_queue_of_its_player(queue_playi
         group.pause.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("queue_playing", "served_as_file", "can_pause", "passive", "stops"),
+    [
+        pytest.param(True, False, True, False, True, id="queue item not served as a file"),
+        pytest.param(True, True, True, False, False, id="queue item served as a file"),
+        pytest.param(False, False, True, False, False, id="another source"),
+        pytest.param(False, False, False, False, True, id="no pause offered"),
+        pytest.param(True, False, True, True, False, id="synced to another speaker"),
+    ],
+)
+def test_a_speaker_stops_on_a_pause_it_could_not_resume(
+    queue_playing: bool, served_as_file: bool, can_pause: bool, passive: bool, stops: bool
+) -> None:
+    """
+    Test a speaker stops on a pause in a queue item it does not get as a file, or without a pause.
+
+    :param queue_playing: Whether the speaker plays a Music Assistant queue.
+    :param served_as_file: Whether the item it plays is served to it as a file.
+    :param can_pause: Whether the speaker offers a pause of what it plays.
+    :param passive: Whether the speaker follows another one, which handles the pause.
+    :param stops: Whether a pause stops the speaker.
+    """
+    player, mass, client = _connected_player()
+    client.player.is_passive = passive
+    client.player.group.playback_actions.can_pause = can_pause
+    player._player = MagicMock(spec=Player)
+    player._player.active_source = "pl0123456789ab"
+    mass.player_queues.get.return_value = MagicMock() if queue_playing else None
+
+    with patch.object(SonosPlayer, "_plays_file", return_value=served_as_file):
+        assert player.stops_on_pause is stops
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("served_as_file", [True, False])
 async def test_pause_pauses_a_speaker_only_in_a_track_it_gets_as_a_file(
@@ -1753,7 +1787,7 @@ async def test_pause_pauses_a_speaker_only_in_a_track_it_gets_as_a_file(
     # the speaker reports the item it cached for the position, and plays what it fetched there
     player._served_bindings = {"abc@0": (0, "xyz")}
     player._config = MagicMock()
-    player._config.get_value.return_value = "wav"
+    player._config.get_value.return_value = "lossless_uncompressed"
     queue_item = mass.player_queues.get_item.return_value
     mass.streams.serves_as_file.return_value = served_as_file
 
@@ -1774,3 +1808,17 @@ def test_a_speaker_fetches_files() -> None:
     player, _ = _make_player()
 
     assert player.fetches_files is True
+
+
+def test_a_speaker_defaults_to_lossless_uncompressed() -> None:
+    """Test a speaker the user picked no playback quality for is streamed lossless, uncompressed."""
+    player, _ = _make_player()
+
+    assert player.default_playback_quality is PlaybackQuality.LOSSLESS_UNCOMPRESSED
+
+
+def test_a_speaker_needs_no_content_length() -> None:
+    """Test a stream that is not a file reaches a speaker without a made-up length."""
+    player, _ = _make_player()
+
+    assert player.requires_content_length is False

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from music_assistant_models.enums import IdentifierType, MediaType, ProtocolRole
 
-from music_assistant.constants import CONF_OUTPUT_CODEC
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.bose_soundtouch.client.schema.models import Info
@@ -124,12 +124,14 @@ async def test_a_preset_press_plays_on_the_queue_of_the_player(scenario: Scenari
 
 
 async def test_a_new_speaker_streams_in_the_codec_of_its_own_record(scenario: Scenario) -> None:
-    """The output codec of a speaker with a minted player id is read from its protocol."""
+    """The playback quality of a speaker with a minted player id is read from its protocol."""
     with patch.object(BoseSoundTouchPlayer, "_listen", _listen_forever):
         protocol = await _register(scenario)
         assert protocol.player is not None
         player_id = protocol.player.player_id
-        await scenario.mass.config.save_protocol_config(PROTOCOL_ID, {CONF_OUTPUT_CODEC: "flac"})
+        await scenario.mass.config.save_protocol_config(
+            PROTOCOL_ID, {CONF_PLAYBACK_QUALITY: "lossless_compressed"}
+        )
         await scenario.mass.players.unregister(PROTOCOL_ID)
         await scenario.mass.players.register(protocol)
         await scenario.settle()
@@ -144,7 +146,7 @@ async def test_a_new_speaker_streams_in_the_codec_of_its_own_record(scenario: Sc
     with patch.object(BoseSoundTouchPlayer, "avt", new_callable=PropertyMock, return_value=avt):
         await protocol.play_media(media)
 
-    assert scenario.mass.config.get_player_value(player_id, CONF_OUTPUT_CODEC) is None
+    assert scenario.mass.config.get_player_value(player_id, CONF_PLAYBACK_QUALITY) is None
     assert avt.set_url.call_args.args[0].uri.endswith(f"/{PROTOCOL_ID}.flac")
 
 

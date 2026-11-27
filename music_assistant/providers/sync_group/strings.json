@@ -17,7 +17,7 @@
     }
   },
   "manifest": {
-    "description": "Create (permanent) sync groups to group speakers of compatible protocols/ecosystems to play audio in sync."
+    "description": "Create a permanent group of speakers that play audio in sync. Its members must share a protocol or ecosystem, such as AirPlay."
   },
   "errors": {
     "not_dynamic": "Group {0} does not allow dynamically adding or removing members.",

@@ -58,6 +58,6 @@
     }
   },
   "manifest": {
-    "description": "Built-in/generic provider that handles generic URLs and playlists."
+    "description": "Plays the tracks and radio stations you add by URL, keeps the playlists you create in Music Assistant and offers built-in playlists such as Infinite Mix."
   }
 }

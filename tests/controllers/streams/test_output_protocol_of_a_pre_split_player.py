@@ -7,35 +7,24 @@ from typing import TYPE_CHECKING
 import pytest
 from music_assistant_models.enums import IdentifierType
 
-from music_assistant.constants import (
-    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
-    CONF_FLOW_MODE_SAMPLE_RATE,
-    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
-    FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
-)
+from music_assistant.constants import CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
 
 # the real server with fake providers, for a player whose id is also that of its protocol
 from tests.scenarios.conftest import scenario  # noqa: F401
 from tests.scenarios.harness import FakeProtocol
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
-
     from tests.scenarios.harness import Scenario
 
 
 @pytest.fixture(autouse=True)
-def dlna_declares_fixed_content_length(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Let the fake DLNA protocols declare the fixed content length setting, as DLNA does."""
-    entries = FakeProtocol.get_config_entries
-
-    async def _entries(protocol: FakeProtocol) -> list[ConfigEntry]:
-        own = await entries(protocol)
-        if protocol.provider.domain != "dlna":
-            return own
-        return [*own, CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH]
-
-    monkeypatch.setattr(FakeProtocol, "get_config_entries", _entries)
+def dlna_requires_content_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the fake DLNA protocols need a content length, and no other fake protocol."""
+    monkeypatch.setattr(
+        FakeProtocol,
+        "requires_content_length",
+        property(lambda protocol: protocol.provider.domain == "dlna"),
+    )
 
 
 # a player from before the split keeps the id of its native protocol
@@ -71,7 +60,6 @@ async def _playing_through_dlna(
                 "default_name": "Kitchen",
                 "values": {
                     "protocol_parent_id": PLAYER_ID,
-                    CONF_REQUIRES_FIXED_CONTENT_LENGTH: True,
                     CONF_FLOW_MODE_SAMPLE_RATE: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
                 },
             },
@@ -91,7 +79,7 @@ async def test_announcement_is_served_with_the_content_length_of_the_output_that
     """An announcement for the player is served as its rendering protocol expects."""
     await _playing_through_dlna(scenario)
 
-    fixed_content_length = scenario.mass.streams._announcement_requires_fixed_content_length(
+    fixed_content_length = scenario.mass.streams._announcement_requires_content_length(
         PLAYER_ID,
         {
             "announcement_url": "",

@@ -587,7 +587,7 @@ class SpotifyProvider(MusicProvider):
     @use_cache()
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        album_obj = await self._get_data(f"albums/{prov_album_id}")
+        album_obj = await self._get_album_data(prov_album_id)
         return parse_album(album_obj, self)
 
     @use_cache()
@@ -836,12 +836,20 @@ class SpotifyProvider(MusicProvider):
     @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
-        # the result cache outlives the page cache, which would only add a request
-        return [
-            parse_track(item, self)
-            async for item in self._get_all_items(f"albums/{prov_album_id}/tracks", use_cache=False)
-            if item["id"]
-        ]
+        # the album carries its first page of tracks, and shares this request with a
+        # lookup of the album itself
+        album_obj = await self._get_album_data(prov_album_id)
+        first_page = album_obj["tracks"]
+        items = list(first_page["items"])
+        if first_page.get("next"):
+            # the result cache outlives the page cache, which would only add a request
+            items += [
+                item
+                async for item in self._get_all_items(
+                    f"albums/{prov_album_id}/tracks", use_cache=False, start=first_page["limit"]
+                )
+            ]
+        return [parse_track(item, self) for item in items if item and item["id"]]
 
     @use_cache(3600 * 3, allow_expired_cache=True)  # 3 hours
     async def get_playlist_tracks(
@@ -1924,6 +1932,7 @@ class SpotifyProvider(MusicProvider):
         key: str = "items",
         limit: int = 50,
         use_cache: bool = True,
+        start: int = 0,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any]]:
         """
@@ -1934,8 +1943,9 @@ class SpotifyProvider(MusicProvider):
         :param limit: Number of items to request per page.
         :param use_cache: Serve pages from the page cache, at the cost of one extra request that
             checks the list for changes; when False, every page is requested from the API.
+        :param start: Offset of the first item to list.
         """
-        offset = 0
+        offset = start
         cache_checksum: str | None = None
         total = 0
         if use_cache:
@@ -1988,6 +1998,11 @@ class SpotifyProvider(MusicProvider):
             cache_key, result, provider=self.instance_id, checksum=cache_checksum
         )
         return result
+
+    @use_cache(120)  # short cache: the album and its track listing share one request
+    async def _get_album_data(self, prov_album_id: str) -> dict[str, Any]:
+        """Get the raw album object, including its first page of tracks."""
+        return await self._get_data(f"albums/{prov_album_id}")
 
     @use_cache(120, allow_bypass=False)  # short cache: repeated traversals reuse metadata
     async def _get_cached_paginated_meta(self, /, endpoint: str, **kwargs: Any) -> dict[str, Any]:

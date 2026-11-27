@@ -9,7 +9,7 @@ import pytest
 from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
 from music_assistant_models.enums import ConfigEntryType, ProtocolRole
 
-from music_assistant.constants import CONF_OUTPUT_CODEC
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.models.player import Player
 from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
 
@@ -22,9 +22,9 @@ def mock_mass() -> MagicMock:
     return mass
 
 
-def _output_codec_entry(default_value: str) -> ConfigEntry:
+def _playback_quality_entry(default_value: str) -> ConfigEntry:
     return ConfigEntry(
-        key=CONF_OUTPUT_CODEC,
+        key=CONF_PLAYBACK_QUALITY,
         type=ConfigEntryType.STRING,
         default_value=default_value,
     )
@@ -85,14 +85,19 @@ class TestGetOutputConfigValue:
         native.set_config(
             _player_config(
                 "parent",
-                [_output_codec_entry("default")],
-                {CONF_OUTPUT_CODEC: "mp3"},
+                [_playback_quality_entry("default")],
+                {CONF_PLAYBACK_QUALITY: "compressed"},
             )
         )
-        audio.set_config(_player_config("child", [_output_codec_entry("wav")]))
+        audio.set_config(
+            _player_config("child", [_playback_quality_entry("lossless_uncompressed")])
+        )
         player.set_active_output_protocol("child")
 
-        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "wav"
+        assert (
+            player.get_output_config_value(CONF_PLAYBACK_QUALITY, "default")
+            == "lossless_uncompressed"
+        )
 
     def test_protocol_stored_value_wins(self, mock_mass: MagicMock) -> None:
         """A value stored on the output protocol wins over its entry default."""
@@ -100,13 +105,16 @@ class TestGetOutputConfigValue:
         audio.set_config(
             _player_config(
                 "child",
-                [_output_codec_entry("wav")],
-                {CONF_OUTPUT_CODEC: "aac"},
+                [_playback_quality_entry("lossless_uncompressed")],
+                {CONF_PLAYBACK_QUALITY: "lossless_compressed"},
             )
         )
         player.set_active_output_protocol("child")
 
-        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "aac"
+        assert (
+            player.get_output_config_value(CONF_PLAYBACK_QUALITY, "default")
+            == "lossless_compressed"
+        )
 
     def test_own_value_used_without_active_protocol(self, mock_mass: MagicMock) -> None:
         """Without an active output protocol the player's own value applies."""
@@ -114,12 +122,12 @@ class TestGetOutputConfigValue:
         native.set_config(
             _player_config(
                 "parent",
-                [_output_codec_entry("default")],
-                {CONF_OUTPUT_CODEC: "mp3"},
+                [_playback_quality_entry("default")],
+                {CONF_PLAYBACK_QUALITY: "compressed"},
             )
         )
 
-        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "mp3"
+        assert player.get_output_config_value(CONF_PLAYBACK_QUALITY, "default") == "compressed"
 
     def test_falls_back_to_own_value_when_protocol_lacks_entry(self, mock_mass: MagicMock) -> None:
         """A key the output protocol has no entry for falls back to the native protocol's value."""
@@ -127,14 +135,14 @@ class TestGetOutputConfigValue:
         native.set_config(
             _player_config(
                 "parent",
-                [_output_codec_entry("default")],
-                {CONF_OUTPUT_CODEC: "mp3"},
+                [_playback_quality_entry("default")],
+                {CONF_PLAYBACK_QUALITY: "compressed"},
             )
         )
         audio.set_config(_player_config("child"))
         player.set_active_output_protocol("child")
 
-        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "mp3"
+        assert player.get_output_config_value(CONF_PLAYBACK_QUALITY, "default") == "compressed"
 
     def test_default_for_unknown_key(self, mock_mass: MagicMock) -> None:
         """A key present on neither player resolves to the given default."""
@@ -143,4 +151,4 @@ class TestGetOutputConfigValue:
         audio.set_config(_player_config("child"))
         player.set_active_output_protocol("child")
 
-        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "default"
+        assert player.get_output_config_value(CONF_PLAYBACK_QUALITY, "default") == "default"

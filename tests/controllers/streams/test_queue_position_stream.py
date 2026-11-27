@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from aiohttp import web
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.controllers.streams.controller import StreamsController
@@ -139,6 +139,7 @@ def _url_controller() -> Any:
     protocol = MagicMock()
     protocol.config.get_value.side_effect = lambda _key, default=None: default
     protocol.flow_mode = False
+    protocol.output_codec = ContentType.FLAC
     protocol.supports_feature.return_value = True
     mass.players.get_output_protocol.return_value = protocol
     mass.player_queues.get.return_value = SimpleNamespace(

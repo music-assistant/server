@@ -591,7 +591,7 @@ async def test_a_file_is_the_stream_of_a_plain_playthrough(rig: _Rig) -> None:
     stream_rig = _Rig(_pair(PCM_16), output_format=WAV_16, pcm_format=PCM_16)
     await stream_rig.decode()
     stream_rig.player.fetches_files = False
-    stream_rig.player.get_config_value.return_value = False
+    stream_rig.player.requires_content_length = False
 
     for item_id in ("a", "b"):
         _, stream = await stream_rig.fetch(item_id)

@@ -3,7 +3,7 @@
   "domain": "sync_group",
   "stage": "stable",
   "name": "Sync Group Player",
-  "description": "Create (permanent) sync groups to group speakers of compatible protocols/ecosystems to play audio in sync.",
+  "description": "Create a permanent group of speakers that play audio in sync. Its members must share a protocol or ecosystem, such as AirPlay.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://music-assistant.io/faq/groups/",

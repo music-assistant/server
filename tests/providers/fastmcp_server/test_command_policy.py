@@ -477,6 +477,7 @@ def test_system_command_families_require_system_admin(command: str) -> None:
         ("players/cmd/pause", "players.control", Capability.CONTROL_PLAYBACK),
         ("players/cmd/stop", "players.control", Capability.CONTROL_PLAYBACK),
         ("players/cmd/seek", "players.control", Capability.CONTROL_PLAYBACK),
+        ("players/cmd/skip", "players.control", Capability.CONTROL_PLAYBACK),
         ("players/cmd/shuffle", "players.control", Capability.CONTROL_PLAYBACK),
         ("players/cmd/repeat", "players.control", Capability.CONTROL_PLAYBACK),
         ("player_queues/skip", "queues.control", Capability.CONTROL_PLAYBACK),

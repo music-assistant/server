@@ -43,6 +43,11 @@ FAVORITES_PAGE_SIZE = 50
 AUDIOBOOK_CHAPTERS_PAGE_SIZE = 200
 FLOW_BATCH_COUNT = 2
 
+# -- Podcast bookmarks --
+
+# lets one pass over the library share the account's bookmarks; cleared on every save
+BOOKMARKS_CACHE_SECONDS = 60
+
 # -- API rate limit, shared by the GraphQL and gw-light requests of a provider instance --
 
 # Deezer documents 50 requests per 5 seconds, enforced per second so they never come in one burst

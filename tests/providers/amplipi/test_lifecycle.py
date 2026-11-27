@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from music_assistant_models.enums import ProtocolRole
 
-from music_assistant.constants import CONF_OUTPUT_CODEC
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.amplipi.constants import SOURCE_DISCONNECTED
 from music_assistant.providers.amplipi.player import AmpliPiZonePlayer, zone_protocol_id
@@ -177,12 +177,12 @@ async def test_a_new_zone_keeps_its_settings_on_its_own_record(scenario: Scenari
     player_id = _player_id(provider, 0)
 
     await scenario.mass.config.save_protocol_config(
-        protocol.protocol_id, {CONF_OUTPUT_CODEC: "mp3"}
+        protocol.protocol_id, {CONF_PLAYBACK_QUALITY: "compressed"}
     )
     await scenario.mass.players.unregister(protocol.protocol_id)
     await provider.discover_players()
     await scenario.settle()
 
     assert _zone(provider, 0) is protocol
-    assert protocol.get_config_value(CONF_OUTPUT_CODEC) == "mp3"
-    assert scenario.mass.config.get_player_value(player_id, CONF_OUTPUT_CODEC) is None
+    assert protocol.get_config_value(CONF_PLAYBACK_QUALITY) == "compressed"
+    assert scenario.mass.config.get_player_value(player_id, CONF_PLAYBACK_QUALITY) is None

@@ -44,7 +44,6 @@ from .constants import (
     FEATURES_FROM_LEADER,
     IDLE_GRACE_SECONDS,
     PLAYBACK_START_TIMEOUT,
-    PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
     REFORM_DEBOUNCE_SECONDS,
     STUCK_MEMBER_TIMEOUT,
     VOLUME_FEATURES_FROM_MEMBERS,
@@ -213,6 +212,16 @@ class SyncGroupPlayer(PlayerProtocol):
         if session := self._active_session_protocol():
             return session.get_supported_sample_rates()
         return [(44100, 16), (48000, 16)]
+
+    def resolve_output_protocol(self) -> PlayerProtocol:
+        """Return the protocol of the sync leader that plays the stream, else the group itself."""
+        return self._active_session_protocol() or self
+
+    @property
+    def stops_on_pause(self) -> bool:
+        """Return whether a pause would stop the leader, which can not resume what it plays."""
+        session = self._active_session_protocol()
+        return session is not None and session.stops_on_pause
 
     @property
     def active_source(self) -> str | None:
@@ -778,8 +787,7 @@ class SyncGroupPlayer(PlayerProtocol):
                     old_leader_id = leader.player_id
                     session_protocol = self._active_session_protocol()
                     supports_handoff = (
-                        session_protocol is not None
-                        and session_protocol.provider.domain in PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH
+                        session_protocol is not None and session_protocol.can_hand_over_session
                     )
 
                     if was_playing and supports_handoff:
@@ -788,7 +796,7 @@ class SyncGroupPlayer(PlayerProtocol):
                         # _dynamic_leader_switch will fall back to dissolve+reform
                         # automatically if no remaining member is part of the live
                         # session (e.g. only freshly-added players are left).
-                        await self._dynamic_leader_switch(old_leader_id)
+                        await self._dynamic_leader_switch(old_leader_id, final_players_to_remove)
                     else:
                         # protocol doesn't support dynamic leader switching or not playing
                         await self._dissolve_and_reform(old_leader_id, resume_playback=was_playing)
@@ -842,7 +850,7 @@ class SyncGroupPlayer(PlayerProtocol):
         if (
             (sync_leader := self.sync_leader) is None
             or self._active_session_protocol() is not leader
-            or leader.provider.domain not in PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH
+            or not leader.can_hand_over_session
             or self.playback_state != PlaybackState.PLAYING
             or not await self._hand_over_lost_session(sync_leader, leader)
         ):
@@ -922,6 +930,8 @@ class SyncGroupPlayer(PlayerProtocol):
         Form syncgroup by syncing all (possible) members.
 
         :raises ResourceBusyError: When the leader stays busy; the group is then left as it was.
+        :raises PlayerCommandFailed: When the leader refuses members; a group that was not
+            formed yet is then dissolved again.
         """
         # select new sync leader if needed; pin the leader ref: a concurrent command (e.g. a
         # dissolve) may clear or replace self.sync_leader while we await below
@@ -945,6 +955,8 @@ class SyncGroupPlayer(PlayerProtocol):
                 self._attr_group_members,
                 leader.name,
             )
+            leader_recorded = self.sync_leader is None
+            previous_members = list(self._attr_group_members)
             self.sync_leader = leader
 
             # ensure the sync leader is first in the list
@@ -1025,9 +1037,18 @@ class SyncGroupPlayer(PlayerProtocol):
                         return None
                 # use _handle_set_members directly to avoid the redirect loop
                 # (cmd_set_members redirects sync-leader targets back to this syncgroup)
-                return await self.mass.players._handle_set_members(
-                    leader, player_ids_to_add=members_to_sync, new_content=new_content
-                )
+                try:
+                    return await self.mass.players._handle_set_members(
+                        leader, player_ids_to_add=members_to_sync, new_content=new_content
+                    )
+                except Exception:
+                    if leader_recorded and self.sync_leader is leader:
+                        # a leader that refuses members does not form the group: the ones it
+                        # did take are released, and the next form selects a leader again
+                        # from the members as they are then
+                        self._attr_group_members = previous_members
+                        await self._dissolve_syncgroup()
+                    raise
             return None
 
     @asynccontextmanager
@@ -1582,13 +1603,15 @@ class SyncGroupPlayer(PlayerProtocol):
         )
         return False
 
-    async def _dynamic_leader_switch(self, old_leader_id: str) -> None:
+    async def _dynamic_leader_switch(
+        self, old_leader_id: str, leaving_ids: list[str] | None = None
+    ) -> None:
         """
         Switch the sync leader without tearing down the stream session.
 
-        Used when the provider supports dynamic leader selection (e.g. AirPlay,
-        Snapcast). The old leader is removed from the live session and the
-        remaining members keep playing uninterrupted on a newly selected leader.
+        Used when the protocol of the live session can hand it over (see
+        `PlayerProtocol.can_hand_over_session`). The old leader is removed from the live
+        session and the remaining members keep playing uninterrupted on a newly selected leader.
         Members it holds outside that session join the session if they can be
         reached on its protocol, else they leave the group.
 
@@ -1597,6 +1620,7 @@ class SyncGroupPlayer(PlayerProtocol):
         that case we fall back to dissolve + reform, accepting a brief audio gap.
 
         :param old_leader_id: The player_id of the leader being removed.
+        :param leaving_ids: The player ids of other members that leave the group along with it.
         """
         old_leader = self.sync_leader
         assert old_leader is not None
@@ -1606,6 +1630,11 @@ class SyncGroupPlayer(PlayerProtocol):
             old_leader.name,
             self.display_name,
         )
+        if leaving_ids:
+            # the handoff below only takes the old leader itself out of the session
+            await self.mass.players._handle_set_members(
+                old_leader, player_ids_to_remove=leaving_ids
+            )
 
         # Snapshot the currently active protocol and session before clearing
         # the leader — we need both for new-leader selection and for the

@@ -1211,6 +1211,45 @@ async def test_a_leader_the_user_takes_out_is_handed_over_without_a_gap(
     await _stop(scenario, group)
 
 
+@pytest.mark.parametrize(
+    ("taken_out", "leader"), [("BC", "Player A"), ("AB", "Player C"), ("ABC", "Player D")]
+)
+async def test_members_the_user_takes_out_at_once_stop_playing(
+    scenario: Scenario, provider: AirPlayProvider, taken_out: str, leader: str
+) -> None:
+    """
+    Members the user takes out of the group in one command stop, while the others play on.
+
+    :param taken_out: The letters of the players the user takes out.
+    :param leader: The player that leads the group after it.
+    """
+    protocols = dict(zip("ABCD", await _receivers(scenario, provider, "ABCD"), strict=True))
+    group = await _play_group(scenario, list(protocols.values()))
+    session = protocols["D"].session
+    assert session is not None
+    staying = [protocol for letter, protocol in protocols.items() if letter not in taken_out]
+    remaining = [_cli(protocol) for protocol in staying]
+
+    await scenario.mass.players.cmd_set_members(
+        group.player_id,
+        player_ids_to_remove=[_player_of(protocols[letter]).player_id for letter in taken_out],
+    )
+    await scenario.advance(2)
+
+    led_by = _led_by(group)
+    assert led_by is not None
+    assert led_by.name == leader
+    assert _state(group) == PlaybackState.PLAYING
+    assert _members(scenario, group) == [_player_of(protocol).name for protocol in staying]
+    assert set(session.sync_clients) == set(staying)
+    for letter in taken_out:
+        assert protocols[letter].playback_state == PlaybackState.IDLE
+    # nothing was restarted
+    assert [_cli(protocol) for protocol in staying] == remaining
+    assert not any(process.closed for process in remaining)
+    await _stop(scenario, group)
+
+
 async def _stop_command(scenario: Scenario, group: Player, _leader: Player) -> None:
     """Stop the group."""
     await scenario.mass.players.cmd_stop(group.player_id)

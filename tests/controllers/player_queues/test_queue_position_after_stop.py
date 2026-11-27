@@ -78,6 +78,7 @@ def _player(state: PlaybackState, stream_elapsed: float) -> Any:
         name="P",
         available=True,
         playback_state=state,
+        fake_paused=False,
         active_source=QUEUE_ID,
         corrected_elapsed_time=stream_elapsed,
         group_members=[],

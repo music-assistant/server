@@ -6,9 +6,6 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_OUTPUT_CODEC,
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     create_sample_rates_config_entry,
 )
@@ -68,9 +65,6 @@ SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
-    # enable flow mode by default as cast devices handle a continuous
-    # flow stream more reliably than enqueueing individual tracks
-    ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}),
     ConfigEntry(
         key=CONF_USE_MASS_APP,
         type=ConfigEntryType.BOOLEAN,
@@ -114,11 +108,6 @@ CAST_MODEL_STATIC_DELAY: dict[tuple[str, str], int] = {
 }
 CAST_FALLBACK_STATIC_DELAY = 330
 
-# Cast models that played lossless (FLAC) flow streams for hours without a dropout. Every other
-# Cast device streams MP3 by default: several receivers (Samsung's Cast Lite speakers, Google
-# Nest Mini and Nest Audio) stop playing a long lossless stream after a while.
-CAST_LOSSLESS_MODELS: set[str] = {"Chromecast Audio", "Google Nest Hub"}
-
 
 def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
     """
@@ -128,14 +117,3 @@ def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
     :param model: Device model name (e.g., "Google Nest Mini").
     """
     return CAST_MODEL_STATIC_DELAY.get((manufacturer, model), CAST_FALLBACK_STATIC_DELAY)
-
-
-def get_cast_output_codec_entry(model: str) -> ConfigEntry:
-    """
-    Return the output codec config entry for a Cast device model, with its default codec.
-
-    :param model: Device model name (e.g., "Google Nest Mini").
-    """
-    if model in CAST_LOSSLESS_MODELS:
-        return CONF_ENTRY_OUTPUT_CODEC
-    return CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3

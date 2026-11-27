@@ -45,7 +45,6 @@ from music_assistant.constants import (
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_OUTPUT_CHANNELS,
-    CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
@@ -58,6 +57,7 @@ from music_assistant.constants import (
     CONF_HIDE_IN_UI,
     CONF_ICON,
     CONF_MUTE_CONTROL,
+    CONF_PLAYBACK_QUALITY,
     CONF_PLAYER_PROTOCOLS,
     CONF_PLAYERS,
     CONF_PLUGIN_KEY_SPLITTER,
@@ -75,6 +75,7 @@ from music_assistant.constants import (
     NATIVE_PRIORITY,
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
+    PlaybackQuality,
 )
 from music_assistant.controllers.config.constants import (
     BASE_KEYS,
@@ -1293,10 +1294,11 @@ class PlayerConfigMixin:
                 # output channel is always configurable per player(protocol)
                 CONF_ENTRY_OUTPUT_CHANNELS
             ]
+            if player.playback_quality_codecs:
+                default_entries.append(_create_playback_quality_config_entry(player))
             if is_http_based_player_protocol:
                 # for http based players we can add the http streaming related entries
                 default_entries += [
-                    CONF_ENTRY_OUTPUT_CODEC,
                     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]
@@ -1955,3 +1957,23 @@ class PlayerConfigMixin:
                 instance_id, {CONF_CONNECTED_PLAYERS: connected_players}
             )
         return values
+
+
+def _create_playback_quality_config_entry(player: PlayerProtocol) -> ConfigEntry:
+    """
+    Return the playback quality entry of a protocol, listing the levels it cannot play as disabled.
+
+    :param player: The protocol object.
+    """
+    codecs = player.playback_quality_codecs
+    return ConfigEntry(
+        key=CONF_PLAYBACK_QUALITY,
+        type=ConfigEntryType.STRING,
+        options=[
+            ConfigValueOption(level.value, disabled=level not in codecs)
+            for level in PlaybackQuality
+        ],
+        default_value=player.default_playback_quality.value,
+        category="protocol_generic",
+        requires_reload=True,
+    )

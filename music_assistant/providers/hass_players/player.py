@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from hass_client.exceptions import FailedCommand
 from music_assistant_models.enums import (
+    ContentType,
     IdentifierType,
     ImageType,
     MediaType,
@@ -18,10 +19,9 @@ from music_assistant_models.media_items import MediaItemImage
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     MASS_LOGO_ONLINE,
-    create_output_codec_config_entry,
+    PlaybackQuality,
 )
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.player import served_duration
@@ -54,9 +54,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import HomeAssistantPlayerProvider
-
-
-DEFAULT_PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,)
 
 
 class HomeAssistantPlayer(PlayerProtocol):
@@ -163,35 +160,33 @@ class HomeAssistantPlayer(PlayerProtocol):
             return set()
         return {AnnouncementFeature.SUPPORTS_VOLUME}
 
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """Return the codec for each playback quality level the player can play."""
+        if (codec := self._esphome_codec()) is not None:
+            # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
+            return {PlaybackQuality.from_codec(codec): codec}
+        return super().playback_quality_codecs
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        if (codec := self._esphome_codec()) is not None:
+            return PlaybackQuality.from_codec(codec)
+        return PlaybackQuality.COMPRESSED
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
+        base_entries: list[ConfigEntry] = []
         # add alert if the player (type) is also supported by a native MA provider
         if (
             self._entity_data.get("hass_domain") in NATIVE_SUPPORTED_HASS_INTEGRATIONS
             or self._has_native_duplicate()
         ):
-            base_entries = [CONF_ENTRY_WARN_HASS_INTEGRATION, *base_entries]
-        supported_formats: list[ESPHomeSupportedAudioFormat] | None = self._entity_data.get(
-            "esphome_supported_audio_formats"
-        )
-        if supported_formats:
+            base_entries.append(CONF_ENTRY_WARN_HASS_INTEGRATION)
+        if self._esphome_codec() is not None:
             # optimized config for new ESPHome mediaplayer
-            # sort on purpose field, so we prefer the media pipeline
-            # but allows fallback to announcements pipeline if no media pipeline is available
-            supported_formats.sort(key=lambda x: x["purpose"])
-            codec = supported_formats[0]["format"] if supported_formats else None
-
-            config_entries = [*base_entries]
-
-            if codec is not None:
-                # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
-                config_entries.append(create_output_codec_config_entry(True, codec))
-
-            config_entries.append(CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN)
-
-            return config_entries
-
+            return [*base_entries, CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN]
         return base_entries
 
     async def play(self) -> None:
@@ -570,3 +565,14 @@ class HomeAssistantPlayer(PlayerProtocol):
         if not (mac := self.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)):
             return False
         return normalized_mac(mac) in native_player_macs(self.mass)
+
+    def _esphome_codec(self) -> ContentType | None:
+        """Return the codec the ESPHome media player plays, None for any other player."""
+        supported_formats: list[ESPHomeSupportedAudioFormat] | None = self._entity_data.get(
+            "esphome_supported_audio_formats"
+        )
+        if not supported_formats:
+            return None
+        # prefer the media pipeline (purpose 0), but allow fallback to the announcements
+        # pipeline if no media pipeline is available
+        return ContentType.try_parse(min(supported_formats, key=lambda x: x["purpose"])["format"])

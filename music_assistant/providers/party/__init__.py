@@ -674,7 +674,11 @@ class PartyPlugin(PluginProvider):
                     MediaType.RADIO,
                 ):
                     raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
-                queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
+                queue_item = build_queue_item(
+                    queue_id,
+                    media_item,  # type: ignore[arg-type]
+                    userid=self.mass.player_queues.queue_data(queue_id).userid,
+                )
                 queue_item.extra_attributes[ATTR_PARTY_GUEST] = True
                 if boost:
                     queue_item.extra_attributes[ATTR_PARTY_BOOSTED] = True
@@ -825,7 +829,11 @@ class PartyPlugin(PluginProvider):
             raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
 
         # Create a QueueItem from the media item
-        queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
+        queue_item = build_queue_item(
+            queue_id,
+            media_item,  # type: ignore[arg-type]
+            userid=self.mass.player_queues.queue_data(queue_id).userid,
+        )
         queue_item.extra_attributes.update(extra_attributes)
 
         # Determine the attribute to scan for when finding the section boundary.

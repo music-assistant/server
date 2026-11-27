@@ -1158,6 +1158,164 @@ async def test_a_sync_group_whose_members_can_not_group_plays_on_its_first_membe
     await _stop(scenario, group_id)
 
 
+def _refuse_members(speaker: FakeProtocol) -> None:
+    """Let a speaker refuse every member it is asked to add, as one asked to lead a stereo pair."""
+    set_members = speaker.set_members
+
+    async def _set_members(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        if player_ids_to_add:
+            msg = f"Cannot add a member to {speaker.name}"
+            raise PlayerCommandFailed(msg)
+        await set_members(player_ids_to_remove=player_ids_to_remove)
+
+    speaker.set_members = _set_members  # type: ignore[method-assign]
+
+
+async def _play_on_queue(scenario: Scenario, player_id: str) -> None:
+    """Play a track on a player through its queue, letting the clock run for it to start."""
+    await _load_music(scenario)
+    play = await scenario.command(scenario.mass.player_queues.play_media(player_id, TEST_TRACK_URI))
+    await scenario.advance(10)
+    assert play.done()
+    await play
+
+
+@pytest.mark.parametrize("dynamic", [False, True], ids=["fixed", "dynamic"])
+async def test_a_sync_group_whose_leader_refuses_its_members_forgets_that_leader(
+    scenario: Scenario, dynamic: bool
+) -> None:
+    """
+    A sync group whose leader refuses the other members is not formed, and keeps no leader.
+
+    The play fails with the refusal. Once Office is put first in the group's settings, the next
+    play lets Office lead, which takes Kitchen.
+    """
+    _, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+    group_id = await _group(scenario, "sync_group", kitchen_id, office_id, dynamic=dynamic)
+    _refuse_members(kitchen)
+
+    with pytest.raises(PlayerCommandFailed, match="Cannot add a member to Kitchen"):
+        await _play_on_queue(scenario, group_id)
+    await scenario.idle()
+
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+    assert _state(scenario, group_id).group_members == [kitchen_id, office_id]
+    for member_id in (kitchen_id, office_id):
+        assert _state(scenario, member_id).active_group is None
+        assert _state(scenario, member_id).synced_to is None
+
+    await scenario.configure_player(group_id, group_members=[office_id, kitchen_id])
+    await _play_on_queue(scenario, group_id)
+    await scenario.idle()
+
+    assert _grouping_commands(office) == [("set_members", ["sonos_kitchen"], None)]
+    assert _state(scenario, kitchen_id).synced_to == office_id
+    assert _state(scenario, office_id).active_group == group_id
+    assert _state(scenario, office_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, group_id)
+
+
+async def test_a_formed_sync_group_keeps_its_leader_when_it_can_not_take_a_member_back(
+    scenario: Scenario,
+) -> None:
+    """
+    A playing sync group whose leader refuses to take a member back keeps its leader.
+
+    The play that asks for the member fails with the refusal; Kitchen still leads the group.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id, office_id, den_id = (_player_id(scenario, x) for x in (kitchen, office, den))
+    group_id = await _sync_group(scenario, kitchen_id, office_id, den_id)
+    await scenario.play(group_id)
+    await scenario.idle()
+    # the leader's device drops a member
+    await scenario.report(kitchen, group_members=["sonos_kitchen", "sonos_den"])
+    await scenario.idle()
+    _refuse_members(kitchen)
+
+    play = await scenario.command(scenario.mass.player_queues.play_media(group_id, TEST_TRACK_URI))
+    await scenario.advance(1)
+    assert play.done()
+    with pytest.raises(PlayerCommandFailed, match="Cannot add a member to Kitchen"):
+        await play
+
+    assert _state(scenario, group_id).group_members == [kitchen_id, den_id]
+    assert _state(scenario, den_id).synced_to == kitchen_id
+    for member_id in (kitchen_id, den_id):
+        assert _state(scenario, member_id).active_group == group_id
+    await _stop(scenario, group_id)
+
+
+async def test_a_sync_group_whose_leader_refuses_a_member_lets_the_ones_it_took_go(
+    scenario: Scenario,
+) -> None:
+    """
+    A sync group whose leader took one member and refuses another lets the first one go again.
+
+    Kitchen takes Office over AirPlay and then refuses Den on its own protocol: the play fails,
+    Office is released and no speaker is left playing through an output of the group.
+    """
+    sonos = await scenario.add_provider("sonos")
+    wiim = await scenario.add_provider("wiim")
+    airplay = await scenario.add_provider("airplay")
+    kitchen = sonos.protocol(
+        "sonos_kitchen",
+        "Kitchen",
+        identifiers=_device(50),
+        supported_features=set(GROUPING),
+        can_group_with={"sonos_den"},
+    )
+    den = sonos.protocol(
+        "sonos_den",
+        "Den",
+        identifiers=_device(52),
+        supported_features=set(GROUPING),
+        can_group_with={"sonos_kitchen"},
+    )
+    office = wiim.protocol("wiim_office", "Office", identifiers=_device(51))
+    kitchen_airplay = airplay.protocol(
+        "airplay_kitchen",
+        "Kitchen",
+        role="audio",
+        identifiers=_device(50),
+        supported_features=set(GROUPING),
+        can_group_with={"airplay_office"},
+    )
+    office_airplay = airplay.protocol(
+        "airplay_office",
+        "Office",
+        role="audio",
+        identifiers=_device(51),
+        supported_features=set(GROUPING),
+        can_group_with={"airplay_kitchen"},
+    )
+    for protocol in (kitchen, kitchen_airplay, office, office_airplay, den):
+        await scenario.register(protocol)
+    await scenario.idle()
+    kitchen_id, office_id, den_id = (_player_id(scenario, x) for x in (kitchen, office, den))
+    group_id = await _group(scenario, "sync_group", kitchen_id, office_id, den_id, dynamic=False)
+    _refuse_members(kitchen)
+
+    with pytest.raises(PlayerCommandFailed, match="Cannot add a member to Kitchen"):
+        await _play_on_queue(scenario, group_id)
+    await scenario.idle()
+
+    assert _grouping_commands(kitchen_airplay) == [
+        ("set_members", ["airplay_office"], None),
+        ("set_members", None, ["airplay_office"]),
+    ]
+    assert _state(scenario, group_id).group_members == [kitchen_id, office_id, den_id]
+    for member_id in (kitchen_id, office_id, den_id):
+        assert _state(scenario, member_id).active_group is None
+        assert _state(scenario, member_id).synced_to is None
+        assert _active_output(scenario, member_id) is None
+
+
 async def test_a_sync_group_whose_leader_leaves_is_led_by_a_member_that_can_group_with_the_others(
     scenario: Scenario,
 ) -> None:

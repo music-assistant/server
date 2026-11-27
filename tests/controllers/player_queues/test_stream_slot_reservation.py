@@ -673,6 +673,7 @@ async def test_a_stream_kept_for_a_queue_is_free_at_once_when_the_queue_is_pause
         name="Queue A",
         available=True,
         playback_state=PlaybackState.PAUSED,
+        fake_paused=False,
         corrected_elapsed_time=1.0,
         group_members=[],
     )

@@ -82,11 +82,12 @@ CHAPTER_A = "spotify:episode:ch1"
 CHAPTER_B = "spotify:episode:ch2"
 CHAPTER_C = "spotify:episode:ch3"
 
-# Stands in for an engine that honours SIGINT but takes a moment to exit on it,
-# longer than the (shortened) wait close() grants the run's log reader.
+# Stands in for an engine that honours SIGINT but takes a moment to exit on it:
+# longer than the (shortened) wait close() grants the run's log reader, yet well
+# within the time close() then waits for the exit before it sends SIGKILL.
 _SLOW_EXIT_ENGINE = (
     "import signal, sys, time; "
-    "signal.signal(signal.SIGINT, lambda *_: (time.sleep(1), sys.exit(0))); "
+    "signal.signal(signal.SIGINT, lambda *_: (time.sleep(0.5), sys.exit(0))); "
     "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)"
 )
 

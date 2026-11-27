@@ -32,7 +32,6 @@ from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
     CONF_POWER_CONTROL,
-    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
 )
@@ -709,13 +708,12 @@ class UniversalGroupPlayer(PlayerProtocol):
             "Content-Type": get_mime_type(output_format_str),
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        # use the configuration of the player that actually renders the audio
+        # ask the player that actually renders the audio
         # (the member's active protocol player when it outputs via a protocol);
         # child player_id may be stale/invalid, then no fixed content length is sent
         child_player = self.mass.players.get_player(child_player_id) if child_player_id else None
-        if child_player and child_player.get_output_config_value(
-            CONF_REQUIRES_FIXED_CONTENT_LENGTH, False
-        ):
+        output_protocol = child_player.resolve_output_protocol() if child_player else None
+        if output_protocol and output_protocol.requires_content_length:
             # some clients refuse to play unless they see a Content-Length header up front
             resp.content_length = 4294967296
         await resp.prepare(request)
@@ -732,7 +730,7 @@ class UniversalGroupPlayer(PlayerProtocol):
 
         # Generate filter params for the player specific DSP settings
         output_plan = None
-        if child_player and (output_protocol := child_player.resolve_output_protocol()):
+        if output_protocol:
             output_plan = self.mass.streams.audio.get_player_output_plan(
                 output_protocol.protocol_id,
                 self.stream.input_format,

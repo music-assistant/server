@@ -16,7 +16,7 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import CONF_OUTPUT_CODEC
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams import StreamsController
@@ -110,6 +110,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player._player = None
     player.connected = True
     player.cloud_queue_id = QUEUE_ID
+    player.group_queue_id = None
     player._loaded_session_id = "session"
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 0
@@ -123,10 +124,12 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     return player, queues
 
 
-def _set_output_codec(player: SonosPlayer, codec: str) -> None:
-    """Set the codec the speaker gets its streams in."""
+def _set_playback_quality(player: SonosPlayer, playback_quality: str) -> None:
+    """Set the playback quality the speaker gets its streams in."""
     cast("MagicMock", player.config).get_value = MagicMock(
-        side_effect=lambda key, default=None: codec if key == CONF_OUTPUT_CODEC else default
+        side_effect=lambda key, default=None: (
+            playback_quality if key == CONF_PLAYBACK_QUALITY else default
+        )
     )
 
 
@@ -721,15 +724,15 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
 
 
 @pytest.mark.parametrize(
-    ("codec", "policies"),
+    ("playback_quality", "policies"),
     [
-        ("wav", [{"canSeek": True}, None]),
-        ("mp3", [{"canSeek": True}, None]),
-        ("flac", [None, None]),
+        ("lossless_uncompressed", [{"canSeek": True}, None]),
+        ("compressed", [{"canSeek": True}, None]),
+        ("lossless_compressed", [None, None]),
     ],
 )
 async def test_only_a_track_served_as_a_file_allows_a_seek(
-    codec: str, policies: list[dict[str, bool] | None]
+    playback_quality: str, policies: list[dict[str, bool] | None]
 ) -> None:
     """Test the speaker may seek in a track it gets as a file, and in nothing else it plays."""
     items = [
@@ -737,7 +740,7 @@ async def test_only_a_track_served_as_a_file_allows_a_seek(
         _make_media_queue_item("radio0", MediaType.RADIO),
     ]
     player, _ = _make_player(items)
-    _set_output_codec(player, codec)
+    _set_playback_quality(player, playback_quality)
     request = MagicMock()
     request.query = {"itemId": "track0@0"}
 
@@ -757,7 +760,7 @@ async def test_a_track_in_a_queue_with_crossfade_allows_a_seek_unless_it_repeats
 ) -> None:
     """Test a track whose stream carries a mix is a file too, but not one that comes right back."""
     player, queues = _make_player([_make_media_queue_item("track0", MediaType.TRACK)])
-    _set_output_codec(player, "wav")
+    _set_playback_quality(player, "lossless_uncompressed")
     queues.queue.repeat_mode = repeat_mode
     streams = cast("MagicMock", player.mass.streams)
     streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE

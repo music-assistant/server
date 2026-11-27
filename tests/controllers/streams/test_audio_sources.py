@@ -457,7 +457,7 @@ class TestAudioSourceContract:
 
 class TestTransportCommandsRedirectToQueue:
     """
-    players/cmd next/previous/seek hand off to the queue controller.
+    players/cmd next/previous/seek/skip hand off to the queue controller.
 
     With no live source playing, the queue is what the player is playing, so the
     command is its business. A live source takes the command first — see
@@ -512,6 +512,23 @@ class TestTransportCommandsRedirectToQueue:
         await controller.cmd_seek("player_1", 42)
 
         mock_mass.player_queues.seek.assert_awaited_once_with("player_1", 42)
+
+    @pytest.mark.asyncio
+    async def test_cmd_skip_redirects_to_the_queue_controller(
+        self,
+        controller: PlayerController,
+        player: Player,
+        mock_mass: MagicMock,
+    ) -> None:
+        """players/cmd/skip reaches player_queues.skip for the active queue, without a seek."""
+        self._wire_active_queue(mock_mass)
+        mock_mass.player_queues.skip = AsyncMock()
+        mock_mass.player_queues.seek = AsyncMock()
+
+        await controller.cmd_skip("player_1", -10)
+
+        mock_mass.player_queues.skip.assert_awaited_once_with("player_1", -10)
+        mock_mass.player_queues.seek.assert_not_awaited()
 
 
 # ------------------------------------------------------------- update_stream_metadata

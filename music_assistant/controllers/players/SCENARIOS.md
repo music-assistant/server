@@ -2194,8 +2194,9 @@ Downstairs, a sync group with a fixed member list, is paused on Kitchen and Offi
 did not answer when it started, and works again. Ten seconds later the user presses play: Den's
 plug is switched on and the play waits for Den to start up, for longer than what is left of the
 pause timeout. Downstairs is not stopped when that timeout ends: it stays paused, and once Den
-has started up it starts once, on all three. Without a play, Downstairs is stopped when the pause
-timeout ends, and Den's plug stays off. When the user stops Downstairs while the play waits, the
+has started up it starts once, on all three. That goes as well for speakers without a pause of
+their own, which the pause stops while Downstairs shows as paused. Without a play, Downstairs is
+stopped when the pause timeout ends, and Den's plug stays off. When the user stops Downstairs while the play waits, the
 play fails and Downstairs is stopped; when the user pauses it instead, the play fails, Downstairs
 is still paused, and it is stopped when the pause timeout has passed since that pause.
 
@@ -2332,6 +2333,21 @@ alone until that ends.
 
 - End-to-end: **possible with** a device that plays by itself, such as one with a vendor's own app.
 - Proven by: `test_grouping.py::test_a_member_of_a_fixed_group_that_plays_something_of_its_own_is_left_alone`
+
+### GROUP-73 · A sync group whose leader refuses its members does not keep that leader
+
+Downstairs is a sync group of Kitchen and Office, in that order, and Kitchen refuses to take Office
+as its member, as a speaker does that is asked to lead a stereo pair. The user plays Downstairs: the
+play fails with Kitchen's refusal, Downstairs is not formed and none of its members shows it as
+active. The user puts Office first in its settings and plays it again: Office leads and Kitchen
+follows it. A member that Kitchen did take before it refused another one is let go again. A
+Downstairs that already plays keeps its leader when that leader refuses to take a member back.
+
+- End-to-end: **possible with** a WiiM stereo pair, which another WiiM speaker can not lead.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_whose_leader_refuses_its_members_forgets_that_leader`
+  - `test_grouping.py::test_a_sync_group_whose_leader_refuses_a_member_lets_the_ones_it_took_go`
+  - `test_grouping.py::test_a_formed_sync_group_keeps_its_leader_when_it_can_not_take_a_member_back`
 
 ## Where playback goes
 
@@ -2508,14 +2524,16 @@ Study's receiver gets that level and mute before the music starts.
 
 A queue whose player plays its last item out is taken for ended 5 s later: it is parked on its
 last item and a play starts it over. A pause or a stop is not that end: the queue keeps its
-place, also when the pause stops the player. In the examples the Kitchen speaker is a Sendspin
-speaker without a pause of its own, so a pause stops it, and it has the whole last track of its
-queue in its buffer.
+place, also when the pause stops the player. A player that is stopped for a pause shows as paused
+until the pause timeout of 30 s, and as idle from then on. In the examples the Kitchen speaker is
+a Sendspin speaker without a pause of its own, so a pause stops it, and it has the whole last
+track of its queue in its buffer.
 
 ### PAUSE-1 · A pause on a player that can not pause is not the end of its queue
 
 The Kitchen speaker is paused 5 s into the last track of its queue. The speaker stops and the
-queue is idle on that track at 5 s. It still is 5 s later, and a minute later.
+queue is paused on that track at 5 s. It still is 5 s later. After the pause timeout of 30 s it is
+idle there, and it still is a minute later.
 
 - End-to-end: **yes**. The `elapsed_tracks_pause` check of the lab on its Sendspin player.
 - Proven by: `test_paused_queue.py::test_a_pause_on_a_player_that_can_not_pause_is_not_the_end_of_its_queue`
@@ -2523,8 +2541,9 @@ queue is idle on that track at 5 s. It still is 5 s later, and a minute later.
 ### PAUSE-2 · A queue paused on a player that can not pause plays on from there
 
 The Kitchen speaker is paused 5 s into the last track of its queue and resumed 4.5 s, 5 s, 5.5 s
-or 40 s later. The track plays on from 5 s. Once it has played to its end, the queue is taken
-for ended after 5 s as any other.
+or 40 s later: while it shows as paused, or once it is idle after the pause timeout. The track
+plays on from 5 s. Once it has played to its end, the queue is taken for ended after 5 s as any
+other.
 
 - End-to-end: **yes**. The `elapsed_tracks_pause` check of the lab on its Sendspin player, which
   resumes 5 s after the pause.
@@ -2593,8 +2612,9 @@ It is stopped 5 s in. The playlist is not asked for more tracks, and the speaker
 ### PAUSE-8 · A queue halted in a new playback is not ended for the one before
 
 The Kitchen speaker has played its queue to the end. Before the queue is taken for ended, its
-first track is played again from 5 s and paused or stopped at once. The queue stays idle on that
-track at 5 s. The same goes for a queue whose dynamic playlist is being asked for more tracks at
+first track is played again from 5 s and paused or stopped at once. The queue stays on that track
+at 5 s: idle after the stop, and paused after the pause until the pause timeout, idle from then
+on. The same goes for a queue whose dynamic playlist is being asked for more tracks at
 that moment: whatever the playlist hands back, nothing is added to the queue and nothing starts.
 And for a play that is stopped before the speaker reports that it plays: the queue is not taken
 for ended, and a dynamic playlist is not asked for more tracks.
@@ -2688,6 +2708,118 @@ such as Spotify, that took the speaker over, before or during the pause, and is 
   - `test_paused_queue.py::test_another_source_paused_at_the_speaker_is_not_stopped`
   - `test_paused_queue.py::test_a_source_that_takes_over_a_paused_speaker_is_not_stopped`
 
+### PAUSE-15 · A queue paused before an announcement plays on from its pause
+
+A speaker with a pause of its own is paused 5 s into a track of its queue, and an announcement
+plays on it. After the clip the speaker is idle, and so is its queue, at 5 s. Play starts the
+track again from there: the speaker is not told to unpause a stream it no longer has.
+
+- End-to-end: **possible with** a player of the lab that has a pause of its own and plays an
+  announcement while paused.
+- Proven by:
+  `test_announcements.py::test_a_queue_paused_before_an_announcement_plays_on_from_its_pause`
+
+### PAUSE-16 · A queue paused on a player that can not pause shows as paused until the pause timeout
+
+The Kitchen speaker is paused 5 s into a track of its queue. The speaker is stopped once, and
+clients see the player and its queue go from playing to paused, never idle in between. A sleep
+timer to the end of the track still waits for the queue to play on. After the pause timeout of
+30 s the player and its queue are idle and the sleep timer is ended, and play still plays the
+track on from 5 s. A second pause meanwhile sends the speaker nothing, and the pause timeout still
+counts from the first.
+
+- End-to-end: **possible with** a check of the lab that follows its Sendspin player and its queue
+  through a pause that lasts longer than the pause timeout.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_a_queue_paused_with_a_stop_shows_as_paused_until_the_pause_timeout`
+  - `test_queue_paused_by_a_stop.py::test_a_second_pause_does_not_lengthen_the_pause`
+
+### PAUSE-17 · Play on a queue paused on a player that can not pause plays on from its pause
+
+The Kitchen speaker is paused 5 s into a track of its queue, and the user presses play within the
+pause timeout. The track plays on from 5 s, and clients see the player and its queue go from
+paused to playing, never idle in between; the pause timeout no longer counts. That is also so
+when the speaker is slow to start and the pause timeout falls meanwhile. A speaker that takes the
+play and never plays is idle a pause timeout after the play. A pause before the speaker plays
+stops it again: the player stays paused, and a play after that plays the track on from 5 s.
+
+- End-to-end: **possible with** a check of the lab that presses play on its paused Sendspin
+  player, for the rest a speaker that is slow to start.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_play_on_a_queue_paused_with_a_stop_plays_on_from_the_pause`
+  - `test_queue_paused_by_a_stop.py::test_a_resume_shortly_before_the_pause_timeout_plays_on`
+  - `test_queue_paused_by_a_stop.py::test_a_resume_that_never_plays_leaves_its_player_idle`
+  - `test_queue_paused_by_a_stop.py::test_a_pause_during_a_resume_stops_the_start_and_stays_paused`
+
+### PAUSE-18 · A queue paused on a player that can not pause keeps its position
+
+The Kitchen speaker is paused 5 s into a track of its queue, which it plays as one flow stream or
+track by track. Whether the stopped speaker reports no stream anymore, or still names the stream
+it stopped and reports its start as its position, the queue stays on that track at 5 s, and play
+plays it on from there.
+
+- End-to-end: **possible with** a check of the lab that reads the queue of its paused Sendspin
+  player, in flow mode and track by track.
+- Proven by: `test_queue_paused_by_a_stop.py::test_a_queue_paused_with_a_stop_keeps_its_position`
+
+### PAUSE-19 · A stop, a clear, other music or an announcement ends the pause of a player that can not pause
+
+The Kitchen speaker is paused 5 s into a track of its queue. When the user stops it or clears its
+queue, the player is idle at once and nothing happens at the pause timeout; after the stop the
+queue keeps its place at 5 s. Another track played on the queue plays at once, also past the
+pause timeout. After an announcement the player is idle, and play plays the track on from 5 s.
+
+- End-to-end: **possible with** a check of the lab that stops, clears, plays on or announces on
+  its paused Sendspin player.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_a_stop_or_a_clear_ends_the_pause_at_once`
+  - `test_queue_paused_by_a_stop.py::test_other_media_takes_the_place_of_the_pause`
+  - `test_queue_paused_by_a_stop.py::test_an_announcement_ends_the_pause_and_the_queue_plays_on_from_it`
+
+### PAUSE-20 · Play next on a queue paused on a player that can not pause goes right after the paused track
+
+The Kitchen speaker plays the first of three tracks of its queue track by track, has fetched the
+second one, and is paused 5 s in. A track played next, or a track of the queue moved to play
+next, goes right after the paused track: the speaker no longer has the second one. Play plays the
+paused track on from 5 s first.
+
+- End-to-end: **possible with** a player of the lab without a pause of its own that plays track by
+  track.
+- Proven by:
+  `test_queue_paused_by_a_stop.py::test_play_next_on_a_paused_queue_plays_right_after_the_paused_track`
+
+### PAUSE-21 · A sync group paused on speakers that can not pause keeps its speakers
+
+The sync group Downstairs of the Kitchen and Office speakers, neither of which can pause, plays
+its queue and is paused. Its leader is stopped, and the group and both speakers show as paused,
+never idle in between. The group keeps its speakers, also past the idle grace in which a group
+that plays nothing lets them go, and play plays the queue on with the same speakers without
+grouping them again. At the pause timeout or on a stop the group and its speakers are idle and
+free again, and the queue keeps its place. The same holds for a group whose leader has a pause of
+its own that would stop it (PAUSE-22).
+
+- End-to-end: **possible with** a sync group in the lab of speakers without a pause of their own.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_a_paused_sync_group_keeps_its_speakers`
+  - `test_queue_paused_by_a_stop.py::test_play_on_a_paused_sync_group_plays_on_with_the_same_speakers`
+  - `test_queue_paused_by_a_stop.py::test_a_paused_sync_group_lets_its_speakers_go_when_the_pause_ends`
+
+### PAUSE-22 · A speaker that would stop for a pause shows its queue as paused
+
+A speaker has a pause of its own, but can not resume what it plays now, so its pause would stop
+it: a Sonos speaker in a track it does not get as a file, or a renderer whose user replaced its
+pause with a stop. It is paused 5 s into a track of its queue. It is stopped instead of paused,
+and shows as paused as a speaker without a pause of its own does; play plays the track on from
+5 s.
+
+- End-to-end: **possible with** a Sonos speaker in the lab that plays a track it does not get as
+  a file.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_a_speaker_that_would_stop_for_a_pause_shows_its_queue_as_paused`
+  - `tests/providers/sonos/test_player.py::test_a_speaker_stops_on_a_pause_it_could_not_resume`
+  - `tests/providers/dlna/test_lifecycle.py::test_a_renderer_set_to_stop_for_a_pause_stops_on_a_pause`
+  - `tests/providers/musiccast/test_player.py::test_a_zone_that_plays_from_music_assistant_stops_on_a_pause`
+
 ## A live source that pauses
 
 A live source of a plugin, such as Spotify Connect, has no audio while it is paused, so its stream
@@ -2728,7 +2860,8 @@ before the speaker plays, the start is stopped and the player stays paused.
 ### SOURCE-3 · A paused live source goes idle at the pause timeout and can still be resumed
 
 Spotify stays paused on the Kitchen player. After the pause timeout of 30 s the player is idle, as
-after the pause of a queue. It keeps the source and the song, and play still resumes Spotify.
+it is after the pause of its queue. It keeps the source and the song, and play still resumes
+Spotify.
 
 - End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
 - Proven by:

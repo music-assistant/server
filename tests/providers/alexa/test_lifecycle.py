@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from music_assistant_models.enums import IdentifierType, MediaType, ProtocolRole
 
-from music_assistant.constants import CONF_OUTPUT_CODEC
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.alexa import AlexaDevice, AlexaPlayer, AlexaProvider
@@ -126,12 +126,14 @@ async def test_a_re_enabled_echo_comes_back(scenario: Scenario) -> None:
 
 
 async def test_a_new_echo_streams_in_the_codec_of_its_own_record(scenario: Scenario) -> None:
-    """The output codec of an Echo with a minted player id is read from its protocol."""
+    """The playback quality of an Echo with a minted player id is read from its protocol."""
     provider = await _provider(scenario)
     protocol = await _discover(scenario, provider)
     assert protocol.player is not None
     player_id = protocol.player.player_id
-    await scenario.mass.config.save_protocol_config(PROTOCOL_ID, {CONF_OUTPUT_CODEC: "mp3"})
+    await scenario.mass.config.save_protocol_config(
+        PROTOCOL_ID, {CONF_PLAYBACK_QUALITY: "compressed"}
+    )
     await scenario.mass.players.unregister(PROTOCOL_ID)
     await scenario.mass.players.register(protocol)
     await scenario.settle()
@@ -145,4 +147,4 @@ async def test_a_new_echo_streams_in_the_codec_of_its_own_record(scenario: Scena
     stream_url = await scenario.mass.streams.resolve_stream_url(PROTOCOL_ID, media)
 
     assert stream_url.endswith(".mp3")
-    assert scenario.mass.config.get_player_value(player_id, CONF_OUTPUT_CODEC) is None
+    assert scenario.mass.config.get_player_value(player_id, CONF_PLAYBACK_QUALITY) is None

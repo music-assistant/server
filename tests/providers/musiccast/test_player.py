@@ -201,6 +201,24 @@ async def test_end_of_track_advance_switches_no_member_of_a_group_on(
     assert seen == [True]
 
 
+@pytest.mark.parametrize("controlled_by_mass", [True, False], ids=["plays from MA", "plays itself"])
+def test_a_zone_that_plays_from_music_assistant_stops_on_a_pause(
+    network: MusicCastNetwork, controlled_by_mass: bool
+) -> None:
+    """
+    A zone that plays from Music Assistant stops on a pause, a zone that plays itself pauses.
+
+    :param controlled_by_mass: Whether Music Assistant plays on the zone.
+    """
+    player = network.player("A___main")
+    assert not player.stops_on_pause
+    player.upnp_update_helper = UpnpUpdateHelper(
+        last_poll=time.time(), controlled_by_mass=controlled_by_mass, current_uri=None
+    )
+
+    assert player.stops_on_pause is controlled_by_mass
+
+
 def test_a_musiccast_player_gets_the_gapless_burst(network: MusicCastNetwork) -> None:
     """A MusicCast device only plays a track gapless once it holds a whole opening chunk of it."""
     assert network.player("A___main").needs_gapless_burst

@@ -347,7 +347,10 @@ def _controller(music: MusicController, userid: str | None = None) -> Any:
 def _queue(ctrl: Any, *tracks: Track, origin: QueueItemOrigin | None = None) -> list[QueueItem]:
     """Put the tracks on the queue, the first one as the current item, and return its items."""
     queue_data = cast("PlayerQueueData", ctrl._queue_data[QUEUE_ID])
-    queue_data.items = [build_queue_item(QUEUE_ID, track, origin=origin) for track in tracks]
+    queue_data.items = [
+        build_queue_item(QUEUE_ID, track, userid=queue_data.userid, origin=origin)
+        for track in tracks
+    ]
     queue_data.enqueued_media_items = list(tracks)
     queue_data.queue.items = len(tracks)
     queue_data.queue.current_index = 0
@@ -1287,8 +1290,8 @@ async def test_stream_details_are_never_asked_for_an_external_track() -> None:
         order.append("stream details")
         return details
 
-    not_loaded = build_queue_item(QUEUE_ID, _external_track())
-    loaded = build_queue_item(QUEUE_ID, _provider_track("spotify--1", "s1"))
+    not_loaded = build_queue_item(QUEUE_ID, _external_track(), userid=None)
+    loaded = build_queue_item(QUEUE_ID, _provider_track("spotify--1", "s1"), userid=None)
     with patch.object(audio, "_get_stream_details", AsyncMock(side_effect=_details)):
         assert await audio.get_stream_details(not_loaded) is details
         assert order == ["look up", "stream details"]

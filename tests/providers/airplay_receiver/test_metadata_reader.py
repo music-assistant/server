@@ -84,6 +84,19 @@ async def test_active_state_marker_delivered(pipe_path: str) -> None:
         await reader.stop()
 
 
+async def test_flush_and_resume_are_delivered(pipe_path: str) -> None:
+    """A flush and a resume of the AirPlay client are delivered as play_state updates."""
+    updates: list[dict[str, Any]] = []
+    reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
+    await reader.start()
+    try:
+        await _write(pipe_path, _item("ssnc", "pfls", b"734201555") + _item("ssnc", "prsm"))
+        await _wait_for(lambda: len(updates) == 2)
+        assert updates == [{"play_state": "flushed"}, {"play_state": "resumed"}]
+    finally:
+        await reader.stop()
+
+
 async def test_mdns_service_hand_over_is_delivered(pipe_path: str) -> None:
     """The mDNS service shairport-sync hands over (svrg) is delivered for publishing."""
     updates: list[dict[str, Any]] = []

@@ -43,7 +43,6 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ChannelLayout,
     ConfigEntryType,
-    ContentType,
     EventType,
     IdentifierType,
     MediaType,
@@ -57,9 +56,9 @@ from music_assistant_models.player import PlayerMedia, PlayerOptionValueType
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
-    CONF_OUTPUT_CODEC,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
+    PlaybackQuality,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.util import is_valid_mac_address
@@ -223,6 +222,9 @@ class SonosPlayer(PlayerProtocol):
         # loaded, and the version the speaker compares against to decide whether its cached
         # copy is still valid
         self.cloud_queue_id: str | None = None
+        # set when that queue is a group's whose stream this speaker renders as its leader:
+        # the cloud queue and its stream urls then name the group
+        self.group_queue_id: str | None = None
         self._loaded_session_id: str | None = None
         self.cloud_queue_version: float = time.time()
         # advanced on every play_media: item ids are served suffixed with it, so a
@@ -286,6 +288,31 @@ class SonosPlayer(PlayerProtocol):
     def fetches_files(self) -> bool:
         """Return True: a speaker pauses, resumes and seeks by asking for a part of a track."""
         return True
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_UNCOMPRESSED
+
+    @property
+    def stops_on_pause(self) -> bool:
+        """Return whether a pause would stop the speaker, which can not resume what it plays."""
+        if not self.connected or self.client.player.is_passive:
+            return False
+        if (group := self.client.player.group) is None:
+            return False
+        active_source = self.player.active_source if self.player is not None else None
+        if (
+            active_source
+            and self.mass.player_queues.get(active_source)
+            and not self._plays_file(group)
+        ):
+            # Sonos resumes a paused track by asking for the rest of it, which only a track
+            # served as a file answers: any other queue item starts over and is skipped,
+            # so we stop the player instead.
+            # https://github.com/music-assistant/support/issues/3758
+            return True
+        return not group.playback_actions.can_pause
 
     @property
     def group_controller(self) -> SonosGroup:
@@ -639,19 +666,7 @@ class SonosPlayer(PlayerProtocol):
         if self.client.player.is_passive:
             self.logger.debug("Ignore PAUSE command: Player is synced to another player.")
             return
-        active_source = self.player.active_source if self.player is not None else None
-        if (
-            active_source
-            and self.mass.player_queues.get(active_source)
-            and not self._plays_file(self.group_controller)
-        ):
-            # Sonos resumes a paused track by asking for the rest of it, which only a track
-            # served as a file answers: any other queue item starts over and is skipped,
-            # so we stop the player instead.
-            # https://github.com/music-assistant/support/issues/3758
-            await self.stop()
-            return
-        if not self.group_controller.playback_actions.can_pause:
+        if self.stops_on_pause:
             await self.stop()
             return
         await self.group_controller.pause()
@@ -821,11 +836,16 @@ class SonosPlayer(PlayerProtocol):
             self._queue_session_id = None
             self._flow_queue_id = None
             self.cloud_queue_id = media.source_id
+            self.group_queue_id = None
+            if self._leads_group_queue(media.source_id):
+                self._claim_group_queue(media.source_id)
 
             def _load_starts(_sonos_session_id: str) -> None:
                 self._loaded_session_id = media.queue_session_id
 
-            cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.protocol_id}/v2.3/"
+            cloud_queue_url = (
+                f"{self.mass.streams.base_url}/sonos_queue/{self._queue_url_id()}/v2.3/"
+            )
             try:
                 await self.group_controller.play_cloud_queue(
                     cloud_queue_url,
@@ -975,8 +995,7 @@ class SonosPlayer(PlayerProtocol):
             return False
         if (queue_item := self.mass.player_queues.get_item(queue_id, queue_item_id)) is None:
             return False
-        output_codec = ContentType.try_parse(self.get_config_value(CONF_OUTPUT_CODEC, "flac"))
-        return self.mass.streams.serves_as_file(self, queue_item, output_codec)
+        return self.mass.streams.serves_as_file(self, queue_item, self.output_codec)
 
     def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:
         """
@@ -2034,9 +2053,31 @@ class SonosPlayer(PlayerProtocol):
             )
         return queue_item_id
 
+    def _leads_group_queue(self, queue_id: str) -> bool:
+        """Return whether a queue belongs to a group whose stream this speaker renders."""
+        # the queue's player plays through a protocol of its own (a sync group) that has
+        # this speaker render its stream; a speaker's own queue resolves to the speaker itself
+        if (player := self.mass.players.get_player(queue_id)) is None:
+            return False
+        owner = player.resolve_output_protocol()
+        return owner is not None and owner is not self and owner.resolve_output_protocol() is self
+
+    def _claim_group_queue(self, queue_id: str) -> None:
+        """Serve the queue of a group this speaker leads, as the only speaker that does."""
+        # a leader that dropped off the network could not be stopped, and still names the group
+        for speaker in self.provider.protocols:
+            if isinstance(speaker, SonosPlayer) and speaker.group_queue_id == queue_id:
+                speaker.group_queue_id = None
+        self.group_queue_id = queue_id
+
+    def _queue_url_id(self) -> str:
+        """Return the id the loaded cloud queue and its stream urls are served under."""
+        return self.group_queue_id or self.protocol_id
+
     def _forget_queue(self) -> None:
         """Forget the MA queue the speaker played, on either path."""
         self.cloud_queue_id = None
+        self.group_queue_id = None
         self._flow_queue_id = None
 
     def _moved_queue_id(self) -> str | None:
@@ -2171,7 +2212,7 @@ class SonosPlayer(PlayerProtocol):
         # such a fetch right away.
         media.queue_session_id = self._loaded_session_id
         media.uri = await self.mass.streams.resolve_stream_url(
-            self.protocol_id, media, queue_index=queue_index
+            self._queue_url_id(), media, queue_index=queue_index
         )
         return media
 

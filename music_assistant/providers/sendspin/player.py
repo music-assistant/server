@@ -80,6 +80,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     EventType,
     IdentifierType,
     MediaType,
@@ -98,6 +99,7 @@ from music_assistant.constants import (
     CONF_ALLOW_AUDIO_ANALYSIS,
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
+    PlaybackQuality,
 )
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
@@ -362,6 +364,12 @@ def _member_clients(
     return [c for c in clients if provider.multi_channel_player_of(c.client_id) is None]
 
 
+def _known_duration(media: PlayerMedia) -> int | None:
+    """Return the duration of the media in seconds, or None when the player does not know it."""
+    # some players report a duration of -1 for a stream without a known length
+    return media.duration if media.duration and media.duration > 0 else None
+
+
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.models.management import ManagementResultData, PairingMethodConfig
@@ -507,6 +515,16 @@ class SendspinBasePlayer(PlayerProtocol):
         self._attr_private = False
         self._attr_expose_to_ha_by_default = True
         self._attr_session_only = False
+
+    @property
+    def can_hand_over_session(self) -> bool:
+        """Return True: the Sendspin group plays on for its members when its leader leaves."""
+        return True
+
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """Return no playback quality levels: Sendspin picks its format with its own settings."""
+        return {}
 
     @property
     def needs_setup(self) -> bool:
@@ -2281,9 +2299,8 @@ class SendspinPlayer(SendspinBasePlayer):
                 return
 
             if (controller_role := self._controller_role) is not None:
-                controller_role.set_seek_max_ms(
-                    int(current_media.duration * 1000) if current_media.duration else None
-                )
+                duration = _known_duration(current_media)
+                controller_role.set_seek_max_ms(int(duration * 1000) if duration else None)
             if (metadata_role := self._metadata_role) is not None:
                 metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
                 self._published_item = (current_media.uri, current_media.queue_item_id)
@@ -3183,7 +3200,7 @@ class SendspinPlayer(SendspinBasePlayer):
             track_number = track.track_number or None
             if track.album is not None:
                 year = track.album.year
-        track_duration = current_media.duration or 0
+        track_duration = _known_duration(current_media) or 0
         is_playing = self._player_playing
         track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
         if track_duration:

@@ -103,7 +103,7 @@ class _Harness:
         streamdetails.queue_id = QUEUE_ID
         streamdetails.target_loudness = TARGET_LOUDNESS
         streamdetails.loudness = loudness
-        queue_item = MagicMock()
+        queue_item = MagicMock(userid=None)
         queue_item.media_type = MediaType.TRACK
         queue_item.streamdetails = streamdetails
         queue_item.name = "Track A"
