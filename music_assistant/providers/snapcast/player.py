@@ -6,11 +6,12 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import ContentType, IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
+from music_assistant.constants import PlaybackQuality
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.snapcast.constants import (
@@ -96,6 +97,16 @@ class SnapCastPlayer(PlayerProtocol):
     def requires_flow_mode(self) -> bool:
         """Return if the player requires flow mode."""
         return True
+
+    @property
+    def can_hand_over_session(self) -> bool:
+        """Return True: the Snapcast group plays on for its members when its leader leaves."""
+        return True
+
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """Return no playback quality levels: the codec is a setting of the Snapcast provider."""
+        return {}
 
     @property
     def synced_to(self) -> str | None:

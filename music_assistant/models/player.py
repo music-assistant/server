@@ -1320,7 +1320,7 @@ class Player:
         """
         Return a config value resolved on the protocol that renders the audio output.
 
-        Audio/output related settings (output codec, fixed content length, output channels,
+        Audio/output related settings (playback quality, output channels,
         sample rates) live on the protocol that actually renders the audio: the
         active audio protocol when outputting via one, otherwise the player's own
         protocol. The output protocol's value (or its provider's entry default) takes
@@ -2273,7 +2273,8 @@ class Player:
 
         Without a selection in the config that is the native protocol while it can be
         reached, else the active output, else any available protocol with the feature.
-        With "auto" selected, the active output comes first while it plays or is paused.
+        With "follow protocol" selected, the active output comes first while it plays or is
+        paused.
 
         :param feature: The feature the control has to support.
         :param conf_key: Config key holding the control selection.

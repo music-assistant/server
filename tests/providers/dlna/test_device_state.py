@@ -7,13 +7,16 @@ import inspect
 import time
 from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
+from types import MethodType
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from async_upnp_client.profiles.dlna import TransportState
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 
+from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.dlna.player import DLNAPlayer
 from tests.common import MockProvider
 
@@ -200,6 +203,26 @@ async def _set_state(player: DLNAPlayer, device: MagicMock, state: TransportStat
     await player.set_dynamic_attributes()
 
 
+async def _send_avtransport_event(player: DLNAPlayer, name: str, value: Any) -> None:
+    """
+    Let the device send an AVTransport event with one state variable, and wait for its handling.
+
+    :param player: The player of the device.
+    :param name: The name of the state variable.
+    :param value: The value of the state variable.
+    """
+    tasks: list[Coroutine[Any, Any, Any]] = []
+    player.mass.create_task = lambda target, **_kwargs: tasks.append(target)  # type: ignore[assignment]
+    service = MagicMock()
+    service.service_id = "urn:upnp-org:serviceId:AVTransport"
+    state_variable = MagicMock()
+    state_variable.name = name
+    state_variable.value = value
+    player._handle_event(service, [state_variable])
+    for task in tasks:
+        await task
+
+
 @pytest.mark.parametrize("media_position", [0, None])
 async def test_resume_continues_on_a_device_that_does_not_advance_its_position(
     monkeypatch: pytest.MonkeyPatch, media_position: int | None
@@ -337,6 +360,85 @@ async def test_position_kept_from_before_a_stop_does_not_count_as_moving(
 
     assert player.elapsed_time == 12.0
     assert player.elapsed_time_last_updated == clock.now
+
+
+async def _play_media(player: DLNAPlayer, device: MagicMock) -> None:
+    """
+    Hand the device new media the way the queue does, without waiting for its events.
+
+    :param player: The player of the device.
+    :param device: The mocked device.
+    """
+    player.mass.streams.resolve_stream_url = AsyncMock(  # type: ignore[method-assign]
+        return_value="http://192.168.1.2:8097/flow/session/queue/item.flac"
+    )
+    player.mass.streams.stream_url_serves_as_file = MagicMock(  # type: ignore[method-assign]
+        return_value=False
+    )
+    for command in ("async_stop", "async_set_transport_uri", "async_wait_for_can_play"):
+        setattr(device, command, AsyncMock())
+    device.async_play = AsyncMock()
+    with patch.object(DLNAPlayer, "update_state"):
+        await player.play_media(PlayerMedia(uri="library://track/1", title="Track"))
+    device.current_track_uri = player._attr_current_media.uri  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("stopped_first", [True, False])
+async def test_new_media_does_not_start_where_the_device_was_last_polled(
+    monkeypatch: pytest.MonkeyPatch, stopped_first: bool
+) -> None:
+    """
+    New media starts at 0, not at the position the device had before it.
+
+    The device is only polled for its position while it plays or is paused, and its
+    transitioning state sends no poll, so until it plays it still holds the old position:
+    where it was paused before a stop, or where it was in the media it played before.
+    """
+    player, device, clock = await _start(monkeypatch, 0)
+    clock.now += 26
+    device.media_position = 26
+    device.media_position_updated_at = _stamp(clock)
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    if stopped_first:
+        clock.now += 30
+        await _set_state(player, device, TransportState.STOPPED)
+    clock.now += 1
+    await _play_media(player, device)
+    device.transport_state = TransportState.TRANSITIONING
+    await _send_avtransport_event(player, "TransportState", TransportState.TRANSITIONING)
+
+    assert player.corrected_elapsed_time == 0.0
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll with the position of the new media."""
+        device.media_position = 0
+        device.media_position_updated_at = _stamp(clock)
+
+    device.async_update = _async_update
+    clock.now += 0.2
+    device.transport_state = TransportState.PLAYING
+    await _send_avtransport_event(player, "TransportState", TransportState.PLAYING)
+    clock.now += 2
+
+    assert player.corrected_elapsed_time == 2.0
+
+
+async def test_device_started_again_after_a_stop_does_not_start_where_it_was_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device that is started again by itself after a stop does not resume the old position."""
+    player, device, clock = await _start(monkeypatch, 0)
+    clock.now += 26
+    device.media_position = 26
+    device.media_position_updated_at = _stamp(clock)
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    clock.now += 30
+    await _set_state(player, device, TransportState.STOPPED)
+    clock.now += 5
+    device.transport_state = TransportState.TRANSITIONING
+    await _send_avtransport_event(player, "TransportState", TransportState.TRANSITIONING)
+
+    assert player.corrected_elapsed_time == 0.0
 
 
 async def test_pause_noticed_late_follows_the_position_the_device_paused_at(
@@ -518,6 +620,38 @@ async def test_transport_state_event_polls_before_reading_the_position() -> None
     assert player.elapsed_time_last_updated >= started_at
 
 
+async def test_track_change_event_polls_before_reading_the_position() -> None:
+    """A player that moves on to the next track by itself reports the position of that track."""
+    device = _mock_device(media_position=100, async_update=AsyncMock())
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    device.media_position = 114
+    await player.set_dynamic_attributes()
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll with the position of the new track."""
+        device.media_position = 0
+        device.media_position_updated_at = datetime.now(UTC)
+
+    device.async_update = _async_update
+    # the device holds the new uri when the event arrives, without a change of state
+    device.current_track_uri = "http://192.168.1.10/next.mp3"
+    await _send_avtransport_event(player, "CurrentTrackURI", device.current_track_uri)
+
+    assert player.elapsed_time == 0.0
+
+
+async def test_event_that_repeats_the_playing_track_does_not_poll() -> None:
+    """An event that repeats the uri of the track that plays does not poll the device."""
+    device = _mock_device(async_update=AsyncMock())
+    player = _player(device)
+    await player.set_dynamic_attributes()
+
+    await _send_avtransport_event(player, "CurrentTrackURI", device.current_track_uri)
+
+    device.async_update.assert_not_called()
+
+
 @pytest.mark.parametrize(("reported", "expected"), [(0.5, 50), (0.0, 0), (1.0, 100)])
 async def test_volume_level_is_scaled_to_percent(reported: float, expected: int) -> None:
     """The device reports volume as a 0..1 fraction, the player as a percentage."""
@@ -677,6 +811,54 @@ async def test_transport_command_reads_the_new_state_back(
     assert player.current_media is not None
     assert player.current_media.title == "New Title"
     assert player.elapsed_time == 83.0
+
+
+async def test_a_seek_on_the_device_reads_the_new_position_back() -> None:
+    """A renderer that asks for its file again after a seek of its own reports where it is."""
+    device = _mock_device(media_position=26)
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll with the position the seek on the device went to."""
+        device.media_position = 60
+        device.media_position_updated_at = datetime.now(UTC)
+
+    device.async_update = _async_update
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    scheduled: list[tuple[float, Any]] = []
+
+    def _call_later(delay: float, target: Any, *_args: Any, **_kwargs: Any) -> None:
+        # the base player also schedules synchronous media callbacks, which are not polls
+        if inspect.iscoroutinefunction(target):
+            scheduled.append((delay, target))
+
+    player.mass.call_later = _call_later  # type: ignore[method-assign,assignment]
+
+    player.on_file_requested_again()
+    assert scheduled
+    for delay, target in scheduled:
+        assert delay < player.poll_interval
+        await target()
+
+    assert player.elapsed_time == 60.0
+
+
+async def test_the_requests_of_one_seek_read_the_state_back_once() -> None:
+    """The requests a renderer sends for one seek give one pair of refreshes."""
+    player = _player(_mock_device())
+    mass = player.mass
+    mass.loop = asyncio.get_running_loop()
+    mass._tracked_timers = {}
+    mass.call_later = MethodType(MusicAssistant.call_later, mass)  # type: ignore[method-assign]
+    create_task = mass.create_task = MagicMock()  # type: ignore[method-assign]
+    player._refresh_state = AsyncMock()  # type: ignore[method-assign]
+
+    with patch("music_assistant.providers.dlna.player.COMMAND_REFRESH_DELAYS", (0.01, 0.02)):
+        for _ in range(3):
+            player.on_file_requested_again()
+        await asyncio.sleep(0.05)
+
+    assert create_task.call_count == 2
 
 
 async def test_pending_refresh_does_not_reconnect_an_unloaded_player() -> None:

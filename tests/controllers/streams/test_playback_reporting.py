@@ -72,7 +72,7 @@ def _make_queue_item() -> MagicMock:
         media_type=MediaType.TRACK,
         duration=3,
     )
-    queue_item = MagicMock()
+    queue_item = MagicMock(userid=None)
     queue_item.media_type = MediaType.TRACK
     queue_item.streamdetails = streamdetails
     queue_item.name = "Track A"

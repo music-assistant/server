@@ -12,7 +12,6 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 
-from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH
 from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
@@ -52,11 +51,9 @@ def test_init_custom_params(provider: Any) -> None:
     assert p._attr_name == "Living Room TV"
 
 
-async def test_no_fixed_content_length_entry(player: MSXPlayer) -> None:
+def test_no_content_length_required(player: MSXPlayer) -> None:
     """Redirected streams must receive EOF without an estimated body length."""
-    entries = await player.get_config_entries()
-
-    assert CONF_REQUIRES_FIXED_CONTENT_LENGTH not in {entry.key for entry in entries}
+    assert player.requires_content_length is False
 
 
 def test_needs_poll_always_true(player: MSXPlayer) -> None:

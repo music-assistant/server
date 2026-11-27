@@ -1,16 +1,16 @@
 {
   "config_entries": {
     "power_controls": {
-      "label": "Player Power Control entities",
-      "description": "Specify which Home Assistant entities you like to import as player Power controls in Music Assistant."
+      "label": "Player power control entities",
+      "description": "Specify which Home Assistant entities you like to import as player power controls in Music Assistant."
     },
     "volume_controls": {
-      "label": "Player Volume Control entities",
-      "description": "Specify which Home Assistant entities you like to import as player Volume controls in Music Assistant."
+      "label": "Player volume control entities",
+      "description": "Specify which Home Assistant entities you like to import as player volume controls in Music Assistant."
     },
     "mute_controls": {
-      "label": "Player Mute Control entities",
-      "description": "Specify which Home Assistant entities you like to import as player Mute controls in Music Assistant."
+      "label": "Player mute control entities",
+      "description": "Specify which Home Assistant entities you like to import as player mute controls in Music Assistant."
     },
     "url": {
       "label": "URL",

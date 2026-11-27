@@ -21,7 +21,11 @@ from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, HeosError, const
 from pyheos import PlayState as HeosPlayState
 
-from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
+    VERBOSE_LOG_LEVEL,
+    PlaybackQuality,
+)
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
@@ -83,6 +87,11 @@ class HeosPlayer(PlayerProtocol):
         """Return whether a source the device lists counts as a takeover: an input only."""
         # a local music source can be Music Assistant's own stream, which HEOS reports as one
         return self._device.now_playing_media.source_id == const.MUSIC_SOURCE_AUX_INPUT
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
     def __init__(self, provider: HeosPlayerProvider, device: PyHeosPlayer) -> None:
         """Initialize the Player."""

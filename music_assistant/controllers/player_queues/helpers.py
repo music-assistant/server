@@ -273,7 +273,11 @@ def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
 
 
 def build_queue_item(
-    queue_id: str, media_item: PlayableMediaItemType, origin: QueueItemOrigin | None = None
+    queue_id: str,
+    media_item: PlayableMediaItemType,
+    *,
+    userid: str | None,
+    origin: QueueItemOrigin | None = None,
 ) -> QueueItem:
     """
     Build a QueueItem for enqueueing, keeping its media item slim.
@@ -285,10 +289,12 @@ def build_queue_item(
 
     :param queue_id: The id of the queue the item is created for.
     :param media_item: The source media item to enqueue.
+    :param userid: The user a play of the item counts for; None for anonymous playback.
     :param origin: Where the item was played from, when it was played from a container.
     """
     queue_item = QueueItem.from_media_item(queue_id, media_item)
     queue_item.origin = origin
+    queue_item.userid = userid
     if isinstance(queue_item.media_item, Track):
         # the list-row artwork is already captured on QueueItem.image, so dropping the
         # track's metadata here does not lose anything the queue listing still needs

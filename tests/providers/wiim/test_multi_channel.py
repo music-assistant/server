@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ChannelLayout, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.translations import TRANSLATION_RESOLVER
 from pywiim import WiiMError
 
+from music_assistant.controllers.translations import TranslationController
+from music_assistant.helpers.api import api_error_message
 from music_assistant.providers.wiim.constants import (
     BACKEND_GENERIC,
     BACKEND_OFFICIAL,
@@ -27,6 +31,7 @@ from music_assistant.providers.wiim.player import WiimPlayer
 from music_assistant.providers.wiim.provider import FOLLOWER_DECISION_DELAY, WiimProvider
 
 if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
     from tests.scenarios.harness import Scenario
 
 LEFT_UUID = "FF98F52BFDA052FF75BD4475"
@@ -146,6 +151,7 @@ def _provider(*players: Any, stored: dict[str, Any] | None = None) -> MagicMock:
     """
     provider = MagicMock()
     provider.instance_id = INSTANCE_ID
+    provider.translation_owner = "provider.wiim"
     provider.protocols = list(players)
     by_id = {player.protocol_id: player for player in players}
     provider.get_protocol = MagicMock(side_effect=by_id.get)
@@ -424,6 +430,44 @@ class TestPairLeadsOnly:
         controller.async_ungroup_device.assert_not_awaited()
         left.make_command_client.return_value.join_slave.assert_not_awaited()
         assert coordinator.channel_layout_of(LEFT_ID) == ChannelLayout.STEREO
+
+    @pytest.mark.parametrize("backend", [BACKEND_OFFICIAL, BACKEND_GENERIC])
+    async def test_the_refusal_carries_its_own_text(self, backend: str) -> None:
+        """The refusal names the WiiM text for it, with the pair and the other speaker."""
+        coordinator, _, _, third = self._speakers(_pair_alone(), backend)
+
+        with pytest.raises(PlayerCommandFailed) as refused:
+            await coordinator.set_members(third, [LEFT_ID], None)
+
+        assert refused.value.translation_key == "set_can_only_lead"
+        assert refused.value.translation_owner == "provider.wiim"
+        assert refused.value.translation_args == ["Pair", "Family Room"]
+
+    async def test_a_client_gets_the_reason_of_the_refusal(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A client gets the whole sentence with both speakers, not the generic failure."""
+        coordinator, _, _, third = self._speakers(_pair_alone())
+        translations = TranslationController(mass_minimal)
+        await translations.setup(None)  # type: ignore[arg-type]
+
+        with pytest.raises(PlayerCommandFailed) as refused:
+            await coordinator.set_members(third, [LEFT_ID], None)
+        message = api_error_message("1", refused.value)
+        token = TRANSLATION_RESOLVER.set(partial(translations.get_translation, locale=None))
+        try:
+            details = message.to_dict()["details"]
+        finally:
+            TRANSLATION_RESOLVER.reset(token)
+
+        assert details == (
+            "Cannot add Pair to Family Room: a stereo pair or other speaker set can only lead "
+            "a group, add Family Room to Pair instead"
+        )
+        # the sentence is the provider's own string, which is what gets translated
+        assert details == translations.get_translation(
+            "errors.set_can_only_lead", owner="provider.wiim", params=["Pair", "Family Room"]
+        )
 
     async def test_a_batch_with_the_pair_fails_as_a_whole(self) -> None:
         """A valid addition in the same batch as the pair is not joined either."""

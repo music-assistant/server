@@ -199,10 +199,10 @@ async def test_device_volume_updates_volume(
 ) -> None:
     """dmcp.device-volume in dB updates the player volume via the converted 0-100 value."""
     player = make_player(mock_mass)
-    # -15 dB maps to 50 on the 0-100 scale
+    # -15 dB maps to 50 on the 0-100 scale; the dB value goes along to be set back exactly
     raw = build_dacp_request("/ctrl-int/1/setproperty?dmcp.device-volume=-15.000000")
     await replay(airplay_provider, raw)
-    player.update_volume_from_device.assert_called_once_with(50)
+    player.update_volume_from_device.assert_called_once_with(50, -15.0)
 
 
 async def test_device_volume_mute_threshold_mutes(

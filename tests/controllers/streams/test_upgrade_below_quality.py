@@ -113,8 +113,8 @@ def _mass(
     mass.providers = providers
     mass.get_provider.side_effect = lambda instance, **_kwargs: by_instance.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
+    mass.webserver.auth.get_user = AsyncMock(return_value=None)
     if owned:
-        mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
         mass.webserver.auth.get_user = AsyncMock(
             return_value=User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
         )
@@ -185,6 +185,7 @@ def _queue_item(
         else None
     )
     return QueueItem(
+        userid=USER_ID,
         queue_id="q1",
         queue_item_id=queue_item_id,
         name="Song",
@@ -553,6 +554,7 @@ async def test_an_audiobook_or_episode_keeps_its_pin_below_the_upgrade_quality(
         )
     )
     queue_item = QueueItem(
+        userid=USER_ID,
         queue_id="q1",
         queue_item_id="qi1",
         name="Book",

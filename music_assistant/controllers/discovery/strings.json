@@ -2,7 +2,7 @@
   "config_entries": {
     "upnp_network_scan": {
       "label": "Allow network scan for UPnP discovery",
-      "description": "Enable additional broadcast-based SSDP discovery. Use this if some UPnP/DLNA devices do not answer regular discovery."
+      "description": "Also search for UPnP/DLNA devices with a network broadcast. Use this if some of them are not found by the regular discovery."
     }
   },
   "manifest": {

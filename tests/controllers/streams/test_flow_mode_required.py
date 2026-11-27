@@ -32,6 +32,7 @@ def _controller() -> Any:
     protocol = MagicMock()
     protocol.config.get_value.side_effect = lambda _key, default=None: default
     protocol.flow_mode = False
+    protocol.output_codec = ContentType.FLAC
     mass.players.get_output_protocol.return_value = protocol
     _set_gapless(controller, True)
     mass.player_queues.get.return_value = SimpleNamespace(

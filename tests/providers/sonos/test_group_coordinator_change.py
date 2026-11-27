@@ -135,6 +135,7 @@ class _Household:
         player._config.name = None
         player.connected = True
         player.cloud_queue_id = None
+        player.group_queue_id = None
         player._flow_queue_id = None
         player.cloud_queue_item_generation = 1
         player._window_item_ids = {}

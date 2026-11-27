@@ -424,11 +424,28 @@ def test_the_start_that_is_kept_ends_at_one_megabyte() -> None:
     assert head.endswith(b"a" + b"b" * 56)
 
 
-def test_a_file_hands_out_thirty_seconds_of_head_start_ten_per_encode() -> None:
-    """The first three encodes of a file get ten seconds, the ones after that none."""
+def test_a_file_hands_out_thirty_seconds_of_head_start_six_per_encode() -> None:
+    """The first five encodes of a file that hand out audio get six seconds, the ones after none."""
     file = _file()
 
-    assert [file.take_head_start() for _ in range(5)] == [10, 10, 10, 0, 0]
+    taken = []
+    for _ in range(7):
+        taken.append(file.take_head_start())
+        file.head_start_handed_out()
+
+    assert taken == [6, 6, 6, 6, 6, 0, 0]
+
+
+def test_an_encode_that_hands_out_no_audio_leaves_its_head_start_to_the_next() -> None:
+    """The head start of an encode that handed out nothing goes to the encode after it."""
+    file = _file()
+    for _ in range(4):
+        file.take_head_start()
+        file.head_start_handed_out()
+
+    assert [file.take_head_start() for _ in range(3)] == [6, 6, 6]
+    file.head_start_handed_out()
+    assert [file.take_head_start() for _ in range(2)] == [0, 0]
 
 
 def test_audio_that_ends_early_sets_the_real_size() -> None:

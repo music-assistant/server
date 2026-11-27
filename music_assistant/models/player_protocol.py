@@ -25,6 +25,7 @@ from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigVa
 from music_assistant_models.constants import EXTRA_ATTRIBUTES_TYPES
 from music_assistant_models.enums import (
     ChannelLayout,
+    ContentType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -45,7 +46,13 @@ from music_assistant_models.player import (
 from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
-from music_assistant.constants import CONF_CACHED_ARP_MAC, CONF_FLOW_MODE, CONF_SAMPLE_RATES
+from music_assistant.constants import (
+    CONF_CACHED_ARP_MAC,
+    CONF_FLOW_MODE,
+    CONF_PLAYBACK_QUALITY,
+    CONF_SAMPLE_RATES,
+    PlaybackQuality,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -155,6 +162,7 @@ class PlayerProtocol(ABC):
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
     _attr_paused_position_reliable: bool = False
+    _attr_stops_on_pause: bool = False
     # Set this on players that can drop the item handed over to play next, also once its
     # audio was sent, and play another one in its place.
     _attr_replaces_enqueued_media: bool = False
@@ -254,6 +262,49 @@ class PlayerProtocol(ABC):
         """
         return False
 
+    @property
+    def requires_content_length(self) -> bool:
+        """
+        Return if the player needs a Content-Length on a stream that has no length.
+
+        Set this only for a player that stops or loops the audio without one. A stream that
+        is not a file (see `fetches_files`) then declares a length for it: an estimate for a
+        single item, and one it never reaches for a stream that runs on.
+        """
+        return False
+
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """
+        Return the codec the player is streamed in for each playback quality level it can play.
+
+        A level left out is listed as unavailable in the settings. A protocol that returns no
+        levels gets no playback quality setting.
+        """
+        return {
+            PlaybackQuality.LOSSLESS_UNCOMPRESSED: ContentType.WAV,
+            PlaybackQuality.LOSSLESS_COMPRESSED: ContentType.FLAC,
+            PlaybackQuality.COMPRESSED: ContentType.MP3,
+        }
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_COMPRESSED
+
+    @property
+    @final
+    def output_codec(self) -> ContentType:
+        """Return the codec the player is streamed in, from its playback quality setting."""
+        codecs = self.playback_quality_codecs
+        if not codecs:
+            return ContentType.FLAC
+        conf_quality = self._config.get_value(CONF_PLAYBACK_QUALITY)
+        # a stored value is not checked against the options the protocol offers now
+        if isinstance(conf_quality, str) and conf_quality in codecs:
+            return codecs[PlaybackQuality(conf_quality)]
+        return codecs.get(self.default_playback_quality) or next(iter(codecs.values()))
+
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
         Return whether the player already holds the given queue item as the one it plays next.
@@ -267,6 +318,26 @@ class PlayerProtocol(ABC):
         :param queue_item: The queue item that follows the one playing out.
         """
         return True
+
+    def on_file_requested_again(self) -> None:  # noqa: B027
+        """
+        Handle the player asking again for the file of the track it plays.
+
+        A player that fetches files does so when it resumes or seeks by itself, see
+        `fetches_files`. Override this for a player that does not report its new position by
+        itself, to read its state back from the device. It is called on the event loop
+        and must return quickly.
+        """
+
+    def resolve_output_protocol(self) -> PlayerProtocol:
+        """
+        Return the protocol that renders the audio of a stream asked for under this protocol's id.
+
+        That is this protocol itself. Override this for a protocol whose streams another
+        protocol renders, such as a group whose leader plays its stream: the output format,
+        DSP and stream callbacks are then those of that protocol.
+        """
+        return self
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -485,6 +556,18 @@ class PlayerProtocol(ABC):
         return self._attr_paused_position_reliable
 
     @property
+    def stops_on_pause(self) -> bool:
+        """
+        Return whether a pause of what the player plays now would stop it instead.
+
+        Set (or override) this for a player that supports PlayerFeature.PAUSE but can not
+        resume what it plays now, so its pause stops it. Its pause is then not called but it is
+        stopped, as a player without a pause of its own: its own queue shows as paused until the
+        pause timeout and plays on from where it was.
+        """
+        return self._attr_stops_on_pause
+
+    @property
     def replaces_enqueued_media(self) -> bool:
         """
         Return if the player can still replace the item handed over to play next.
@@ -519,6 +602,21 @@ class PlayerProtocol(ABC):
         tell actual playback partners from tracked group membership.
         """
         return self.group_members
+
+    @property
+    def can_hand_over_session(self) -> bool:
+        """
+        Return whether the sync session this player leads plays on when it leaves the session.
+
+        A sync group then changes its leader without a stop and without a restart: it calls
+        `set_members` with only this player's own id in `player_ids_to_remove`, which must
+        keep the session playing for its members, and then `set_members` with the remaining
+        members in `player_ids_to_add` on a member the session still feeds (see
+        `live_session_members`), which leads the session from then on. Without it, the group
+        stops the session and forms it anew around another leader, with a short gap.
+        The answer may depend on what the player plays at the moment it is asked.
+        """
+        return False
 
     @property
     def can_group_with(self) -> set[str]:

@@ -413,12 +413,96 @@ async def test_a_head_request_gets_the_length_without_opening_the_track(
     rig.ctrl.audio.claim_item.assert_not_called()
 
 
+def _play(rig: _Rig, queue_item: QueueItem) -> None:
+    """
+    Let the queue of the rig play the given item, and run what the stream hands to the loop.
+
+    :param rig: The rig.
+    :param queue_item: The item the queue plays now.
+    """
+    rig.queue_data.queue.current_item = queue_item
+    rig.ctrl.mass.loop = asyncio.get_running_loop()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+@pytest.mark.parametrize("byte_range", [None, f"bytes={100 * KIB_16}-", "bytes=-128"])
+async def test_a_player_that_asks_again_for_the_file_it_plays_is_heard(
+    rig: _Rig, byte_range: str | None
+) -> None:
+    """A player that comes back for the file of the item it plays has resumed or seeked."""
+    await rig.decode()
+    _play(rig, rig.queue_item)
+
+    await rig.fetch()
+    await asyncio.sleep(0)
+    rig.player.on_file_requested_again.assert_not_called()
+
+    await rig.fetch(byte_range)
+    await asyncio.sleep(0)
+    rig.player.on_file_requested_again.assert_called_once_with()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_file_fetched_ahead_again_is_no_resume_or_seek(rig: _Rig) -> None:
+    """A player that asks again for the file of the next item does not resume or seek."""
+    await rig.decode()
+    _play(rig, QueueItem(queue_id=QUEUE_ID, queue_item_id="item0", name="item0", duration=60))
+
+    await rig.fetch()
+    await rig.fetch("bytes=-128")
+    await asyncio.sleep(0)
+
+    rig.player.on_file_requested_again.assert_not_called()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_head_or_refused_request_again_is_no_resume_or_seek(rig: _Rig) -> None:
+    """A HEAD request and a part past the end that gets a 416 do not count as a request again."""
+    await rig.decode()
+    _play(rig, rig.queue_item)
+    await rig.fetch()
+
+    await rig.fetch(f"bytes={100 * KIB_16}-", method="HEAD")
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable):
+        await rig.fetch(f"bytes={HEADER_SIZE + len(rig.pcm)}-")
+    await asyncio.sleep(0)
+
+    rig.player.on_file_requested_again.assert_not_called()
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_file_asked_under_a_group_id_outlives_a_change_of_its_leader(rig: _Rig) -> None:
+    """
+    The file a url of a group names stays the same when another leader renders it.
+
+    The url names the group; the protocol of its leader renders the file and gets the callbacks.
+    """
+    await rig.decode()
+    _play(rig, rig.queue_item)
+    old_leader = MagicMock(protocol_id="old_leader", group_members=[], fetches_files=True)
+    new_leader = MagicMock(protocol_id="new_leader", group_members=[], fetches_files=True)
+    rig.ctrl.mass.players.get_output_protocol.return_value = old_leader
+    resp, whole_file = await rig.fetch()
+
+    rig.ctrl.mass.players.get_output_protocol.return_value = new_leader
+    again, start = await rig.fetch("bytes=0-", wanted=KIB_16)
+    await asyncio.sleep(0)
+
+    assert again.headers["Content-Range"] == f"bytes 0-{len(whole_file) - 1}/{resp.content_length}"
+    assert start == whole_file[:KIB_16]
+    assert rig.encodes == 1
+    assert rig.ctrl.audio.get_player_output_plan.call_args.kwargs["protocol_id"] == "old_leader"
+    assert list(rig.ctrl._file_streams._files) == [PLAYER_ID]
+    old_leader.on_file_requested_again.assert_not_called()
+    new_leader.on_file_requested_again.assert_called_once_with()
+
+
 @pytest.mark.usefixtures("passthrough_encoder")
 async def test_a_player_that_does_not_fetch_files_keeps_its_stream(rig: _Rig) -> None:
     """Without the property a range is not answered, and no length or part is announced."""
     await rig.decode()
     rig.player.fetches_files = False
-    rig.player.get_config_value.return_value = False
+    rig.player.requires_content_length = False
 
     resp, _ = await rig.fetch("bytes=100000-", method="HEAD")
 
@@ -706,11 +790,164 @@ async def test_every_encode_is_paced_with_a_head_start_out_of_the_files_budget(r
     seek = HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2
 
     await rig.fetch(wanted=KIB_16)
-    for _ in range(3):
+    for _ in range(6):
         await rig.fetch(f"bytes={seek}-", wanted=KIB_16)
 
     # an encode starts a whole second before its part: 1.5 s that the player never gets
-    assert [_burst(pacing) for pacing in rig.pacing] == [10, 11.5, 11.5, 1.5]
+    assert [_burst(pacing) for pacing in rig.pacing] == [6, 7.5, 7.5, 7.5, 7.5, 1.5, 1.5]
+
+
+def _hold_audio(rig: _Rig, until: asyncio.Event, error: AudioError | None = None) -> None:
+    """
+    Let every encode wait for its audio, as it does while ffmpeg starts.
+
+    :param rig: The rig whose encodes wait.
+    :param until: Set when the audio comes.
+    :param error: What the source of the first encode raises then, instead of its audio.
+    """
+    item_stream = rig.ctrl.audio.get_queue_item_stream.side_effect
+    errors = [error] if error is not None else []
+
+    async def _held(**kwargs: Any) -> AsyncGenerator[bytes]:
+        async with aclosing(item_stream(**kwargs)) as audio:
+            await until.wait()
+            if errors:
+                raise errors.pop()
+            async for chunk in audio:
+                yield chunk
+
+    rig.ctrl.audio.get_queue_item_stream = MagicMock(side_effect=_held)
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_request_dropped_before_its_audio_costs_no_head_start(rig: _Rig) -> None:
+    """A player that hangs up before an encode hands it anything leaves the head start as it was."""
+    await rig.decode()
+    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
+
+    for _ in range(6):
+        request, download = rig.request(seek)
+        download.hang_up()
+        await StreamsController.serve_queue_item_stream(rig.ctrl, request)
+    for _ in range(6):
+        await rig.fetch(seek, wanted=KIB_16)
+
+    assert [_burst(pacing) for pacing in rig.pacing[6:]] == [7.5, 7.5, 7.5, 7.5, 7.5, 1.5]
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_change_of_leader_costs_one_head_start(rig: _Rig) -> None:
+    """The four requests of a sync group that changes its leader take what one encode takes."""
+    await rig.decode()
+    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
+    started = asyncio.Event()
+    _hold_audio(rig, started)
+
+    # the new leader asks without a range and for its part, the old leader for a part as it
+    # leaves, and the new leader for its part again: each request ends the one before it
+    tasks = []
+    for byte_range, wanted in ((None, None), (seek, None), (seek, None), (seek, KIB_16)):
+        request, _ = rig.request(byte_range, wanted=wanted)
+        tasks.append(
+            asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
+        )
+        await asyncio.sleep(0.01)
+    started.set()
+    await asyncio.gather(*tasks)
+    for _ in range(5):
+        await rig.fetch(seek, wanted=KIB_16)
+
+    assert [_burst(pacing) for pacing in rig.pacing] == [6, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 1.5]
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_file_never_hands_out_more_head_start_than_it_has(rig: _Rig) -> None:
+    """Requests that are dropped between those that are served leave thirty seconds in all."""
+    await rig.decode()
+    seek = HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2
+    run_in = BYTES_PER_SECOND // 2 / BYTES_PER_SECOND
+
+    for _ in range(10):
+        request, download = rig.request(f"bytes={seek}-")
+        download.hang_up()
+        await StreamsController.serve_queue_item_stream(rig.ctrl, request)
+        await rig.fetch(f"bytes={seek}-", wanted=KIB_16)
+
+    served = [_burst(pacing) - 1 - run_in for pacing in rig.pacing[1::2]]
+    assert sum(served) == 30
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_an_encode_that_handed_out_audio_keeps_its_head_start(rig: _Rig) -> None:
+    """Audio that went to a player that was still there counts, also when the write fails."""
+    await rig.decode()
+    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
+
+    for _ in range(5):
+        request, download = rig.request(seek, stall_at=0)
+        task = asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
+        await download.stalled.wait()
+        download.hang_up()
+        download.resume.set()
+        await task
+        assert not download.body
+    await rig.fetch(seek, wanted=KIB_16)
+
+    assert [_burst(pacing) for pacing in rig.pacing] == [7.5, 7.5, 7.5, 7.5, 7.5, 1.5]
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_an_encode_that_replaces_one_without_audio_gets_its_head_start_at_once(
+    rig: _Rig,
+) -> None:
+    """The last head start goes to the encode that replaces one still waiting for its audio."""
+    await rig.decode()
+    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
+    await rig.fetch(wanted=KIB_16)
+    for _ in range(3):
+        await rig.fetch(seek, wanted=KIB_16)
+    started = asyncio.Event()
+    _hold_audio(rig, started)
+
+    tasks = []
+    for wanted in (None, KIB_16):
+        request, _ = rig.request(seek, wanted=wanted)
+        tasks.append(
+            asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
+        )
+        await asyncio.sleep(0.01)
+
+    assert not tasks[0].done()
+    assert [_burst(pacing) for pacing in rig.pacing[4:]] == [7.5, 7.5]
+    started.set()
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+@pytest.mark.parametrize("ending", ["cancel", "disconnect", "error"])
+async def test_an_encode_that_ends_before_its_audio_leaves_its_head_start(
+    rig: _Rig, ending: str
+) -> None:
+    """Cancelled, left by its player or failed: an encode without audio keeps no head start."""
+    await rig.decode()
+    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
+    started = asyncio.Event()
+    _hold_audio(rig, started, AudioError("the source broke off") if ending == "error" else None)
+
+    request, download = rig.request(seek)
+    task = asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
+    await asyncio.sleep(0.01)
+    if ending == "cancel":
+        task.cancel()
+    elif ending == "disconnect":
+        download.hang_up()
+    started.set()
+    await asyncio.gather(task, return_exceptions=True)
+    for _ in range(6):
+        await rig.fetch(seek, wanted=KIB_16)
+
+    assert not download.body
+    assert [_burst(pacing) for pacing in rig.pacing] == [7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 1.5]
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
@@ -1167,9 +1404,7 @@ async def test_a_part_from_the_middle_of_an_mp3(unpaced_encoder: list[list[str]]
     assert stream["seek_position_ms"] == 3000 + 5 * MP3_BLOCK_MS
     # the output that is dropped costs the player none of its head start
     dropped = (first - 5 * MP3_BLOCK_SIZE) / MP3_BYTES_PER_SECOND
-    assert [_burst(pacing) for pacing in unpaced_encoder] == [
-        pytest.approx(10 + dropped, abs=0.001)
-    ]
+    assert [_burst(pacing) for pacing in unpaced_encoder] == [pytest.approx(6 + dropped, abs=0.001)]
     rig.ctrl.mass.player_queues.track_loaded_in_buffer.assert_called_once_with(QUEUE_ID, ITEM_ID)
 
 

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType, ProtocolRole
+from music_assistant_models.errors import PlayerCommandFailed
 from pywiim import WiiMError
 
 from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX
@@ -178,7 +179,7 @@ def _mock_native_groups() -> MagicMock:
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """Create a mock low-level WiiMClient with the GroupAPI methods the shell uses."""
+    """Create a mock low-level WiiMClient with the group and volume methods the shell uses."""
     client = MagicMock()
     client.host = "192.168.1.50"
     client.get_device_info_model = AsyncMock(
@@ -191,6 +192,9 @@ def mock_client() -> MagicMock:
     client.capabilities = {}
     client.join_slave = AsyncMock()
     client.leave_group = AsyncMock()
+    client.get_player_status = AsyncMock(return_value={"volume": 20, "mute": False})
+    client.send_command = AsyncMock(return_value={})
+    client.set_mute = AsyncMock()
     return client
 
 
@@ -226,7 +230,7 @@ def _make_shell(
 
 
 class TestShellConstruction:
-    """The protocol exposes device identity and a grouping-only native capability."""
+    """The protocol exposes device identity, the volume and mute of the device and grouping."""
 
     def test_is_a_control_protocol(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
@@ -427,6 +431,111 @@ class TestTopology:
         await player.poll()
         mock_client.get_device_info_model.assert_awaited()
         mock_provider.native_groups.refresh_leader.assert_awaited_with(player, force=True)
+
+
+class TestVolume:
+    """The level and mute of the device go through its LinkPlay HTTP API."""
+
+    async def test_poll_shows_the_level_and_mute_of_the_device(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A poll shows the level and mute the device reports."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        mock_client.get_player_status.return_value = {"volume": 26, "mute": False}
+
+        await player.poll()
+
+        assert (player.volume_level, player.volume_muted) == (26, False)
+
+    async def test_poll_reads_no_volume_while_the_api_is_unreachable(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A device whose LinkPlay API does not answer is not asked for its volume."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        mock_client.get_device_info_model = AsyncMock(side_effect=WiiMError("down"))
+
+        await player.poll()
+
+        mock_client.get_player_status.assert_not_awaited()
+
+    async def test_volume_set_sends_the_exact_level(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """
+        A level goes to the device as it is given.
+
+        29 is a level pywiim's set_volume would send as 28.
+        """
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._attr_volume_muted = False
+
+        await player.volume_set(29)
+
+        mock_client.send_command.assert_awaited_once_with("setPlayerCmd:vol:29")
+        assert player.volume_level == 29
+
+    async def test_a_level_set_while_muted_is_sent_before_the_unmute(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """
+        A level set while muted shows, and only reaches the device with the unmute.
+
+        The firmware lifts the mute on any volume command, so the level is held until the
+        unmute and sent before it, so the speaker never plays at the level it was muted at.
+        """
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        await player.volume_mute(True)
+
+        await player.volume_set(29)
+        # a poll while the device is still muted at its own level keeps the level set
+        mock_client.get_player_status.return_value = {"volume": 26, "mute": True}
+        await player.poll()
+
+        mock_client.send_command.assert_not_awaited()
+        assert (player.volume_level, player.volume_muted) == (29, True)
+
+        device = MagicMock()
+        device.attach_mock(mock_client.send_command, "send_command")
+        device.attach_mock(mock_client.set_mute, "set_mute")
+        await player.volume_mute(False)
+
+        assert device.mock_calls == [call.send_command("setPlayerCmd:vol:29"), call.set_mute(False)]
+        assert (player.volume_level, player.volume_muted) == (29, False)
+        assert player._volume_while_muted is None
+
+    async def test_a_device_unmuted_on_its_own_drops_the_held_level(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A device unmuted on the device itself plays at the level it reports."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        await player.volume_mute(True)
+        await player.volume_set(29)
+        mock_client.get_player_status.return_value = {"volume": 26, "mute": False}
+
+        await player.poll()
+
+        assert (player.volume_level, player.volume_muted) == (26, False)
+        # the level set while muted is gone, so an unmute sends no level
+        await player.volume_mute(False)
+        mock_client.send_command.assert_not_awaited()
+        mock_client.set_mute.assert_awaited_with(False)
+
+    async def test_a_command_the_device_does_not_take_fails(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """A failed volume or mute command fails as a player command and changes nothing."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._attr_volume_level = 26
+        player._attr_volume_muted = False
+        mock_client.send_command.side_effect = WiiMError("down")
+        mock_client.set_mute.side_effect = WiiMError("down")
+
+        with pytest.raises(PlayerCommandFailed):
+            await player.volume_set(29)
+        with pytest.raises(PlayerCommandFailed):
+            await player.volume_mute(True)
+
+        assert (player.volume_level, player.volume_muted) == (26, False)
 
 
 class TestGroupCompatibility:

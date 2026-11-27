@@ -36,6 +36,7 @@ from pyatv.const import (
 from pyatv.const import (
     MediaType as PyatvMediaType,
 )
+from pyatv.core.relayer import Relayer
 from pyatv.interface import (
     AppleTV,
     AudioListener,
@@ -46,6 +47,7 @@ from pyatv.interface import (
     PowerListener,
     PushListener,
 )
+from pyatv.protocols.mrp import MrpAudio, messages, protobuf
 from pyatv.settings import MrpTunnel
 from pyatv.storage.memory_storage import MemoryStorage
 
@@ -87,6 +89,7 @@ _CONTROL_RECONNECT_INITIAL_DELAY: Final[float] = 30.0
 _CONTROL_RECONNECT_MAX_DELAY: Final[float] = 600.0
 _WAKE_TIMEOUT: Final[float] = 10.0
 _SPEAKER_CONNECT_TIMEOUT: Final[float] = 10.0
+_VOLUME_READ_TIMEOUT: Final[float] = 2.0
 
 # mDNS TXT keys whose values change with transient playback, session or group
 # state - most notably `flags`, which a receiver toggles while it is receiving a
@@ -609,7 +612,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         device.listener = listener
         device.power.listener = listener
         device.audio.listener = listener
-        self._apply_initial_device_state(device, "companion")
+        await self._apply_initial_device_state(device, "companion")
         self.update_state()
         self.logger.debug("Connected Companion control for %s", self.display_name)
         self._notify_companion_state_change()
@@ -666,7 +669,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         device.audio.listener = state_listener
         device.push_updater.listener = push_listener
         device.push_updater.start()
-        self._apply_initial_device_state(device, "mrp")
+        await self._apply_initial_device_state(device, "mrp")
         try:
             self._handle_playing_update(await device.metadata.playing())
         except _CONNECTION_ERRORS as err:
@@ -716,7 +719,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             device.listener = listener
             device.audio.listener = listener
             if self._feature_available(device, FeatureName.Volume):
-                self._handle_volume_update("speaker", device.audio.volume)
+                self._handle_volume_update("speaker", await self._connected_volume(device))
             self.logger.debug(
                 "Connected volume control for %s through %s", self.name, speaker.display_name
             )
@@ -1213,12 +1216,33 @@ class AirPlayControlPlayer(AirPlayPlayer):
             )
         return str(credentials)
 
-    def _apply_initial_device_state(self, device: AppleTV, source: str) -> None:
+    async def _apply_initial_device_state(self, device: AppleTV, source: str) -> None:
         """Apply power and volume snapshots exposed after connection."""
         if self._feature_available(device, FeatureName.PowerState):
             self._handle_power_update(source, device.power.power_state)
         if self._feature_available(device, FeatureName.Volume):
-            self._handle_volume_update(source, device.audio.volume)
+            self._handle_volume_update(source, await self._connected_volume(device))
+
+    async def _connected_volume(self, device: AppleTV) -> float:
+        """Return the volume level of a device that just connected."""
+        audio = device.audio
+        # MRP only pushes the volume when it changes, so until then pyatv reports 0.0. Ask the
+        # device for its level instead: pyatv has the message for it, but no API.
+        mrp_audio = audio.get(Protocol.MRP) if isinstance(audio, Relayer) else None
+        if isinstance(mrp_audio, MrpAudio) and (output_device_uid := mrp_audio.device_uid):
+            request = messages.create(protobuf.GET_VOLUME_MESSAGE)  # type: ignore[no-untyped-call]
+            protobuf.extract_inner(request).outputDeviceUID = output_device_uid
+            # pyatv raises KeyError for a request still waiting when its connection closes
+            try:
+                response = await mrp_audio.protocol.send_and_receive(
+                    request, timeout=_VOLUME_READ_TIMEOUT
+                )
+            except (*_COMMAND_ERRORS, KeyError) as err:
+                self.logger.debug("No volume answer at connect for %s: %r", self.name, err)
+            else:
+                if response.type == protobuf.GET_VOLUME_RESULT_MESSAGE:
+                    return float(protobuf.extract_inner(response).volume * 100)
+        return audio.volume
 
     def _handle_power_update(self, source: str, power_state: PowerState) -> None:
         """Apply a pushed pyatv power state."""

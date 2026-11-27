@@ -31,6 +31,7 @@ from music_assistant.constants import (
     CONF_ENABLED,
     CONF_ICON,
     CONF_MUTE_CONTROL,
+    CONF_PLAYBACK_QUALITY,
     CONF_PLAYER_DSP,
     CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
@@ -49,6 +50,7 @@ from music_assistant.constants import (
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_NORMALIZATION,
+    NON_HTTP_PROVIDERS,
 )
 from music_assistant.controllers.config.player_split import (
     LEGACY_LINKED_PROTOCOL_IDS,
@@ -82,6 +84,21 @@ LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
 
 # removed player HTTP profile config key, only referenced by its migrations
 LEGACY_HTTP_PROFILE_KEY = "http_profile"
+
+# removed player fixed content length config key, only referenced by its migration
+LEGACY_FIXED_CONTENT_LENGTH_KEY = "requires_fixed_content_length"
+
+# removed player output codec config key, only referenced by its migration
+LEGACY_OUTPUT_CODEC_KEY = "output_codec"
+
+# the playback quality level each value of the removed output codec setting belongs to
+LEGACY_OUTPUT_CODEC_PLAYBACK_QUALITY = {
+    "wav": "lossless_uncompressed",
+    "pcm": "lossless_uncompressed",
+    "flac": "lossless_compressed",
+    "mp3": "compressed",
+    "aac": "compressed",
+}
 
 # domains of the removed builtin providers, whose stored configs nothing can load anymore
 RETIRED_BUILTIN_PROVIDER_DOMAINS = ("builtin_player", "universal_player", "sendspin_source")
@@ -557,7 +574,7 @@ PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
 }
 
 
-async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
+async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
 
@@ -682,6 +699,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_drop_http_profile(data):
         changed = True
 
+    # Move the stored value of the removed output codec setting to the playback quality level
+    # of that codec. It reads both trees, so it also reaches a config that was split before.
+    # TODO: remove after 2.13 release
+    if _migrate_output_codec_to_playback_quality(data):
+        changed = True
+
     # Negate the stored sync adjust of every AirPlay player, whose positive value now plays
     # earlier like it does on every other protocol. It reads the split trees, so it runs
     # after the split.
@@ -706,6 +729,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # into the one in use. It reads the split tree, so it runs after the split.
     # TODO: remove after 2.13 release
     if _migrate_sendspin_one_output(data):
+        changed = True
+
+    # Drop the stored value of the removed fixed content length setting from every player
+    # and protocol.
+    # TODO: remove after 2.13 release
+    if _migrate_drop_fixed_content_length(data):
         changed = True
 
     return changed
@@ -1262,10 +1291,34 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
 
 def _migrate_drop_http_profile(data: dict[str, Any]) -> bool:
     """Drop the stored value of the removed HTTP profile setting from every player and protocol."""
+    changed = _drop_player_setting(data, LEGACY_HTTP_PROFILE_KEY)
+    if changed:
+        LOGGER.info("Dropped the removed HTTP profile from the player configuration(s)")
+    return changed
+
+
+def _migrate_drop_fixed_content_length(data: dict[str, Any]) -> bool:
+    """Drop the stored value of the removed fixed content length setting from every player."""
+    changed = _drop_player_setting(data, LEGACY_FIXED_CONTENT_LENGTH_KEY)
+    if changed:
+        LOGGER.info(
+            "Dropped the removed fixed content length setting from the player configuration(s)"
+        )
+    return changed
+
+
+def _drop_player_setting(data: dict[str, Any], setting_key: str) -> bool:
+    """
+    Drop the stored value of a removed setting from every player and protocol record.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param setting_key: The config key of the removed setting.
+    :return: Whether a value was dropped.
+    """
     # a player record can hold a copy of a protocol's value under a prefixed key: a parent
     # player stored one for a linked protocol player, and the split keeps the values of a
     # universal player on its player record
-    protocol_key_suffix = f"{CONF_PROTOCOL_KEY_SPLITTER}{LEGACY_HTTP_PROFILE_KEY}"
+    protocol_key_suffix = f"{CONF_PROTOCOL_KEY_SPLITTER}{setting_key}"
     changed = False
     for tree in (CONF_PLAYERS, CONF_PLAYER_PROTOCOLS):
         records = data.get(tree)
@@ -1278,14 +1331,49 @@ def _migrate_drop_http_profile(data: dict[str, Any]) -> bool:
             if not isinstance(values, dict):
                 continue
             for key in [
-                key
-                for key in values
-                if key == LEGACY_HTTP_PROFILE_KEY or key.endswith(protocol_key_suffix)
+                key for key in values if key == setting_key or key.endswith(protocol_key_suffix)
             ]:
                 del values[key]
                 changed = True
+    return changed
+
+
+def _migrate_output_codec_to_playback_quality(data: dict[str, Any]) -> bool:
+    """Move the stored output codec of every player and protocol to its playback quality level."""
+    # a player record can hold a copy of a protocol's value under a prefixed key, like the
+    # removed HTTP profile above
+    protocol_key_suffix = f"{CONF_PROTOCOL_KEY_SPLITTER}{LEGACY_OUTPUT_CODEC_KEY}"
+    changed = False
+    for tree in (CONF_PLAYERS, CONF_PLAYER_PROTOCOLS):
+        records = data.get(tree)
+        if not isinstance(records, dict):
+            continue
+        for record in records.values():
+            if not isinstance(record, dict):
+                continue
+            values = record.get("values")
+            if not isinstance(values, dict):
+                continue
+            # the protocols of these providers never used their own output codec value
+            skip_own_value = _provider_domain(data, record) in NON_HTTP_PROVIDERS
+            for key in [
+                key
+                for key in values
+                if key == LEGACY_OUTPUT_CODEC_KEY or key.endswith(protocol_key_suffix)
+            ]:
+                codec = values.pop(key)
+                changed = True
+                if skip_own_value and key == LEGACY_OUTPUT_CODEC_KEY:
+                    continue
+                if not isinstance(codec, str):
+                    continue
+                if (quality := LEGACY_OUTPUT_CODEC_PLAYBACK_QUALITY.get(codec)) is None:
+                    continue
+                quality_key = key.removesuffix(LEGACY_OUTPUT_CODEC_KEY) + CONF_PLAYBACK_QUALITY
+                if values.get(quality_key) is None:
+                    values[quality_key] = quality
     if changed:
-        LOGGER.info("Dropped the removed HTTP profile from the player configuration(s)")
+        LOGGER.info("Moved the output codec to the playback quality in the player configuration(s)")
     return changed
 
 

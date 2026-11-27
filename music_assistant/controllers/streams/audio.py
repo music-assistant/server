@@ -4330,7 +4330,7 @@ class StreamsAudio:
 
         # the playback user's own music sources are steered to first, the ones they
         # may not use at all are dropped
-        sources = await playback_sources(mass, queue_item.queue_id)
+        sources = await playback_sources(mass, queue_item)
         allowed, preferred_providers = sources.allowed, sources.preferred
 
         # reuse if the buffer can serve this seek position (fast seek path)
@@ -4547,7 +4547,7 @@ class StreamsAudio:
         )
         # what left the queue's scope gives its audio, and the slot of its source, up first
         self.mass.player_queues.release_unneeded_audio(queue_item.queue_id)
-        sources = await playback_sources(self.mass, queue_item.queue_id)
+        sources = await playback_sources(self.mass, queue_item)
         allowed, preferred = sources.allowed, sources.preferred
         all_candidate_instances = {
             provider.instance_id

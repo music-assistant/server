@@ -588,7 +588,10 @@ async def start_flow_playback(
     for player_id in player_ids:
         await ws.command(
             "config/players/save",
-            {"player_id": player_id, "values": {"flow_mode": True, "output_codec": "wav"}},
+            {
+                "player_id": player_id,
+                "values": {"flow_mode": True, "playback_quality": "lossless_uncompressed"},
+            },
         )
     # allow the config change to be applied to the registered players
     await asyncio.sleep(1)

@@ -3,7 +3,7 @@
   "domain": "universal_group",
   "stage": "experimental",
   "name": "Universal Group Player",
-  "description": "Create universal groups to group speakers of different protocols/ecosystems to play the same audio (but not in sync).",
+  "description": "Create a group of speakers of different protocols or ecosystems that play the same audio, but not in sync.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://music-assistant.io/faq/groups/",

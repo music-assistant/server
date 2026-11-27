@@ -556,8 +556,9 @@ class SpotifyConnectProvider(PluginProvider):
 
         # The backend reports 100% volume until told otherwise; push the player's
         # volume so the Spotify app's absolute volume commands start from the
-        # real level.
-        await self._sync_player_volume_to_spotify(daemon, active_player_id)
+        # real level. Not awaited: go-librespot can only answer once something
+        # reads its audio, and that reader is the stream this call holds up.
+        self.mass.create_task(self._sync_player_volume_to_spotify(daemon, active_player_id))
 
     async def on_source_unselected(
         self, source_id: str, owner_player_id: str, stream_session_id: str

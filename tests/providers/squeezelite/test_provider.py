@@ -17,6 +17,7 @@ from music_assistant_models.event import MassEvent
 from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.squeezelite import SUPPORTED_FEATURES
+from music_assistant.providers.squeezelite.constants import CONF_STORED_POWER
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
 from music_assistant.providers.squeezelite.sendspin_bridge import (
     BRIDGE_STREAM_PATH,
@@ -471,3 +472,27 @@ async def test_cli_stop_of_a_protocol_device_takes_it_out_of_its_sendspin_stream
 
     provider.bridge_manager.stop_streaming.assert_called_once_with("p1")
     assert _awaited_player_commands(provider) == []
+
+
+@pytest.mark.parametrize(("saved_power", "expected"), [(True, True), (None, True), (False, False)])
+async def test_a_connecting_player_starts_in_its_saved_power_state(
+    saved_power: bool | None, expected: bool
+) -> None:
+    """A player that was on, or is new, connects on; one that was switched off stays off, as on LMS."""
+    provider = MagicMock()
+    stored = {} if saved_power is None else {CONF_STORED_POWER: saved_power}
+    provider.mass.config.get_protocol_value.side_effect = lambda _pid, key, default=None: (
+        stored.get(key, default)
+    )
+    client = MagicMock(player_id="p1", device_model="Squeezebox Radio")
+
+    assert await SqueezelitePlayerProvider._get_initial_power(provider, client) is expected
+
+
+async def test_an_audio_protocol_connects_in_the_default_power_state() -> None:
+    """A device that plays through slimproto only as an audio protocol is powered with the stream."""
+    provider = MagicMock()
+    client = MagicMock(player_id="p1", device_model="WiiM Player")
+
+    assert await SqueezelitePlayerProvider._get_initial_power(provider, client) is None
+    provider.mass.config.get_protocol_value.assert_not_called()

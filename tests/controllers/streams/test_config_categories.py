@@ -1,4 +1,4 @@
-"""Tests for the categories of the streams settings that join the queue settings."""
+"""Tests for the streams settings that join the queue settings."""
 
 from __future__ import annotations
 
@@ -38,3 +38,20 @@ async def test_crossfade_and_normalization_share_the_queue_categories(
         CONF_VOLUME_NORMALIZATION_TARGET,
     ):
         assert categories[key] == CATEGORY_VOLUME_NORMALIZATION, key
+
+
+async def test_crossfade_and_normalization_tuning_is_advanced(
+    streams_controller: StreamsController,
+) -> None:
+    """The crossfade and volume normalization fine-tuning only shows with the advanced settings."""
+    entries = {entry.key: entry for entry in await streams_controller.get_config_entries()}
+
+    for key in (
+        CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+        CONF_VOLUME_NORMALIZATION_RADIO,
+        CONF_VOLUME_NORMALIZATION_TRACKS,
+        CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
+        CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
+        CONF_VOLUME_NORMALIZATION_TARGET,
+    ):
+        assert entries[key].advanced, key

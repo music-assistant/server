@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 from music_assistant_models.enums import EventType, IdentifierType, PlaybackState
 
-from music_assistant.constants import CONF_OUTPUT_CODEC
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 from tests.scenarios.harness import Scenario
@@ -156,16 +156,18 @@ async def test_a_removed_tv_comes_back_as_a_new_player(
 async def test_a_setting_of_a_new_player_is_its_tv_s(
     scenario: Scenario, provider: MSXBridgeProvider
 ) -> None:
-    """The codec of a player with a minted id is stored for its TV, also after it was idle."""
+    """The playback quality of a player with a minted id is kept for its TV, also after idle."""
     protocol = await _request(scenario, provider)
     player_id = _player(protocol).player_id
 
-    await scenario.configure_player(player_id, **{CONF_OUTPUT_CODEC: "aac"})
+    await scenario.configure_player(player_id, **{CONF_PLAYBACK_QUALITY: "lossless_compressed"})
     await provider._handle_player_unregister(TV)
     await _request(scenario, provider)
 
-    assert protocol.config.get_value(CONF_OUTPUT_CODEC) == "aac"
-    assert CONF_OUTPUT_CODEC not in (scenario.mass.config.get(f"players/{player_id}/values") or {})
+    assert protocol.config.get_value(CONF_PLAYBACK_QUALITY) == "lossless_compressed"
+    assert CONF_PLAYBACK_QUALITY not in (
+        scenario.mass.config.get(f"players/{player_id}/values") or {}
+    )
 
 
 @pytest.mark.parametrize("away", [True, False], ids=["after-idle-timeout", "while-attached"])

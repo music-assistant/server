@@ -335,6 +335,7 @@ async def test_a_player_still_reporting_the_replaced_item_keeps_the_new_queue_po
             )
         ),
         playback_state=PlaybackState.PLAYING,
+        fake_paused=False,
         corrected_elapsed_time=12.0,
     )
 

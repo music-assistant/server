@@ -501,6 +501,7 @@ async def test_a_track_whose_source_still_fills_goes_when_the_player_reports_the
         name="Queue A",
         available=True,
         playback_state=PlaybackState.PLAYING,
+        fake_paused=False,
         corrected_elapsed_time=1.0,
         group_members=[],
     )

@@ -11,7 +11,7 @@
     },
     "allow_crossfade_same_album": {
       "label": "Allow crossfade between tracks from the same album",
-      "description": "Enabling this option allows for crossfading between tracks that are part of the same album."
+      "description": "When off, the tracks of one album follow each other without a crossfade."
     },
     "stream_source_mode": {
       "label": "Which source plays",
@@ -38,7 +38,7 @@
       }
     },
     "smart_fades_log_level": {
-      "label": "Smart Fades Log level",
+      "label": "Smart Fades log level",
       "description": "Log level for the Smart Fades mixer and analyzer."
     },
     "publish_ip": {
@@ -68,10 +68,10 @@
       }
     },
     "volume_normalization_fixed_gain_radio": {
-      "label": "Fixed/fallback gain adjustment for radio streams"
+      "label": "Fixed/fallback gain for radio streams (dB)"
     },
     "volume_normalization_fixed_gain_tracks": {
-      "label": "Fixed/fallback gain adjustment for tracks"
+      "label": "Fixed/fallback gain for tracks (dB)"
     },
     "background_scan_concurrency": {
       "label": "Background analysis concurrency",

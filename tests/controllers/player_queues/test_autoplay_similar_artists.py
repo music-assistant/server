@@ -161,7 +161,10 @@ async def _fill(loader: Any, disliked: set[str] | None = None) -> None:
         ),
         patch(
             "music_assistant.controllers.player_queues.queue_loader.build_queue_item",
-            side_effect=lambda _queue_id, item, origin: (item.name, origin.container.name),
+            side_effect=lambda _queue_id, item, origin, **_kwargs: (
+                item.name,
+                origin.container.name,
+            ),
         ),
     ):
         await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
