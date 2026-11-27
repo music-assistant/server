@@ -105,6 +105,8 @@ class SyncGroupPlayer(PlayerProtocol):
         # monotonic timestamp of the last playback start issued to the leader
         # (-inf means never)
         self._playback_start_at: float = float("-inf")
+        # set while the live session goes from its leader to one of its members
+        self._session_changes_hands = False
         self._update_attributes()
 
     @cached_property
@@ -1388,6 +1390,10 @@ class SyncGroupPlayer(PlayerProtocol):
 
     def _update_attributes(self) -> None:
         """Update dynamic attributes."""
+        if self._session_changes_hands:
+            # the member picked to lead the session reports for it once it does: the member
+            # that holds it in the end can be another one
+            return
         # NOTE on what reads the leader's final values vs its raw attributes below:
         # the current media and active source of a player that has
         # an ``active_group`` route through the active_group's state — so reading
@@ -1714,6 +1720,41 @@ class SyncGroupPlayer(PlayerProtocol):
             )
             return
 
+        self._session_changes_hands = True
+        try:
+            new_leader, new_target = await self._move_session(
+                session, old_leader, new_leader, session_domain, outside_ids
+            )
+        finally:
+            self._session_changes_hands = False
+
+        self._update_attributes()
+        self.update_state()
+
+        # 3. The members the old leader released join the session that plays on.
+        if outside_ids and new_target is not None:
+            await self._join_released_members(outside_ids, new_leader, new_target)
+
+    async def _move_session(
+        self,
+        session: PlayerProtocol | None,
+        old_leader: Player,
+        new_leader: Player,
+        session_domain: str | None,
+        outside_ids: list[str],
+    ) -> tuple[Player, PlayerProtocol | None]:
+        """
+        Let the leader step out of the live session, which a member leads from then on.
+
+        :param session: The protocol that owns the live session.
+        :param old_leader: The leader that steps out.
+        :param new_leader: The member picked to lead it.
+        :param session_domain: The protocol domain of the session.
+        :param outside_ids: Player ids of the members that are not in the session.
+        :return: The member that leads the session, and its protocol in the session, if any.
+        """
+        # the output the member has that is picked, which it keeps unless it leads the session
+        picked_output = new_leader.active_output_protocol
         new_target = await self._lead_session(new_leader, session_domain)
         self.logger.info(
             "Dynamic leader switch complete: %s is now leader of group %s",
@@ -1747,8 +1788,8 @@ class SyncGroupPlayer(PlayerProtocol):
                     self.display_name,
                     new_leader.name,
                 )
-                # the member that was picked plays nothing itself
-                self.mass.players.schedule_active_output_protocol_clear(new_leader)
+                # the member that was picked follows the session as it did before
+                new_leader.set_active_output_protocol(picked_output)
                 new_leader = holder
                 new_target = await self._lead_session(holder, session_domain)
                 remaining_protocol_ids = self._session_member_ids(
@@ -1761,12 +1802,7 @@ class SyncGroupPlayer(PlayerProtocol):
         # the new leader's protocol reports them as its group members.
         if remaining_protocol_ids and new_target is not None:
             await new_target.set_members(player_ids_to_add=remaining_protocol_ids)
-
-        self.update_state()
-
-        # 3. The members the old leader released join the session that plays on.
-        if outside_ids and new_target is not None:
-            await self._join_released_members(outside_ids, new_leader, new_target)
+        return new_leader, new_target
 
     async def _release_members(self, leader: Player, member_ids: list[str]) -> None:
         """

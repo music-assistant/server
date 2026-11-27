@@ -8,6 +8,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from functools import partial
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1096,9 +1097,97 @@ class TestDynamicLeaderSwitch:
             player_ids_to_add=["sonos_study"]
         )
         _member_changes(_protocol(study, "sonos")).assert_not_awaited()
-        # the member that leads plays on its own protocol, the one that was picked does not
+        # the member that leads plays on its own protocol
         mass.players._activate_output_protocol.assert_awaited_with(bathroom, "sonos_bathroom")
-        mass.players.schedule_active_output_protocol_clear.assert_any_call(study)
+
+    async def test_a_member_that_was_picked_in_vain_gets_its_output_back_at_once(self) -> None:
+        """
+        The member that was picked follows the session again as it did before it was picked.
+
+        A clear that waits until it stops would take the output away later, while it plays on
+        and may lead the group by then.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        old_leader = _make_member(mass, "old_leader", "sonos")
+        study = _make_member(mass, "study", "sonos")
+        bathroom = _make_member(mass, "bathroom", "sonos")
+        session = _protocol(old_leader, "sonos")
+        session._attr_group_members = ["sonos_old_leader", "sonos_study", "sonos_bathroom"]
+        for player in (study, bathroom):
+            _protocol(player, "sonos").set_members = AsyncMock()  # type: ignore[method-assign]
+
+        async def _activate(player: Player, output_protocol_id: str) -> None:
+            assert output_protocol_id == f"sonos_{player.player_id}"
+            player._active_output_protocol = "native"
+            player._state = replace(player._state, active_output_protocol="native")
+
+        mass.players._activate_output_protocol = AsyncMock(side_effect=_activate)
+
+        def _step_out(**_kwargs: object) -> None:
+            assert study.active_output_protocol == "native"
+            session._attr_group_members = []
+            _protocol(bathroom, "sonos")._attr_group_members = ["sonos_bathroom", "sonos_study"]
+
+        session.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "study", "bathroom"]
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(study, "update_state"),
+        ):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader is bathroom
+        assert bathroom._active_output_protocol == "native"
+        assert study._active_output_protocol is None
+        scheduled = mass.players.schedule_active_output_protocol_clear.call_args_list
+        assert [call.args[0] for call in scheduled] == [old_leader]
+
+    async def test_the_group_reports_what_it_plays_while_its_session_changes_hands(self) -> None:
+        """
+        The group does not report what the member does that was picked to lead the session.
+
+        Its former leader hands the session to a member of its own choice, and the member
+        that was picked reads as idle once that leader plays nothing anymore.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        old_leader = _make_member(mass, "old_leader", "sonos", playback_state=PlaybackState.PLAYING)
+        study = _make_member(mass, "study", "sonos", playback_state=PlaybackState.PLAYING)
+        bathroom = _make_member(mass, "bathroom", "sonos", playback_state=PlaybackState.PLAYING)
+        session = _protocol(old_leader, "sonos")
+        session._attr_group_members = ["sonos_old_leader", "sonos_study", "sonos_bathroom"]
+        for player in (study, bathroom):
+            _protocol(player, "sonos").set_members = AsyncMock()  # type: ignore[method-assign]
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "study", "bathroom"]
+        sgp._update_attributes()
+        bathroom._state = replace(bathroom._state, elapsed_time=42.0)
+        reported: list[PlaybackState | None] = []
+
+        def _step_out(**_kwargs: object) -> None:
+            session._attr_group_members = []
+            _protocol(bathroom, "sonos")._attr_group_members = ["sonos_bathroom", "sonos_study"]
+            assert sgp.sync_leader is study
+            study._state = replace(study._state, playback_state=PlaybackState.IDLE)
+            sgp.on_group_member_updated(study, {})
+            reported.append(sgp._attr_playback_state)
+
+        session.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert reported == [PlaybackState.PLAYING]
+        assert sgp._idle_grace_task is None
+        # what the member reports that leads the session in the end
+        assert sgp.sync_leader is bathroom
+        assert sgp._attr_playback_state == PlaybackState.PLAYING
+        assert sgp._attr_elapsed_time == 42.0
+        sgp.on_group_member_updated(study, {})
+        assert sgp._attr_playback_state == PlaybackState.PLAYING
 
     @pytest.mark.parametrize("active_output", [None, "sonos"])
     async def test_a_member_that_takes_over_as_leader_plays_on_the_protocol_of_the_session(
