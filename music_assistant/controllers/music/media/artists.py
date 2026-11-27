@@ -1601,6 +1601,33 @@ class ArtistsController(MediaControllerBase[Artist]):
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(db_id)
 
+    async def forget_looked_up_ids(self, db_artist: Artist, provider_artist: Artist) -> None:
+        """
+        Remove the MusicBrainz and Discogs ids a lookup gave a library artist.
+
+        The next metadata update then identifies the artist again, so a correction on
+        MusicBrainz reaches the library. Ids the provider artist carries itself are kept, as
+        are the ids of an artist a local source (which may read them from tags) provides.
+
+        :param db_artist: The library artist, updated in place.
+        :param provider_artist: The artist as its provider just delivered it.
+        """
+        if not db_artist.mbid or db_artist.mbid == VARIOUS_ARTISTS_MBID or provider_artist.mbid:
+            return
+        for mapping in db_artist.provider_mappings:
+            provider = self.mass.get_provider(mapping.provider_instance, return_unavailable=True)
+            # an id from a source that is not a known streaming service may come from tags
+            if not isinstance(provider, MusicProvider) or not provider.is_streaming_provider:
+                return
+        carried = {id_type for id_type, _ in provider_artist.external_ids}
+        # the Discogs id is taken from the MusicBrainz artist, so it goes along with it
+        looked_up = {ExternalID.MB_ARTIST, ExternalID.DISCOGS} - carried
+        await self.remove_external_ids(db_artist.item_id, looked_up)
+        db_artist.external_ids = {
+            external_id for external_id in db_artist.external_ids if external_id[0] not in looked_up
+        }
+        self.logger.debug("Identifying artist %s on MusicBrainz again", db_artist.name)
+
     async def match_provider(
         self, db_artist: Artist, provider: MusicProvider, strict: bool = True
     ) -> list[ProviderMapping]:

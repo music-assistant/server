@@ -2096,6 +2096,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         await self.mass.music.tracks.update_item_in_library(
                             album_track.item_id, prov_track
                         )
+        if isinstance(library_item, Artist) and isinstance(media_item, Artist):
+            # a stored id is never looked up again, so a fix on MusicBrainz would not reach it
+            await self.artists.forget_looked_up_ids(library_item, media_item)
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         if isinstance(library_item, Artist):
