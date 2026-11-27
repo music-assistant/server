@@ -52,7 +52,6 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sync_group.constants import (
-    PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
     REFORM_DEBOUNCE_SECONDS,
     STUCK_MEMBER_TIMEOUT,
 )
@@ -74,16 +73,29 @@ LOCK_BUDGET = 0.25
 MEMBER_FEATURES = frozenset({PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS})
 
 
+# the domains of the protocols whose session plays on when its leader leaves it
+HANDOVER_DOMAINS = ("airplay", "snapcast", "sendspin")
+
+
 class _SessionProtocol(MockProtocol):
     """A mock protocol of a member, whose live session can differ from its group members."""
 
     # the protocol ids its live session feeds, None when that is its group members
     live_session: list[str] | None = None
+    # whether its session plays on when it leaves it, None to answer by its domain
+    hands_over: bool | None = None
 
     @property
     def live_session_members(self) -> list[str]:
         """Return the ids of the protocols that take part in the live session."""
         return self.group_members if self.live_session is None else self.live_session
+
+    @property
+    def can_hand_over_session(self) -> bool:
+        """Return whether its session plays on when it leaves it."""
+        if self.hands_over is None:
+            return self.provider.domain in HANDOVER_DOMAINS
+        return self.hands_over
 
 
 def _noop_context() -> AsyncMock:
@@ -841,7 +853,7 @@ class TestDynamicLeaderSwitch:
         _protocol(member, domain).set_members = AsyncMock()  # type: ignore[method-assign]
         return sgp, leader, calls
 
-    @pytest.mark.parametrize("domain", PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH)
+    @pytest.mark.parametrize("domain", HANDOVER_DOMAINS)
     async def test_dynamic_leader_switch_releases_native_followers_first(self, domain: str) -> None:
         """The members the leader holds outside the session leave it before its stream ends."""
         mass = _make_mock_mass()
@@ -861,7 +873,7 @@ class TestDynamicLeaderSwitch:
         member = mass.players.get_player("member")
         _member_changes(_protocol(member, domain)).assert_not_awaited()
 
-    @pytest.mark.parametrize("domain", PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH)
+    @pytest.mark.parametrize("domain", HANDOVER_DOMAINS)
     async def test_dynamic_leader_switch_takes_native_followers_along(self, domain: str) -> None:
         """A released member joins the session that plays on when it can be reached on it."""
         mass = _make_mock_mass()
@@ -954,7 +966,7 @@ class TestDynamicLeaderSwitch:
             player_ids_to_add=["airplay_f1"]
         )
 
-    @pytest.mark.parametrize("domain", PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH)
+    @pytest.mark.parametrize("domain", HANDOVER_DOMAINS)
     async def test_dynamic_leader_switch_without_native_followers_releases_nobody(
         self, domain: str
     ) -> None:
@@ -1494,6 +1506,17 @@ class TestLeaderLost:
         assert not await sgp.on_session_leader_lost(_protocol(members["a"], "squeezelite"))
 
         assert sgp.sync_leader is members["a"]
+
+    async def test_a_protocol_that_answers_it_can_not_hand_over_is_left_as_it_is(self) -> None:
+        """The protocol decides whether it hands over, whatever its provider."""
+        _mass, sgp, members = self._playing_group()
+        session = _protocol(members["a"], "airplay")
+        session.hands_over = False
+
+        assert not await sgp.on_session_leader_lost(session)
+
+        assert sgp.sync_leader is members["a"]
+        _member_changes(session).assert_not_awaited()
 
     async def test_the_loss_of_a_protocol_that_does_not_carry_the_session_is_ignored(self) -> None:
         """A protocol that leads members, but not the session the group plays, hands over nothing."""
@@ -4709,6 +4732,31 @@ class TestReformResumeGate:
 
         dyn_switch.assert_awaited_once_with("leader", [])
         reform.assert_not_awaited()
+
+    async def test_leader_removal_reforms_on_a_protocol_that_answers_it_can_not_hand_over(
+        self,
+    ) -> None:
+        """The protocol of the session decides whether it hands over, whatever its provider."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        sgp.sync_leader = _make_member(
+            mass, "leader", "sonos", audio=["airplay"], active_output="airplay"
+        )
+        _make_member(mass, "other", "sonos", audio=["airplay"])
+        _protocol(sgp.sync_leader, "airplay").hands_over = False
+        sgp._attr_group_members = ["leader", "other"]
+        sgp._attr_playback_state = PlaybackState.PLAYING
+
+        with (
+            patch.object(sgp, "_dissolve_and_reform", new=AsyncMock()) as reform,
+            patch.object(sgp, "_dynamic_leader_switch", new=AsyncMock()) as dyn_switch,
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+        dyn_switch.assert_not_awaited()
+        reform.assert_awaited_once()
+        assert reform.await_args is not None
+        assert reform.await_args.kwargs.get("resume_playback") is True
 
 
 def _static_group_with_a_member_away(

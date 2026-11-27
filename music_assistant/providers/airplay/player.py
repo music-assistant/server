@@ -486,6 +486,11 @@ class AirPlayPlayer(PlayerProtocol):
         return []
 
     @property
+    def can_hand_over_session(self) -> bool:
+        """Return True: the stream session plays on for its members when its leader leaves."""
+        return True
+
+    @property
     def session(self) -> AirPlayStreamSession | None:
         """Return the stream session that carries this player's playback, None without one."""
         for endpoint in self.session_endpoints:

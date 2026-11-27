@@ -44,7 +44,6 @@ from .constants import (
     FEATURES_FROM_LEADER,
     IDLE_GRACE_SECONDS,
     PLAYBACK_START_TIMEOUT,
-    PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
     REFORM_DEBOUNCE_SECONDS,
     STUCK_MEMBER_TIMEOUT,
     VOLUME_FEATURES_FROM_MEMBERS,
@@ -788,8 +787,7 @@ class SyncGroupPlayer(PlayerProtocol):
                     old_leader_id = leader.player_id
                     session_protocol = self._active_session_protocol()
                     supports_handoff = (
-                        session_protocol is not None
-                        and session_protocol.provider.domain in PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH
+                        session_protocol is not None and session_protocol.can_hand_over_session
                     )
 
                     if was_playing and supports_handoff:
@@ -852,7 +850,7 @@ class SyncGroupPlayer(PlayerProtocol):
         if (
             (sync_leader := self.sync_leader) is None
             or self._active_session_protocol() is not leader
-            or leader.provider.domain not in PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH
+            or not leader.can_hand_over_session
             or self.playback_state != PlaybackState.PLAYING
             or not await self._hand_over_lost_session(sync_leader, leader)
         ):
@@ -1611,9 +1609,9 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         Switch the sync leader without tearing down the stream session.
 
-        Used when the provider supports dynamic leader selection (e.g. AirPlay,
-        Snapcast). The old leader is removed from the live session and the
-        remaining members keep playing uninterrupted on a newly selected leader.
+        Used when the protocol of the live session can hand it over (see
+        `PlayerProtocol.can_hand_over_session`). The old leader is removed from the live
+        session and the remaining members keep playing uninterrupted on a newly selected leader.
         Members it holds outside that session join the session if they can be
         reached on its protocol, else they leave the group.
 
