@@ -8,6 +8,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from functools import partial
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1059,6 +1060,210 @@ class TestDynamicLeaderSwitch:
             player_ids_to_add=["sendspin_living_room"]
         )
 
+    async def test_dynamic_leader_switch_follows_the_member_that_took_the_session_over(
+        self,
+    ) -> None:
+        """
+        The group follows the member its former leader's protocol handed the session to.
+
+        Sonos hands a group to the member that joined it first, which need not be the first
+        one it lists, so the member picked from the order of the session can be another one.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        old_leader = _make_member(mass, "old_leader", "sonos")
+        study = _make_member(mass, "study", "sonos")
+        bathroom = _make_member(mass, "bathroom", "sonos")
+        session = _protocol(old_leader, "sonos")
+        session._attr_group_members = ["sonos_old_leader", "sonos_study", "sonos_bathroom"]
+        for player in (study, bathroom):
+            _protocol(player, "sonos").set_members = AsyncMock()  # type: ignore[method-assign]
+
+        def _step_out(**_kwargs: object) -> None:
+            session._attr_group_members = []
+            _protocol(bathroom, "sonos")._attr_group_members = ["sonos_bathroom", "sonos_study"]
+
+        session.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "study", "bathroom"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader is bathroom
+        assert sgp._attr_group_members == ["bathroom", "study"]
+        _member_changes(session).assert_awaited_once_with(player_ids_to_remove=["sonos_old_leader"])
+        _member_changes(_protocol(bathroom, "sonos")).assert_awaited_once_with(
+            player_ids_to_add=["sonos_study"]
+        )
+        _member_changes(_protocol(study, "sonos")).assert_not_awaited()
+        # the member that leads plays on its own protocol
+        mass.players._activate_output_protocol.assert_awaited_with(bathroom, "sonos_bathroom")
+
+    async def test_a_member_that_was_picked_in_vain_gets_its_output_back_at_once(self) -> None:
+        """
+        The member that was picked follows the session again as it did before it was picked.
+
+        A clear that waits until it stops would take the output away later, while it plays on
+        and may lead the group by then.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        old_leader = _make_member(mass, "old_leader", "sonos")
+        study = _make_member(mass, "study", "sonos")
+        bathroom = _make_member(mass, "bathroom", "sonos")
+        session = _protocol(old_leader, "sonos")
+        session._attr_group_members = ["sonos_old_leader", "sonos_study", "sonos_bathroom"]
+        for player in (study, bathroom):
+            _protocol(player, "sonos").set_members = AsyncMock()  # type: ignore[method-assign]
+
+        async def _activate(player: Player, output_protocol_id: str) -> None:
+            assert output_protocol_id == f"sonos_{player.player_id}"
+            player._active_output_protocol = "native"
+            player._state = replace(player._state, active_output_protocol="native")
+
+        mass.players._activate_output_protocol = AsyncMock(side_effect=_activate)
+
+        def _step_out(**_kwargs: object) -> None:
+            assert study.active_output_protocol == "native"
+            session._attr_group_members = []
+            _protocol(bathroom, "sonos")._attr_group_members = ["sonos_bathroom", "sonos_study"]
+
+        session.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "study", "bathroom"]
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(study, "update_state"),
+        ):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader is bathroom
+        assert bathroom._active_output_protocol == "native"
+        assert study._active_output_protocol is None
+        scheduled = mass.players.schedule_active_output_protocol_clear.call_args_list
+        assert [call.args[0] for call in scheduled] == [old_leader]
+
+    async def test_the_group_reports_what_it_plays_while_its_session_changes_hands(self) -> None:
+        """
+        The group does not report what the member does that was picked to lead the session.
+
+        Its former leader hands the session to a member of its own choice, and the member
+        that was picked reads as idle once that leader plays nothing anymore.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        old_leader = _make_member(mass, "old_leader", "sonos", playback_state=PlaybackState.PLAYING)
+        study = _make_member(mass, "study", "sonos", playback_state=PlaybackState.PLAYING)
+        bathroom = _make_member(mass, "bathroom", "sonos", playback_state=PlaybackState.PLAYING)
+        session = _protocol(old_leader, "sonos")
+        session._attr_group_members = ["sonos_old_leader", "sonos_study", "sonos_bathroom"]
+        for player in (study, bathroom):
+            _protocol(player, "sonos").set_members = AsyncMock()  # type: ignore[method-assign]
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "study", "bathroom"]
+        sgp._update_attributes()
+        bathroom._state = replace(bathroom._state, elapsed_time=42.0)
+        reported: list[PlaybackState | None] = []
+
+        def _step_out(**_kwargs: object) -> None:
+            session._attr_group_members = []
+            _protocol(bathroom, "sonos")._attr_group_members = ["sonos_bathroom", "sonos_study"]
+            assert sgp.sync_leader is study
+            study._state = replace(study._state, playback_state=PlaybackState.IDLE)
+            sgp.on_group_member_updated(study, {})
+            reported.append(sgp._attr_playback_state)
+
+        session.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert reported == [PlaybackState.PLAYING]
+        assert sgp._idle_grace_task is None
+        # what the member reports that leads the session in the end
+        assert sgp.sync_leader is bathroom
+        assert sgp._attr_playback_state == PlaybackState.PLAYING
+        assert sgp._attr_elapsed_time == 42.0
+        sgp.on_group_member_updated(study, {})
+        assert sgp._attr_playback_state == PlaybackState.PLAYING
+
+    @pytest.mark.parametrize("active_output", [None, "sonos"])
+    async def test_a_member_that_takes_over_as_leader_plays_on_the_protocol_of_the_session(
+        self, active_output: str | None
+    ) -> None:
+        """
+        The output of the new leader is marked active, as that of a leader that was played on.
+
+        A member that follows its leader on its own protocol has no active output, and a
+        command that needs one, such as a pause, would stop it instead.
+
+        :param active_output: Domain of the output the new leader has as its active one.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        old_leader = _make_member(mass, "old_leader", "sonos", active_output="sonos")
+        member = _make_member(mass, "member", "sonos", active_output=active_output)
+        session = _protocol(old_leader, "sonos")
+        session._attr_group_members = ["sonos_old_leader", "sonos_member"]
+        session.set_members = AsyncMock()  # type: ignore[method-assign]
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "member"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader is member
+        if active_output is None:
+            mass.players._activate_output_protocol.assert_awaited_once_with(member, "sonos_member")
+        else:
+            mass.players._activate_output_protocol.assert_not_awaited()
+
+    @pytest.mark.parametrize("domain", HANDOVER_DOMAINS)
+    async def test_dynamic_leader_switch_keeps_the_member_it_picked(self, domain: str) -> None:
+        """
+        The member picked leads the session unless the protocol of the session names another.
+
+        A member that holds others on another protocol, such as two speakers that are grouped
+        natively while the group plays over AirPlay, does not hold the session.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        old_leader = _make_member(mass, "old_leader", "sonos", audio=[domain], active_output=domain)
+        kitchen = _make_member(mass, "kitchen", "sonos", audio=[domain], active_output=domain)
+        bathroom = _make_member(mass, "bathroom", "sonos", audio=[domain], active_output=domain)
+        session = _protocol(old_leader, domain)
+        session._attr_group_members = [
+            f"{domain}_{x}" for x in ("old_leader", "kitchen", "bathroom")
+        ]
+        _protocol(bathroom, "sonos")._attr_group_members = ["sonos_bathroom", "sonos_kitchen"]
+        for player in (kitchen, bathroom):
+            _protocol(player, domain).set_members = AsyncMock()  # type: ignore[method-assign]
+
+        def _step_out(**_kwargs: object) -> None:
+            session._attr_group_members = []
+            if domain != "airplay":
+                # its members are briefly without a leader on AirPlay, the others regroup them
+                _protocol(kitchen, domain)._attr_group_members = [
+                    f"{domain}_kitchen",
+                    f"{domain}_bathroom",
+                ]
+
+        session.set_members = AsyncMock(side_effect=_step_out)  # type: ignore[method-assign]
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "kitchen", "bathroom"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader is kitchen
+        assert sgp._attr_group_members == ["kitchen", "bathroom"]
+        _member_changes(_protocol(kitchen, domain)).assert_awaited_once_with(
+            player_ids_to_add=[f"{domain}_bathroom"]
+        )
+        _member_changes(_protocol(bathroom, domain)).assert_not_awaited()
+
     async def test_handoff_stays_on_live_protocol_after_downshift(self) -> None:
         """
         A pending downshift must not redirect the handoff to the native protocols.
@@ -1760,6 +1965,45 @@ def _controller_with_a_sync_group(
         player.refresh_state(signal_event=False)
     group.update_state = MagicMock()  # type: ignore[method-assign,misc]
     return players, group, leader, member
+
+
+class TestPauseAfterAChangeOfLeader:
+    """A group whose leader was changed while it played is paused, not stopped."""
+
+    async def test_a_pause_reaches_the_member_that_took_over_as_leader(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pause of the group goes to the protocol of its new leader as a pause."""
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+        group_id = _group_id(group)
+        queue = PlayerQueue(
+            queue_id=group_id, active=True, display_name="Test Group", available=True, items=3
+        )
+        cast("MagicMock", players.mass).player_queues.get = MagicMock(
+            side_effect=lambda queue_id: queue if queue_id == group_id else None
+        )
+        monkeypatch.setattr(players, "get_player_audio_source", lambda _player_id: None)
+        for player in (leader, member):
+            protocol = _protocol(player, "sonos")
+            protocol._attr_supported_features = {*MEMBER_FEATURES, PlayerFeature.PAUSE}
+            protocol._attr_playback_state = PlaybackState.PLAYING
+            for command in ("set_members", "pause", "stop"):
+                setattr(protocol, command, AsyncMock())
+        session = _protocol(leader, "sonos")
+        session._attr_group_members = ["sonos_L", "sonos_B"]
+        leader.set_active_output_protocol("native")
+        group.sync_leader = leader
+
+        await group._dynamic_leader_switch("L")
+        group._update_attributes()
+        for refreshed in (group.player, leader, member):
+            assert refreshed is not None
+            refreshed.refresh_state(signal_event=False)
+        await players._handle_cmd_pause(group_id)
+
+        assert group.sync_leader is member
+        cast("AsyncMock", _protocol(member, "sonos").pause).assert_awaited_once()
+        cast("AsyncMock", _protocol(member, "sonos").stop).assert_not_awaited()
 
 
 class TestFormationAndACommandOnItsLeader:
@@ -4757,6 +5001,27 @@ class TestReformResumeGate:
         reform.assert_awaited_once()
         assert reform.await_args is not None
         assert reform.await_args.kwargs.get("resume_playback") is True
+
+    async def test_leader_removal_of_a_paused_group_does_not_hand_off(self) -> None:
+        """A paused group is re-formed without a resume, also on a protocol that hands over."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        sgp.sync_leader = _make_member(mass, "leader", "sonos")
+        _make_member(mass, "other", "sonos")
+        _protocol(sgp.sync_leader, "sonos").hands_over = True
+        sgp._attr_group_members = ["leader", "other"]
+        sgp._attr_playback_state = PlaybackState.PAUSED
+
+        with (
+            patch.object(sgp, "_dissolve_and_reform", new=AsyncMock()) as reform,
+            patch.object(sgp, "_dynamic_leader_switch", new=AsyncMock()) as dyn_switch,
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+        dyn_switch.assert_not_awaited()
+        reform.assert_awaited_once()
+        assert reform.await_args is not None
+        assert reform.await_args.kwargs.get("resume_playback") is False
 
 
 def _static_group_with_a_member_away(
