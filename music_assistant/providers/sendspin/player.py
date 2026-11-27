@@ -2317,8 +2317,7 @@ class SendspinPlayer(SendspinBasePlayer):
             metadata, queue, queue_item, is_playing=is_playing
         )
         if held_ms is not None:
-            track_progress = held_ms
-            is_playing = False
+            track_progress, is_playing = held_ms, False
 
         if not self._metadata_publish_allowed(generation):
             return
