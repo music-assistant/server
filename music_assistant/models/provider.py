@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, final, overload
 from music_assistant_models.config_entries import UI_ONLY, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
+from music_assistant_models.media_items import BrowseFolder
 
 from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS, MASS_LOGGER_NAME
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
         ProviderConfig,
     )
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
+    from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.provider import ProviderManifest
     from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
@@ -46,6 +48,8 @@ class Provider:
     # the AI engine settings of this provider, listed on the AI settings page; engine choices
     # kept in the provider's own data (such as the voice of an AI Radio host) are not listed
     engine_settings: ClassVar[tuple[EngineSetting, ...]] = ()
+    # Opt in to a shared Browse folder named by media.folder.<key>.name.
+    browse_group_translation_key: ClassVar[str | None] = None
 
     def __init__(
         self,
@@ -307,6 +311,13 @@ class Provider:
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
         return None
+
+    def get_browse_root_item(self) -> BrowseFolder | MediaItemType:
+        """Return this source's entry in the main Browse list."""
+        path = f"{self.instance_id}://"
+        return BrowseFolder(
+            item_id="root", provider=self.domain, path=path, uri=path, name=self.name
+        )
 
     @property
     @final

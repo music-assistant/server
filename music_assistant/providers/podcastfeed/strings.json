@@ -6,5 +6,12 @@
   },
   "manifest": {
     "description": "Subscribe to and play any podcast via its RSS feed."
+  },
+  "media": {
+    "folder": {
+      "rss_podcasts": {
+        "name": "RSS Podcasts"
+      }
+    }
   }
 }

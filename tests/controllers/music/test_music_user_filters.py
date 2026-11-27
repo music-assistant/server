@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
@@ -40,6 +41,7 @@ from music_assistant.helpers.throttle_retry import (
     request_priority,
 )
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.provider import Provider
 from tests.common import set_music_source_access
 
 GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
@@ -68,6 +70,7 @@ def _make_prov(
     prov.instance_id = instance_id
     prov.type = prov_type
     prov.supported_features = features or set()
+    prov.browse_group_translation_key = None
     return prov
 
 
@@ -183,6 +186,8 @@ async def test_browse_root_honors_admin_music_sources(mock_get_user: Mock) -> No
     music_b = _make_prov("m_b", ProviderType.MUSIC, {ProviderFeature.BROWSE})
     music_b.domain = "music_b"
     music_b.name = "Music B"
+    for provider in (music_a, music_b):
+        provider.get_browse_root_item = partial(Provider.get_browse_root_item, provider)
     mass.get_providers_supporting_feature.side_effect = lambda feature: (
         [music_a, music_b] if feature == ProviderFeature.BROWSE else []
     )

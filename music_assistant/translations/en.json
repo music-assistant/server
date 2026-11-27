@@ -2520,6 +2520,7 @@
   "provider.podcast_index.media.folder.trending_podcasts.name": "Trending Podcasts",
   "provider.podcastfeed.config_entries.feed_url.label": "RSS Feed URL",
   "provider.podcastfeed.manifest.description": "Subscribe to and play any podcast via its RSS feed.",
+  "provider.podcastfeed.media.folder.rss_podcasts.name": "RSS Podcasts",
   "provider.profiler.config_entries.action_run_cpu_profile.action_label": "Profile now",
   "provider.profiler.config_entries.action_run_cpu_profile.label": "Capture an on-demand CPU profile window, for example while you are reproducing an issue. The result is included in the next report.",
   "provider.profiler.config_entries.cpu_profile_duration.description": "How long each CPU profile window records before its results are processed.",

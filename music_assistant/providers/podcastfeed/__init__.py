@@ -10,6 +10,7 @@ multiple instances with each one feed must exist.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
@@ -70,6 +71,8 @@ async def setup(
 class PodcastMusicprovider(MusicProvider):
     """Podcast RSS Feed Music Provider."""
 
+    browse_group_translation_key = "rss_podcasts"
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return ()
@@ -111,6 +114,11 @@ class PodcastMusicprovider(MusicProvider):
         """Return a (default) instance name postfix for this provider instance."""
         return self.parsed_podcast.get("title")
 
+    def get_browse_root_item(self) -> Podcast:
+        """Open the podcast directly from its Browse entry."""
+        # Use the provider item URI even when the feed links to a website.
+        return replace(self._parse_podcast(), uri=None)
+
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""
         """
@@ -124,14 +132,14 @@ class PodcastMusicprovider(MusicProvider):
             provider_instance_id=self.instance_id,
             feed_url=self.feed_url,
         )
-        yield await self._parse_podcast()
+        yield self._parse_podcast()
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full artist details by id."""
         if prov_podcast_id != self.podcast_id:
             raise MediaNotFoundError(f"Podcast id not in provider: {prov_podcast_id}")
-        return await self._parse_podcast()
+        return self._parse_podcast()
 
     @use_cache(3600)  # Cache for 1 hour
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
@@ -226,7 +234,7 @@ class PodcastMusicprovider(MusicProvider):
 
             raise MediaNotFoundError(f"Episode image not found: {path}")
 
-    async def _parse_podcast(self) -> Podcast:
+    def _parse_podcast(self) -> Podcast:
         """Parse podcast information from podcast feed."""
         assert self.feed_url is not None
         return parse_podcast(
