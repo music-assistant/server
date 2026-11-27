@@ -3335,6 +3335,10 @@ class StreamsAudio:
         self.logger.warning(
             "Failed to parse radio URL %s: %s - attempting direct stream", validate_url, str(err)
         )
+        # a connection that failed, such as a DNS lookup, says nothing about the stream itself,
+        # so it is probed again on the next start rather than streamed without metadata for hours
+        if isinstance(err, aiohttp.ClientConnectionError):
+            return (validate_url, fallback_stream_type)
         return await self._cache_radio_result(url, fallback_stream_type, resolved_url=validate_url)
 
     async def _get_stream_details(
@@ -3367,22 +3371,32 @@ class StreamsAudio:
                 f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
             )
 
+        # reuse if the buffer can serve this seek position (fast seek path)
+        buffered = bool(
+            queue_item.streamdetails
+            and queue_item.streamdetails.buffer
+            and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
+        )
         if (
             queue_item.streamdetails
             # cached details of an excluded instance are exactly what we select away from
             and queue_item.streamdetails.provider not in excluded_provider_instances
             and (
-                # reuse if the buffer can serve this seek position (fast seek path)
-                (
-                    queue_item.streamdetails.buffer
-                    and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
-                )
+                buffered
                 # or reuse if streamdetails hasn't expired yet (new buffer will be created)
                 or (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
                 > time.time()
             )
         ):
             streamdetails = queue_item.streamdetails
+            if not buffered:
+                # a radio station whose check failed earlier is checked again for the new
+                # buffer; a station checked fine answers from the cache
+                try:
+                    await self._resolve_radio_stream_details(streamdetails)
+                except MusicAssistantError as err:
+                    # the stored details played before, a failed re-check is no reason to drop them
+                    self.logger.debug("Radio re-check failed for %s: %s", streamdetails.uri, err)
         else:
             # need to (re)create streamdetails
             # retrieve streamdetails from provider
@@ -3410,23 +3424,7 @@ class StreamsAudio:
                 raise MediaNotFoundError(msg)
 
             # work out how to handle radio stream
-            if (
-                streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
-                and streamdetails.media_type == MediaType.RADIO
-                and isinstance(streamdetails.path, str)
-            ):
-                resolved_url, stream_type = await self.resolve_radio_stream(streamdetails.path)
-                streamdetails.path = resolved_url
-                streamdetails.stream_type = stream_type
-                # Set up metadata monitoring callback for HLS radio streams, if not already set
-                if (
-                    stream_type == StreamType.HLS
-                    and not streamdetails.stream_metadata_update_callback
-                ):
-                    streamdetails.stream_metadata_update_callback = partial(
-                        self._update_hls_radio_metadata
-                    )
-                    streamdetails.stream_metadata_update_interval = 5
+            await self._resolve_radio_stream_details(streamdetails)
 
         # providers report an unknown duration as either None or 0
         if not streamdetails.duration:
@@ -4064,6 +4062,22 @@ class StreamsAudio:
                 ffmpeg_proc.returncode,
                 streamdetails.uri,
             )
+
+    async def _resolve_radio_stream_details(self, streamdetails: StreamDetails) -> None:
+        """Resolve the playable url and stream type of radio stream details in place."""
+        if not (
+            streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
+            and streamdetails.media_type == MediaType.RADIO
+            and isinstance(streamdetails.path, str)
+        ):
+            return
+        resolved_url, stream_type = await self.resolve_radio_stream(streamdetails.path)
+        streamdetails.path = resolved_url
+        streamdetails.stream_type = stream_type
+        # Set up metadata monitoring callback for HLS radio streams, if not already set
+        if stream_type == StreamType.HLS and not streamdetails.stream_metadata_update_callback:
+            streamdetails.stream_metadata_update_callback = partial(self._update_hls_radio_metadata)
+            streamdetails.stream_metadata_update_interval = 5
 
     def _report_crossfade_mode(
         self,
