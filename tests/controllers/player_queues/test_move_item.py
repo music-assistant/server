@@ -13,7 +13,6 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import ATTR_LAST_LOCKED_INDEX
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.constants import NEXT_ITEM_REPLACE_MARGIN
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -158,12 +157,12 @@ async def test_clients_get_the_locked_index_as_the_playing_track_moves_on() -> N
     ctrl.track_loaded_in_buffer("q1", _item_id_at(ctrl, 1))
     queue = ctrl._queue_data["q1"].queue
     PlayerQueuesController.signal_update(ctrl, "q1")
-    assert queue.extra_attributes[ATTR_LAST_LOCKED_INDEX] == 0
+    assert queue.last_locked_index == 0
 
     queue.current_index = 1
     PlayerQueuesController.signal_update(ctrl, "q1")
 
-    assert queue.extra_attributes[ATTR_LAST_LOCKED_INDEX] == 1
+    assert queue.last_locked_index == 1
 
 
 async def test_the_buffered_track_stays_when_nothing_follows_it() -> None:
@@ -176,6 +175,26 @@ async def test_the_buffered_track_stays_when_nothing_follows_it() -> None:
     ctrl.delete_item("q1", _item_id_at(ctrl, 4))
 
     assert _order(ctrl) == TRACKS
+
+
+async def test_clients_get_a_buffered_last_track_as_locked_until_a_track_follows_it() -> None:
+    """Once a track is added behind the buffered last one, clients may remove the buffered one."""
+    ctrl = _controller(current_index=3, index_in_buffer=3)
+    ctrl._preload_next_item = Mock()
+    ctrl.mass.players.replaces_enqueued_media.return_value = True
+    ctrl.track_loaded_in_buffer("q1", _item_id_at(ctrl, 4))
+    queue = ctrl._queue_data["q1"].queue
+    PlayerQueuesController.signal_update(ctrl, "q1")
+    assert queue.last_locked_index == 4
+
+    added = QueueItem.from_media_item("q1", _track("t5"))
+    ctrl.update_items("q1", [*ctrl._queue_data["q1"].items, added])
+    PlayerQueuesController.signal_update(ctrl, "q1")
+    assert queue.last_locked_index == 3
+
+    ctrl.delete_item("q1", _item_id_at(ctrl, 4))
+
+    assert _order(ctrl) == ["t0", "t1", "t2", "t3", "t5"]
 
 
 async def test_play_next_lands_behind_the_playing_track_when_nothing_is_buffered_ahead() -> None:
