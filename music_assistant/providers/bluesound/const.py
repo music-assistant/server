@@ -35,11 +35,12 @@ PLAYBACK_STATE_MAP = {
 SOURCE_TIDAL = "Tidal"
 SOURCE_AIRPLAY = "AirPlay"
 SOURCE_SPOTIFY = "Spotify"
-SOURCE_RADIOPARADISE = "RadioParadise"
+SOURCE_RADIOPARADISE = "Radio Paradise"
 SOURCE_TUNEIN = "TuneIn"
 SOURCE_HTTP = "http"
 SOURCE_BLUETOOTH = "Bluetooth"
 SOURCE_TV = "HDMI ARC"
+SOURCE_LOCALMUSIC = "LocalMusic"
 
 # play urls of the inputs of a player: a capture from its own audio hardware, where
 # Bluetooth and services such as Spotify are captured as "Capture:bluez:" or "Capture:spotify:"
@@ -106,6 +107,14 @@ PLAYER_SOURCE_MAP = {
     SOURCE_TUNEIN: PlayerSource(
         id=SOURCE_TUNEIN,
         name="TuneIn",
+        passive=True,
+        can_play_pause=True,
+        can_next_previous=False,
+        can_seek=False,
+    ),
+    SOURCE_LOCALMUSIC: PlayerSource(
+        id=SOURCE_LOCALMUSIC,
+        name="Local Music",
         passive=True,
         can_play_pause=True,
         can_next_previous=False,
