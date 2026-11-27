@@ -16,6 +16,7 @@ from music_assistant_models.player import PlayerSource
 from pyheos import PlayState as HeosPlayState
 from pyheos import const as heos_const
 
+from music_assistant.constants import PlaybackQuality
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.player import HeosPlayer
 from tests.common import MockProvider, attach_mock, mock_player_mass
@@ -456,6 +457,13 @@ def test_group_members_need_the_stream_of_their_leader() -> None:
     player = HeosPlayer.__new__(HeosPlayer)
 
     assert player.native_grouping_requires_own_stream is True
+
+
+def test_a_player_defaults_to_lossless_uncompressed() -> None:
+    """A player the user picked no playback quality for is streamed lossless, uncompressed."""
+    player = HeosPlayer.__new__(HeosPlayer)
+
+    assert player.default_playback_quality is PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
 
 @pytest.mark.parametrize(
