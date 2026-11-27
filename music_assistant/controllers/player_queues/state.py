@@ -102,6 +102,9 @@ class PlayerQueueData:
     # session_id whose flow stream ended because the queue ran out of items, as opposed
     # to ending early to restart on a format change or a live item
     flow_queue_exhausted: str | None = None
+    # session_id whose fully streamed flow the player started over from 0 s: its position
+    # reports no longer move the queue
+    flow_started_over: str | None = None
     # session_id whose lost flow stream the queue restarted, and when (monotonic) it restarted
     # lost flow streams, for the rate limit
     flow_restarted_session_id: str | None = None

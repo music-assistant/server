@@ -1810,7 +1810,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.flow_mode:
             # _get_flow_queue_stream_index returns media-time in the current item
             # using each playlog entry's recorded speed.
-            current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+            current_index, elapsed_time = self._get_flow_position(queue, player)
             if current_index != queue.current_index:
                 # the jump crossed a track boundary: the elapsed time is in that track
                 queue.current_index = current_index
