@@ -282,8 +282,8 @@ class GoLibrespotBackend(SpotifyConnectBackend):
             # external_volume: don't let go-librespot attenuate the PCM — MA / the
             # target player owns the actual volume. We still receive 'volume'
             # events and push volume back so the Spotify app slider stays in sync.
-            # No initial_volume: go-librespot ignores it with external_volume set;
-            # the provider pushes the player's volume instead.
+            # No initial_volume: the provider pushes the player's volume once a
+            # session starts.
             "external_volume": True,
             "volume_steps": VOLUME_STEPS,
             # normalisation is applied by go-librespot itself (-14 LUFS target);
