@@ -342,10 +342,12 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # Cleared after restore finishes: a resume during the announcement still needs the
             # position the queue was stopped at while this is set.
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
-            if (
-                held_queue_id := player.extra_data.pop(ATTR_ANNOUNCEMENT_HELD_QUEUE, None)
-            ) is not None:
+            held_queue_id = player.extra_data.pop(ATTR_ANNOUNCEMENT_HELD_QUEUE, None)
+            if held_queue_id is not None:
                 self._release_held_queue(player, held_queue_id)
+            if held_queue_id != player.player_id:
+                # the queue of the player followed its player again too, held or not
+                self.mass.player_queues.release_after_announcement(player.player_id)
             # the idle power off counts from here, also after a native announcement that
             # leaves the playback state as it was
             player.extra_data.pop(ATTR_IDLE_SINCE, None)

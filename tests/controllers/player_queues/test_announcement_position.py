@@ -689,8 +689,8 @@ async def test_a_cancelled_announcement_releases_the_queue() -> None:
     assert ctrl._queue_data[QUEUE_ID].announcement_position is None
 
 
-async def test_an_announcement_that_held_nothing_releases_no_queue() -> None:
-    """A hold that belongs to someone else is not released by an announcement that held none."""
+async def test_an_announcement_that_held_nothing_still_releases_the_queue_of_its_player() -> None:
+    """A queue that was paused follows its player again after the clip, as one that was held."""
     queue = _queue(PlaybackState.PAUSED)
     queue.extra_attributes[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
     player = _player(announcement=False, state=PlaybackState.PAUSED)
@@ -703,4 +703,4 @@ async def test_an_announcement_that_held_nothing_releases_no_queue() -> None:
     with pytest.raises(PlayerCommandFailed):
         await announcements._run_announcement(player, _announce_data(), None)
 
-    assert _held(ctrl)
+    assert not _held(ctrl)
