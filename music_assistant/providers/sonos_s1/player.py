@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 
 from music_assistant_models.enums import (
     IdentifierType,
@@ -30,6 +31,7 @@ from soco.data_structures import DidlAudioBroadcast
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     VERBOSE_LOG_LEVEL,
+    PlaybackQuality,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
@@ -146,6 +148,11 @@ class SonosPlayer(PlayerProtocol):
         """Return a list of missing service subscriptions."""
         subscribed_services = {sub.service.service_type for sub in self._subscriptions}
         return SUBSCRIPTION_SERVICES - subscribed_services
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
     async def setup(self) -> None:
         """Set up the player."""
@@ -289,15 +296,14 @@ class SonosPlayer(PlayerProtocol):
             )
 
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
-        if not media.duration:
-            # Sonos really does not like FLAC streams without duration
-            stream_url = stream_url.replace(".flac", ".mp3")
-
         didl_metadata = create_didl_metadata(
             media, stream_url, self.mass.streams.stream_url_serves_as_file(stream_url)
         )
         is_announcement = media.media_type == MediaType.ANNOUNCEMENT
-        force_radio = False if is_announcement else not media.duration
+        # the stream of a queue in flow mode runs on past the duration of its first track
+        endless = not media.duration or "/flow/" in stream_url
+        # the radio path plays an endless MP3 stream, but stops on an endless WAV or FLAC one
+        force_radio = not is_announcement and endless and urlparse(stream_url).path.endswith(".mp3")
 
         await asyncio.to_thread(
             self.soco.play_uri, stream_url, meta=didl_metadata, force_radio=force_radio
