@@ -30,7 +30,7 @@ from music_assistant_models.player import PlayerSource
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
-    create_output_codec_config_entry,
+    PlaybackQuality,
 )
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
@@ -309,11 +309,17 @@ class YandexStationPlayer(PlayerProtocol):
         self.glagol.update_handler = self._on_glagol_update
         await self.glagol.start()
 
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        # WAV for prompt queue playback
+        return PlaybackQuality.LOSSLESS_UNCOMPRESSED
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """
         Return player-specific config entries.
 
-        Default to WAV for prompt queue and live-source playback.
+        Default to WAV for live-source playback.
         """
         # List players that can receive a redirected track.  We dispatch
         # the handoff via ``mass.player_queues.play_media(queue_id=...)``
@@ -339,7 +345,6 @@ class YandexStationPlayer(PlayerProtocol):
             key=lambda o: (o.title or "").lower(),
         )
         return [
-            create_output_codec_config_entry(default_value="wav"),
             CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
             CONF_ENTRY_VOICE_CONTROL,
             ConfigEntry(

@@ -32,6 +32,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_emby_album_artists_heal,
     _migrate_milkdrop_drop_color_tint,
     _migrate_nicovideo_drop_mail_login,
+    _migrate_output_codec_to_playback_quality,
     _migrate_player_icons,
     _migrate_player_setup_data,
     _migrate_raumfeld_icy_basic,
@@ -184,10 +185,12 @@ async def test_migrate_drops_the_http_profile_of_a_config_from_before_the_split(
 
     records = [*data["players"].values(), *data["player_protocols"].values()]
     assert not [key for record in records for key in record["values"] if "http_profile" in key]
-    assert data["player_protocols"]["sonos_1"]["values"] == {"output_codec": "mp3"}
+    assert data["player_protocols"]["sonos_1"]["values"] == {"playback_quality": "compressed"}
     assert data["player_protocols"]["dlna_1"]["values"] == {"flow_mode": True}
     assert data["player_protocols"]["cast_1"]["values"] == {}
-    assert data["players"]["up_cast"]["values"] == {"cast_1||protocol||output_codec": "flac"}
+    assert data["players"]["up_cast"]["values"] == {
+        "cast_1||protocol||playback_quality": "lossless_compressed"
+    }
     assert await migrate(data) is False
 
 
@@ -332,7 +335,7 @@ async def test_migrate_drops_the_fixed_content_length_of_a_config_from_before_th
         for key in record["values"]
         if "requires_fixed_content_length" in key
     ]
-    assert data["player_protocols"]["sonos_1"]["values"] == {"output_codec": "mp3"}
+    assert data["player_protocols"]["sonos_1"]["values"] == {"playback_quality": "compressed"}
     assert data["player_protocols"]["dlna_1"]["values"] == {"flow_mode": False}
     assert data["player_protocols"]["wam_1"]["values"] == {}
     assert await migrate(data) is False
@@ -382,6 +385,85 @@ def test_migrate_drop_fixed_content_length_tolerates_malformed_data(tree: str) -
     assert data[tree]["a"] == "broken"
     assert "values" not in data[tree]["b"]
     assert data[tree]["d"]["values"] == {}
+
+
+def test_migrate_output_codec_moves_every_codec_to_its_playback_quality() -> None:
+    """Each output codec moves to its level, in both trees and on a prefixed copy."""
+    data: dict[str, Any] = {
+        "players": {
+            # a universal player keeps a copy of a protocol's value under a prefixed key
+            "up_1": {
+                "provider": "universal_player",
+                "values": {"cast_1||protocol||output_codec": "aac", "hide_in_ui": True},
+            },
+        },
+        "player_protocols": {
+            "dlna_wav": {"provider": "dlna", "values": {"output_codec": "wav"}},
+            "dlna_pcm": {"provider": "dlna", "values": {"output_codec": "pcm"}},
+            "cast_flac": {"provider": "chromecast", "values": {"output_codec": "flac"}},
+            "sonos_mp3": {"provider": "sonos", "values": {"output_codec": "mp3"}},
+            "fully_aac": {"provider": "fully_kiosk", "values": {"output_codec": "aac"}},
+        },
+    }
+
+    assert _migrate_output_codec_to_playback_quality(data) is True
+
+    assert data["players"]["up_1"]["values"] == {
+        "cast_1||protocol||playback_quality": "compressed",
+        "hide_in_ui": True,
+    }
+    protocols = data["player_protocols"]
+    assert protocols["dlna_wav"]["values"] == {"playback_quality": "lossless_uncompressed"}
+    assert protocols["dlna_pcm"]["values"] == {"playback_quality": "lossless_uncompressed"}
+    assert protocols["cast_flac"]["values"] == {"playback_quality": "lossless_compressed"}
+    assert protocols["sonos_mp3"]["values"] == {"playback_quality": "compressed"}
+    assert protocols["fully_aac"]["values"] == {"playback_quality": "compressed"}
+    assert _migrate_output_codec_to_playback_quality(data) is False
+
+
+def test_migrate_output_codec_drops_what_has_no_playback_quality() -> None:
+    """An unknown value is dropped, a stored level is kept and a non-HTTP value never moves."""
+    data: dict[str, Any] = {
+        "providers": {"airplay--x": {"domain": "airplay"}},
+        "player_protocols": {
+            "dlna_unknown": {"provider": "dlna", "values": {"output_codec": "ogg"}},
+            "dlna_number": {"provider": "dlna", "values": {"output_codec": 3}},
+            "dlna_set": {
+                "provider": "dlna",
+                "values": {"output_codec": "mp3", "playback_quality": "lossless_uncompressed"},
+            },
+            "ap_1": {"provider": "airplay--x", "values": {"output_codec": "mp3"}},
+            "snap_1": {"provider": "snapcast", "values": {"output_codec": "flac"}},
+        },
+    }
+
+    assert _migrate_output_codec_to_playback_quality(data) is True
+
+    protocols = data["player_protocols"]
+    assert protocols["dlna_unknown"]["values"] == {}
+    assert protocols["dlna_number"]["values"] == {}
+    assert protocols["dlna_set"]["values"] == {"playback_quality": "lossless_uncompressed"}
+    assert protocols["ap_1"]["values"] == {}
+    assert protocols["snap_1"]["values"] == {}
+
+
+def test_migrate_output_codec_tolerates_malformed_data() -> None:
+    """Missing or non-dict trees, records and values are skipped without raising."""
+    assert _migrate_output_codec_to_playback_quality({}) is False
+    assert _migrate_output_codec_to_playback_quality({"player_protocols": "broken"}) is False
+    data: dict[str, Any] = {
+        "providers": "broken",
+        "players": {
+            "p1": "broken",
+            "p2": {"provider": "dlna"},
+            "p3": {"provider": "dlna", "values": None},
+            "p4": {"provider": None, "values": {"output_codec": "flac"}},
+        },
+    }
+    assert _migrate_output_codec_to_playback_quality(data) is True
+    assert data["players"]["p1"] == "broken"
+    assert "values" not in data["players"]["p2"]
+    assert data["players"]["p4"]["values"] == {"playback_quality": "lossless_compressed"}
 
 
 def test_migrate_airplay_apple_power_control_flips_stale_default() -> None:
@@ -1531,7 +1613,7 @@ async def test_migrate_drops_the_milkdrop_color_tint_of_a_config_from_before_the
 
     assert data["providers"]["milkdrop_visualizer"]["values"] == {}
     assert data["player_protocols"]["sonos_1"]["values"] == {
-        "output_codec": "mp3",
+        "playback_quality": "compressed",
         "color_tint": False,
     }
     assert await migrate(data) is False
@@ -1556,7 +1638,7 @@ async def test_migrate_drops_the_milkdrop_color_tint_of_a_split_config() -> None
                 "player_id": "pl_a",
                 "role": "native",
                 "enabled": True,
-                "values": {"output_codec": "mp3", "color_tint": True},
+                "values": {"playback_quality": "compressed", "color_tint": True},
             }
         },
     }
@@ -1725,7 +1807,7 @@ async def test_migrate_moves_the_artist_selection_of_a_config_from_before_the_sp
     assert await migrate(data) is True
 
     assert values == {"default_enqueue_select_artist": "library_album_tracks"}
-    assert data["player_protocols"]["sonos_1"]["values"] == {"output_codec": "mp3"}
+    assert data["player_protocols"]["sonos_1"]["values"] == {"playback_quality": "compressed"}
     assert await migrate(data) is False
 
 
@@ -1744,7 +1826,7 @@ async def test_migrate_moves_the_artist_selection_of_a_split_config() -> None:
                 "player_id": "pl_a",
                 "role": "native",
                 "enabled": True,
-                "values": {"output_codec": "mp3"},
+                "values": {"playback_quality": "compressed"},
             }
         },
     }

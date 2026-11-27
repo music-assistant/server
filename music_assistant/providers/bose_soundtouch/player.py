@@ -28,8 +28,8 @@ from music_assistant_models.player import (
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     MASS_USER_AGENT,
+    PlaybackQuality,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.upnp import AVTransport
@@ -327,6 +327,12 @@ class BoseSoundTouchPlayer(PlayerProtocol):
         return self._client.session_config.ip
 
     @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        # by far the most consistent results with mp3. flac is flakier.
+        return PlaybackQuality.COMPRESSED
+
+    @property
     def avt(self) -> AVTransport:
         """UPnP AVTransport of the speaker."""
         return AVTransport(
@@ -350,8 +356,6 @@ class BoseSoundTouchPlayer(PlayerProtocol):
         base_entries = await super().get_config_entries()
 
         default_entries = [
-            # by far the most consistent results with mp3. flac is flakier.
-            CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
             CONF_ENTRY_FLOW_MODE,
             create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
         ]

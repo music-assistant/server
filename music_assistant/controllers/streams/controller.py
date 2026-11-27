@@ -57,7 +57,6 @@ from music_assistant.constants import (
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_LOG_LEVEL,
-    CONF_OUTPUT_CODEC,
     CONF_PLAYER_QUEUES,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PUBLISH_IP,
@@ -862,12 +861,6 @@ class StreamsController(CoreController):
         if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
             return media.uri
         protocol_player = self.mass.players.get_output_protocol(player_id)
-        conf_output_codec = cast(
-            "str",
-            protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
-            if protocol_player
-            else "flac",
-        )
         prefer_wav_for_live_sources = (
             media.media_type == MediaType.AUDIO_SOURCE
             and protocol_player is not None
@@ -876,11 +869,12 @@ class StreamsController(CoreController):
                 protocol_player.config.get_value(CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False),
             )
         )
-        output_codec = (
-            ContentType.WAV
-            if prefer_wav_for_live_sources
-            else ContentType.try_parse(conf_output_codec)
-        )
+        if prefer_wav_for_live_sources:
+            output_codec = ContentType.WAV
+        elif protocol_player is not None:
+            output_codec = protocol_player.output_codec
+        else:
+            output_codec = ContentType.FLAC
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:

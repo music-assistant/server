@@ -28,7 +28,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerOptionValueType
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import ATTR_VOLUME_TARGET, CONF_PASSWORD
+from music_assistant.constants import ATTR_VOLUME_TARGET, CONF_PASSWORD, PlaybackQuality
 from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
@@ -194,6 +194,12 @@ class AirPlayPlayer(PlayerProtocol):
         if (membership := self.set_membership) and membership.position == 0 and membership.name:
             return membership.name
         return super().name
+
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """Return the codec for each playback quality level the player can play."""
+        # the cliairplay binary always encodes ALAC
+        return {PlaybackQuality.LOSSLESS_COMPRESSED: ContentType.ALAC}
 
     @property
     def protocol(self) -> StreamingProtocol:

@@ -11,6 +11,7 @@ from music_assistant_models.dashboard import DashboardDevice
 from music_assistant_models.enums import DashboardType
 from music_assistant_models.errors import PlayerUnavailableError
 from pychromecast.const import CAST_TYPE_CHROMECAST
+from pychromecast.models import CastInfo, HostServiceInfo
 
 from music_assistant.providers.chromecast.dashboard import ChromecastDashboards
 from music_assistant.providers.chromecast.player import ChromecastPlayer
@@ -85,6 +86,38 @@ def test_register_video_capable_device() -> None:
         },
         provider_domain_hint="chromecast",
     )
+
+
+@pytest.mark.parametrize(
+    ("model_name", "manufacturer", "registered"),
+    [
+        ("Chromecast Audio", "Google Inc.", False),
+        ("Google Home Mini", "Google Inc.", False),
+        ("Google Nest Hub", "Google Inc.", True),
+        ("WiiM Pro", "Unknown manufacturer", False),
+        ("BRAVIA 4K", "Sony", True),
+    ],
+)
+def test_register_host_discovered_device_by_known_model(
+    model_name: str, manufacturer: str, registered: bool
+) -> None:
+    """Host discovery reports cast type 'cast' when display_supported is missing."""
+    dashboards = _make_dashboards()
+    uuid = uuid4()
+    cast_info = CastInfo(
+        {HostServiceInfo("192.168.1.20", 8009)},
+        uuid,
+        model_name,
+        "Kitchen speaker",
+        "192.168.1.20",
+        8009,
+        CAST_TYPE_CHROMECAST,
+        manufacturer,
+    )
+
+    dashboards.register(uuid, cast_info)
+
+    assert dashboards.mass.dashboard.register_dashboard_handler.called is registered  # type: ignore[attr-defined]
 
 
 ### Unregistration on removal

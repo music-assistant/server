@@ -1320,7 +1320,7 @@ class Player:
         """
         Return a config value resolved on the protocol that renders the audio output.
 
-        Audio/output related settings (output codec, output channels,
+        Audio/output related settings (playback quality, output channels,
         sample rates) live on the protocol that actually renders the audio: the
         active audio protocol when outputting via one, otherwise the player's own
         protocol. The output protocol's value (or its provider's entry default) takes

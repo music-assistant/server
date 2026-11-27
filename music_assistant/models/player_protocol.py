@@ -25,6 +25,7 @@ from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigVa
 from music_assistant_models.constants import EXTRA_ATTRIBUTES_TYPES
 from music_assistant_models.enums import (
     ChannelLayout,
+    ContentType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -45,7 +46,13 @@ from music_assistant_models.player import (
 from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
-from music_assistant.constants import CONF_CACHED_ARP_MAC, CONF_FLOW_MODE, CONF_SAMPLE_RATES
+from music_assistant.constants import (
+    CONF_CACHED_ARP_MAC,
+    CONF_FLOW_MODE,
+    CONF_PLAYBACK_QUALITY,
+    CONF_SAMPLE_RATES,
+    PlaybackQuality,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -262,6 +269,38 @@ class PlayerProtocol(ABC):
         single item, and one it never reaches for a stream that runs on.
         """
         return False
+
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """
+        Return the codec the player is streamed in for each playback quality level it can play.
+
+        A level left out is listed as unavailable in the settings. A protocol that returns no
+        levels gets no playback quality setting.
+        """
+        return {
+            PlaybackQuality.LOSSLESS_UNCOMPRESSED: ContentType.WAV,
+            PlaybackQuality.LOSSLESS_COMPRESSED: ContentType.FLAC,
+            PlaybackQuality.COMPRESSED: ContentType.MP3,
+        }
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_COMPRESSED
+
+    @property
+    @final
+    def output_codec(self) -> ContentType:
+        """Return the codec the player is streamed in, from its playback quality setting."""
+        codecs = self.playback_quality_codecs
+        if not codecs:
+            return ContentType.FLAC
+        conf_quality = self._config.get_value(CONF_PLAYBACK_QUALITY)
+        # a stored value is not checked against the options the protocol offers now
+        if isinstance(conf_quality, str) and conf_quality in codecs:
+            return codecs[PlaybackQuality(conf_quality)]
+        return codecs.get(self.default_playback_quality) or next(iter(codecs.values()))
 
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """

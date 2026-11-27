@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
 from aiohttp import web
@@ -88,10 +88,7 @@ class AudioPipeline:
                 player_id,
             )
 
-        effective_format = cast(
-            "str",
-            player.config.get_value("output_codec", "mp3"),
-        )
+        effective_format = player.output_codec.value
 
         pcm_format, out_format, headers = build_audio_params(effective_format)
 

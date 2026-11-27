@@ -43,7 +43,6 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ChannelLayout,
     ConfigEntryType,
-    ContentType,
     EventType,
     IdentifierType,
     MediaType,
@@ -57,7 +56,6 @@ from music_assistant_models.player import PlayerMedia, PlayerOptionValueType
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
-    CONF_OUTPUT_CODEC,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -991,8 +989,7 @@ class SonosPlayer(PlayerProtocol):
             return False
         if (queue_item := self.mass.player_queues.get_item(queue_id, queue_item_id)) is None:
             return False
-        output_codec = ContentType.try_parse(self.get_config_value(CONF_OUTPUT_CODEC, "flac"))
-        return self.mass.streams.serves_as_file(self, queue_item, output_codec)
+        return self.mass.streams.serves_as_file(self, queue_item, self.output_codec)
 
     def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:
         """

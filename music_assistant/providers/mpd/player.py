@@ -14,6 +14,7 @@ from mpd.asyncio import MPDClient
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     IdentifierType,
     PlaybackState,
     PlayerFeature,
@@ -24,13 +25,13 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_PASSWORD,
+    PlaybackQuality,
 )
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.setup_flow import SetupFlowError
 
 from .constants import (
     COMMAND_TIMEOUT,
-    CONF_ENTRY_OUTPUT_CODEC_MPD,
     CONNECT_TIMEOUT,
     ELAPSED_POLL_INTERVAL,
     HEALTHCHECK_POLL_INTERVAL,
@@ -125,16 +126,27 @@ class MPDPlayer(PlayerProtocol):
             return ELAPSED_POLL_INTERVAL
         return HEALTHCHECK_POLL_INTERVAL
 
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """Return the codec for each playback quality level the player can play."""
+        # FLAC does not work for infinite HTTP streams - MPD cannot probe the header.
+        return {
+            PlaybackQuality.LOSSLESS_UNCOMPRESSED: ContentType.WAV,
+            PlaybackQuality.COMPRESSED: ContentType.MP3,
+        }
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.COMPRESSED
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """
         Return player-level config entries.
 
         :return: List of ConfigEntry objects for this player.
         """
-        return [
-            CONF_ENTRY_OUTPUT_CODEC_MPD,
-            CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
-        ]
+        return [CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED]
 
     async def on_config_updated(self) -> None:
         """Reconnect to MPD when player configuration changes."""

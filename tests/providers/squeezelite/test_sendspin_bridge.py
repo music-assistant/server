@@ -21,7 +21,7 @@ from dataclasses import replace
 from functools import partial
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
 from aiohttp import web
@@ -41,7 +41,7 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.sendspin.bridge_role import BRIDGE_SAMPLE_RATE
 from music_assistant.providers.squeezelite.bridge_flac import BLOCK_FRAMES, HELD_BACK_BYTES
@@ -548,8 +548,8 @@ class _Rig:
 
         :param sync_adjust: The sync delay setting of the player.
         :param device_type: The device type the player reports.
-        :param output_codec: The output codec setting of the player. Most tests are about
-            the stream of a session whatever it is sent as, which PCM shows as it is.
+        :param output_codec: The codec of the playback quality of the player. Most tests are
+            about the stream of a session whatever it is sent as, which PCM shows as it is.
         """
         self.clock = ManualClock(now_us_value=EPOCH_US)
         self.mass = mass = MagicMock()
@@ -588,9 +588,13 @@ class _Rig:
         protocol.available = True
         protocol.client = self.client
         protocol.provider = provider
-        self.config = {CONF_SYNC_ADJUST: sync_adjust, CONF_OUTPUT_CODEC: output_codec}
+        self.config = {CONF_SYNC_ADJUST: sync_adjust}
         protocol.config.get_value = MagicMock(
             side_effect=lambda key, default=None: self.config.get(key, default)
+        )
+        self.output_codec = output_codec
+        type(protocol).output_codec = PropertyMock(
+            side_effect=lambda: ContentType(self.output_codec)
         )
         # the Sendspin protocol of the bridge client, which knows no source yet
         self.sendspin_player = mass.players.get_protocol.return_value
@@ -1500,9 +1504,9 @@ PCM_16 = "audio/pcm;rate=44100;bitrate=16;channels=2"
 PCM_24 = "audio/pcm;rate=44100;bitrate=24;channels=2"
 FLAC = "audio/flac"
 
-# The output codec setting of a player, the codecs it says it plays, the bit depth of the
-# audio of the playback session and the bit depths the player plays, with what the player
-# is sent.
+# The codec of the playback quality of a player, the codecs it says it plays, the bit depth
+# of the audio of the playback session and the bit depths the player plays, with what the
+# player is sent.
 SENT = [
     # FLAC for a player that plays it, in the bit depth of the session
     ("flac", FLAC_PLAYER, 16, (16, 24), FLAC, 16),
@@ -1656,7 +1660,7 @@ async def test_a_pcm_stream_that_fails_before_it_played_is_restarted_as_it_was(
         assert rig.session.mime_type == first.mime_type == MIME_TYPE
         assert "instead of FLAC" not in caplog.text
         # a FLAC stream is still what it gets once it is set to it and plays it
-        rig.config[CONF_OUTPUT_CODEC] = "flac"
+        rig.output_codec = "flac"
         rig.client.supported_codecs = FLAC_PLAYER
         assert (await rig.start_playing()).mime_type == "audio/flac"
     finally:
@@ -1701,7 +1705,7 @@ async def test_a_stream_keeps_its_codec_and_bit_depth_while_it_plays(flac_rig: _
     session = await rig.start_playing()
 
     rig.sendspin_player.session_bit_depth = 24
-    rig.config[CONF_OUTPUT_CODEC] = "wav"
+    rig.output_codec = "wav"
     rig.bridge._on_audio_chunk(_chunk(rig.origin_us, 4 * SECOND, SECOND))
     rig.bridge.update_now_playing()
     await _settle()
@@ -4776,7 +4780,7 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
         assert -22 - later // 2000 <= player.left_out() <= 0
         assert len(first.chunks) == 8 - (plays_s - 3) // 3
         # a setting that changed meanwhile is for the stream after this one
-        rig.config[CONF_OUTPUT_CODEC] = "mp3"
+        rig.output_codec = "mp3"
         rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
         # it answers its status requests all along: its clock is known
         rig.map_clock()

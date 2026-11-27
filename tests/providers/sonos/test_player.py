@@ -1787,7 +1787,7 @@ async def test_pause_pauses_a_speaker_only_in_a_track_it_gets_as_a_file(
     # the speaker reports the item it cached for the position, and plays what it fetched there
     player._served_bindings = {"abc@0": (0, "xyz")}
     player._config = MagicMock()
-    player._config.get_value.return_value = "wav"
+    player._config.get_value.return_value = "lossless_uncompressed"
     queue_item = mass.player_queues.get_item.return_value
     mass.streams.serves_as_file.return_value = served_as_file
 

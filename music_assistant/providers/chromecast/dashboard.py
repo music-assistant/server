@@ -11,7 +11,7 @@ import pychromecast
 from music_assistant_models.dashboard import DashboardDevice
 from music_assistant_models.enums import DashboardType
 from music_assistant_models.errors import PlayerUnavailableError
-from pychromecast.const import CAST_TYPE_CHROMECAST
+from pychromecast.const import CAST_TYPE_CHROMECAST, CAST_TYPES
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_LOST
 
 from .constants import MASS_APP_ID
@@ -80,7 +80,7 @@ class ChromecastDashboards:
         :param uuid: Cast device uuid, as reported by discovery.
         :param cast_info: Discovery info for the Cast device.
         """
-        if self._unloaded or cast_info.cast_type != CAST_TYPE_CHROMECAST:
+        if self._unloaded or not _has_display(cast_info):
             return
         self._register_device(str(uuid), cast_info)
 
@@ -338,3 +338,18 @@ class _DashboardCastListener:
         self.dashboards.mass.loop.call_soon_threadsafe(
             self.dashboards._handle_connection_status, self.device_id, status
         )
+
+
+def _has_display(cast_info: CastInfo) -> bool:
+    """Return whether the Cast device has a display to show a dashboard on."""
+    if cast_info.cast_type != CAST_TYPE_CHROMECAST:
+        return False
+    # pychromecast's placeholder when the device info named no manufacturer, which also
+    # leaves display_supported at its default
+    if cast_info.manufacturer == "Unknown manufacturer":
+        return False
+    # Host discovery reports "cast" when a device omits display_supported, so a model
+    # pychromecast knows as audio-only overrides it.
+    model = (cast_info.model_name or "").lower()
+    known_type, _ = CAST_TYPES.get(model, (CAST_TYPE_CHROMECAST, None))
+    return known_type == CAST_TYPE_CHROMECAST
