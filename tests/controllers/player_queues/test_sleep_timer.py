@@ -116,6 +116,7 @@ def _player(state: PlaybackState, queue_item_id: str, elapsed: float) -> Any:
         name="Q1",
         available=True,
         playback_state=state,
+        fake_paused=False,
         active_source="q1",
         corrected_elapsed_time=elapsed,
         group_members=[],
@@ -467,12 +468,16 @@ async def test_a_pause_made_with_a_stop_keeps_the_sleep_timer() -> None:
     ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
     mass.players.get_group_and_player_lock = Mock(return_value=nullcontext())
     mass.players._handle_cmd_stop = AsyncMock()
+    mass.players._handle_fake_pause = AsyncMock()
     # set by the pause command before the player turns it into a stop
     ctrl._queue_data["q1"].halted_by_command = True
 
-    await ctrl._handle_stop("q1", keep_sleep_timer=True)
-    queue.state = PlaybackState.IDLE
-    ctrl._handle_sleep_timer(queue, *_states(PlaybackState.IDLE, "item_1", prev_elapsed=50))
+    await ctrl._handle_stop("q1", pause=True)
+    queue.state = PlaybackState.PAUSED
+    ctrl._handle_sleep_timer(queue, *_states(PlaybackState.PAUSED, "item_1", prev_elapsed=50))
+
+    mass.players._handle_fake_pause.assert_awaited_once_with("q1")
+    mass.players._handle_cmd_stop.assert_not_awaited()
 
     _scheduled(mass)
     assert ctrl._queue_data["q1"].sleep_timer_target == SleepTimerTarget(

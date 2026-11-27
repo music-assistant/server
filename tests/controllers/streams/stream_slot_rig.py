@@ -223,6 +223,7 @@ class SlotRig:
         mass.streams.audio_analysis.start_analysis = AsyncMock()
         mass.streams.audio_analysis.get_audio_analysis = AsyncMock(return_value=None)
         mass.streams.source_normalizes_audio.return_value = False
+        mass.players.get_player.return_value.fake_paused = False
         self.queues = PlayerQueuesController.__new__(PlayerQueuesController)
         self.queues.mass = mass
         self.queues.logger = MagicMock()
@@ -399,6 +400,7 @@ class SlotRig:
             synced_to=None,
             active_group=None,
             offline_by_power_control=False,
+            fake_paused=False,
             extra_data={},
         )
         self.mass.players.get_playback_locks = lambda *_player_ids: nullcontext()

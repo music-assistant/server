@@ -187,7 +187,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # mechanical clear: the shuffle state for this batch was already settled by the caller.
             # Replace is exempt: it swaps the whole queue below without ever emptying it.
             self._clear(queue_id, skip_stop=True)
-        if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        player = self.mass.players.get_player(queue_id)
+        # a player that stopped for its pause holds nothing of the queue anymore: the queue
+        # plays on from its current item
+        if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED) and not (
+            player and player.fake_paused
+        ):
             boundary_index = committed_index(queue)
             cur_index = boundary_index if boundary_index is not None else 0
         else:

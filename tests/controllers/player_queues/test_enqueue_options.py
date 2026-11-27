@@ -35,6 +35,7 @@ def _controller() -> PlayerQueuesController:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.fake_paused = False
     return ctrl
 
 

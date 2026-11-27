@@ -329,6 +329,7 @@ def test_a_track_change_asks_for_the_next_batch() -> None:
             name="Q1",
             available=True,
             playback_state=PlaybackState.PLAYING,
+            fake_paused=False,
             corrected_elapsed_time=10,
             group_members=[],
         )

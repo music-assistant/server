@@ -972,7 +972,7 @@ async def test_a_jump_is_not_undone_by_the_report_on_the_replaced_load() -> None
     queues = _real_queues("queue1", ["track0", "track1", "track2"])
     mass.player_queues = queues
     queue = queues._queue_data["queue1"].queue
-    reporting = MagicMock(corrected_elapsed_time=0.0)
+    reporting = MagicMock(corrected_elapsed_time=0.0, fake_paused=False)
     reporting.resolve_output_protocol.return_value = player
     _report_playing_our_queue(group, cast("str", player.wire_item_id("track0")))
     player.on_player_event(None)

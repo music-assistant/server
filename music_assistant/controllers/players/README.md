@@ -729,7 +729,9 @@ and still waits for another one, holds that off.
   player's: it shows over an idle output and ends when the player plays again, is stopped, loses
   the source, or after the pause timeout of the queues. The members of a group and the players
   synced to a leader show the fake pause of their group or leader, and a sync group keeps its
-  members meanwhile. The session outlives it. A source carries
+  members meanwhile. The session outlives it. The same fake pause shows the pause of the player's
+  own queue on a player that can not pause: the queue is stopped with its session, the output
+  silenced with `hold`, and play starts the queue again from where it was paused. A source carries
   its own name and the player it belongs to; `get_audio_source_name` composes the name for where it
   is shown: the name alone on that player, with the player's name after it elsewhere. An input a
   speaker offers from another speaker of its system, such as the line-in of another Sonos speaker,
