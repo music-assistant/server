@@ -11,7 +11,7 @@ import pytest
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import SlimEvent
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerType
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -131,6 +131,27 @@ def test_group_regular_track_ignores_wav_preference() -> None:
 def test_is_protocol_only_device(device_model: str, expected: bool) -> None:
     """Test protocol-only device detection based on the reported device model."""
     assert is_protocol_only_device(device_model) is expected
+
+
+@pytest.mark.parametrize("device_model", ["SqueezeLite", "WiiM Player"])
+async def test_stop_leaves_the_output_on(device_model: str) -> None:
+    """A stop only stops the client, also for a protocol-only device such as a WiiM."""
+    player, mass = _player_with_mocked_mass()
+    use_real_create_task(mass)
+    player.multi_client_stream = None
+    player._attr_type = (
+        PlayerType.PROTOCOL if is_protocol_only_device(device_model) else PlayerType.PLAYER
+    )
+    client = MagicMock(device_model=device_model, stop=AsyncMock(), power=AsyncMock())
+
+    with (
+        patch.object(player, "_get_sync_clients", return_value=[client]),
+        patch.object(player, "update_state"),
+    ):
+        await player.stop()
+
+    client.stop.assert_awaited_once()
+    client.power.assert_not_awaited()
 
 
 async def test_regroup_supersedes_pending_resume() -> None:

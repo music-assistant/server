@@ -112,7 +112,7 @@ class SqueezelitePlayer(Player):
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
         }
-        # Protocol players are powered on/off with the stream and expose no power
+        # Protocol players are powered on with the stream and expose no power
         # control; full players get native power support (slimproto power can e.g.
         # drive a GPIO/script wired to an amplifier).
         if is_protocol_only_device(client.device_model):
@@ -225,11 +225,10 @@ class SqueezelitePlayer(Player):
             await self.multi_client_stream.stop()
             self.multi_client_stream = None
         async with TaskManager(self.mass) as tg:
+            # like LMS, a stop leaves the output on: a WiiM answers a power off with a pause
+            # request a few seconds later, which pauses whatever was started in between
             for client in self._get_sync_clients():
-                if self.type == PlayerType.PROTOCOL:
-                    tg.create_task(client.power(False))
-                else:
-                    tg.create_task(client.stop())
+                tg.create_task(client.stop())
         self.update_state()
 
     async def play(self) -> None:
