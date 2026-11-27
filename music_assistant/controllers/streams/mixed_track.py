@@ -207,8 +207,7 @@ class MixedTrack:
     def close(self) -> None:
         """Give up what is kept, and end the pass that runs."""
         self._closed = True
-        if self._pass is not None and self._pass.task is not None:
-            self._pass.task.cancel()
+        self._end_pass()
         self._lead_in = bytearray()
         self._end = bytearray()
         self._wake()
@@ -279,8 +278,16 @@ class MixedTrack:
         """End a pass that is in the track's own audio, and wait until it has gone."""
         if self._pass is None or self._pass.task is None or self._pass.over:
             return
-        self._pass.task.cancel()
+        self._end_pass()
         await asyncio.wait({self._pass.task})
+
+    def _end_pass(self) -> None:
+        """End the pass that runs, and tell its reader."""
+        if self._pass is None or self._pass.task is None:
+            return
+        self._pass.task.cancel()
+        # a pass that is ended before its first step never gets to tell its reader
+        self._pass.audio.put_nowait(None)
 
     async def _run(self, run: _Pass, stream: AsyncGenerator[bytes]) -> None:
         """

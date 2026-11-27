@@ -803,6 +803,32 @@ async def test_a_pass_ends_with_the_request_that_drives_it(rig: _Rig) -> None:
     assert streamdetails.buffer.users == ()
 
 
+async def test_a_request_that_is_replaced_as_it_starts_its_pass_ends(rig: _Rig) -> None:
+    """A pass that is ended before it ran tells its request, which does not wait for it forever."""
+    # the player read the start of the track and left: no pass runs
+    await rig.fetch("a", wanted=KIB_16)
+    mix = rig.file("a").mix
+    assert mix is not None
+    assert mix._pass is not None
+    assert mix._pass.task is not None
+    await asyncio.wait({mix._pass.task})
+    seek = rig.offset(5.5)
+
+    # the player asks for a part, and in the same moment for another one
+    replaced_request, replaced = rig.request("a", f"bytes={rig.offset(2.5)}-")
+    request, download = rig.request("a", f"bytes={seek}-")
+    tasks = [
+        asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, asked))
+        for asked in (replaced_request, request)
+    ]
+    await asyncio.wait_for(asyncio.gather(*tasks), 2)
+
+    replaced.transport.abort.assert_called_once()
+    assert not replaced.body
+    assert len(download.body) == rig.offset(TRACK_SECONDS - TRIMMED) - seek
+    assert rig.ctrl._active_output_streams == 0
+
+
 async def test_a_pass_that_reached_the_end_of_its_track_runs_on_by_itself(rig: _Rig) -> None:
     """From the end of the track on, the mix is made whether its player reads on or not."""
     second = PCM_16.pcm_sample_size
