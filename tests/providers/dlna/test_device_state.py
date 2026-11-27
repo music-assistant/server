@@ -16,6 +16,7 @@ from async_upnp_client.profiles.dlna import TransportState
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.dlna.player import DLNAPlayer
 from tests.common import MockProvider
 
@@ -359,6 +360,85 @@ async def test_position_kept_from_before_a_stop_does_not_count_as_moving(
 
     assert player.elapsed_time == 12.0
     assert player.elapsed_time_last_updated == clock.now
+
+
+async def _play_media(player: DLNAPlayer, device: MagicMock) -> None:
+    """
+    Hand the device new media the way the queue does, without waiting for its events.
+
+    :param player: The player of the device.
+    :param device: The mocked device.
+    """
+    player.mass.streams.resolve_stream_url = AsyncMock(  # type: ignore[method-assign]
+        return_value="http://192.168.1.2:8097/flow/session/queue/item.flac"
+    )
+    player.mass.streams.stream_url_serves_as_file = MagicMock(  # type: ignore[method-assign]
+        return_value=False
+    )
+    for command in ("async_stop", "async_set_transport_uri", "async_wait_for_can_play"):
+        setattr(device, command, AsyncMock())
+    device.async_play = AsyncMock()
+    with patch.object(DLNAPlayer, "update_state"):
+        await player.play_media(PlayerMedia(uri="library://track/1", title="Track"))
+    device.current_track_uri = player._attr_current_media.uri  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("stopped_first", [True, False])
+async def test_new_media_does_not_start_where_the_device_was_last_polled(
+    monkeypatch: pytest.MonkeyPatch, stopped_first: bool
+) -> None:
+    """
+    New media starts at 0, not at the position the device had before it.
+
+    The device is only polled for its position while it plays or is paused, and its
+    transitioning state sends no poll, so until it plays it still holds the old position:
+    where it was paused before a stop, or where it was in the media it played before.
+    """
+    player, device, clock = await _start(monkeypatch, 0)
+    clock.now += 26
+    device.media_position = 26
+    device.media_position_updated_at = _stamp(clock)
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    if stopped_first:
+        clock.now += 30
+        await _set_state(player, device, TransportState.STOPPED)
+    clock.now += 1
+    await _play_media(player, device)
+    device.transport_state = TransportState.TRANSITIONING
+    await _send_avtransport_event(player, "TransportState", TransportState.TRANSITIONING)
+
+    assert player.corrected_elapsed_time == 0.0
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll with the position of the new media."""
+        device.media_position = 0
+        device.media_position_updated_at = _stamp(clock)
+
+    device.async_update = _async_update
+    clock.now += 0.2
+    device.transport_state = TransportState.PLAYING
+    await _send_avtransport_event(player, "TransportState", TransportState.PLAYING)
+    clock.now += 2
+
+    assert player.corrected_elapsed_time == 2.0
+
+
+async def test_device_started_again_after_a_stop_does_not_start_where_it_was_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device that is started again by itself after a stop does not resume the old position."""
+    player, device, clock = await _start(monkeypatch, 0)
+    clock.now += 26
+    device.media_position = 26
+    device.media_position_updated_at = _stamp(clock)
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    clock.now += 30
+    await _set_state(player, device, TransportState.STOPPED)
+    clock.now += 5
+    device.transport_state = TransportState.TRANSITIONING
+    await _send_avtransport_event(player, "TransportState", TransportState.TRANSITIONING)
+
+    assert player.corrected_elapsed_time == 0.0
 
 
 async def test_pause_noticed_late_follows_the_position_the_device_paused_at(
