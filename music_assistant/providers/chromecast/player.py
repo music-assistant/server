@@ -50,7 +50,6 @@ from .constants import (
     APP_MEDIA_RECEIVER,
     APP_QUIT_DELAY,
     APP_TRACK_CHANGE_TIME,
-    CAST_LOSSLESS_MODELS,
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_DEFER_IDLE_VOLUME,
     CONF_ENTRY_DEFER_IDLE_VOLUME,
@@ -181,8 +180,6 @@ class ChromecastPlayer(PlayerProtocol):
     @property
     def default_playback_quality(self) -> PlaybackQuality:
         """Return the playback quality level to use when the user picked none."""
-        if self.cast_info.model_name in CAST_LOSSLESS_MODELS:
-            return PlaybackQuality.LOSSLESS_COMPRESSED
         return PlaybackQuality.COMPRESSED
 
     async def get_config_entries(self) -> list[ConfigEntry]:
