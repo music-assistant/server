@@ -75,6 +75,23 @@ async def test_a_pause_of_the_client_pauses_the_player(provider: MagicMock) -> N
     provider._write_silence_to_unblock_stream.assert_awaited_once_with(provider.daemon)
 
 
+async def test_the_stream_goes_on_while_the_player_is_paused(provider: MagicMock) -> None:
+    """The silence that lets the stream go on does not wait for the pause of the player."""
+    released = asyncio.Event()
+
+    async def _pause(*_args: Any) -> None:
+        await released.wait()
+
+    provider.mass.players.pause_audio_source.side_effect = _pause
+    _handle(provider, "flushed")
+    await asyncio.sleep(0.1)
+
+    # a speaker that waits for audio on its stream is slow to take the stop of the pause
+    provider._write_silence_to_unblock_stream.assert_awaited_once_with(provider.daemon)
+    released.set()
+    await asyncio.sleep(0)
+
+
 async def test_a_seek_of_the_client_does_not_pause_the_player(provider: MagicMock) -> None:
     """A flush that is followed by a resume at once, as on a seek, changes nothing."""
     _handle(provider, "flushed")

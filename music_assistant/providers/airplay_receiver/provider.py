@@ -1088,16 +1088,16 @@ class AirPlayReceiverProvider(PluginProvider):
         if daemon.in_use_by_player != player_id:
             return
         daemon.paused_player_id = player_id
+        # shairport-sync writes nothing while paused, so the stream of the player would wait
+        # for audio until it stalls, and a speaker (Sonos) waiting on it is slow to take the
+        # stop that silences it
+        self.mass.create_task(self._write_silence_to_unblock_stream(daemon))
         try:
             await self.mass.players.pause_audio_source(
                 player_id, daemon.player_id, self.instance_id
             )
         except Exception as err:  # noqa: BLE001 - player code, a resume still plays on
             self.logger.debug("Failed to pause player %s: %s", player_id, err)
-            return
-        # shairport-sync writes nothing while paused, so the stream of the silenced player
-        # would wait for audio until it stalls
-        await self._write_silence_to_unblock_stream(daemon)
 
     def _cancel_pending_pause(self, daemon: _ReceiverDaemon) -> None:
         """Cancel the pause a flush of the AirPlay client scheduled, if it is still waiting."""
