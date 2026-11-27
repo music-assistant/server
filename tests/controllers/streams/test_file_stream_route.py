@@ -102,6 +102,8 @@ class _Download:
         self._wanted = wanted
         self._stall_at = stall_at
         self.body = bytearray()
+        # the bytes handed to the player: those it got, and the write that is under way
+        self.handed = 0
         self.transport = Mock()
         self.transport.get_extra_info.return_value = None
         self.transport.is_closing.return_value = False
@@ -127,6 +129,7 @@ class _Download:
         self.protocol.transport = None
 
     async def _write(self, data: bytes) -> None:
+        self.handed = len(self.body) + len(data)
         if self._stall_at is not None and len(self.body) >= self._stall_at:
             self.stalled.set()
             await self.resume.wait()
@@ -769,15 +772,16 @@ class _Speakers:
         self.downloads.append(download)
         self._tasks.append(task)
         waits = [asyncio.create_task(download.stalled.wait()), task]
-        await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(waits, timeout=10, return_when=asyncio.FIRST_COMPLETED)
         waits[0].cancel()
+        assert done, "the speaker neither stopped reading nor got its part"
         return download
 
     async def read_on(self) -> None:
         """Let every speaker read on to the end of its part."""
         for download in self.downloads:
             download.resume.set()
-        await asyncio.gather(*self._tasks)
+        await asyncio.wait_for(asyncio.gather(*self._tasks), 10)
 
 
 def _second(seconds: float) -> int:
@@ -820,27 +824,44 @@ async def test_a_change_of_leader_as_measured_ends_no_encode_of_the_other_speake
 
 @pytest.mark.usefixtures("passthrough_encoder")
 @pytest.mark.parametrize(
-    ("asked", "reads_beside"), [(10, True), (20, True), (31, True), (9, False), (40, False)]
+    ("asked", "reads_beside"),
+    [
+        ("where the first speaker started", True),
+        ("between the two speakers", True),
+        ("where the speaker that passed has got", True),
+        ("the byte after the last one handed out", True),
+        ("a frame before the first speaker started", False),
+        ("a frame past the last byte handed out", False),
+    ],
 )
 async def test_a_speaker_reads_beside_the_others_from_what_the_file_has_sent(
-    long_rig: _Rig, asked: int, reads_beside: bool
+    long_rig: _Rig, asked: str, reads_beside: bool
 ) -> None:
     """A request for a part that no speaker was sent ends the encodes that run."""
     await long_rig.decode()
     speakers = _Speakers(long_rig)
-    # a speaker stands still at twelve seconds, and one that passed it at thirty-one
-    await speakers.ask(PLAYER_ADDRESS, _second(10), reads=2 * BYTES_PER_SECOND)
-    await speakers.ask(OTHER_ADDRESS, _second(11), reads=20 * BYTES_PER_SECOND)
+    # a speaker stands still two seconds into its part, and one that passed it twenty
+    started, passed = _second(10), _second(11)
+    await speakers.ask(PLAYER_ADDRESS, started, reads=2 * BYTES_PER_SECOND)
+    ahead = await speakers.ask(OTHER_ADDRESS, passed, reads=20 * BYTES_PER_SECOND)
+    start = {
+        "where the first speaker started": started,
+        "between the two speakers": _second(20),
+        "where the speaker that passed has got": passed + len(ahead.body),
+        "the byte after the last one handed out": passed + ahead.handed,
+        "a frame before the first speaker started": started - 4,
+        "a frame past the last byte handed out": passed + ahead.handed + 4,
+    }[asked]
 
-    third = await speakers.ask("192.168.1.22", _second(asked), reads=None)
+    third = await speakers.ask("192.168.1.22", start, reads=None)
 
-    assert bytes(third.body) == long_rig.pcm[asked * BYTES_PER_SECOND :]
+    assert bytes(third.body) == long_rig.pcm[start - HEADER_SIZE :]
     aborted = [download.transport.abort.called for download in speakers.downloads]
     assert aborted == [not reads_beside, not reads_beside, False]
     await speakers.read_on()
     complete = [
-        bytes(download.body) == long_rig.pcm[start * BYTES_PER_SECOND :]
-        for download, start in zip(speakers.downloads, (10, 11, asked), strict=True)
+        bytes(download.body) == long_rig.pcm[begin - HEADER_SIZE :]
+        for download, begin in zip(speakers.downloads, (started, passed, start), strict=True)
     ]
     assert complete == [reads_beside, reads_beside, True]
     assert long_rig.ctrl._active_output_streams == 0
@@ -855,14 +876,16 @@ async def test_a_speaker_asks_again_for_bytes_of_a_write_that_did_not_return(
     speakers = _Speakers(long_rig)
     reading = await speakers.ask(PLAYER_ADDRESS, _second(10), reads=5 * BYTES_PER_SECOND)
     beside = await speakers.ask(OTHER_ADDRESS, _second(11))
-    got = _second(10) + len(reading.body)
+    under_way = reading.handed - len(reading.body)
+    assert under_way > 4
 
-    # its connection breaks while a write is under way, of which it got a part
+    # its connection breaks while a write is under way, of which it got the first half
     reading.hang_up()
-    again = await speakers.ask(PLAYER_ADDRESS, got + 1000, reads=None)
+    stopped = _second(10) + len(reading.body) + under_way // 8 * 4
+    again = await speakers.ask(PLAYER_ADDRESS, stopped, reads=None)
 
     beside.transport.abort.assert_not_called()
-    assert bytes(again.body) == long_rig.pcm[got + 1000 - HEADER_SIZE :]
+    assert bytes(again.body) == long_rig.pcm[stopped - HEADER_SIZE :]
     await speakers.read_on()
     assert bytes(beside.body) == long_rig.pcm[11 * BYTES_PER_SECOND :]
 
@@ -889,13 +912,13 @@ async def test_speakers_that_ask_just_ahead_of_each_other_leave_one_encode(
     """Speakers that stay close together and each ask past what the others were sent gain nothing."""
     await long_rig.decode()
     speakers = _Speakers(long_rig)
-    start = 10
+    start = _second(10)
     for number in range(6):
-        # two seconds are read, a third is under way: the next speaker asks a second past that
-        await speakers.ask(
-            f"192.168.1.{20 + number % 3}", _second(start), reads=2 * BYTES_PER_SECOND
+        download = await speakers.ask(
+            f"192.168.1.{20 + number % 3}", start, reads=2 * BYTES_PER_SECOND
         )
-        start += 4
+        # the next speaker asks a second past what this one was handed
+        start += download.handed + BYTES_PER_SECOND
 
         connected = [download.connected for download in speakers.downloads]
         assert connected == [False] * number + [True]
