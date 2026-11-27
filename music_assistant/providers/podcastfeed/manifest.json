@@ -4,7 +4,7 @@
   "stage": "stable",
   "name": "Podcast RSS Feed",
   "description": "Subscribe to and play any podcast via its RSS feed.",
-  "codeowners": ["@saeugetier"],
+  "codeowners": ["@saeugetier", "@music-assistant"],
   "provides": ["podcast"],
   "documentation": "https://music-assistant.io/music-providers/podcastfeed/",
   "multi_instance": true
