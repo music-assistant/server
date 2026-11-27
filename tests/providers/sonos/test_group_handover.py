@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
-from aiosonos.exceptions import CommandTimeout
+from aiosonos.exceptions import CommandTimeout, ConnectionClosed
 from aiosonos.group import SonosGroup as AiosonosGroup
 from aiosonos.player import SonosPlayer as AiosonosPlayer
 from music_assistant_models.enums import MediaType, PlaybackState
@@ -189,6 +189,8 @@ class _Household:
         self.silent: set[str] = set()
         # set to let a leader that leaves answer for it late, or not at all
         self.leave_answer: asyncio.Event | None = None
+        # whether a leader that leaves tells its own connection which member leads its group
+        self.tells_of_move = True
         # the playback state and the queue item each speaker reported, in order
         self.reports: dict[str, list[tuple[PlaybackState | None, str | None]]] = {}
         self.apis = {player_id: self._api(player_id) for player_id in (KITCHEN, STUDY, BATHROOM)}
@@ -320,18 +322,19 @@ class _Household:
             api = self.apis[speaker_id]
             api.playback.get_playback_status.return_value = dict(status)
             api.playback_metadata.get_metadata_status.return_value = dict(metadata)
-        # the former coordinator hears of the move at once
-        leader.client._handle_group_coordinator_changed(
-            old_group_id,
-            cast(
-                "Any",
-                {
-                    "_objectType": "groupCoordinatorChanged",
-                    "groupStatus": "GROUP_STATUS_MOVED",
-                    "playerId": new_coordinator,
-                },
-            ),
-        )
+        if self.tells_of_move:
+            # the former coordinator hears of the move at once
+            leader.client._handle_group_coordinator_changed(
+                old_group_id,
+                cast(
+                    "Any",
+                    {
+                        "_objectType": "groupCoordinatorChanged",
+                        "groupStatus": "GROUP_STATUS_MOVED",
+                        "playerId": new_coordinator,
+                    },
+                ),
+            )
         if self.leave_answer is not None:
             await self.leave_answer.wait()
         return {"_objectType": "groupInfo"}
@@ -683,7 +686,8 @@ async def test_a_step_out_stops_nothing_and_loads_nothing(home: _Household) -> N
     assert home.commands(KITCHEN) == ["groups.modify_group_members"]
     assert home.commands(STUDY) == []
     assert home.commands(BATHROOM) == []
-    assert home.tasks == []
+    # only the report of the leader that left
+    assert len(home.tasks) == 1
     assert home.kitchen._stepping_out is False
     assert home.bathroom.group_queue_id == QUEUE_ID
 
@@ -709,10 +713,8 @@ async def test_the_new_coordinator_hands_the_group_over_in_its_turn(home: _House
     home.apis[BATHROOM].playback.get_playback_status.side_effect = asyncio.CancelledError
 
     await _step_out(home, BATHROOM)
-
-    # it reports nothing more of the group it took over before
-    assert home.bathroom.playback_state == PlaybackState.IDLE
     await home.settle()
+
     assert _kept(home.study) == kept
     assert _kept(home.bathroom) == {**CLEAN, "generation": GENERATION + 1}
     assert home.study.playback_state == PlaybackState.PLAYING
@@ -721,7 +723,6 @@ async def test_the_new_coordinator_hands_the_group_over_in_its_turn(home: _House
     assert home.bathroom.playback_state == PlaybackState.IDLE
     assert home.commands(BATHROOM) == ["groups.modify_group_members"]
     assert home.commands(STUDY) == []
-    assert home.tasks == []
 
 
 @pytest.mark.parametrize(
@@ -735,10 +736,12 @@ async def test_a_speaker_that_was_asked_too_early_is_asked_again(
     """Test a speaker that still answers with the group it was in does not end the hand-over."""
     monkeypatch.setattr(player_module, "GROUPS_POLL_INTERVAL", 0.01, raising=False)
     monkeypatch.setattr(player_module, "MOVED_GROUP_TIMEOUT", 1)
+    home.tells_of_move = False
     for player_id in asked:
         home.asked_too_early[player_id] = 2
 
     await _step_out(home)
+    await asyncio.gather(*home.tasks)
 
     assert home.bathroom.group_queue_id == QUEUE_ID
     assert _kept(home.kitchen) == CLEAN
@@ -752,6 +755,7 @@ async def test_the_old_leader_is_read_back_once_it_has_left(home: _Household) ->
     home.asked_too_early[KITCHEN] = 1
 
     await _step_out(home)
+    await home.settle()
 
     assert home.bathroom.group_queue_id == QUEUE_ID
     assert home.kitchen.client.player.group_members == [KITCHEN]
@@ -767,6 +771,7 @@ async def test_what_is_left_of_a_group_a_member_was_in_before_is_not_the_moved_g
     leftover = {"id": group_id, "coordinatorId": STUDY, "playerIds": [], "name": "Study"}
     client = home.kitchen.client
     client._groups[group_id] = AiosonosGroup(client, cast("Any", leftover))
+    home.tells_of_move = False
 
     await _step_out(home)
 
@@ -789,38 +794,112 @@ async def test_a_speaker_reports_again_once_a_group_it_leads_is_read() -> None:
     assert SonosEventType.GROUP_ADDED in subscribed
 
 
-async def test_the_hand_over_does_not_wait_for_the_answer_of_the_leader(home: _Household) -> None:
-    """Test the queue follows the group while the leader that left has not answered for it."""
+async def test_a_step_out_does_not_wait_for_the_answer_of_the_leader(home: _Household) -> None:
+    """Test the step-out ends once a member leads, while the leader has not answered for it."""
     home.leave_answer = asyncio.Event()
 
-    stepping_out = asyncio.ensure_future(_step_out(home))
-    await _until(lambda: home.bathroom.group_queue_id == QUEUE_ID)
+    await _step_out(home)
 
-    assert not stepping_out.done()
     assert home.serving(QUEUE_ID) is home.bathroom
     assert home.bathroom.playback_state == PlaybackState.PLAYING
-    home.leave_answer.set()
-    await stepping_out
+    assert home.bathroom.group_members == [BATHROOM, STUDY]
+    # the leader that left reports for itself as soon as its own connection has it alone
+    await _until(lambda: not home.kitchen._stepping_out)
     assert home.kitchen.playback_state == PlaybackState.IDLE
+    assert home.kitchen.group_members == []
+    assert not home.leave_answer.is_set()
 
 
-async def test_a_leader_that_never_answers_for_leaving_did_leave(home: _Household) -> None:
-    """Test a leave without an answer is no failure once a member leads the group."""
+async def test_the_leader_that_left_reports_nothing_of_the_group_until_it_is_alone(
+    home: _Household, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test the old leader is quiet while its connection still names the group it led."""
+    monkeypatch.setattr(player_module, "GROUPS_POLL_INTERVAL", 0.01, raising=False)
     home.leave_answer = asyncio.Event()
+    home.asked_too_early[KITCHEN] = 1000
+
+    await _step_out(home)
+    for _ in range(20):
+        await asyncio.sleep(0.005)
+
+    assert home.kitchen._stepping_out
+    assert home.reports[KITCHEN] == []
+    # its answer ends the wait as well
+    home.asked_too_early[KITCHEN] = 0
+    home.leave_answer.set()
+    await _until(lambda: not home.kitchen._stepping_out)
+    assert home.kitchen.playback_state == PlaybackState.IDLE
+    assert home.kitchen.group_members == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [CommandTimeout("groups.modifyGroupMembers", 10), ConnectionClosed("Connection closed")],
+    ids=["no answer", "connection closed"],
+)
+async def test_a_leader_whose_leave_fails_did_leave_once_a_member_leads(
+    home: _Household, failure: Exception
+) -> None:
+    """Test a leave without an answer is no failure once a member leads the group."""
     leave = cast("AsyncMock", home.apis[KITCHEN].groups.modify_group_members)
     moves = leave.side_effect
 
     async def _no_answer(*args: object, **kwargs: object) -> None:
-        home.leave_answer = None
         await moves(*args, **kwargs)
-        raise CommandTimeout("groups.modifyGroupMembers", 10)
+        raise failure
 
     leave.side_effect = _no_answer
 
     await _step_out(home)
+    await asyncio.gather(*home.tasks)
 
     assert home.bathroom.group_queue_id == QUEUE_ID
     assert _kept(home.kitchen) == CLEAN
+    assert home.kitchen._stepping_out is False
+
+
+async def test_the_member_the_leader_names_takes_the_queue_before_any_speaker_lists_it(
+    home: _Household, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test the speaker that leaves tells which member leads its group, ahead of the groups."""
+    monkeypatch.setattr(player_module, "GROUPS_POLL_INTERVAL", 0.01, raising=False)
+    monkeypatch.setattr(player_module, "MOVED_GROUP_TIMEOUT", 0.1)
+    home.asked_too_early = dict.fromkeys(home.speakers, 1000)
+
+    with caplog.at_level(logging.WARNING):
+        await _step_out(home)
+
+    assert "could not be handed" not in caplog.text
+    assert home.serving(QUEUE_ID) is home.bathroom
+    assert _kept(home.kitchen) == CLEAN
+    assert home.bathroom.playback_state == PlaybackState.PLAYING
+
+
+async def test_a_window_asked_for_before_the_hand_over_leaves_nothing_on_the_old_leader(
+    home: _Household,
+) -> None:
+    """Test a window that is built while the queue changes hands is not kept by the old leader."""
+    handed = home.kitchen._window_item_ids
+    resolve = home.mass.streams.resolve_stream_url
+    resolved = resolve.side_effect
+    asked, go_on = asyncio.Event(), asyncio.Event()
+
+    async def _slow(*args: object, **kwargs: object) -> str:
+        asked.set()
+        await go_on.wait()
+        return cast("str", resolved(*args, **kwargs))
+
+    resolve.side_effect = _slow
+    window = asyncio.ensure_future(home.kitchen.build_cloud_queue_window(f"track0@{GENERATION}"))
+    await asked.wait()
+    resolve.side_effect = resolved
+
+    await _step_out(home)
+    go_on.set()
+    await window
+
+    assert _kept(home.kitchen) == CLEAN
+    assert home.bathroom._window_item_ids is handed
 
 
 async def test_a_new_coordinator_that_does_not_answer_gets_the_queue_all_the_same(
@@ -829,6 +908,7 @@ async def test_a_new_coordinator_that_does_not_answer_gets_the_queue_all_the_sam
     """Test another speaker tells which member leads the group when that member is silent."""
     monkeypatch.setattr(player_module, "GROUPS_REFRESH_TIMEOUT", 0.02)
     monkeypatch.setattr(player_module, "MOVED_GROUP_TIMEOUT", 0.2)
+    home.tells_of_move = False
     home.silent.add(BATHROOM)
 
     await _step_out(home)
@@ -846,10 +926,14 @@ async def test_a_new_coordinator_does_not_add_the_members_it_took_over(home: _Ho
     assert home.commands(BATHROOM) == []
 
 
-async def test_a_coordinator_adds_only_the_members_it_does_not_lead_yet() -> None:
-    """Test a member that is new to the group is added, next to one that is in it already."""
+@pytest.mark.parametrize(("took_over", "added"), [(True, [KITCHEN]), (False, [STUDY, KITCHEN])])
+async def test_only_a_coordinator_that_took_a_group_over_skips_the_members_it_leads(
+    took_over: bool, added: list[str]
+) -> None:
+    """Test a member list is only gone by right after a hand-over, when it was just read."""
     speaker, _ = _make_player([])
     speaker._airplay_rejoin_members = set()
+    speaker._taken_over_item_id = f"track0@{GENERATION}" if took_over else None
     speaker.client = MagicMock()
     speaker.client.player.is_coordinator = True
     speaker.client.player.group_members = [BATHROOM, STUDY]
@@ -857,7 +941,28 @@ async def test_a_coordinator_adds_only_the_members_it_does_not_lead_yet() -> Non
 
     await speaker.set_members(player_ids_to_add=[STUDY, KITCHEN])
 
-    speaker._modify_group_members.assert_awaited_once_with([KITCHEN], [])
+    speaker._modify_group_members.assert_awaited_once_with(added, [])
+
+
+async def test_a_new_load_ends_what_is_kept_of_the_take_over(home: _Household) -> None:
+    """Test a new coordinator is a coordinator like any other once it loaded something itself."""
+    await _step_out(home)
+    await home.settle()
+    _loads_into_a_session(cast("MagicMock", home.bathroom.group_controller))
+
+    await home.bathroom.play_media(
+        PlayerMedia(
+            uri="library://track/1",
+            media_type=MediaType.TRACK,
+            source_id=QUEUE_ID,
+            queue_item_id="track0",
+            queue_session_id="session2",
+        )
+    )
+    home.apis[BATHROOM].reset_mock()
+    await home.bathroom.set_members(player_ids_to_add=[STUDY])
+
+    assert home.commands(BATHROOM) == ["groups.modify_group_members"]
 
 
 async def test_the_old_leader_plays_something_else_next_to_the_group(home: _Household) -> None:
@@ -935,6 +1040,7 @@ async def test_a_queue_stays_where_it_is_when_no_member_is_known_to_lead_the_gro
     monkeypatch.setattr(player_module, "GROUPS_POLL_INTERVAL", 0.01, raising=False)
     monkeypatch.setattr(player_module, "MOVED_GROUP_TIMEOUT", 0.1)
     if failure == "no speaker reports the move":
+        home.tells_of_move = False
         home.asked_too_early = dict.fromkeys(home.speakers, 1000)
     else:
         del home.speakers[BATHROOM]

@@ -255,6 +255,8 @@ class SonosPlayer(PlayerProtocol):
         # this speaker leaves the group it leads because Music Assistant asked it to, which
         # then hands the queue of that group over itself
         self._stepping_out = False
+        # the member the speaker names as the coordinator of the group it leaves, once it does
+        self._moved_to: asyncio.Future[str] | None = None
         # the item this speaker took over from the leader of its group while it played
         self._taken_over_item_id: str | None = None
         # the members the running AirPlay group restore still has to bring back
@@ -819,6 +821,7 @@ class SonosPlayer(PlayerProtocol):
         # awaits in between, and an empty window served in that gap stops the current queue
         self._announcement_media = None
         self.cloud_queue_item_generation += 1
+        self._taken_over_item_id = None
         self.bump_cloud_queue_version()
         # a new load serves fresh positions; what the old one fetched says nothing about it
         self._served_bindings.clear()
@@ -1133,6 +1136,7 @@ class SonosPlayer(PlayerProtocol):
         if not queue_id or not (queue := self.mass.player_queues.get(queue_id)):
             # nothing to describe: both ends flagged, or the speaker holds what it cached
             return SonosQueueWindow(includes_beginning=True, includes_end=True)
+        loaded = self.cloud_queue_item_generation
 
         if not item_id:
             # an omitted or empty itemId asks for the start of the queue
@@ -1210,7 +1214,9 @@ class SonosPlayer(PlayerProtocol):
             # check after the loop in case the window filled exactly up to the last item
             includes_end=self.mass.player_queues.get_next_item(queue_id, last_index) is None,
         )
-        self._window_item_ids = positions | upcoming_positions
+        if self.cloud_queue_item_generation == loaded:
+            # not once the queue was loaded anew or went to another speaker meanwhile
+            self._window_item_ids = positions | upcoming_positions
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Serving Sonos queue window for %s on player %s: %s",
@@ -1262,9 +1268,9 @@ class SonosPlayer(PlayerProtocol):
             # a sync group changes its leader: its members play on, led by one of them
             await self._step_out_of_group()
             return
-        if self.client.player.is_coordinator:
-            # a member this speaker leads already, as after it took over the group of a
-            # leader that stepped out
+        if self._taken_over_item_id is not None and self.client.player.is_coordinator:
+            # the members of the group it took over from a leader that stepped out, which
+            # it leads already
             led = self.client.player.group_members
             player_ids_to_add = [x for x in player_ids_to_add if x not in led]
         if player_ids_to_add or player_ids_to_remove:
@@ -1824,6 +1830,13 @@ class SonosPlayer(PlayerProtocol):
         data = cast("GroupCoordinatorChanged", event.data)
         if self._stepping_out:
             # Music Assistant made this move, and hands the queue over itself
+            if (
+                (moved_to := self._moved_to) is not None
+                and not moved_to.done()
+                and data["groupStatus"] == GroupStatus.MOVED
+                and (new_coordinator_id := data.get("playerId"))
+            ):
+                moved_to.set_result(new_coordinator_id)
             return
         if data["groupStatus"] != GroupStatus.MOVED or not (queue_id := self._moved_queue_id()):
             # any other group change Music Assistant made itself stops our queue first
@@ -2456,42 +2469,87 @@ class SonosPlayer(PlayerProtocol):
             and isinstance(member := self.provider.get_protocol(member_id), SonosPlayer)
             and member.connected
         ]
-        deadline = time.monotonic() + MOVED_GROUP_TIMEOUT
-        new_coordinator: SonosPlayer | None = None
+        started = time.monotonic()
+        deadline = started + MOVED_GROUP_TIMEOUT
         self._stepping_out = True
+        self._moved_to = moved_to = asyncio.get_running_loop().create_future()
         # the group moves at once, while the answer of this speaker can take seconds
         leave = asyncio.ensure_future(self.client.player.leave_group())
+        reports_later = False
         try:
-            # Sonos chooses the member that coordinates the group from here on
+            # Sonos chooses the member that coordinates the group from here on: this speaker
+            # is told which one, and the groups of every speaker show it
             await self._poll_groups(
                 (self, *members),
                 lambda: self._moved_group_coordinator(members) is not None,
                 deadline,
+                moved_to,
             )
             if (new_coordinator := self._moved_group_coordinator(members)) is not None:
+                self.logger.debug(
+                    "%s leads the group that %s left, %s after %.2f s",
+                    new_coordinator.name,
+                    self.name,
+                    "named by that speaker" if moved_to.done() else "listed in the groups",
+                    time.monotonic() - started,
+                )
                 self._hand_cloud_queue_to(new_coordinator, item_id)
                 leads = new_coordinator.client.player
                 await self._poll_groups((new_coordinator,), lambda: leads.is_coordinator, deadline)
                 if leads.is_coordinator:
                     new_coordinator.on_player_event(None)
-            try:
-                await leave
-            except FailedCommand as err:
-                if new_coordinator is None:
-                    raise
-                # it did leave: a member leads its former group
-                self.logger.debug("%s did not answer for leaving its group: %s", self.name, err)
+                await asyncio.gather(*(member._refresh_groups() for member in members))
+                # it did leave: its answer is not waited for, and neither is its own report
+                leave.add_done_callback(self._log_failed_leave)
+                self.mass.create_task(
+                    self._report_once_alone(leave, members, deadline),
+                    task_id=f"sonos_report_once_alone_{self.protocol_id}",
+                )
+                reports_later = True
+                return
+            # no member is known to lead: its answer tells whether it left at all
+            await leave
             await asyncio.gather(*(speaker._refresh_groups() for speaker in (self, *members)))
         finally:
-            leave.cancel()
-            self._stepping_out = False
-        if new_coordinator is None:
-            self.logger.warning(
-                "%s left its group, but its queue could not be handed to the speaker that "
-                "leads the group now",
-                self.display_name,
-            )
+            self._moved_to = None
+            if not reports_later:
+                leave.cancel()
+                self._stepping_out = False
+        self.logger.warning(
+            "%s left its group, but its queue could not be handed to the speaker that "
+            "leads the group now",
+            self.display_name,
+        )
         self.on_player_event(None)
+
+    async def _report_once_alone(
+        self, leave: asyncio.Future[None], members: list[SonosPlayer], deadline: float
+    ) -> None:
+        """
+        Report what this speaker does again, once it reports to have left the group it led.
+
+        :param leave: The leave that is under way.
+        :param members: The speakers that were in the group with this one.
+        :param deadline: When to stop waiting for it (time.monotonic).
+        """
+        member_ids = {member.protocol_id for member in members}
+
+        def _alone() -> bool:
+            return member_ids.isdisjoint(self.client.player.group_members)
+
+        try:
+            await self._poll_groups((self,), _alone, deadline, leave)
+            if not _alone():
+                # its answer came first
+                await self._refresh_groups()
+        finally:
+            self._stepping_out = False
+        self.on_player_event(None)
+
+    def _log_failed_leave(self, leave: asyncio.Future[None]) -> None:
+        """Log a leave that the speaker did not answer, or answered with an error."""
+        if not leave.cancelled() and (err := leave.exception()) is not None:
+            self.logger.debug("%s did not answer for leaving its group: %s", self.name, err)
 
     def _moved_group_coordinator(self, members: list[SonosPlayer]) -> SonosPlayer | None:
         """
@@ -2499,6 +2557,10 @@ class SonosPlayer(PlayerProtocol):
 
         :param members: The speakers that were in the group with this one.
         """
+        if (moved_to := self._moved_to) is not None and moved_to.done():
+            for member in members:
+                if member.protocol_id == moved_to.result():
+                    return member
         # the connection of each speaker lists every group of the household
         for speaker in (self, *members):
             for group in speaker.client.groups:
@@ -2513,7 +2575,11 @@ class SonosPlayer(PlayerProtocol):
         return None
 
     async def _poll_groups(
-        self, speakers: Iterable[SonosPlayer], reported: Callable[[], bool], deadline: float
+        self,
+        speakers: Iterable[SonosPlayer],
+        reported: Callable[[], bool],
+        deadline: float,
+        or_when: asyncio.Future[Any] | None = None,
     ) -> None:
         """
         Read the grouping of speakers back until it reports what is waited for.
@@ -2521,6 +2587,7 @@ class SonosPlayer(PlayerProtocol):
         :param speakers: The speakers to ask.
         :param reported: Returns whether the speakers report what is waited for.
         :param deadline: When to give up (time.monotonic).
+        :param or_when: Ends the wait as well once it is done.
         """
 
         async def _poll(speaker: SonosPlayer) -> None:
@@ -2536,7 +2603,7 @@ class SonosPlayer(PlayerProtocol):
         polls = [asyncio.ensure_future(_poll(speaker)) for speaker in speakers]
         try:
             await asyncio.wait(
-                polls,
+                polls if or_when is None else (*polls, or_when),
                 timeout=max(0, deadline - time.monotonic()),
                 return_when=asyncio.FIRST_COMPLETED,
             )
