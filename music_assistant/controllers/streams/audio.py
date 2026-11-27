@@ -343,12 +343,16 @@ class CrossfadeHandover:
 class ItemStreamMarks(Protocol):
     """Takes the two points that divide the stream of a queue item with a fade at either end."""
 
-    def lead_in_ended(self, size: int, position_ms: int) -> None:
+    def lead_in_ended(
+        self, size: int, position_ms: int, normalization: VolumeNormalizationMode | None
+    ) -> None:
         """
         Take the point where the fade into the item ends and its own audio goes on.
 
         :param size: The bytes the stream has yielded up to this point.
         :param position_ms: The position in the item its own audio goes on from.
+        :param normalization: The volume normalization the fade pins the item's own audio
+            to, if it pins one.
         """
 
     def source_read_out(self, size: int) -> None:
@@ -2556,7 +2560,9 @@ class StreamsAudio:
         elif marks is not None:
             # the position the buffer cuts the item's own audio at
             marks.lead_in_ended(
-                bytes_written, read_position_ms(int(discard_position * 1000), exact_buffer_seek)
+                bytes_written,
+                read_position_ms(int(discard_position * 1000), exact_buffer_seek),
+                norm_override,
             )
         # a repeat of this item loads its details again while this pass still streams
         start_position = streamdetails.seek_position

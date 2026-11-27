@@ -22,6 +22,7 @@ from music_assistant.controllers.streams.file_stream import RUN_IN_SECONDS
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
+    from music_assistant_models.enums import VolumeNormalizationMode
     from music_assistant_models.media_items import AudioFormat
 
 # Seconds the stream of a track can get longer than the track: a smart fade slows the end
@@ -99,7 +100,8 @@ class MixedTrack:
             ``start_ms``, reporting to ``marks`` and for a consumer that ``consumer_connected``
             tells about.
         :param open_track: Opens the track's own audio at ``seek_position_ms``, for a
-            consumer that ``consumer_connected`` tells about.
+            consumer that ``consumer_connected`` tells about, with the volume normalization
+            ``normalization_override`` pins it to.
         """
         self._second = pcm_format.pcm_sample_size
         self._sample_rate = pcm_format.sample_rate
@@ -111,12 +113,16 @@ class MixedTrack:
         # the size of the lead-in and the position in the track that follows it, once known
         self._lead_in_size: int | None = None
         self._track_ms = 0
+        # the volume normalization the fade into the track pins its own audio to
+        self._normalization: VolumeNormalizationMode | None = None
         # the offset in the stream where the kept end starts, once the track is read out
         self._end_offset: int | None = None
         self._end = bytearray()
         # the size of the stream, once its end is made
         self.size: int | None = None
         self._pass: _Pass | None = None
+        # the pass that opened its stream last: one pass has the track at a time
+        self._opened: asyncio.Task[None] | None = None
         # reports for every reader of the stream whether it is still there
         self._readers: list[Callable[[], bool]] = []
         # what kept the lead-in or the end from being made: neither can be made again
@@ -132,15 +138,20 @@ class MixedTrack:
         frames = -(-max(self._end_ms - self._track_ms, 0) * self._sample_rate // 1000)
         return self._lead_in_size + frames * (self._second // self._sample_rate)
 
-    def lead_in_ended(self, size: int, position_ms: int) -> None:
+    def lead_in_ended(
+        self, size: int, position_ms: int, normalization: VolumeNormalizationMode | None
+    ) -> None:
         """
         Take the point where the fade into the track ends and its own audio goes on.
 
         :param size: The bytes the running pass has yielded up to this point.
         :param position_ms: The position in the track its own audio goes on from.
+        :param normalization: The volume normalization the fade pins the track's own audio
+            to, if it pins one.
         """
         assert self._pass is not None
         self._lead_in_size, self._track_ms = size, position_ms
+        self._normalization = normalization
         self._pass.offset = size
         self._wake()
 
@@ -286,7 +297,12 @@ class MixedTrack:
         origin, position_ms = self._track_position(offset)
         skip = offset - origin
         async with aclosing(
-            self._open_track(seek_position_ms=position_ms, consumer_connected=connected)
+            self._open_track(
+                seek_position_ms=position_ms,
+                consumer_connected=connected,
+                # at the level of the pass it is read beside, or in the place of
+                normalization_override=self._normalization,
+            )
         ) as audio:
             async for chunk in audio:
                 # the end can get made while the track is read, which moves where this ends
@@ -317,11 +333,10 @@ class MixedTrack:
             or any reader of the stream for a pass that none drives.
         :param unpaced: Whether the pass runs by itself, at the pace of no reader.
         """
-        replaced = self._pass.task if self._pass is not None else None
         self._end_pass()
         run = self._pass = _Pass(origin, connected, unpaced)
         stream = self._open_stream(start_ms=start_ms, marks=self, consumer_connected=run.wanted)
-        run.task = asyncio.create_task(self._run(run, stream, replaced))
+        run.task = asyncio.create_task(self._run(run, stream))
         return run
 
     def _end_pass(self) -> None:
@@ -332,19 +347,19 @@ class MixedTrack:
         # a pass that is ended before its first step never gets to tell its reader
         self._pass.audio.put_nowait(None)
 
-    async def _run(
-        self, run: _Pass, stream: AsyncGenerator[bytes], replaced: asyncio.Task[None] | None
-    ) -> None:
+    async def _run(self, run: _Pass, stream: AsyncGenerator[bytes]) -> None:
         """
         Run a pass: keep what the mixes yield, and hand the track's own audio to its reader.
 
         :param run: The pass.
         :param stream: The stream of the track with its mixes.
-        :param replaced: The pass this one takes the place of, which has to be gone first.
         """
         try:
-            if replaced is not None:
-                await asyncio.wait({replaced})
+            if self._opened is not None:
+                # the pass that had the track lets go of it first, whatever was started
+                # and ended between the two
+                await asyncio.wait({self._opened})
+            self._opened = run.task
             async with aclosing(stream):
                 async for chunk in stream:
                     if self._end_offset is not None:

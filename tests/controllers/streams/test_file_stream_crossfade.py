@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     RepeatMode,
     StreamType,
+    VolumeNormalizationMode,
 )
 from music_assistant_models.errors import AudioError, QueueEmpty
 from music_assistant_models.media_items import AudioFormat
@@ -136,6 +137,8 @@ class _Rig:
         self.items: dict[str, QueueItem] = {}
         # every read of the decoded audio of a track: the item and the position in it
         self.opened: list[tuple[str, int]] = []
+        # and the volume normalization it was pinned to
+        self.normalization: list[VolumeNormalizationMode | None] = []
         for item_id, pcm in tracks.items():
             duration = len(pcm) // self.buffer_format.pcm_sample_size
             item = QueueItem(
@@ -334,6 +337,7 @@ class _Rig:
         if position_ms is None:
             position_ms = int(seek_position * 1000)
         self.opened.append((queue_item.queue_item_id, position_ms))
+        self.normalization.append(kwargs.get("normalization_override"))
         assert queue_item.streamdetails is not None
         return cast(
             "AsyncGenerator[bytes]",
@@ -1188,7 +1192,7 @@ async def test_a_pass_that_is_replaced_before_its_first_step_tells_its_reader() 
     ) -> AsyncGenerator[bytes]:
         opened.append(start_ms)
         if start_ms is None:
-            marks.lead_in_ended(0, 0)
+            marks.lead_in_ended(0, 0, None)
         while True:
             await asyncio.sleep(0)
             yield second
@@ -1270,7 +1274,7 @@ async def test_a_pass_opens_its_stream_once_the_one_it_replaces_has_gone() -> No
         events.append(("opened", start_ms))
         try:
             if start_ms is None:
-                marks.lead_in_ended(0, 0)
+                marks.lead_in_ended(0, 0, None)
             while True:
                 await asyncio.sleep(0)
                 yield second
@@ -1298,6 +1302,88 @@ async def test_a_pass_opens_its_stream_once_the_one_it_replaces_has_gone() -> No
     await asyncio.wait({waiting})
     await first.aclose()
     mix.close()
+
+
+@bounded
+async def test_a_pass_waits_for_the_one_that_has_the_track_whatever_was_ended_in_between() -> None:
+    """A player that seeks twice at once: the pass of the last seek opens when the first let go."""
+    second = bytes(PCM_16.pcm_sample_size)
+    events: list[tuple[str, int | None]] = []
+    let_go = asyncio.Event()
+
+    async def _stream(
+        *, start_ms: int | None, marks: MixedTrack, **_kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        events.append(("opened", start_ms))
+        try:
+            if start_ms is None:
+                marks.lead_in_ended(0, 0, None)
+            while True:
+                await asyncio.sleep(0)
+                yield second
+        finally:
+            if start_ms is None:
+                # the first pass takes its time to let go of the track
+                await let_go.wait()
+            events.append(("gone", start_ms))
+
+    async def _track(**_kwargs: Any) -> AsyncGenerator[bytes]:
+        while True:
+            yield second
+
+    mix = MixedTrack(PCM_16, 60000, 50000, _stream, _track)
+    there = {"first": True, "seek": True}
+    first = mix.read(0, lambda: there["first"])
+    assert await anext(first)
+    # its player seeks, and seeks again before the pass of the first seek got the track
+    there["first"] = False
+    seek = asyncio.create_task(anext(mix.read(10 * len(second), lambda: there["seek"])))
+    await asyncio.sleep(0)
+    there["seek"] = False
+    seek.cancel()
+    await asyncio.wait({seek})
+    reading = asyncio.create_task(anext(mix.read(20 * len(second), lambda: True)))
+
+    # turns of the loop, not time: all a pass needs to open its stream when nothing holds it
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert events == [("opened", None)]
+    let_go.set()
+    assert await asyncio.wait_for(reading, WAIT)
+    assert events == [("opened", None), ("gone", None), ("opened", 19000)]
+    await first.aclose()
+    mix.close()
+
+
+@bounded
+@pytest.mark.parametrize("pinned", [VolumeNormalizationMode.DYNAMIC, None])
+async def test_a_read_from_the_buffer_has_the_normalization_the_fade_pinned_the_track_to(
+    rig: _Rig, pinned: VolumeNormalizationMode | None
+) -> None:
+    """A part that is read beside or after the pass has the level of the pass."""
+    rig.ctrl.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    fade = _tone(1.5, 9, PCM_16)
+
+    async def _fade() -> AsyncGenerator[bytes]:
+        yield fade
+
+    rig.audio._crossfade_handover[QUEUE_ID] = CrossfadeHandover(
+        stream=_fade(),
+        fade_in_media_duration=3.5,
+        pcm_format=PCM_16,
+        queue_item_id="b",
+        crossfade_mode=CrossfadeMode.VOICE_OVER,
+        elapsed_time_offset=2.0,
+        normalization_mode=pinned,
+        session_id=SESSION_ID,
+    )
+
+    _, body = await asyncio.wait_for(rig.fetch("b"), WAIT)
+    _, part = await asyncio.wait_for(rig.fetch("b", f"bytes={rig.offset(3.0)}-"), WAIT)
+
+    assert part == body[rig.offset(3.0) :]
+    # the pass that played the track, and the read from its buffer
+    assert rig.normalization == [pinned, pinned]
 
 
 @bounded
@@ -1733,7 +1819,7 @@ async def test_the_held_tail_is_cut_at_exactly_the_fade_window(
     tail_start = len(audio_bytes) - STANDARD_CROSSFADE_DURATION * second
     assert build.await_args.kwargs["fade_out_data"] == audio_bytes[tail_start:]
     assert bytes(output[:tail_start]) == audio_bytes[:tail_start]
-    marks.lead_in_ended.assert_called_once_with(0, 0)
+    marks.lead_in_ended.assert_called_once_with(0, 0, None)
     marks.source_read_out.assert_called_once_with(tail_start)
     await audio._crossfade_handover.pop("queue-1").close()
 
