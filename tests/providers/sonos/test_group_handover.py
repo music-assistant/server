@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -667,6 +668,52 @@ async def test_a_position_reported_after_a_new_load_is_taken(home: _Household) -
     await home.report_position(home.bathroom.protocol_id, f"track0@{GENERATION + 1}", 7)
 
     assert home.bathroom.elapsed_time == 7
+
+
+def _change_track(speaker: SonosPlayer, *, named: str, position_in: str, seconds: int) -> None:
+    """
+    Let the group a speaker leads report a position and the item it names.
+
+    :param speaker: The speaker that leads the group.
+    :param named: The item its metadata names.
+    :param position_in: The item its playback status has the position of.
+    :param seconds: The position its playback status reports.
+    """
+    group = speaker.group_controller
+    group._playback_status_data = cast(
+        "Any",
+        {**PLAYING, "itemId": f"{position_in}@{GENERATION}", "positionMillis": seconds * 1000},
+    )
+    group._playback_status_last_updated = time.time()
+    group._playback_metadata_data = cast("Any", _metadata(QUEUE_ID, named))
+    speaker.on_player_event(None)
+
+
+@pytest.mark.parametrize("handed_over", [False, True])
+async def test_a_position_in_an_item_the_speaker_does_not_name_yet_is_not_in_the_one_it_names(
+    home: _Household, handed_over: bool
+) -> None:
+    """Test the position of the next track is not read as one in the track that ends."""
+    if handed_over:
+        await _step_out(home)
+        await home.settle()
+    leader = home.bathroom if handed_over else home.kitchen
+    _change_track(leader, named="track0", position_in="track0", seconds=118)
+    reported_at = leader.elapsed_time_last_updated
+
+    # the speaker moved on: the position comes first, the item it is in after it
+    _change_track(leader, named="track0", position_in="track1", seconds=3)
+
+    assert leader.current_media is not None
+    assert leader.current_media.queue_item_id == "track0"
+    assert leader.elapsed_time == pytest.approx(118, abs=1)
+    assert leader.elapsed_time_last_updated == reported_at
+
+    _change_track(leader, named="track1", position_in="track1", seconds=4)
+
+    assert leader.current_media.queue_item_id == "track1"
+    assert leader.elapsed_time == pytest.approx(4, abs=1)
+    assert leader.elapsed_time_last_updated != reported_at
 
 
 async def test_a_step_out_stops_nothing_and_loads_nothing(home: _Household) -> None:
