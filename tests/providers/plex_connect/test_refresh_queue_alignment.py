@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
 from music_assistant_models.enums import PlaybackState
 
+from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.providers.plex_connect.queue_commands import QueueCommandsMixin
 from music_assistant.providers.plex_connect.queue_sync import QueueSyncMixin
+
+if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
 
 
 def _fake_track(track_key: str) -> SimpleNamespace:
@@ -29,6 +33,11 @@ class _QueueHandler(QueueSyncMixin, QueueCommandsMixin):
             state=PlaybackState.PLAYING, current_index=0, index_in_buffer=0
         )
         provider.mass.player_queues.get = Mock(return_value=self.queue)
+        provider.mass.player_queues.committed_index = Mock(
+            side_effect=lambda _queue_id: committed_index(
+                cast("PlayerQueue", self.queue), next_item_replaceable=False
+            )
+        )
         self.provider = provider
         self._ma_player_id = "player1"
         self._updating_from_plex = False

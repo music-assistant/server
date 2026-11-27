@@ -42,7 +42,6 @@ from music_assistant.controllers.player_queues.constants import (
     SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
 )
 from music_assistant.controllers.player_queues.helpers import (
-    committed_index,
     interleave_groups,
     space_by_artist,
 )
@@ -169,7 +168,9 @@ class SmartShuffle:
         if (queue_data := self.queues.queue_data_or_none(queue_id)) is None:
             return
         queue = queue_data.queue
-        if (boundary := committed_index(queue)) is None or not self._orders_batches(queue):
+        if (boundary := self.queues.committed_index(queue_id)) is None or not self._orders_batches(
+            queue
+        ):
             return
         items = queue_data.items
         ordered_until = queue_data.fade_ordered_until
@@ -191,7 +192,7 @@ class SmartShuffle:
         if (
             self.queues.queue_data_or_none(queue_id) is not queue_data
             or queue_data.items is not items
-            or committed_index(queue) != boundary
+            or self.queues.committed_index(queue_id) != boundary
             or not self._orders_batches(queue)
         ):
             # the queue was edited, moved on or had the ordering turned off meanwhile

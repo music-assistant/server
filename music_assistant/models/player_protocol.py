@@ -163,6 +163,9 @@ class PlayerProtocol(ABC):
     _attr_trusts_reported_source: bool = False
     _attr_paused_position_reliable: bool = False
     _attr_stops_on_pause: bool = False
+    # Set this on players that can drop the item handed over to play next, also once its
+    # audio was sent, and play another one in its place.
+    _attr_replaces_enqueued_media: bool = False
 
     def __init__(self, provider: PlayerProvider, protocol_id: str) -> None:
         """Initialize the protocol object."""
@@ -563,6 +566,16 @@ class PlayerProtocol(ABC):
         pause timeout and plays on from where it was.
         """
         return self._attr_stops_on_pause
+
+    @property
+    def replaces_enqueued_media(self) -> bool:
+        """
+        Return if the player can still replace the item handed over to play next.
+
+        The queue then keeps that item free to move until shortly before it plays or a crossfade
+        into it is prepared, and hands over the item that follows instead.
+        """
+        return self._attr_replaces_enqueued_media
 
     @property
     def group_members(self) -> list[str]:

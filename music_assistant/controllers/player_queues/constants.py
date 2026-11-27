@@ -188,6 +188,10 @@ SLEEP_TIMER_NATURAL_END_MARGIN = 5
 # this close to its duration: the last report lags the end and is truncated to whole seconds.
 PLAYED_TO_END_MARGIN = 2
 
+# A player that can replace its next item gets an edit of it about a second later. The next item
+# stays in place once it starts within this many seconds, where the edit would come too late.
+NEXT_ITEM_REPLACE_MARGIN = 5
+
 # A player counts as having played a fully streamed flow stream session once its position is
 # this close to the end of it: position reports are not exact down to the last audio frame.
 FLOW_PLAYED_OUT_MARGIN = 0.5

@@ -12,7 +12,6 @@ import aiofiles
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.helpers.json import async_json_loads
 
 from .constants import (
@@ -609,9 +608,10 @@ class AIRadioQueueDJMixin:
 
     def _dj_guard_index(self, queue: PlayerQueue) -> int:
         """Return the highest queue index the player already owns."""
-        # the player owns the current and the already buffered item, and the slot right
-        # after the buffered one may be handed to the player at any moment
-        boundary_index = committed_index(queue)
+        # the player owns the current and the already buffered item (unless it can still
+        # replace that one), and the slot right after the buffered one may be handed to the
+        # player at any moment
+        boundary_index = self.mass.player_queues.committed_index(queue.queue_id)
         return boundary_index if boundary_index is not None else -1
 
     def _repair_dj_clips(

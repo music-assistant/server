@@ -393,7 +393,33 @@ async def test_direct_pcm_stream_reports_the_item_loaded_to_an_enqueue_player(
     await stream.aclose()
 
     if loaded:
-        player_queues.track_loaded_in_buffer.assert_called_once_with(QUEUE_ID, QUEUE_ITEM_ID)
+        player_queues.track_loaded_in_buffer.assert_called_once_with(
+            QUEUE_ID, QUEUE_ITEM_ID, faded_in=False
+        )
     else:
         player_queues.track_loaded_in_buffer.assert_not_called()
     assert player_queues.mark_item_served.called is not loaded
+
+
+@pytest.mark.asyncio
+async def test_direct_pcm_stream_reports_a_faded_in_item_after_it_claimed_the_fade() -> None:
+    """The queue learns the item was faded into, though the stream claims the fade first."""
+    controller = _pcm_stream_controller()
+    cast("Any", controller.mass.players.get_output_protocol).return_value = _gapless_player(
+        supports_enqueue=True
+    )
+    audio = cast("Any", controller.audio)
+    audio.fade_into_pending.return_value = True
+
+    async def _claim_then_play(**_kwargs: object) -> AsyncGenerator[bytes]:
+        audio.fade_into_pending.return_value = False
+        yield b"mixed"
+
+    audio.get_queue_item_stream_with_smartfade.side_effect = _claim_then_play
+
+    stream = controller.get_stream(_media(), PCM_FORMAT, player_id=QUEUE_ID)
+    assert [chunk async for chunk in stream] == [b"mixed"]
+
+    cast("Any", controller.mass.player_queues).track_loaded_in_buffer.assert_called_once_with(
+        QUEUE_ID, QUEUE_ITEM_ID, faded_in=True
+    )

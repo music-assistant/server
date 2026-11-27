@@ -526,6 +526,18 @@ class PlaybackMixin(_PlayerControllerBase):
         # forward to player
         await protocol.set_option(option_key=option_key, option_value=option_value)
 
+    def replaces_enqueued_media(self, player_id: str) -> bool:
+        """Return if the protocol that takes the player's next item can still replace it."""
+        if (player := self.get_player(player_id)) is None:
+            return False
+        target = (
+            self._get_control_target(
+                player, required_feature=PlayerFeature.ENQUEUE, require_active=True
+            )
+            or player.own_protocol
+        )
+        return target is not None and target.replaces_enqueued_media
+
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """

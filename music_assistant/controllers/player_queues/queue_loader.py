@@ -64,7 +64,6 @@ from music_assistant.controllers.player_queues.constants import (
 from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
     can_be_enqueued,
-    committed_index,
     external_track_placeholder,
     handle_play_action,
     has_dynamic_source,
@@ -194,7 +193,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED) and not (
             player and player.fake_paused
         ):
-            boundary_index = committed_index(queue)
+            boundary_index = self.committed_index(queue_id)
             cur_index = boundary_index if boundary_index is not None else 0
         else:
             cur_index = queue.current_index or 0
@@ -1435,9 +1434,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue.shuffle_enabled = True
         queue.repeat_mode = RepeatMode.OFF
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
-        # rebuild from the buffered position so the already-prepared next track is kept and the
-        # crossfade isn't disturbed; fall back to the current index (or the front when idle/empty)
-        base_index = committed_index(queue)
+        # rebuild from the buffered position so the already-prepared next track is kept (unless the
+        # player can still replace it) and the crossfade isn't disturbed; fall back to the current
+        # index (or the front when idle/empty)
+        base_index = self.committed_index(queue_id)
         insert_at = 0 if base_index is None else base_index + 1
         if option == QueueOption.REPLACE:
             # A replace is a fresh queue, so the pool takes the place of the old items rather than
@@ -1463,7 +1463,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # or has asked for and not received audio of yet, stays, so the pool goes in behind
                 # it, without the songs it already holds
                 fetched_at = insert_at
-                base_index = committed_index(queue)
+                base_index = self.committed_index(queue_id)
                 insert_at = 0 if base_index is None else base_index + 1
                 if queue_data.session_id is not None:
                     requested = self.mass.streams.requested_item_ids(

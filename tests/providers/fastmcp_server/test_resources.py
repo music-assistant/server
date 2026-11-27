@@ -259,6 +259,25 @@ async def test_queue_resource_returns_json_text_for_brief(mock_mass: MagicMock) 
     mock_mass.player_queues.items.assert_called_once_with("q1", limit=500)
 
 
+@pytest.mark.parametrize(
+    ("index_in_buffer", "last_locked_index", "expected"),
+    [(None, None, 3), (3, 2, 3), (3, 3, 4)],
+    ids=["nothing buffered", "a replaceable buffered row", "a locked buffered row"],
+)
+def test_queue_brief_inserts_behind_the_rows_the_player_locked(
+    index_in_buffer: int | None, last_locked_index: int | None, expected: int
+) -> None:
+    """New rows can go right behind the playing row and every row the player locked."""
+    queue = SimpleNamespace(
+        queue_id="q1",
+        current_index=2,
+        index_in_buffer=index_in_buffer,
+        last_locked_index=last_locked_index,
+    )
+
+    assert to_brief_queue(queue).next_insertable_index == expected
+
+
 async def test_queue_resource_takes_a_legacy_id_of_the_player(mock_mass: MagicMock) -> None:
     """A queue URI naming the player by a legacy id returns that player's queue and items."""
     queues = PlayerQueuesController.__new__(PlayerQueuesController)

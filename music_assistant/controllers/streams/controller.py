@@ -2115,12 +2115,12 @@ class StreamsController(CoreController):
                 overlay_enabled=mix_overlay,
                 session_id=queue_session_id,
             )
+            # the item before may have mixed (or be mixing) a fade into this one,
+            # which only the smart fade stream plays
+            fade_in_pending = self.audio.fade_into_pending(queue_id, queue_item.queue_item_id)
             inner_stream: AsyncGenerator[bytes]
             if protocol_player is not None and (
-                crossfade_mode != CrossfadeMode.DISABLED
-                # the item before may have mixed (or be mixing) a fade into this one,
-                # which only the smart fade stream plays
-                or self.audio.fade_into_pending(queue_id, queue_item.queue_item_id)
+                crossfade_mode != CrossfadeMode.DISABLED or fade_in_pending
             ):
                 inner_stream = self.audio.get_queue_item_stream_with_smartfade(
                     player=protocol_player,
@@ -2169,6 +2169,7 @@ class StreamsController(CoreController):
                 queue_session_id,
                 loads_next=protocol_player is not None
                 and protocol_player.supports_feature(PlayerFeature.ENQUEUE),
+                faded_in=fade_in_pending,
             )
             return self._count_as_output_stream(inner_stream)
         # assume url or some other direct path
@@ -2667,6 +2668,7 @@ class StreamsController(CoreController):
         session_id: str | None,
         *,
         loads_next: bool,
+        faded_in: bool,
     ) -> AsyncGenerator[bytes]:
         """
         Forward a single-item stream, reporting its first chunk to the queue.
@@ -2678,6 +2680,7 @@ class StreamsController(CoreController):
             its session is no longer current.
         :param loads_next: Report the item as loaded in the player's buffer, so the queue hands
             the player the item after it.
+        :param faded_in: The item before mixed a fade into this item.
         """
         queue_data = self.mass.player_queues.queue_data_or_none(queue_item.queue_id)
         served = False
@@ -2699,7 +2702,7 @@ class StreamsController(CoreController):
                     if queue_data is not None:
                         if loads_next:
                             self.mass.player_queues.track_loaded_in_buffer(
-                                queue_item.queue_id, queue_item.queue_item_id
+                                queue_item.queue_id, queue_item.queue_item_id, faded_in=faded_in
                             )
                         else:
                             self.mass.player_queues.mark_item_served(

@@ -553,6 +553,16 @@ class SendspinBasePlayer(PlayerProtocol):
         return not self.api.active_roles or self._source_input_pending
 
     @property
+    def replaces_enqueued_media(self) -> bool:
+        """Return if the player can replace its next item, which every audio role must cut."""
+        return self._attr_replaces_enqueued_media and all(
+            role.supports_timestamped_clear()
+            for client in self.api.group.clients
+            for role in client.active_roles
+            if role.get_audio_requirements() is not None
+        )
+
+    @property
     def setup_reason(self) -> str | None:
         """Return the reason this device needs setup (pairing), or None when it does not."""
         return "pairing_required" if self.needs_setup else None
@@ -1579,6 +1589,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 PlayerFeature.ENQUEUE,
                 PlayerFeature.GAPLESS_PLAYBACK,
             }
+            self._attr_replaces_enqueued_media = True
         self._metadata_generation = 0
         self._content_takeover_pending = False
         self._metadata_lock = asyncio.Lock()

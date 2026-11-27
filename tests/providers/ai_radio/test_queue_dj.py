@@ -8,7 +8,7 @@ from collections.abc import Callable, Coroutine
 from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from music_assistant_models.enums import EventType, MediaType
@@ -19,6 +19,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.event import MassEvent
 
+from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.providers.ai_radio.constants import (
     ATTR_GAP_NEXT_ID,
     ATTR_HOST_ID,
@@ -34,6 +35,9 @@ from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
 from .events import ProviderEventRecorder
+
+if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
 
 
 class FakeQueue:
@@ -88,6 +92,10 @@ class FakePlayerQueues:
         self.update_calls = 0
         # stands in for the QUEUE_ITEMS_UPDATED event a real update_items emits
         self.on_items_updated: Callable[[], None] | None = None
+
+    def committed_index(self, queue_id: str) -> int | None:
+        """Return the highest queue index the player holds."""
+        return committed_index(cast("PlayerQueue", self._queue), next_item_replaceable=False)
 
     def get(self, queue_id: str) -> FakeQueue | None:
         """Return the queue when the id matches."""

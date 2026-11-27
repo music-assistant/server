@@ -11,7 +11,7 @@ from ..models import RemoveFromQueueResult
 
 
 async def remove_items_safe(mass: Any, queue_id: str, item_ids: list[str]) -> RemoveFromQueueResult:
-    """Remove only queue items that are neither played nor player-buffered."""
+    """Remove only queue items that are neither played nor locked by the player."""
     if not item_ids:
         raise InvalidDataError("Provide at least one queue item id")
     queue = mass.player_queues.get(queue_id)
@@ -25,7 +25,7 @@ async def remove_items_safe(mass: Any, queue_id: str, item_ids: list[str]) -> Re
             result.not_found.append(item_id)
         elif queue.current_index is not None and index <= queue.current_index:
             result.skipped_played.append(item_id)
-        elif queue.index_in_buffer is not None and index <= queue.index_in_buffer:
+        elif queue.last_locked_index is not None and index <= queue.last_locked_index:
             result.skipped_buffered.append(item_id)
         else:
             try:

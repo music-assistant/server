@@ -2631,12 +2631,9 @@ class StreamsAudio:
                         raise InvalidDataError(
                             f"No streamdetails for next queue item {next_queue_item.queue_item_id}"
                         )
-                    queue.index_in_buffer = self.mass.player_queues.index_by_id(
+                    self.mass.player_queues.fading_into(
                         queue.queue_id, next_queue_item.queue_item_id
                     )
-                    # no audio is asked for when the next item's is in hand already, so
-                    # what left the queue's scope with this move is released here
-                    self.mass.player_queues.release_unneeded_audio(queue.queue_id)
                 except QueueEmpty:
                     # end of queue reached, no next item
                     next_queue_item = None

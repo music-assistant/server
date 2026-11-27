@@ -33,7 +33,7 @@ def test_committed_index(
     current_index: int | None, index_in_buffer: int | None, expected: int | None
 ) -> None:
     """The boundary is whichever of the two positions is furthest into the queue."""
-    assert committed_index(_queue(current_index, index_in_buffer)) == expected
+    assert committed_index(_queue(current_index, index_in_buffer), False) == expected
 
 
 def test_a_wrapped_buffer_never_reports_a_boundary_before_the_playing_track() -> None:
@@ -43,4 +43,9 @@ def test_a_wrapped_buffer_never_reports_a_boundary_before_the_playing_track() ->
     Inserting or truncating before the playing track shifts it, and its index is not re-anchored,
     so the queue would end up naming a different track than the one being played.
     """
-    assert committed_index(_queue(current_index=4, index_in_buffer=0)) == 4
+    assert committed_index(_queue(current_index=4, index_in_buffer=0), False) == 4
+
+
+def test_a_buffered_track_the_player_can_replace_is_not_held() -> None:
+    """The boundary stays on the playing track while the player can still swap the next one."""
+    assert committed_index(_queue(current_index=2, index_in_buffer=3), True) == 2
