@@ -39,6 +39,8 @@ def _player(
     player._config.name = None
     player.cloud_queue_id = cloud_queue_id
     player.group_queue_id = None
+    player._stepping_out = False
+    player._taken_over_item_id = None
     player._flow_queue_id = None
     player._evicted_cloud_queue = None
     player._queue_session_id = session_id if cloud_queue_id else None
