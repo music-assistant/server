@@ -43,6 +43,7 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ChannelLayout,
     ConfigEntryType,
+    ContentType,
     EventType,
     IdentifierType,
     MediaType,
@@ -244,7 +245,8 @@ class SonosPlayer(PlayerProtocol):
         self._announcement_media: PlayerMedia | None = None
         # the queue a session eviction released, and when (time.monotonic)
         self._evicted_cloud_queue: tuple[str, float] | None = None
-        # the MA queue the speaker plays as one stream (flow mode): no cloud queue is loaded
+        # the MA queue the speaker plays as one stream (flow mode, or a compressed item
+        # without an end): no cloud queue is loaded
         self._flow_queue_id: str | None = None
         # the playback session our queue was loaded into
         self._queue_session_id: str | None = None
@@ -287,6 +289,11 @@ class SonosPlayer(PlayerProtocol):
     @property
     def fetches_files(self) -> bool:
         """Return True: a speaker pauses, resumes and seeks by asking for a part of a track."""
+        return True
+
+    @property
+    def shows_stream_titles(self) -> bool:
+        """Return True: a speaker shows the titles in a stream it plays from its stream url."""
         return True
 
     @property
@@ -829,7 +836,12 @@ class SonosPlayer(PlayerProtocol):
                 raise
             return
 
-        if not self.flow_mode and media.source_id and media.queue_item_id:
+        if (
+            not self.flow_mode
+            and media.source_id
+            and media.queue_item_id
+            and not await self._plays_as_compressed_stream(media)
+        ):
             # Regular Queue item playback
             # create a sonos cloud queue and load it, into the session already playing if any
             previous_queue_id = self._playing_queue_id()
@@ -912,6 +924,9 @@ class SonosPlayer(PlayerProtocol):
 
          :param media: Details of the item that needs to be enqueued on the player.
         """
+        if self._flow_queue_id:
+            # the speaker plays one stream and holds no cloud queue to read a next item from
+            return
         if media.source_id:
             self.cloud_queue_id = media.source_id
             self._loaded_session_id = media.queue_session_id
@@ -2160,8 +2175,23 @@ class SonosPlayer(PlayerProtocol):
         self._evicted_cloud_queue = (queue_id, time.monotonic())
         self.update_state()
 
+    async def _plays_as_compressed_stream(self, media: PlayerMedia) -> bool:
+        """Return whether a queue item is a stream without an end in a compressed codec."""
+        if media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+            return False
+        # the codec the stream really gets: a live source can be sent uncompressed by a
+        # setting of its own
+        stream_url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
+        codec = ContentType.try_parse(urlparse(stream_url).path.rsplit(".", 1)[-1])
+        return not codec.is_lossless()
+
     async def _play_stream(self, media: PlayerMedia) -> None:
-        """Play media as one stream: a queue in flow mode, or media that is no MA queue item."""
+        """
+        Play media as one stream over the speaker's stream url.
+
+        That is a queue in flow mode, a compressed queue item without an end, or media that
+        is no MA queue item.
+        """
         # this path loads no cloud queue, so the speaker must not be signalled about one
         previous_queue_id = self._playing_queue_id()
         self._queue_session_id = None

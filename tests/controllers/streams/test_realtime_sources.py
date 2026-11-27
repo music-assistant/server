@@ -2483,7 +2483,9 @@ async def test_flow_with_icy_framing_writes_small_blocks_and_counts_to_the_inter
     assert seen["chunk_size"] == ICY_WRITE_SIZE
     stream = b"".join(written)
     metadata = controller_mod._icy_metadata_block(
-        controller.audio_analysis, controller.mass.player_queues.get.return_value, full=True
+        controller.audio_analysis,
+        controller.mass.player_queues.get.return_value.current_item,
+        full=True,
     )
     assert stream == b"a" * 256_000 + metadata + b"a" * 44_000
 
@@ -2499,7 +2501,9 @@ def test_icy_title_is_the_metadata_shown_for_the_stream() -> None:
         title="Recognised", artist="Someone"
     )
 
-    metadata = controller_mod._icy_metadata_block(audio_analysis, cast("Any", queue), full=False)
+    metadata = controller_mod._icy_metadata_block(
+        audio_analysis, cast("Any", queue.current_item), full=False
+    )
 
     audio_analysis.shown_stream_metadata.assert_called_once_with(streamdetails)
     assert metadata[1:].rstrip(b"\x00") == b"StreamTitle='Someone - Recognised';"
