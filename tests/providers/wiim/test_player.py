@@ -674,6 +674,13 @@ class TestSourceList:
             "aux_in": True,
             "airplay": False,
             "spotify": False,
+            "tidal": False,
+            "qobuz": False,
+            "amazon": False,
+            "deezer": False,
+            "youtube": False,
+            "soundcloud": False,
+            "external": False,
             "unknown": False,
         }
 

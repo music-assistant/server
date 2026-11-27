@@ -9,6 +9,7 @@ import typing
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import (
     MusicAssistantError,
@@ -31,8 +32,10 @@ from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     BACKEND_OFFICIAL,
+    EXTERNAL_SOURCES,
     INPUT_MODE_SOURCES,
     PASSIVE_SOURCES,
+    REPORTED_SOURCES,
     SOURCE_AIRPLAY,
     SOURCE_ID_TO_INPUT_MODE,
     SOURCE_NETWORK,
@@ -40,6 +43,7 @@ from .constants import (
     SOURCE_UNKNOWN,
 )
 from .grouping import NativeGroupRole
+from .sources import resolve_active_source
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
@@ -60,6 +64,11 @@ JOIN_RESTART_TIMEOUT = 2
 # seconds between attempts to set up the SDK device of a speaker that is not reachable
 CONNECT_RETRY_INITIAL_DELAY = 30
 CONNECT_RETRY_MAX_DELAY = 600
+
+# How often the device's own status is read for the input mode and the streaming service: the SDK
+# only follows the UPnP playback_mode, which goes stale while a physical input is selected.
+DEVICE_STATUS_INTERVAL = 15
+DEVICE_STATUS_TIMEOUT = 5
 
 
 @dataclass
@@ -143,6 +152,8 @@ class WiimPlayer(PlayerProtocol):
         self._last_logged_sdk_uri: str | None = None
         self._last_logged_sdk_status: PlayingStatus | None = None
         self._ma_stream_uri: str | None = None
+        self._device_status: dict[str, Any] = {}
+        self._device_status_last_update: float = 0.0
         self._join_restart_watch: _JoinRestartWatch | None = None
         self._pending_join_resume: _JoinRestartWatch | None = None
         self._native_groups: NativeGroupCoordinator = provider.native_groups
@@ -568,12 +579,14 @@ class WiimPlayer(PlayerProtocol):
         ]
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_AIRPLAY])
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_SPOTIFY])
+        self._attr_source_list.extend(EXTERNAL_SOURCES.values())
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_UNKNOWN])
         # read the live topology before the availability goes out, then reconcile so any
         # leader that already lists this device, or that it leads, self-heals regardless
         # of discovery order.
         await self._native_groups.refresh_leader(self, force=True)
         self._native_groups.schedule_reconcile()
+        await self._read_device_status()
         self._update_ma_state_from_sdk_cache()
 
     async def _create_device(self) -> WiimDevice:
@@ -652,28 +665,25 @@ class WiimPlayer(PlayerProtocol):
         # Group members
         self._attr_group_members = self._native_groups.members_of(self.protocol_id)
 
-        if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
-            self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
-        elif play_mode == SOURCE_NETWORK:
-            # the queue is registered just after the player, so an early poll can precede it
-            queue_id = self._queue_id
-            ma_queue = self.mass.player_queues.get(queue_id) if queue_id else None
-            if device_uri == "wiimu_airplay":
-                self._attr_active_source = SOURCE_AIRPLAY
-            elif device_uri.startswith("spotify:"):
-                self._attr_active_source = SOURCE_SPOTIFY
-            elif ma_queue and ma_queue.current_item:
-                self._attr_active_source = queue_id
-            else:
-                self._attr_active_source = SOURCE_UNKNOWN
-        else:
-            self._attr_active_source = None
+        # The queue is registered just after the player, so an early poll can precede it.
+        queue_id = self._queue_id
+        ma_queue = self.mass.player_queues.get(queue_id) if queue_id else None
+        self._attr_active_source = resolve_active_source(
+            play_mode=play_mode,
+            mode=self._device_status.get("mode"),
+            vendor=self._device_status.get("vendor"),
+            uri=device_uri,
+            own_hosts=self._own_stream_hosts,
+            own_stream_uri=bool(device_uri and device_uri == self._ma_stream_uri),
+            queue_id=queue_id,
+            queue_has_item=bool(ma_queue and ma_queue.current_item),
+        )
 
         source_display_name: str | None = None
         if play_mode and play_mode in INPUT_MODE_SOURCES:
             source_display_name = INPUT_MODE_SOURCES[play_mode].name
-        elif self._attr_active_source in PASSIVE_SOURCES:
-            source_display_name = PASSIVE_SOURCES[self._attr_active_source].name
+        elif passive_source := REPORTED_SOURCES.get(self._attr_active_source or ""):
+            source_display_name = passive_source.name
 
         is_ma_source = self._queue_id is not None and self._attr_active_source == self._queue_id
         sdk_has_metadata = bool(media and (media.title or media.artist or media.album))
@@ -684,11 +694,20 @@ class WiimPlayer(PlayerProtocol):
             # Keep the metadata play_media set until the SDK catches up.
             pass
         else:
+            media_title = media.title if media else None
+            media_artist = media.artist if media else None
+            media_album = media.album if media else None
+            if not is_ma_source and not (media_title or media_artist):
+                # An external session (Tidal Connect and friends) only reports its track through
+                # the device's own status endpoint, so mirror that instead of showing nothing.
+                media_title = self._device_status_text("Title")
+                media_artist = self._device_status_text("Artist")
+                media_album = self._device_status_text("Album")
             self._attr_current_media = PlayerMedia(
                 uri=(media.uri if media else None) or "",
-                title=(media.title if media else None) or source_display_name,
-                artist=media.artist if media else None,
-                album=media.album if media else None,
+                title=media_title or source_display_name,
+                artist=media_artist,
+                album=media_album,
                 image_url=media.image_url if media else None,
                 duration=media.duration if media else None,
                 source_id=self._attr_active_source,
@@ -768,6 +787,7 @@ class WiimPlayer(PlayerProtocol):
         except WiimException as err:
             self.logger.debug("Failed to refresh status for %s: %s", self._attr_name, err)
             return
+        await self._read_device_status()
         self._update_ma_state_from_sdk_cache()
 
     async def _sync_position(self) -> None:
@@ -930,3 +950,43 @@ class WiimPlayer(PlayerProtocol):
             self.device.volume if self._volume_while_muted is None else self._volume_while_muted
         )
         self._attr_volume_muted = self.device.is_muted
+
+    @property
+    def _own_stream_hosts(self) -> set[str]:
+        """Return the hosts that serve Music Assistant's own streams."""
+        hosts = {"127.0.0.1", "localhost"}
+        if publish_ip := getattr(self.mass.streams, "publish_ip", None):
+            hosts.add(str(publish_ip))
+        return hosts
+
+    async def _read_device_status(self) -> None:
+        """Read the device's own status (input mode and stream vendor) from its HTTP API."""
+        if time.monotonic() - self._device_status_last_update < DEVICE_STATUS_INTERVAL:
+            return
+        ip_address = self.native_ip
+        if not ip_address:
+            return
+        self._device_status_last_update = time.monotonic()
+        try:
+            async with asyncio.timeout(DEVICE_STATUS_TIMEOUT):
+                async with self.mass.http_session_no_ssl.get(
+                    f"https://{ip_address}/httpapi.asp",
+                    params={"command": "getPlayerStatus"},
+                ) as response:
+                    payload = await response.json(content_type=None)
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+            self.logger.debug("Unable to read the device status of %s: %s", self._attr_name, err)
+            return
+        if isinstance(payload, dict):
+            self._device_status = payload
+
+    def _device_status_text(self, key: str) -> str | None:
+        """Return a decoded text field of the device status (the device reports hex encoded)."""
+        value = self._device_status.get(key)
+        if not isinstance(value, str) or not value:
+            return None
+        with contextlib.suppress(ValueError):
+            decoded = bytes.fromhex(value).decode("utf-8").strip()
+            if decoded and decoded.lower() != "unknown":
+                return decoded
+        return None
