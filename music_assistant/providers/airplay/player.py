@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -22,6 +23,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import ATTR_VOLUME_TARGET
 from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
@@ -34,6 +36,7 @@ from .constants import (
     AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
+    AIRPLAY_NATIVE_START_VOLUME_PROVIDERS,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
     AIRPLAY_VOLUME_ECHO_GRACE_S,
@@ -954,6 +957,38 @@ class AirPlayPlayer(Player):
         if not (parent_player := self.mass.players.get_player(parent_id)):
             return True
         return self._control_routes_to_self(parent_player.volume_control_for_output(self.player_id))
+
+    @property
+    def native_start_volume(self) -> int | None:
+        """
+        Return the level a session starts at while the native protocol owns the volume.
+
+        None when the native protocol does not own the volume of this output, the player
+        is muted, or its device keeps its own level when a session starts without one.
+        """
+        if not (parent_id := self.protocol_parent_id):
+            return None
+        parent_player = self.mass.players.get_player(parent_id)
+        if parent_player is None or parent_player.volume_muted:
+            return None
+        if parent_player.volume_control_for_output(self.player_id) != PLAYER_CONTROL_NATIVE:
+            return None
+        if parent_player.provider.domain not in AIRPLAY_NATIVE_START_VOLUME_PROVIDERS:
+            return None
+        return parent_player.volume_level
+
+    def volume_commanded_since(self, since: float) -> bool:
+        """
+        Return whether a volume command went to the player through Music Assistant since then.
+
+        :param since: A time.monotonic() timestamp.
+        """
+        if not (parent_id := self.protocol_parent_id):
+            return False
+        if not (parent_player := self.mass.players.get_player(parent_id)):
+            return False
+        target = parent_player.extra_data.get(ATTR_VOLUME_TARGET)
+        return target is not None and target[1] > since
 
     def release_foreign_mute_latch(self) -> None:
         """Clear our mute latch when another control owns the mute of this output."""
