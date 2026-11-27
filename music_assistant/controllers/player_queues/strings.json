@@ -5,11 +5,11 @@
   },
   "config_entries": {
     "autoplay_enabled": {
-      "label": "Keep playing when the queue runs out (Autoplay)",
+      "label": "Enable Autoplay by default",
       "description": "Each queue's player controls can still turn it on or off individually."
     },
     "autoplay_mode": {
-      "label": "What Autoplay adds",
+      "label": "Autoplay source",
       "description": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Choose here which tracks it adds; turn Autoplay on or off from the player controls.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist.",
       "options": {
         "auto": "Automatic — similar tracks, falling back to your library",
@@ -33,11 +33,11 @@
       "description": "The playlist Autoplay pulls tracks from to keep the music going."
     },
     "crossfade_enabled": {
-      "label": "Crossfade between tracks",
+      "label": "Enable crossfade by default",
       "description": "Each queue's player controls can still turn it on or off individually."
     },
     "crossfade_duration": {
-      "label": "Crossfade length (seconds)",
+      "label": "Standard crossfade duration (seconds)",
       "description": "How long the standard crossfade overlaps the end of one track with the start of the next."
     },
     "crossfade_mode": {
@@ -122,7 +122,7 @@
       }
     },
     "volume_normalization": {
-      "label": "Even out volume between tracks",
+      "label": "Volume normalization",
       "description": "Uses the EBU-R128 loudness standard to match the perceived loudness of tracks, without affecting their dynamic range.",
       "options": {
         "enabled": "Enabled",
