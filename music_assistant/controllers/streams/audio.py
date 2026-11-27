@@ -3914,6 +3914,10 @@ class StreamsAudio:
         pending = self._crossfade_pending.get(queue_id)
         return pending is not None and pending[0] == queue_item_id
 
+    def fade_pending(self, queue_id: str) -> bool:
+        """Return whether an item of the queue has mixed, or is mixing, a fade into the next one."""
+        return queue_id in self._crossfade_handover or queue_id in self._crossfade_pending
+
     def clear_crossfade_handover(self, queue_id: str) -> None:
         """
         Clear any pending crossfade data for a queue.

@@ -1922,6 +1922,8 @@ class SendspinPlayer(SendspinBasePlayer):
         """Handle enqueuing of the next queue item on the player."""
         if self.playback_session.set_next_media(media):
             return
+        if await self.playback_session.replace_next_media(media):
+            return
         if not media.source_id or (queue := self.mass.player_queues.get(media.source_id)) is None:
             return
         # Restart from the current position like a seek, after which the queue hands over the

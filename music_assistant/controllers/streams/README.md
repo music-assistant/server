@@ -175,7 +175,7 @@ their users and the streams that claim their items.
 - **Queue streaming**: `get_queue_item_stream`, `get_queue_item_stream_with_smartfade`, `get_queue_flow_stream`
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
 - **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
-- **Crossfade management**: `crossfade_allowed`, `fade_into_pending`, `clear_crossfade_handover`
+- **Crossfade management**: `crossfade_allowed`, `fade_into_pending`, `fade_pending`, `clear_crossfade_handover`
 
 `AudioProcessingManager`, initialized as `self.audio_processing` on the
 StreamsController, combines queue processing and per-player output plans into complete

@@ -73,6 +73,12 @@ class _FakePushStream:
         self.is_stopped = False
         # event loop turns each commit waits for, which lets the producer run ahead
         self.commit_lag = 0
+        self.cleared_from: list[int] = []
+        self.keeps_audio_before_a_cut = True
+        # commits wait for commits_released once this many were made
+        self.hold_commits_after: int | None = None
+        self.commits_released = asyncio.Event()
+        self.clear_released: asyncio.Event | None = None
 
     def set_live_source(self, _live: bool) -> None:
         pass
@@ -92,6 +98,8 @@ class _FakePushStream:
     async def sleep_to_limit_buffer(self, _limit_us: int) -> None:
         for _ in range(self.commit_lag):
             await _real_sleep(0)
+        if self.hold_commits_after is not None and self._commits >= self.hold_commits_after:
+            await self.commits_released.wait()
 
     def now_us(self) -> int:
         return self.now
@@ -101,6 +109,14 @@ class _FakePushStream:
 
     def clear(self) -> None:
         pass
+
+    async def clear_from(self, timestamp_us: int) -> bool:
+        self.cleared_from.append(timestamp_us)
+        if self.clear_released is not None:
+            await self.clear_released.wait()
+        if self.keeps_audio_before_a_cut:
+            self._commits = (timestamp_us - _T0) // _CHUNK_DURATION_US
+        return self.keeps_audio_before_a_cut
 
 
 async def _chunks(count: int) -> AsyncIterator[bytes]:
@@ -132,6 +148,7 @@ def _player() -> MagicMock:
     player.requires_flow_mode = False
     player.mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
     player.mass.config.get_raw_player_config_value.return_value = "stereo"
+    player.mass.streams.audio.fade_pending.return_value = False
     player.mass.player_queues.queue_data_or_none.return_value = SimpleNamespace(
         session_id=None, queue=SimpleNamespace(flow_mode=False)
     )
@@ -566,6 +583,7 @@ async def test_a_next_item_that_replaces_one_sent_ahead_restarts_at_the_position
     """The player restarts the queue where it plays when the item sent ahead is replaced."""
     player = MagicMock()
     player.playback_session.set_next_media.return_value = False
+    player.playback_session.replace_next_media = AsyncMock(return_value=False)
     player.mass.player_queues.get.return_value = SimpleNamespace(
         queue_id="queue",
         corrected_elapsed_time=elapsed,
@@ -606,8 +624,8 @@ async def test_the_next_leader_follows_the_items_of_the_session_it_takes_over() 
     assert next_leader._attr_current_media is playing
 
 
-def test_a_next_item_replaces_one_sent_ahead_only_by_restarting() -> None:
-    """Once another item was sent ahead, only that same item can follow without a restart."""
+def test_a_next_item_does_not_take_the_place_of_one_sent_ahead() -> None:
+    """Once another item was sent ahead, only that same item follows it as the next item."""
     playing, sent_ahead = _media("item-1"), _media("item-2")
     player = _player()
     player._attr_current_media = playing
@@ -652,6 +670,253 @@ def test_a_repeated_item_follows_its_own_pass_sent_ahead() -> None:
     # once the repeat ends, the pass sent ahead has to make way for the next item
     player.mass.player_queues.get_next_item.return_value = SimpleNamespace(queue_item_id="item-2")
     assert session.set_next_media(_media("item-2")) is False
+
+
+async def _send_ahead_and_stall(
+    monkeypatch: pytest.MonkeyPatch,
+    player: MagicMock,
+    *,
+    member_dsp: bool = False,
+    hold_commits_after: int | None = None,
+) -> tuple[SendspinPlaybackSession, _FakePushStream, asyncio.Task[None]]:
+    """
+    Play a 1 s item-1, then send 0.5 s of item-2 ahead, whose source then stalls.
+
+    :param member_dsp: Run the audio through a member DSP process that holds back its last input.
+    :param hold_commits_after: Stop committing after this many chunks, until commits_released.
+    :return: The session, its push stream, and the running playback.
+    """
+    playing = _media("item-1")
+    player._attr_current_media = playing
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-2"])
+
+    async def _source(
+        media: PlayerMedia, *_args: object, **_kwargs: object
+    ) -> AsyncIterator[bytes]:
+        async for chunk in _chunks({"item-1": 10, "item-2": 5}.get(str(media.queue_item_id), 2)):
+            yield chunk
+        if media.queue_item_id == "item-2":
+            await asyncio.Event().wait()
+
+    player.mass.streams.get_stream.side_effect = _source
+    session, push_stream = _session(monkeypatch, player)
+    monkeypatch.setattr(session, "_get_item_streamdetails", lambda _media: None)
+    if member_dsp:
+        monkeypatch.setattr(
+            session,
+            "_read_pipeline_config",
+            lambda _player_id: _PipelineConfig(
+                requires_transform=True, filter_params=("volume=1.0",)
+            ),
+        )
+        monkeypatch.setattr(session, "_create_member_ffmpeg", lambda _params: _TailHoldingFFMpeg())
+    push_stream.hold_commits_after = hold_commits_after
+    assert session.set_next_media(_media("item-2"))
+    playback = asyncio.create_task(session._run_playback(playing))
+    while push_stream._commits < (hold_commits_after or 14) or len(session._item_starts) < 2:
+        await _real_sleep(0)
+    return session, push_stream, playback
+
+
+async def test_a_next_item_replaces_one_sent_ahead_from_its_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clients drop a replaced item sent ahead from its start, where the new next item follows."""
+    player = _player()
+    player.mass.streams.audio.fade_into_pending.return_value = False
+    item_starts: list[tuple[int, str | None]] = []
+
+    async def _record_item_starts(self: SendspinPlaybackSession) -> None:
+        item_starts.extend(
+            (offset_us, media.queue_item_id) for offset_us, media in self._item_starts
+        )
+
+    monkeypatch.setattr(SendspinPlaybackSession, "_wait_for_buffer_drain", _record_item_starts)
+    session, push_stream, playback = await _send_ahead_and_stall(monkeypatch, player)
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-3"])
+    replacement = _media("item-3")
+
+    assert session.set_next_media(replacement) is False
+    assert await session.replace_next_media(replacement) is True
+    await playback
+
+    assert push_stream.cleared_from == [_T0 + 1_000_000]
+    played = [call.args[0].queue_item_id for call in player.mass.streams.get_stream.call_args_list]
+    assert played == ["item-1", "item-2", "item-3"]
+    assert item_starts == [(0, "item-1"), (1_000_000, "item-3")]
+
+
+async def test_a_replacement_whose_start_was_not_committed_returns_before_the_audio_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The queue does not wait for the audio queued before a cut that no client got yet."""
+    player = _player()
+    player.mass.streams.audio.fade_into_pending.return_value = False
+    session, push_stream, playback = await _send_ahead_and_stall(
+        monkeypatch, player, hold_commits_after=3
+    )
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-3"])
+
+    assert await asyncio.wait_for(session.replace_next_media(_media("item-3")), timeout=1)
+    push_stream.commits_released.set()
+    await playback
+
+    assert push_stream.cleared_from == []
+    played = [call.args[0].queue_item_id for call in player.mass.streams.get_stream.call_args_list]
+    assert played == ["item-1", "item-2", "item-3"]
+
+
+async def test_a_replacement_during_a_cut_takes_the_place_of_the_one_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queue edit while the clients are still being cut plays its item, without a restart."""
+    player = _player()
+    player.mass.streams.audio.fade_into_pending.return_value = False
+    session, push_stream, playback = await _send_ahead_and_stall(
+        monkeypatch, player, hold_commits_after=3
+    )
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-3"])
+    assert await asyncio.wait_for(session.replace_next_media(_media("item-3")), timeout=1)
+
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-4"])
+    assert await asyncio.wait_for(session.replace_next_media(_media("item-4")), timeout=1)
+    push_stream.commits_released.set()
+    await playback
+
+    played = [call.args[0].queue_item_id for call in player.mass.streams.get_stream.call_args_list]
+    assert played == ["item-1", "item-2", "item-4"]
+
+
+async def test_an_edit_undone_during_a_cut_plays_the_item_it_restored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The item sent ahead, handed over again while it is cut, follows after the cut."""
+    player = _player()
+    player.mass.streams.audio.fade_into_pending.return_value = False
+    session, push_stream, playback = await _send_ahead_and_stall(
+        monkeypatch, player, hold_commits_after=3
+    )
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-3"])
+    assert await asyncio.wait_for(session.replace_next_media(_media("item-3")), timeout=1)
+
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-2"])
+    assert session.set_next_media(_media("item-2"))
+    push_stream.commits_released.set()
+    async with asyncio.timeout(1):
+        while player.mass.streams.get_stream.call_count < 3:
+            await _real_sleep(0)
+    playback.cancel()
+    await asyncio.gather(playback, return_exceptions=True)
+
+    played = [call.args[0].queue_item_id for call in player.mass.streams.get_stream.call_args_list]
+    assert played == ["item-1", "item-2", "item-2"]
+
+
+async def test_a_replacement_removed_during_a_cut_does_not_play(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement the queue no longer lists when the cut ends is not opened."""
+    player = _player()
+    player.mass.streams.audio.fade_into_pending.return_value = False
+    session, push_stream, playback = await _send_ahead_and_stall(
+        monkeypatch, player, hold_commits_after=3
+    )
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-3"])
+    assert await asyncio.wait_for(session.replace_next_media(_media("item-3")), timeout=1)
+
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1"])
+    push_stream.commits_released.set()
+    await asyncio.wait_for(playback, timeout=5)
+
+    played = [call.args[0].queue_item_id for call in player.mass.streams.get_stream.call_args_list]
+    assert played == ["item-1", "item-2"]
+    # an item added now is left to a restart, as after any end of the audio
+    assert session.set_next_media(_media("item-4")) is False
+
+
+async def test_stopping_during_a_replacement_releases_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session stopped while the clients are cut leaves no handover waiting on it."""
+    player = _player()
+    player.mass.streams.audio.fade_into_pending.return_value = False
+    session, push_stream, playback = await _send_ahead_and_stall(monkeypatch, player)
+    push_stream.clear_released = asyncio.Event()
+    replacing = asyncio.create_task(session.replace_next_media(_media("item-3")))
+    while not push_stream.cleared_from:
+        await _real_sleep(0)
+    playback.cancel()
+
+    assert await asyncio.wait_for(replacing, timeout=1) is True
+    with pytest.raises(asyncio.CancelledError):
+        await playback
+
+
+async def test_a_member_dsp_holding_back_audio_does_not_stall_a_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The audio before the cut gets through a member DSP that holds back its last input."""
+    player = _player()
+    player.mass.streams.audio.fade_into_pending.return_value = False
+    session, push_stream, playback = await _send_ahead_and_stall(
+        monkeypatch, player, member_dsp=True
+    )
+
+    assert await asyncio.wait_for(session.replace_next_media(_media("item-3")), timeout=5)
+
+    assert push_stream.cleared_from == [_T0 + 1_000_000]
+    playback.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await playback
+
+
+async def test_a_replacement_the_clients_cannot_cut_in_is_left_to_a_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the clients cannot keep the audio before the cut, the session plays out what it sent."""
+    player = _player()
+    player.mass.streams.audio.fade_into_pending.return_value = False
+    session, push_stream, playback = await _send_ahead_and_stall(monkeypatch, player)
+    push_stream.keeps_audio_before_a_cut = False
+
+    assert await session.replace_next_media(_media("item-3")) is False
+    await asyncio.wait_for(playback, timeout=1)
+
+    played = [call.args[0].queue_item_id for call in player.mass.streams.get_stream.call_args_list]
+    assert played == ["item-1", "item-2"]
+
+
+async def test_a_replacement_of_an_item_already_faded_into_leaves_the_stream_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An item whose head the one before mixed into its own tail keeps being sent."""
+    player = _player()
+    player.mass.streams.audio.fade_into_pending.return_value = True
+    session, push_stream, playback = await _send_ahead_and_stall(monkeypatch, player)
+
+    assert await session.replace_next_media(_media("item-3")) is False
+
+    assert push_stream.cleared_from == []
+    assert not playback.done()
+    playback.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await playback
+
+
+async def test_a_replacement_that_would_drop_a_fade_into_a_later_item_leaves_the_stream_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The audio sent ahead holds a fade into a later item, which only a restart resets."""
+    player = _player()
+    player.mass.streams.audio.fade_pending.return_value = True
+    session, push_stream, playback = await _send_ahead_and_stall(monkeypatch, player)
+
+    assert await session.replace_next_media(_media("item-3")) is False
+
+    assert push_stream.cleared_from == []
+    playback.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await playback
 
 
 def _formats(sample_rate: int) -> tuple[AudioFormat, SendspinAudioFormat]:

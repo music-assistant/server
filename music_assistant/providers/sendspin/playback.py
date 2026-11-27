@@ -248,6 +248,15 @@ class _PendingChunk:
 
 
 @dataclass(slots=True)
+class _ItemReplacement:
+    media: PlayerMedia
+    # where the replaced item starts in the session audio
+    offset_us: int
+    # False when only a restart from the current position replaces the item
+    done: asyncio.Future[bool]
+
+
+@dataclass(slots=True)
 class _JoinCatchupState:
     """
     Per-member state for a join-catchup processor replaying history through DSP.
@@ -363,6 +372,10 @@ class SendspinPlaybackSession:
         self._next_media_ready = asyncio.Event()
         # the session sent the end of its audio, so it plays no further item
         self._audio_ended = False
+        # where items start whose head the item before mixed into its own tail
+        self._faded_in_offsets: set[int] = set()
+        self._producer_task: asyncio.Task[None] | None = None
+        self._replacement: _ItemReplacement | None = None
 
     def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
         """
@@ -419,11 +432,15 @@ class SendspinPlaybackSession:
 
         :param media: The item that follows the playing one.
         :return: False when the session cannot play it next, because another item was already
-            sent ahead in its place or the end of its audio was sent. Only a restart from the
-            current position plays it then.
+            sent ahead in its place or the end of its audio was sent. Only replace_next_media
+            or a restart from the current position plays it then.
         """
         if self._audio_ended:
             return False
+        if (replacement := self._replacement) is not None:
+            # the cut still running plays this item in place of the one it replaces
+            replacement.media = media
+            return True
         current = self.player.current_media
         opened = [item for _, item in self._item_starts]
         if opened and opened[-1] is not current and any(item is current for item in opened):
@@ -437,6 +454,39 @@ class SendspinPlaybackSession:
         self._next_media = media
         self._next_media_ready.set()
         return True
+
+    async def replace_next_media(self, media: PlayerMedia) -> bool:
+        """
+        Replace the item sent ahead after the one playing now, keeping the audio before it.
+
+        :param media: The item that now follows the playing one.
+        :return: False when only a restart from the current position replaces the item.
+        """
+        if (replacement := self._replacement) is not None:
+            # the cut still running plays this item in place of the one it replaces
+            replacement.media = media
+            return True
+        task = self._producer_task
+        push_stream = self._push_stream
+        if (
+            task is None
+            or task.done()
+            or push_stream is None
+            or (anchor_us := self._timeline_start_us) is None
+        ):
+            return False
+        playing_offset_us, _ = self._playing_item(anchor_us, push_stream.now_us())
+        offset_us = next((o for o, _ in self._item_starts if o > playing_offset_us), None)
+        if offset_us is None or offset_us in self._faded_in_offsets:
+            return False
+        if media.source_id and self.player.mass.streams.audio.fade_pending(media.source_id):
+            # the cut would drop a fade into a later item, which only a restart resets
+            return False
+        replacement = self._replacement = _ItemReplacement(
+            media, offset_us, asyncio.get_running_loop().create_future()
+        )
+        task.cancel()
+        return await asyncio.shield(replacement.done)
 
     # -- Public API ------------------------------------------------------------
 
@@ -511,6 +561,7 @@ class SendspinPlaybackSession:
         self._cancel_requested = False
         self._item_starts = []
         self._audio_ended = False
+        self._faded_in_offsets = set()
         self._next_media = None
         self._next_media_ready.clear()
         self.playback_task = asyncio.create_task(self._run_playback(media))
@@ -970,9 +1021,17 @@ class SendspinPlaybackSession:
         reported_anchor_us: int | None = None
         reported_upcoming: tuple[PlayerMedia | None, float | None] = (None, None)
 
-        async def _produce_pending_chunks() -> None:
-            item_media: PlayerMedia | None = media
+        async def _produce_pending_chunks(item_media: PlayerMedia | None) -> None:
             while item_media is not None:
+                if (
+                    self._item_starts
+                    and item_media.source_id
+                    and item_media.queue_item_id
+                    and self.player.mass.streams.audio.fade_into_pending(
+                        item_media.source_id, item_media.queue_item_id
+                    )
+                ):
+                    self._faded_in_offsets.add(produced_us)
                 item_start_us = produced_us
                 self._opening_item = item_media
                 try:
@@ -1169,6 +1228,54 @@ class SendspinPlaybackSession:
             finally:
                 drained.cancel()
                 await asyncio.gather(drained, return_exceptions=True)
+
+        async def _cut_items_from(replacement: _ItemReplacement) -> bool:
+            nonlocal produced_us
+            offset_us = replacement.offset_us
+            # the queued audio of the replaced items follows all queued audio before them
+            queued = [pending_chunks.get_nowait() for _ in range(pending_chunks.qsize())]
+            for _ in queued:
+                pending_chunks.task_done()
+            while pending_backlog and produced_us > offset_us:
+                produced_us -= pending_backlog.pop().duration_us
+            for pending in queued[: len(pending_backlog)]:
+                pending_chunks.put_nowait(pending)
+            produced_us = offset_us
+            if pending_backlog:
+                # nothing from the cut on was committed, so the cut needs no stream/clear
+                replacement.done.set_result(True)
+            # the member DSP processes hold back their last chunk until their input ends
+            self._producer_eof_sent = True
+            await self._write_eof_to_member_pipelines()
+            await _commit_queued_chunks()
+            async with self._state_lock:
+                cut_us = next(
+                    (
+                        chunk.start_time_us
+                        for chunk in self._history
+                        if chunk.start_time_us - chunk.timeline_start_us >= offset_us
+                    ),
+                    None,
+                )
+            if cut_us is not None and not await push_stream.clear_from(cut_us):
+                return False
+            async with self._state_lock:
+                self._history = deque(
+                    chunk
+                    for chunk in self._history
+                    if chunk.start_time_us - chunk.timeline_start_us < offset_us
+                )
+                self._produced_audio_us = min(self._produced_audio_us, offset_us)
+                self._item_starts = [item for item in self._item_starts if item[0] < offset_us]
+                self._faded_in_offsets = {o for o in self._faded_in_offsets if o < offset_us}
+                self._producer_eof_sent = False
+            self._next_media = None
+            self._next_media_ready.clear()
+            # the member DSP processes hold audio of the replaced items
+            await self._restart_member_pipelines()
+            if (anchor_us := self._timeline_start_us) is not None:
+                await _report_timeline(anchor_us, push_stream.now_us())
+            return True
 
         anchor_move_task_id = f"sendspin_anchor_move_{uuid4().hex}"
         first_heard_task_id = f"sendspin_first_heard_{uuid4().hex}"
@@ -1452,9 +1559,39 @@ class SendspinPlaybackSession:
         self._attach_task_exception_logger(commit_task, "commit_pending_chunks")
         producer_stopped_cleanly = False
         try:
-            await _produce_pending_chunks()
+            item_media: PlayerMedia | None = media
+            while item_media is not None:
+                producer_task = self._producer_task = asyncio.create_task(
+                    _produce_pending_chunks(item_media)
+                )
+                item_media = None
+                try:
+                    await producer_task
+                except asyncio.CancelledError:
+                    replacement = self._replacement
+                    current_task = asyncio.current_task()
+                    if replacement is None or (current_task and current_task.cancelling()):
+                        raise
+                    kept = await _cut_items_from(replacement)
+                    self._replacement = None
+                    if not replacement.done.done():
+                        replacement.done.set_result(kept)
+                    if kept:
+                        self.player.logger.debug(
+                            "Replaced the item sent ahead with %s", replacement.media.uri
+                        )
+                        # the queue may have moved on from the replacement while the cut ran
+                        self._next_media = replacement.media
+                        self._next_media_ready.set()
+                        item_media = await _next_item_media(self._item_starts[-1][1])
+            self._audio_ended = True
             producer_stopped_cleanly = True
         finally:
+            # an ending session leaves nothing to replace
+            if (replacement := self._replacement) is not None:
+                self._replacement = None
+                if not replacement.done.done():
+                    replacement.done.set_result(True)
             if producer_stopped_cleanly and not self._cancel_requested and not commit_task.done():
                 # Mark EOF so that catchup processors promoted after this
                 # point also get flushed (see _promote_join_catchup_processor).
