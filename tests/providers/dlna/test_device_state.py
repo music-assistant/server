@@ -202,6 +202,26 @@ async def _set_state(player: DLNAPlayer, device: MagicMock, state: TransportStat
     await player.set_dynamic_attributes()
 
 
+async def _send_avtransport_event(player: DLNAPlayer, name: str, value: Any) -> None:
+    """
+    Let the device send an AVTransport event with one state variable, and wait for its handling.
+
+    :param player: The player of the device.
+    :param name: The name of the state variable.
+    :param value: The value of the state variable.
+    """
+    tasks: list[Coroutine[Any, Any, Any]] = []
+    player.mass.create_task = lambda target, **_kwargs: tasks.append(target)  # type: ignore[assignment]
+    service = MagicMock()
+    service.service_id = "urn:upnp-org:serviceId:AVTransport"
+    state_variable = MagicMock()
+    state_variable.name = name
+    state_variable.value = value
+    player._handle_event(service, [state_variable])
+    for task in tasks:
+        await task
+
+
 @pytest.mark.parametrize("media_position", [0, None])
 async def test_resume_continues_on_a_device_that_does_not_advance_its_position(
     monkeypatch: pytest.MonkeyPatch, media_position: int | None
@@ -518,6 +538,38 @@ async def test_transport_state_event_polls_before_reading_the_position() -> None
     assert player.elapsed_time == 0.0
     assert player.elapsed_time_last_updated is not None
     assert player.elapsed_time_last_updated >= started_at
+
+
+async def test_track_change_event_polls_before_reading_the_position() -> None:
+    """A player that moves on to the next track by itself reports the position of that track."""
+    device = _mock_device(media_position=100, async_update=AsyncMock())
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    device.media_position = 114
+    await player.set_dynamic_attributes()
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll with the position of the new track."""
+        device.media_position = 0
+        device.media_position_updated_at = datetime.now(UTC)
+
+    device.async_update = _async_update
+    # the device holds the new uri when the event arrives, without a change of state
+    device.current_track_uri = "http://192.168.1.10/next.mp3"
+    await _send_avtransport_event(player, "CurrentTrackURI", device.current_track_uri)
+
+    assert player.elapsed_time == 0.0
+
+
+async def test_event_that_repeats_the_playing_track_does_not_poll() -> None:
+    """An event that repeats the uri of the track that plays does not poll the device."""
+    device = _mock_device(async_update=AsyncMock())
+    player = _player(device)
+    await player.set_dynamic_attributes()
+
+    await _send_avtransport_event(player, "CurrentTrackURI", device.current_track_uri)
+
+    device.async_update.assert_not_called()
 
 
 @pytest.mark.parametrize(("reported", "expected"), [(0.5, 50), (0.0, 0), (1.0, 100)])
