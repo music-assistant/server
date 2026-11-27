@@ -1024,10 +1024,11 @@ class PlaybackMixin(_PlayerControllerBase):
                 translation_owner=self.translation_owner,
                 translation_args=[player.name],
             )
-        # Delegate to the active audio protocol if one is active
-        if target_player := player.foreign_protocol or self._get_control_target(
-            player, PlayerFeature.PAUSE, require_active=True
-        ):
+        # Delegate to the active audio protocol if one is active, unless it would stop for it
+        if (
+            target_player := player.foreign_protocol
+            or self._get_control_target(player, PlayerFeature.PAUSE, require_active=True)
+        ) and not target_player.stops_on_pause:
             await target_player.pause()
             return
         # No active protocol target: if the protocol rendering the audio supports pause and the
@@ -1039,10 +1040,11 @@ class PlaybackMixin(_PlayerControllerBase):
             and active_source
             and active_source.can_play_pause
             and PlayerFeature.PAUSE in output_player.supported_features
+            and not output_player.stops_on_pause
         ):
             await output_player.pause()
             return
-        # player/protocol does not support pause: fall back to stop, which also ends the
+        # player/protocol can not pause what it plays: fall back to stop, which also ends the
         # player's own queue so it releases its audio and the music source right away, and
         # shows that queue as paused until the pause timeout
         self.logger.debug(

@@ -2964,6 +2964,67 @@ class TestPauseWithoutPauseSupport:
         mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1", pause=True)
         cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
 
+    @pytest.mark.parametrize(
+        ("player_type", "stops_on_pause"),
+        [
+            (PlayerType.PLAYER, True),
+            (PlayerType.PLAYER, False),
+            (PlayerType.GROUP, True),
+            (PlayerType.GROUP, False),
+        ],
+    )
+    async def test_pause_of_a_protocol_that_would_stop_for_it_ends_the_queue(
+        self, mock_mass: MagicMock, player_type: PlayerType, stops_on_pause: bool
+    ) -> None:
+        """
+        A protocol that would stop for a pause is not paused: its player's queue shows the pause.
+
+        :param player_type: The type of player; a group plays on its own protocol, without an
+            active output protocol.
+        :param stops_on_pause: Whether the protocol would stop for the pause.
+        """
+        controller, player = self._player_on_own_queue(mock_mass, player_type)
+        protocol = cast("MockProtocol", player.own_protocol)
+        protocol._attr_supported_features.add(PlayerFeature.PAUSE)
+        protocol._attr_stops_on_pause = stops_on_pause
+        protocol.pause = AsyncMock()  # type: ignore[method-assign]
+        if player_type == PlayerType.PLAYER:
+            player.set_active_output_protocol("native")
+        _refresh(player)
+
+        await controller._handle_cmd_pause("player_1")
+
+        if stops_on_pause:
+            protocol.pause.assert_not_awaited()
+            mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1", pause=True)
+        else:
+            protocol.pause.assert_awaited_once()
+            mock_mass.player_queues._handle_stop.assert_not_awaited()
+        cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
+
+    async def test_pause_of_a_protocol_that_would_stop_for_it_stops_another_queue(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player that plays another queue than its own is stopped, as its protocol would be."""
+        controller, player = self._player_on_own_queue(mock_mass)
+        group_queue = _stub_queue("group_1")
+        mock_mass.player_queues.get = MagicMock(
+            side_effect=lambda queue_id: group_queue if queue_id == "group_1" else None
+        )
+        protocol = cast("MockProtocol", player.own_protocol)
+        protocol._attr_supported_features.add(PlayerFeature.PAUSE)
+        protocol._attr_stops_on_pause = True
+        protocol.pause = AsyncMock()  # type: ignore[method-assign]
+        player.set_active_output_protocol("native")
+        player.set_active_mass_source("group_1")
+        _refresh(player)
+
+        await controller._handle_cmd_pause("player_1")
+
+        protocol.pause.assert_not_awaited()
+        mock_mass.player_queues._handle_stop.assert_not_awaited()
+        cast("AsyncMock", controller._handle_cmd_stop).assert_awaited_once_with("player_1")
+
 
 class TestMirrorsParentMedia:
     """Tests for _mirrors_parent_media (palette-fetch gating for grouped players)."""

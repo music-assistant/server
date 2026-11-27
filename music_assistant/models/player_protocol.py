@@ -155,6 +155,7 @@ class PlayerProtocol(ABC):
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
     _attr_paused_position_reliable: bool = False
+    _attr_stops_on_pause: bool = False
 
     def __init__(self, provider: PlayerProvider, protocol_id: str) -> None:
         """Initialize the protocol object."""
@@ -501,6 +502,18 @@ class PlayerProtocol(ABC):
         so the queue (also in flow mode) follows it while paused.
         """
         return self._attr_paused_position_reliable
+
+    @property
+    def stops_on_pause(self) -> bool:
+        """
+        Return whether a pause of what the player plays now would stop it instead.
+
+        Set (or override) this for a player that supports PlayerFeature.PAUSE but can not
+        resume what it plays now, so its pause stops it. Its pause is then not called but it is
+        stopped, as a player without a pause of its own: its own queue shows as paused until the
+        pause timeout and plays on from where it was.
+        """
+        return self._attr_stops_on_pause
 
     @property
     def group_members(self) -> list[str]:

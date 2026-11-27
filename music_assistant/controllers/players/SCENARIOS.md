@@ -2803,6 +2803,22 @@ free again, and the queue keeps its place.
   - `test_queue_paused_by_a_stop.py::test_play_on_a_paused_sync_group_plays_on_with_the_same_speakers`
   - `test_queue_paused_by_a_stop.py::test_a_paused_sync_group_lets_its_speakers_go_when_the_pause_ends`
 
+### PAUSE-22 · A speaker that would stop for a pause shows its queue as paused
+
+A speaker has a pause of its own, but can not resume what it plays now, so its pause would stop
+it: a Sonos speaker in a track it does not get as a file, or a renderer whose user replaced its
+pause with a stop. It is paused 5 s into a track of its queue. It is stopped instead of paused,
+and shows as paused as a speaker without a pause of its own does; play plays the track on from
+5 s.
+
+- End-to-end: **possible with** a Sonos speaker in the lab that plays a track it does not get as
+  a file.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_a_speaker_that_would_stop_for_a_pause_shows_its_queue_as_paused`
+  - `tests/providers/sonos/test_player.py::test_a_speaker_stops_on_a_pause_it_could_not_resume`
+  - `tests/providers/dlna/test_lifecycle.py::test_a_renderer_set_to_stop_for_a_pause_stops_on_a_pause`
+  - `tests/providers/musiccast/test_player.py::test_a_zone_that_plays_from_music_assistant_stops_on_a_pause`
+
 ## A live source that pauses
 
 A live source of a plugin, such as Spotify Connect, has no audio while it is paused, so its stream

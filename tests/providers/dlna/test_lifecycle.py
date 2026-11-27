@@ -97,6 +97,30 @@ async def test_a_new_renderer_reads_its_settings_from_its_own_record(
     device.async_pause.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("replace_pause_with_stop", "can_stop"), [(True, True), (True, False), (False, True)]
+)
+async def test_a_renderer_set_to_stop_for_a_pause_stops_on_a_pause(
+    scenario: Scenario, replace_pause_with_stop: bool, can_stop: bool
+) -> None:
+    """
+    A renderer stops on a pause when its user replaced its pause with a stop and it can stop.
+
+    :param replace_pause_with_stop: The setting of the renderer.
+    :param can_stop: Whether the renderer offers a stop.
+    """
+    protocol = await _attach_renderer(scenario)
+    await scenario.mass.config.save_protocol_config(
+        UDN, {"replace_pause_with_stop": replace_pause_with_stop}
+    )
+    await scenario.settle()
+    device = protocol.device
+    assert isinstance(device, MagicMock)
+    device.can_stop = can_stop
+
+    assert protocol.stops_on_pause is (replace_pause_with_stop and can_stop)
+
+
 async def test_two_renderers_on_one_host_are_two_players(scenario: Scenario) -> None:
     """The UDN of a renderer vetoes a match with another renderer of the same host."""
     renderer_a = await _attach_renderer(scenario)

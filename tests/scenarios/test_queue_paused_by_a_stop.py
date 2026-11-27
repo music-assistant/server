@@ -508,3 +508,28 @@ async def test_a_paused_sync_group_lets_its_speakers_go_when_the_pause_ends(
     for player_id in player_ids:
         assert _state(scenario, player_id).active_group is None
     assert _position(scenario, group_id).resume_pos == pytest.approx(PLAYED_SECONDS, abs=1)
+
+
+async def test_a_speaker_that_would_stop_for_a_pause_shows_its_queue_as_paused(
+    scenario: Scenario,
+) -> None:
+    """A speaker with a pause that can not resume what it plays is stopped, and shows the pause."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+    await scenario.report(speaker, stops_on_pause=True)
+    scenario.clear_events()
+
+    await _pause_by_stop(scenario, speaker, player_id)
+
+    assert ("pause",) not in speaker.commands
+    assert _state(scenario, player_id).playback_state == PlaybackState.PAUSED
+    assert PlaybackState.IDLE not in _seen_states(scenario, player_id)
+    assert _is_at_the_pause(scenario, player_id, PlaybackState.PAUSED)
+    speaker.commands.clear()
+    await scenario.mass.players.cmd_play(player_id)
+    await scenario.settle()
+    assert _names(speaker) == ["play_media"]
+    playing = _position(scenario, player_id)
+    assert (playing.state, playing.current_index) == (PlaybackState.PLAYING, 0)
+    assert playing.elapsed_time == pytest.approx(PLAYED_SECONDS, abs=1)
