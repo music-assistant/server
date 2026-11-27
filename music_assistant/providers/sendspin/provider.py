@@ -1718,6 +1718,10 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         announcements are relayed to: ESPHome devices support announcements
         natively, but that capability is only reachable through the HA API.
         Players are correlated by the MAC address they report.
+
+        A device with several audio outputs runs one client per output, and they all
+        report the MAC address of the device. The HA name of the device says nothing
+        about which output a player is, so those players keep the name of their client.
         """
         mac_players: list[tuple[SendspinBasePlayer, str]] = []
         for player in players:
@@ -1740,14 +1744,54 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         except Exception as err:  # noqa: BLE001 - the home assistant enrichment is optional
             self.logger.warning("Failed to apply Home Assistant enrichment: %s", err)
             return
+        shared_mac_addresses = self._restore_names_of_players_sharing_mac(mac_players)
         for player, mac_address in mac_players:
             device_info = device_infos.get(mac_address)
-            if device_info is not None and device_info["name"]:
+            if (
+                device_info is not None
+                and device_info["name"]
+                and mac_address not in shared_mac_addresses
+            ):
                 player._attr_name = device_info["name"]
             if isinstance(player, SendspinPlayer):
                 player.set_hass_announce_entity(
                     device_info["announce_entity_id"] if device_info is not None else None
                 )
+
+    def _restore_names_of_players_sharing_mac(
+        self, mac_players: Sequence[tuple[SendspinBasePlayer, str]]
+    ) -> set[str]:
+        """
+        Return the MAC addresses several players report, and give those players their own name back.
+
+        A player that was alone on its MAC address took the HA name of the device. Once
+        a second client reports the same MAC address that name no longer tells them
+        apart, so every player on it returns to the name its client reports. The players
+        registered before this call are updated in place.
+
+        :param mac_players: The players being enriched, each with the MAC address it reports.
+        """
+        by_mac: dict[str, dict[str, SendspinBasePlayer]] = {}
+        for player, mac_address in mac_players:
+            by_mac.setdefault(mac_address, {})[player.protocol_id] = player
+        enriched_ids = {player.protocol_id for player, _ in mac_players}
+        for protocol in self.protocols:
+            if not isinstance(protocol, SendspinBasePlayer):
+                continue
+            reported = _reported_mac_address(protocol)
+            if reported is not None and reported in by_mac:
+                by_mac[reported].setdefault(protocol.protocol_id, protocol)
+        shared_mac_addresses = {mac for mac, players in by_mac.items() if len(players) > 1}
+        for mac_address in shared_mac_addresses:
+            for player in by_mac[mac_address].values():
+                info = player.api.info_or_none
+                if info is None or not info.name or player._attr_name == info.name:
+                    continue
+                player._attr_name = info.name
+                if player.protocol_id not in enriched_ids:
+                    # the caller publishes the state of the players it enriches
+                    player.update_state()
+        return shared_mac_addresses
 
     async def _refresh_hass_esphome_enrichment(self) -> None:
         """Re-apply the HA enrichment to all registered players that report a MAC address (in place)."""

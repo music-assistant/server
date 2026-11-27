@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import PlayerFeature
@@ -15,8 +15,10 @@ from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from aiosendspin.server.client import SendspinClient
-    from music_assistant_models.config_entries import PlayerConfig
+    from music_assistant_models.config_entries import PlayerConfig, ProviderConfig
 
     from music_assistant.mass import MusicAssistant
 
@@ -24,30 +26,47 @@ MAC = "aa:bb:cc:dd:ee:ff"
 ENTITY_ID = "media_player.kitchen_speaker"
 
 
-def _player(*, player_id: str = MAC, hello_mac: str | None = None) -> SendspinPlayer:
+def _player(
+    *, player_id: str = MAC, hello_mac: str | None = None, hello_name: str = "hello name"
+) -> SendspinPlayer:
     player = SendspinPlayer.__new__(SendspinPlayer)
     player._protocol_id = player_id
     player._player = None
     player.api = cast(
         "SendspinClient",
         SimpleNamespace(
-            info_or_none=SimpleNamespace(device_info=SimpleNamespace(mac_address=hello_mac))
+            info_or_none=SimpleNamespace(
+                name=hello_name, device_info=SimpleNamespace(mac_address=hello_mac)
+            )
         ),
     )
     player._cache = {}
     player._attr_supported_features = set()
     player._attr_device_info = DeviceInfo(manufacturer="ESPHome")
-    player._attr_name = "hello name"
+    player._attr_name = hello_name
     player._config = cast("PlayerConfig", SimpleNamespace(name=None, default_name=None))
     player.logger = Mock()
     return player
 
 
-def _provider(hass_provider: object | None) -> SendspinProvider:
+def _provider(
+    hass_provider: object | None, registered: Sequence[SendspinPlayer] = ()
+) -> SendspinProvider:
+    """
+    Return a provider that finds the given hass provider.
+
+    :param hass_provider: The hass provider the enrichment asks, or None for none.
+    :param registered: The players the provider holds already.
+    """
     provider = SendspinProvider.__new__(SendspinProvider)
     provider.mass = cast(
-        "MusicAssistant", SimpleNamespace(get_provider=lambda _domain: hass_provider)
+        "MusicAssistant",
+        SimpleNamespace(
+            get_provider=lambda _domain: hass_provider,
+            players=SimpleNamespace(iter_protocols=lambda _instance_id: iter(registered)),
+        ),
     )
+    provider.config = cast("ProviderConfig", SimpleNamespace(instance_id="sendspin"))
     provider.logger = Mock()
     return provider
 
@@ -171,3 +190,43 @@ async def test_play_announcement_requires_resolved_entity() -> None:
     )
     with pytest.raises(PlayerCommandFailed):
         await player.play_announcement(PlayerMedia(uri="http://mass.local/announcement.mp3"))
+
+
+OUTPUT_A = "RgmjgOGNLs4XquiLE1OE42qVHLSNEj5WcBkkI9la20A"
+OUTPUT_B = "ZmFrZS1zZW5kc3Bpbi1wbGF5ZXItaWQtMzJieXRlcyE"
+
+
+async def test_enrichment_keeps_the_names_of_outputs_sharing_a_mac_address() -> None:
+    """The outputs of one device report its MAC address, and keep their own names."""
+    hass = _hass_provider({MAC: {"name": "Universal Proxy", "announce_entity_id": None}})
+    hdmi = _player(player_id=OUTPUT_A, hello_mac=MAC, hello_name="HDMI")
+    speaker = _player(player_id=OUTPUT_B, hello_mac=MAC, hello_name="Bluetooth speaker")
+    await _provider(hass)._apply_hass_esphome_enrichment([hdmi, speaker])
+    assert hdmi._attr_name == "HDMI"
+    assert speaker._attr_name == "Bluetooth speaker"
+
+
+async def test_enrichment_restores_the_name_when_a_second_output_appears() -> None:
+    """A player that took the HA name gets its own back once another shares its MAC address."""
+    hass = _hass_provider({MAC: {"name": "Universal Proxy", "announce_entity_id": None}})
+    hdmi = _player(player_id=OUTPUT_A, hello_mac=MAC, hello_name="HDMI")
+    await _provider(hass)._apply_hass_esphome_enrichment([hdmi])
+    assert hdmi._attr_name == "Universal Proxy"
+
+    speaker = _player(player_id=OUTPUT_B, hello_mac=MAC, hello_name="Bluetooth speaker")
+    with patch.object(SendspinPlayer, "update_state") as update_state:
+        await _provider(hass, registered=[hdmi])._apply_hass_esphome_enrichment([speaker])
+    assert speaker._attr_name == "Bluetooth speaker"
+    assert hdmi._attr_name == "HDMI"
+    # the player that was registered already publishes its restored name
+    update_state.assert_called_once_with()
+
+
+async def test_enrichment_names_a_player_that_is_registered_already() -> None:
+    """A player that is enriched again while registered is still alone on its MAC address."""
+    hass = _hass_provider({MAC: {"name": "Kitchen Speaker", "announce_entity_id": ENTITY_ID}})
+    player = _player(player_id=OUTPUT_A, hello_mac=MAC)
+    other = _player(player_id=OUTPUT_B, hello_mac="11:22:33:44:55:66")
+    await _provider(hass, registered=[player, other])._apply_hass_esphome_enrichment([player])
+    assert player._attr_name == "Kitchen Speaker"
+    assert other._attr_name == "hello name"
