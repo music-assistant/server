@@ -214,6 +214,10 @@ class SyncGroupPlayer(PlayerProtocol):
             return session.get_supported_sample_rates()
         return [(44100, 16), (48000, 16)]
 
+    def resolve_output_protocol(self) -> PlayerProtocol:
+        """Return the protocol of the sync leader that plays the stream, else the group itself."""
+        return self._active_session_protocol() or self
+
     @property
     def active_source(self) -> str | None:
         """Return the active source id of the current media (if any)."""

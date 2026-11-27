@@ -2726,7 +2726,7 @@ class StreamsController(CoreController):
         :param request: The request of the player.
         :param queue: The queue the item plays on.
         :param queue_item: The queue item, with its stream details resolved.
-        :param player: The player that fetches the file.
+        :param player: The protocol that renders the file for the player that fetches it.
         :param pcm_format: PCM format a new file reads its audio in.
         :param output_format: Format of a new file.
         :param headers: The headers of a stream response for this item.
@@ -2739,7 +2739,9 @@ class StreamsController(CoreController):
         session_id = request.match_info["session_id"]
         start_position = int(queue_item.streamdetails.seek_position)
         key = FileKey(session_id, queue.queue_id, queue_item.queue_item_id, start_position)
-        file = self._file_streams.get(player.protocol_id, key)
+        # kept under the id the url names: the protocol that renders it can change in between
+        url_player_id = request.match_info["player_id"]
+        file = self._file_streams.get(url_player_id, key)
         requested_again = file is not None
         if file is None:
             frames = declared_frames(queue_item, output_format.sample_rate)
@@ -2772,7 +2774,7 @@ class StreamsController(CoreController):
                         session_id=session_id,
                     ),
                 )
-            self._file_streams.add(player.protocol_id, key, file)
+            self._file_streams.add(url_player_id, key, file)
         if file.mix is not None and (max_size := file.mix.max_size) is not None:
             # what the mixes left of the track is known before a request reaches its end
             file.end_at(file.offset_of(max_size))

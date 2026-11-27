@@ -214,6 +214,8 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 1. **HTTP endpoints** (`serve_queue_item_stream`, `serve_queue_flow_stream`): Used by players that consume HTTP streams (Chromecast, DLNA, Sonos, etc.)
 2. **Direct PCM** (`get_stream`): Used by player providers that consume raw PCM directly (AirPlay, Sendspin, etc.)
 
+A stream is asked for under the id of a protocol (or a player), and `PlayersController.get_output_protocol` turns that id into the protocol that renders it: its output format, DSP and stream callbacks apply. That is the protocol of the id itself, unless that protocol has another one render its streams (`PlayerProtocol.resolve_output_protocol`): a sync group answers with the protocol of its current leader, and with itself while it has none.
+
 ### The Length of a Stream
 
 An HTTP stream declares no `Content-Length`: it ends when its audio does. Two traits of a player's protocol change that, and neither is a user setting:
@@ -231,6 +233,7 @@ A player that is built around files (`PlayerProtocol.fetches_files`) wants the l
 - The declared length is exact when the track was decoded to its end before the first request, and else its duration plus a second. Audio that ends before the declared length just ends the body; from then on the file has its real size, and a request at or past it gets a `416` with that size. More audio than declared is cut off.
 - Pacing stays with ffmpeg, as for every stream. A file hands out 30 seconds of head start, 6 per encode as any other stream gets when it starts, so the encodes after the fifth start at playback speed.
 - One encode runs per file: a request for another part ends the one before it. A player has three files at most, and they go when the queue stops.
+- A file is kept under the id its url names. The protocol that id resolves to (`PlayersController.get_output_protocol`) renders each part and gets the callbacks; for a sync group that is the protocol of its leader now. So a group that changes its leader goes on with the same file: its formats stay those it was made with, and the parts after the change get the DSP of the new leader.
 - A GET for a file the player asked for before, of the item the queue plays now, means the player resumed or seeked by itself: the stream calls `PlayerProtocol.on_file_requested_again`. A player that does not report its new position by itself (a DLNA renderer) reads its state back from the device then.
 
 In a queue with crossfade or smart fades the stream of a track is more than the track: it starts with the end of the mix that the track before it began (the lead-in), and it ends with the first part of the mix into the track after it. `get_queue_item_stream_with_smartfade` makes those mixes once and live, as for every player. `MixedTrack` runs that stream as passes and keeps what the mixes yield, so a file can be cut from it:

@@ -5046,3 +5046,42 @@ class TestProtocolLookups:
 
         assert sgp.active_source == "spotify"
         assert sgp.source_list == native.source_list
+
+
+class TestStreamUnderTheIdOfTheGroup:
+    """A stream asked for under the id of a sync group is rendered by the protocol of its leader."""
+
+    @pytest.mark.parametrize("by_player_id", [False, True])
+    async def test_the_leader_renders_and_a_new_leader_takes_over(
+        self, monkeypatch: pytest.MonkeyPatch, by_player_id: bool
+    ) -> None:
+        """The protocol of the leader renders the stream, also after the group changed it."""
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+        stream_id = _group_id(group) if by_player_id else group.protocol_id
+
+        group.sync_leader = leader
+        assert players.get_output_protocol(stream_id) is _protocol(leader, "sonos")
+
+        group.sync_leader = member
+        assert players.get_output_protocol(stream_id) is _protocol(member, "sonos")
+
+    async def test_a_group_without_a_leader_renders_its_stream_itself(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a leader the group's own protocol is the one that renders."""
+        players, group, _, _ = _controller_with_a_sync_group(monkeypatch)
+        assert group.sync_leader is None
+
+        assert players.get_output_protocol(group.protocol_id) is group
+        assert players.get_output_protocol(_group_id(group)) is group
+
+    async def test_the_id_of_a_member_names_its_own_protocol(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A protocol id or player id of a member is answered as for any player."""
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+        group.sync_leader = leader
+
+        assert players.get_output_protocol("sonos_B") is _protocol(member, "sonos")
+        assert players.get_output_protocol("B") is _protocol(member, "sonos")
+        assert players.get_output_protocol("unknown") is None
