@@ -1596,9 +1596,9 @@ async def test_lookup_sends_the_keys_as_headers(
     [
         pytest.param(
             None,
-            {"code": 2, "message": 'missing required parameter "user"'},
+            {"code": 21, "message": 'missing required parameter "user"'},
             "user_key_missing",
-            id="user_key_missing",
+            id="user_key_required",
         ),
         pytest.param(
             None,
@@ -1616,10 +1616,10 @@ async def test_lookup_sends_the_keys_as_headers(
             "USERKEY", {"code": 4, "message": "invalid API key"}, "app_key_refused", id="app_key"
         ),
         pytest.param(
-            "USERKEY",
-            {"code": 2, "message": 'missing required parameter "fingerprint"'},
             None,
-            id="missing_parameter_with_a_user_key",
+            {"code": 2, "message": 'missing required parameter "user"'},
+            None,
+            id="missing_parameter",
         ),
         pytest.param("USERKEY", {"code": 3, "message": "invalid fingerprint"}, None, id="other"),
     ],

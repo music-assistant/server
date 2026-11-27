@@ -65,9 +65,9 @@ MAX_RELEASE_GROUPS_PER_RECORDING = 500
 ACOUSTID_LOOKUP_URL = "https://api.acoustid.org/v2/lookup"
 ACOUSTID_LOOKUP_CACHE_TTL = 86400 * 30
 # AcoustID error codes that mean no lookup can succeed until a key changes
-ACOUSTID_ERROR_MISSING_PARAMETER = 2
 ACOUSTID_ERROR_INVALID_APIKEY = 4
 ACOUSTID_ERROR_INVALID_USER_APIKEY = 6
+ACOUSTID_ERROR_USER_KEY_REQUIRED = 21
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -609,7 +609,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             if 500 <= response.status < 600:
                 raise ResourceTemporarilyUnavailable("AcoustID server error", backoff_time=30)
             if response.status == 400:
-                self._check_refused_keys(await response.json(content_type=None), user_key)
+                self._check_refused_keys(await response.json(content_type=None))
                 return None
             if response.status in (401, 403):
                 self.logger.warning("AcoustID refused the lookup (HTTP %d)", response.status)
@@ -629,7 +629,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             return None
         return payload
 
-    def _check_refused_keys(self, payload: Any, user_key: str | None) -> None:
+    def _check_refused_keys(self, payload: Any) -> None:
         """Unload the provider when AcoustID refuses the lookup over a key."""
         error = payload.get("error") if isinstance(payload, dict) else None
         code = error.get("code") if isinstance(error, dict) else None
@@ -640,9 +640,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 translation_key="app_key_refused",
                 translation_owner=self.translation_owner,
             )
-        elif code == ACOUSTID_ERROR_INVALID_USER_APIKEY or (
-            code == ACOUSTID_ERROR_MISSING_PARAMETER and not user_key
-        ):
+        elif code in (ACOUSTID_ERROR_INVALID_USER_APIKEY, ACOUSTID_ERROR_USER_KEY_REQUIRED):
             reason = LoginFailed(
                 "AcoustID needs a valid user key",
                 translation_key="user_key_missing",
