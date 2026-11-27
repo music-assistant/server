@@ -39,7 +39,7 @@ from pychromecast.socket_client import (
     ConnectionStatus,
 )
 
-from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL, PlaybackQuality
 from music_assistant.helpers.player import served_duration
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
@@ -50,6 +50,7 @@ from .constants import (
     APP_MEDIA_RECEIVER,
     APP_QUIT_DELAY,
     APP_TRACK_CHANGE_TIME,
+    CAST_LOSSLESS_MODELS,
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_DEFER_IDLE_VOLUME,
     CONF_ENTRY_DEFER_IDLE_VOLUME,
@@ -59,7 +60,6 @@ from .constants import (
     DASHBOARD_KEEPALIVE_SUFFIXES,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
-    get_cast_output_codec_entry,
 )
 from .helpers import (
     CastStatusListener,
@@ -178,18 +178,22 @@ class ChromecastPlayer(PlayerProtocol):
         """Return True: a receiver pauses, resumes and seeks by asking for a part of a track."""
         return True
 
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        if self.cast_info.model_name in CAST_LOSSLESS_MODELS:
+            return PlaybackQuality.LOSSLESS_COMPRESSED
+        return PlaybackQuality.COMPRESSED
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        output_codec_entry = get_cast_output_codec_entry(self.cast_info.model_name)
         if self.type == PlayerType.GROUP:
             return [
-                output_codec_entry,
                 *CAST_PLAYER_CONFIG_ENTRIES,
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
-            output_codec_entry,
             *CAST_PLAYER_CONFIG_ENTRIES,
             CONF_ENTRY_SAMPLE_RATES_CAST,
             CONF_ENTRY_DEFER_IDLE_VOLUME,

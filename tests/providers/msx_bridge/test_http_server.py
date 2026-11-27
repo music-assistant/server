@@ -15,8 +15,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient as AiohttpTestClient
 from aiohttp.test_utils import TestServer, make_mocked_request
-from music_assistant_models.config_entries import PlayerConfig
+from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     MediaType,
     PlaybackState,
@@ -34,6 +35,7 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
@@ -2365,19 +2367,26 @@ async def test_msx_audio_arms_wait_before_enqueue(
 # --- Audio params ---
 
 
-@pytest.mark.parametrize("codec", [None, "mp3", "aac", "flac"])
+@pytest.mark.parametrize(
+    ("playback_quality", "codec"),
+    [
+        (None, ContentType.MP3),
+        ("compressed", ContentType.MP3),
+        ("lossless_compressed", ContentType.FLAC),
+    ],
+)
 async def test_independent_audio_uses_saved_tv_codec(
-    provider: MSXBridgeProvider, mass_mock: Mock, codec: str | None
+    provider: MSXBridgeProvider, mass_mock: Mock, playback_quality: str | None, codec: ContentType
 ) -> None:
-    """Registration preserves each TV's codec and defaults new configurations to MP3."""
-    entries = await MSXPlayer(provider, "msx_test").get_config_entries()
+    """Registration preserves each TV's playback quality and defaults new configurations to MP3."""
+    entry = ConfigEntry(key=CONF_PLAYBACK_QUALITY, type=ConfigEntryType.STRING)
     config = PlayerConfig.parse(
-        entries,
+        [entry],
         {
             "provider": provider.instance_id,
             "player_id": "msx_test",
             "enabled": True,
-            "values": {"output_codec": codec} if codec is not None else {},
+            "values": {entry.key: playback_quality} if playback_quality is not None else {},
         },
     )
     mass_mock.config.get_base_protocol_config.return_value = config
@@ -2390,8 +2399,7 @@ async def test_independent_audio_uses_saved_tv_codec(
     with patch.object(pipeline, "serve_independent", return_value=web.Response()) as serve:
         await pipeline.serve(request, player, media)
 
-    assert config.get_value("output_codec") == (codec or "mp3")
-    assert serve.call_args.args[4].content_type == ContentType(codec or "mp3")
+    assert serve.call_args.args[4].content_type == codec
 
 
 @pytest.mark.parametrize("codec", ["mp3", "aac", "flac"])

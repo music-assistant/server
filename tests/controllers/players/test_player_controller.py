@@ -72,7 +72,7 @@ from music_assistant.constants import (
     CONF_IDLE_POWER_OFF,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
-    CONF_OUTPUT_CODEC,
+    CONF_PLAYBACK_QUALITY,
     CONF_POWER_CONTROL,
     CONF_POWER_CONTROL_CUTS_POWER,
     CONF_POWER_ON_STARTUP_TIME,
@@ -4551,14 +4551,14 @@ class TestConfigChangeRestartsPlayback:
     """
     Test that a changed setting which needs a reload restarts playback.
 
-    A setting is stored on the player or on one of its protocols (such as the output
-    codec); a change of either one restarts the queue.
+    A setting is stored on the player or on one of its protocols (such as the playback
+    quality); a change of either one restarts the queue.
     """
 
     @staticmethod
     def _config(scope: str, *, requires_reload: bool) -> PlayerConfig:
         """Build the config of the given scope holding a single setting."""
-        key = CONF_OUTPUT_CODEC if scope == "protocol" else "player_setting"
+        key = CONF_PLAYBACK_QUALITY if scope == "protocol" else "player_setting"
         return PlayerConfig(
             provider="test_prov",
             player_id="player_1" if scope == "player" else _proto("player_1"),
@@ -4567,7 +4567,7 @@ class TestConfigChangeRestartsPlayback:
                     key=key,
                     type=ConfigEntryType.STRING,
                     label="Setting",
-                    value="flac",
+                    value="lossless_compressed",
                     requires_reload=requires_reload,
                 )
             },

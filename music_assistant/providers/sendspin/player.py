@@ -80,6 +80,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     EventType,
     IdentifierType,
     MediaType,
@@ -98,6 +99,7 @@ from music_assistant.constants import (
     CONF_ALLOW_AUDIO_ANALYSIS,
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
+    PlaybackQuality,
 )
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
@@ -518,6 +520,11 @@ class SendspinBasePlayer(PlayerProtocol):
     def can_hand_over_session(self) -> bool:
         """Return True: the Sendspin group plays on for its members when its leader leaves."""
         return True
+
+    @property
+    def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
+        """Return no playback quality levels: Sendspin picks its format with its own settings."""
+        return {}
 
     @property
     def needs_setup(self) -> bool:

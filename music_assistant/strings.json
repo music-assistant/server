@@ -216,25 +216,28 @@
         "mono": "Mono (both channels)"
       }
     },
-    "output_codec": {
-      "label": "Output codec to use for streaming audio to the player",
-      "description": "Select the codec to use for streaming audio to this player. \nMost players get lossless, high quality FLAC by default, which offers some compression while still remaining lossless. \n\nSome players default to a lossy codec such as MP3 instead, because they do not support FLAC or stop playing a long FLAC stream after a while. \n\nChoosing a lossy codec also saves some network bandwidth, at the cost of audio quality.",
+    "playback_quality": {
+      "label": "Playback quality",
+      "description": "How Music Assistant sends audio to this player. The default is the level that works best for this kind of player. Pick a lower level if playback stutters or the player is on weak Wi-Fi.",
       "options": {
-        "flac": "FLAC (lossless, compressed)",
-        "mp3": "MP3 (lossy)",
-        "aac": "AAC (lossy)",
-        "wav": "WAV (uncompressed PCM)"
+        "lossless_uncompressed": "Lossless, uncompressed",
+        "lossless_compressed": "Lossless, compressed",
+        "compressed": "High quality, compressed"
       },
       "option_descriptions": {
-        "flac": "Lossless and compressed — full quality at a moderate bitrate. The default and best choice for most players.",
-        "mp3": "Lossy — smaller bitrate at some quality cost. Use for players that can't play FLAC, or to save bandwidth.",
-        "aac": "Lossy — comparable to MP3; pick it for players that prefer AAC.",
-        "wav": "Uncompressed PCM audio in a WAV container — highest bandwidth. Only needed for players that can't handle FLAC."
+        "lossless_uncompressed": "Full quality without compression. The lossless level that works on the most players; best on a wired connection or good Wi-Fi.",
+        "lossless_compressed": "Full quality in a smaller size. Easier on Wi-Fi, but not every player plays it reliably.",
+        "compressed": "Much smaller, with a quality loss that is hard to hear. The most reliable level when a player or the network struggles: pick this on weak Wi-Fi or when playback stutters or stops."
+      },
+      "disabled_reasons": {
+        "lossless_uncompressed": "This player cannot play this level.",
+        "lossless_compressed": "This player cannot play this level.",
+        "compressed": "This player cannot play this level."
       }
     },
     "prefer_wav_for_live_sources": {
-      "label": "Prefer low-latency WAV for live sources",
-      "description": "Send live sources such as Spotify Connect and AirPlay Receiver as uncompressed PCM audio in a WAV container to reduce playback delay. Disable this if the player cannot play continuous WAV streams; Music Assistant will use the configured output codec instead."
+      "label": "Send live sources uncompressed",
+      "description": "Send live sources such as Spotify Connect and AirPlay Receiver without compression to reduce the playback delay. Turn this off if the player cannot play them this way; they then follow the playback quality."
     },
     "play_media_overrides_group": {
       "label": "Play media overrides active group",

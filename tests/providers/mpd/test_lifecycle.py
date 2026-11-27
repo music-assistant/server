@@ -7,7 +7,7 @@ import gc
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
-from music_assistant.constants import CONF_OUTPUT_CODEC
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.mpd.provider import CONF_MANUAL_IPS
 
@@ -207,11 +207,16 @@ async def test_a_host_taken_out_of_the_config_is_removed(scenario: Scenario) -> 
 
 
 async def test_a_setting_of_a_new_player_is_its_server_s(scenario: Scenario) -> None:
-    """The codec of a player with a minted id is stored for its server and read back."""
+    """The playback quality of a player with a minted id is stored for its server."""
     provider = await add_provider(scenario, [HOST])
     player_id = _player(provider, FIRST).player_id
 
-    await scenario.configure_player(player_id, **{CONF_OUTPUT_CODEC: "wav"})
+    await scenario.configure_player(player_id, **{CONF_PLAYBACK_QUALITY: "lossless_uncompressed"})
 
-    assert _protocol(provider, FIRST).get_config_value(CONF_OUTPUT_CODEC) == "wav"
-    assert CONF_OUTPUT_CODEC not in (scenario.mass.config.get(f"players/{player_id}/values") or {})
+    assert (
+        _protocol(provider, FIRST).get_config_value(CONF_PLAYBACK_QUALITY)
+        == "lossless_uncompressed"
+    )
+    assert CONF_PLAYBACK_QUALITY not in (
+        scenario.mass.config.get(f"players/{player_id}/values") or {}
+    )

@@ -17,7 +17,7 @@ reports, and once it has little left to correct the bridge keeps the stream seco
 of what the player plays, as far as Sendspin delivered its audio, so the player plays on
 through a stall of its network.
 
-The stream is FLAC or PCM, by the output codec setting of the player and what the player
+The stream is FLAC or PCM, by the playback quality setting of the player and what the player
 says it plays, in no more bits than the audio of its playback session has. A player whose
 FLAC stream fails before it played ``MIN_PLAYED_US`` is sent PCM from then on.
 
@@ -48,7 +48,7 @@ from music_assistant_models.enums import ContentType, IdentifierType
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -1016,10 +1016,10 @@ class SendspinSqueezeliteBridge:
 
         That is what a lossless output of its playback session has: the bits of its first
         item, and for a track all of them once volume normalization or DSP works on it. A
-        player that is set to a lossy output codec gets PCM in its place, in 16 bits
+        player whose playback quality is a lossy codec gets PCM in its place, in 16 bits
         whatever plays.
         """
-        if self.protocol.config.get_value(CONF_OUTPUT_CODEC, "flac") in ("mp3", "aac"):
+        if not self.protocol.output_codec.is_lossless():
             return 16
         if not (client_id := self._bridge_client_id):
             return None
@@ -1038,7 +1038,7 @@ class SendspinSqueezeliteBridge:
         sample_rate = requirements.sample_rate if requirements else BRIDGE_SAMPLE_RATE
         bit_depth = requirements.bit_depth if requirements else BRIDGE_BIT_DEPTH
         flac = (
-            self.protocol.config.get_value(CONF_OUTPUT_CODEC, "flac") == "flac"
+            self.protocol.output_codec == ContentType.FLAC
             and "flc" in self._client.supported_codecs
             and not self._flac_failed
         )
