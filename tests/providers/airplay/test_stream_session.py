@@ -3654,6 +3654,8 @@ async def test_live_resync_keeps_the_source_and_reanchors_on_a_short_lead() -> N
 
     source_task = asyncio.create_task(_feeding())
     session._audio_source_task = source_task
+    # a source that plays handed over its first audio long ago
+    session._feed_settled.set()
 
     with (
         patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock) as start_ffmpeg,
