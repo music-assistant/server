@@ -16,12 +16,12 @@ def _wire_queue(
     ids: list[str],
     *,
     current_index: int | None = None,
-    index_in_buffer: int | None = None,
+    last_locked_index: int | None = None,
 ) -> None:
     indices = {item_id: index for index, item_id in enumerate(ids)}
     mass.player_queues.get.return_value = SimpleNamespace(
         current_index=current_index,
-        index_in_buffer=index_in_buffer,
+        last_locked_index=last_locked_index,
     )
     mass.player_queues.index_by_id.side_effect = lambda _queue_id, item_id: indices.get(item_id)
     mass.player_queues.delete_item.side_effect = lambda _queue_id, item_id: indices.pop(
@@ -31,7 +31,7 @@ def _wire_queue(
 
 async def test_remove_items_safe_reports_every_requested_item(mock_mass: MagicMock) -> None:
     """Removed, played, buffered, and missing ids land in distinct buckets."""
-    _wire_queue(mock_mass, ["played", "buffered", "remove"], current_index=0, index_in_buffer=1)
+    _wire_queue(mock_mass, ["played", "buffered", "remove"], current_index=0, last_locked_index=1)
 
     result = await remove_items_safe(
         mock_mass,
