@@ -1898,6 +1898,13 @@ def test_a_speaker_fetches_files() -> None:
     assert player.fetches_files is True
 
 
+def test_a_speaker_shows_the_titles_in_a_stream() -> None:
+    """Test a radio station a speaker plays as one stream carries its titles by default."""
+    player, _ = _make_player()
+
+    assert player.shows_stream_titles is True
+
+
 def test_a_speaker_defaults_to_lossless_uncompressed() -> None:
     """Test a speaker the user picked no playback quality for is streamed lossless, uncompressed."""
     player, _ = _make_player()

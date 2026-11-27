@@ -274,6 +274,17 @@ class PlayerProtocol(ABC):
         return False
 
     @property
+    def shows_stream_titles(self) -> bool:
+        """
+        Return if the player shows the titles sent inside the stream of a radio or live item.
+
+        Such a player gets them (as ICY metadata) in the stream of a radio station or live
+        source whenever it asks for them, also with its ICY metadata setting disabled. A
+        queue in flow mode follows that setting alone.
+        """
+        return False
+
+    @property
     def playback_quality_codecs(self) -> dict[PlaybackQuality, ContentType]:
         """
         Return the codec the player is streamed in for each playback quality level it can play.

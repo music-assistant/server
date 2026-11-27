@@ -137,6 +137,24 @@ async def test_a_live_source_sent_uncompressed_plays_out_of_the_cloud_queue(
     group.play_cloud_queue.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("extension", "plays_as_stream"), [("mp3", True), ("flac", False), ("wav", False)]
+)
+async def test_the_codec_is_read_from_the_path_of_the_stream_url(
+    monkeypatch: pytest.MonkeyPatch, extension: str, plays_as_stream: bool
+) -> None:
+    """A query string behind the stream url does not hide the codec of the stream."""
+    player, group = _make_speaker(monkeypatch)
+    cast("MagicMock", player.mass).streams.resolve_stream_url = AsyncMock(
+        return_value=f"{SINGLE_URL}.{extension}?player_id=sonos.player"
+    )
+
+    await player.play_media(_media(MediaType.RADIO))
+
+    assert group.play_stream_url.await_count == (1 if plays_as_stream else 0)
+    assert group.play_cloud_queue.await_count == (0 if plays_as_stream else 1)
+
+
 async def test_a_compressed_track_plays_out_of_the_cloud_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

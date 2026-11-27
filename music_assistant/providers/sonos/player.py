@@ -292,6 +292,11 @@ class SonosPlayer(PlayerProtocol):
         return True
 
     @property
+    def shows_stream_titles(self) -> bool:
+        """Return True: a speaker shows the titles in a stream it plays from its stream url."""
+        return True
+
+    @property
     def default_playback_quality(self) -> PlaybackQuality:
         """Return the playback quality level to use when the user picked none."""
         return PlaybackQuality.LOSSLESS_UNCOMPRESSED
@@ -920,8 +925,7 @@ class SonosPlayer(PlayerProtocol):
          :param media: Details of the item that needs to be enqueued on the player.
         """
         if self._flow_queue_id:
-            # the speaker plays one stream, which no cloud queue follows: the queue starts
-            # the next item itself
+            # the speaker plays one stream and holds no cloud queue to read a next item from
             return
         if media.source_id:
             self.cloud_queue_id = media.source_id
@@ -2178,7 +2182,8 @@ class SonosPlayer(PlayerProtocol):
         # the codec the stream really gets: a live source can be sent uncompressed by a
         # setting of its own
         stream_url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
-        return not ContentType.try_parse(stream_url.rsplit(".", 1)[-1]).is_lossless()
+        codec = ContentType.try_parse(urlparse(stream_url).path.rsplit(".", 1)[-1])
+        return not codec.is_lossless()
 
     async def _play_stream(self, media: PlayerMedia) -> None:
         """

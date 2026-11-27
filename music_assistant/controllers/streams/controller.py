@@ -1264,7 +1264,9 @@ class StreamsController(CoreController):
             )
             # a radio or live item carries its titles in the stream for a player that asks
             icy = (
-                self._icy_framing(request, player_id, lambda: queue_item)
+                self._icy_framing(
+                    request, player_id, lambda: queue_item, by_default=player.shows_stream_titles
+                )
                 if queue_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
                 else None
             )
@@ -3142,6 +3144,8 @@ class StreamsController(CoreController):
         request: web.Request,
         player_id: str,
         current_item: Callable[[], QueueItem | None],
+        *,
+        by_default: bool = False,
     ) -> _IcyFraming | None:
         """
         Return the ICY framing of a stream, None for a stream that carries no metadata.
@@ -3151,13 +3155,16 @@ class StreamsController(CoreController):
         :param request: The stream request.
         :param player_id: The (protocol) player the stream is for.
         :param current_item: Returns the item the stream plays at the moment it is called.
+        :param by_default: Whether the stream carries it with the ICY setting disabled too.
         """
         icy_preference = self.mass.config.get_protocol_value(
             player_id,
             CONF_ENTRY_ENABLE_ICY_METADATA.key,
             CONF_ENTRY_ENABLE_ICY_METADATA.default_value,
         )
-        if request.headers.get("Icy-MetaData", "") != "1" or icy_preference == "disabled":
+        if request.headers.get("Icy-MetaData", "") != "1":
+            return None
+        if icy_preference == "disabled" and not by_default:
             return None
         return _IcyFraming(self.audio_analysis, current_item, full=icy_preference == "full")
 
