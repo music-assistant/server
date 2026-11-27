@@ -49,6 +49,16 @@ async def test_no_fixed_content_length_entry(model_name: str, cast_type: str) ->
 
 
 @pytest.mark.parametrize(
+    ("model_name", "cast_type"),
+    [("Google Nest Mini", CAST_TYPE_AUDIO), ("Google Cast Group", CAST_TYPE_GROUP)],
+    ids=["device", "group"],
+)
+def test_a_cast_player_fetches_files(model_name: str, cast_type: str) -> None:
+    """Every Cast receiver is built around files, so no setting has to tell."""
+    assert _player(model_name, cast_type).fetches_files is True
+
+
+@pytest.mark.parametrize(
     ("model_name", "cast_type", "manufacturer", "expected_codec"),
     [
         ("Chromecast Audio", CAST_TYPE_AUDIO, "Google Inc.", "flac"),
