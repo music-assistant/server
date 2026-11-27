@@ -308,7 +308,6 @@ async def test_next_takes_the_slot_of_a_replaceable_buffered_track_unless_it_is_
     """The player can only replace the buffered track with a track that follows it."""
     ctrl = _controller()
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
-    ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]
     existing = _items("q1", existing_ids)
     queue = PlayerQueue(
         queue_id="q1",

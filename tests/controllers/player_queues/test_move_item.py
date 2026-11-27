@@ -47,7 +47,6 @@ def _controller(
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
-    ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]
     ctrl._enqueue_next_item = Mock()  # type: ignore[method-assign]
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
@@ -173,6 +172,19 @@ async def test_the_buffered_track_stays_when_nothing_follows_it() -> None:
     ctrl.track_loaded_in_buffer("q1", _item_id_at(ctrl, 4))
 
     ctrl.delete_item("q1", _item_id_at(ctrl, 4))
+
+    assert _order(ctrl) == TRACKS
+
+
+async def test_the_buffered_track_stays_when_only_unavailable_tracks_follow_it() -> None:
+    """The queue skips unavailable tracks, so none of them can take the buffered one's place."""
+    ctrl = _controller(current_index=2, index_in_buffer=2)
+    ctrl._preload_next_item = Mock()
+    ctrl.mass.players.replaces_enqueued_media.return_value = True
+    ctrl._queue_data["q1"].items[4].available = False
+    ctrl.track_loaded_in_buffer("q1", _item_id_at(ctrl, 3))
+
+    ctrl.delete_item("q1", _item_id_at(ctrl, 3))
 
     assert _order(ctrl) == TRACKS
 

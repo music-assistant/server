@@ -2570,7 +2570,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Return the highest queue index the player holds, or None if it holds none."""
         if (queue_data := self.queue_data_or_none(queue_id)) is None:
             return None
-        return committed_index(queue_data.queue, queue_data.next_item_replaceable)
+        queue = queue_data.queue
+        replaceable = (
+            queue_data.next_item_replaceable
+            and queue.index_in_buffer is not None
+            # a player can only replace the buffered item with an item that follows it
+            and self.get_next_item(queue_id, queue.index_in_buffer) is not None
+        )
+        return committed_index(queue, replaceable)
 
     def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
         """Get index by queue_item_id."""
