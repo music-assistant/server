@@ -29,6 +29,7 @@ from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
 )
+from music_assistant.controllers.streams.constants import REALTIME_BURST
 from music_assistant.providers.squeezelite.constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
@@ -43,6 +44,9 @@ from tests.common import use_real_create_task
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
+
+# KB a second of a plain tone in FLAC at 44.1 kHz, 16 bit, stereo
+PLAIN_TONE_FLAC_KB_PER_SECOND = 15
 
 
 async def test_squeezelite_prefers_wav_for_live_sources_by_default() -> None:
@@ -81,7 +85,7 @@ def _player_with_mocked_mass() -> tuple[SqueezelitePlayer, MagicMock]:
         (MediaType.RADIO, (64, 1)),
         (MediaType.AUDIO_SOURCE, (64, 1)),
         (MediaType.ANNOUNCEMENT, (64, 1)),
-        (MediaType.TRACK, (200, 20)),
+        (MediaType.TRACK, (64, 20)),
     ],
 )
 async def test_live_streams_start_on_a_smaller_buffer(
@@ -106,6 +110,22 @@ async def test_live_streams_start_on_a_smaller_buffer(
     for play_call in slimplayer.play_url.call_args_list:
         thresholds = (play_call.kwargs["stream_threshold"], play_call.kwargs["output_threshold"])
         assert thresholds == expected
+
+
+async def test_a_quiet_track_fills_the_stream_buffer_from_its_head_start() -> None:
+    """A player can start on the audio a stream hands over at once, also for a quiet track."""
+    player, mass = _player_with_mocked_mass()
+    mass.player_queues.get.return_value = None
+    player.client = slimplayer = MagicMock()
+    slimplayer.play_url = AsyncMock()
+
+    await player._handle_play_url_for_slimplayer(
+        url="http://127.0.0.1:8097/stream.flac",
+        media=PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1"),
+    )
+
+    stream_threshold_kb = slimplayer.play_url.call_args.kwargs["stream_threshold"]
+    assert stream_threshold_kb <= REALTIME_BURST * PLAIN_TONE_FLAC_KB_PER_SECOND
 
 
 @pytest.mark.parametrize(
@@ -545,7 +565,7 @@ async def test_play_media_plays_the_stream_of_the_player_itself() -> None:
         enqueue=False,
         send_flush=True,
         autostart=False,
-        stream_threshold=200,
+        stream_threshold=64,
         output_threshold=20,
     )
 
