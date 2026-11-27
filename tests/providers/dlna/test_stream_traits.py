@@ -1,0 +1,19 @@
+"""Tests for what a DLNA player tells about the streams it fetches."""
+
+from __future__ import annotations
+
+from music_assistant.providers.dlna.player import DLNAPlayer
+
+
+def test_a_renderer_fetches_files() -> None:
+    """A renderer is built around files, so it gets a track as a file where that is possible."""
+    player = DLNAPlayer.__new__(DLNAPlayer)
+
+    assert player.fetches_files is True
+
+
+def test_a_renderer_needs_no_content_length() -> None:
+    """A stream that is not a file reaches a renderer without a made-up length."""
+    player = DLNAPlayer.__new__(DLNAPlayer)
+
+    assert player.requires_content_length is False

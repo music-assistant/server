@@ -2212,7 +2212,7 @@ def _single_item_handler(
                 content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2
             )
         )
-        protocol.get_config_value = MagicMock(return_value=False)
+        protocol.requires_content_length = False
         controller._update_audio_processing_context = MagicMock()
 
         def _capture_ffmpeg_args(**kwargs: Any) -> None:
@@ -2361,7 +2361,7 @@ def _flow_handler(
     mass.player_queues.get_item.return_value = start_queue_item
     mass.config.get_protocol_value.return_value = "disabled"
     protocol = MagicMock(protocol_id="player-1", display_name="Player", group_members=[])
-    protocol.get_config_value = MagicMock(return_value=False)
+    protocol.requires_content_length = False
     mass.players.get_output_protocol.return_value = protocol
 
     audio = MagicMock()

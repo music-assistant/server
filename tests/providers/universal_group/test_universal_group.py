@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aiohttp import HttpVersion, HttpVersion10, HttpVersion11, web
@@ -41,12 +41,10 @@ from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
-    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_GROUP_MEMBERS,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_POWER_CONTROL,
     CONF_POWER_CONTROL_CUTS_POWER,
-    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
 )
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
@@ -1072,45 +1070,44 @@ class TestCommandOnAMemberOfAHeldGroup:
 
 
 class TestStreamContentLength:
-    """The group stream follows the fixed content length setting of the member fetching it."""
+    """The group stream gives a content length to the member that needs one."""
 
     UGP_CONTENT_LENGTH = 4294967296
 
     async def _serve(
-        self, member_setting: bool, member_id: str, version: HttpVersion = HttpVersion11
+        self, member_requires_it: bool, member_id: str, version: HttpVersion = HttpVersion11
     ) -> web.StreamResponse:
         """Serve a probe of the group stream to member_id and return the prepared response."""
         mass = _make_mock_mass()
         ugp = _make_ugp(mass, members=["m1"])
         ugp.stream = MagicMock(done=False)
-        # the setting is one of the protocol that renders the member's audio
+        # the protocol that renders the member's audio tells whether it needs a length
         _member, protocol = attach_mock(
             MockProvider("sonos", mass=mass), "proto_m1", player_id="m1"
         )
-        config = PlayerConfig.parse(
-            [CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH],
-            {
-                "player_id": "proto_m1",
-                "provider": "sonos",
-                "values": {CONF_REQUIRES_FIXED_CONTENT_LENGTH: member_setting},
-            },
-        )
-        protocol.set_config(cast("PlayerConfig", config))
         request = make_mocked_request(
             "HEAD", f"/ugp/{GROUP_PROTOCOL_ID}.mp3?player_id={member_id}", version=version
         )
-        return await ugp._serve_ugp_stream(request)
+        with patch.object(
+            type(protocol),
+            "requires_content_length",
+            new_callable=PropertyMock,
+            return_value=member_requires_it,
+        ):
+            return await ugp._serve_ugp_stream(request)
 
     async def test_member_that_requires_it_gets_a_content_length(self) -> None:
-        """A member whose output protocol needs a fixed length gets one."""
-        resp = await self._serve(member_setting=True, member_id="m1")
+        """A member whose output protocol needs a content length gets one."""
+        resp = await self._serve(member_requires_it=True, member_id="m1")
 
         assert resp.content_length == self.UGP_CONTENT_LENGTH
 
     @pytest.mark.parametrize("version", [HttpVersion10, HttpVersion11], ids=["http10", "http11"])
-    async def test_member_without_the_setting_gets_no_length(self, version: HttpVersion) -> None:
+    async def test_member_that_does_not_require_it_gets_no_length(
+        self, version: HttpVersion
+    ) -> None:
         """Other members get no length and no forced chunking, on any HTTP version."""
-        resp = await self._serve(member_setting=False, member_id="m1", version=version)
+        resp = await self._serve(member_requires_it=False, member_id="m1", version=version)
 
         assert resp.prepared
         assert resp.content_length is None
@@ -1118,6 +1115,6 @@ class TestStreamContentLength:
 
     async def test_unknown_member_gets_no_length(self) -> None:
         """A stale member id in the stream url falls back to no fixed length."""
-        resp = await self._serve(member_setting=True, member_id="ghost")
+        resp = await self._serve(member_requires_it=True, member_id="ghost")
 
         assert resp.content_length is None

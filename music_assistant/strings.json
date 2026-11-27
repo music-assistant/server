@@ -243,10 +243,6 @@
     "preview_note": {
       "label": "Please note that this feature/provider is still in early stages. \n\nFunctionality may still be limited and/or bugs may occur!"
     },
-    "requires_fixed_content_length": {
-      "label": "Requires a fixed content length",
-      "description": "Only enable this if the player stops or loops during playback. Most players play fine without it."
-    },
     "sample_rates": {
       "label": "Sample rates supported by this player",
       "description": "The sample rates (and bit depths) supported by this player.\nContent with unsupported sample rates will be automatically resampled.",

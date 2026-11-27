@@ -61,7 +61,6 @@ from music_assistant.constants import (
     CONF_PLAYER_QUEUES,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PUBLISH_IP,
-    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -1288,13 +1287,10 @@ class StreamsController(CoreController):
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
-            fixed_content_length = player.get_config_value(
-                CONF_REQUIRES_FIXED_CONTENT_LENGTH, False
-            )
-            if fixed_content_length and not queue_item.duration:
+            if player.requires_content_length and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
-            elif fixed_content_length and queue_item.duration:
+            elif player.requires_content_length and queue_item.duration:
                 # estimate content length based on effective duration
                 # account for seek position (e.g., crossfade from previous track)
                 seek_pos = queue_item.streamdetails.seek_position if queue_item.streamdetails else 0
@@ -1774,8 +1770,7 @@ class StreamsController(CoreController):
             headers["icy-metaint"] = str(icy_meta_interval)
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        fixed_content_length = player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False)
-        if fixed_content_length:
+        if player.requires_content_length:
             # just set an insane high content length to make sure the player keeps playing
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
 
@@ -1910,7 +1905,7 @@ class StreamsController(CoreController):
 
         if not self.mass.player_queues.flow_stream_finished(queue_id):
             self._watch_lost_stream(request, queue_data, session_id, player)
-        if not client_disconnected and fixed_content_length:
+        if not client_disconnected and player.requires_content_length:
             await self._finish_flow_stream(request, resp, queue_id, session_id, player)
 
         return resp
@@ -1930,9 +1925,7 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        fixed_content_length = self._announcement_requires_fixed_content_length(
-            player_id, announce_data
-        )
+        fixed_content_length = self._announcement_requires_content_length(player_id, announce_data)
 
         # return early if this is not a GET request:
         # players often probe the url with a HEAD request before fetching it and
@@ -2428,7 +2421,7 @@ class StreamsController(CoreController):
             headers=_audio_source_headers(source_name, output_format.output_format_str),
         )
         resp.content_type = get_mime_type(output_format.output_format_str)
-        if player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False):
+        if player.requires_content_length:
             # a live source has no length, so advertise one it will never reach
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
         await resp.prepare(request)
@@ -3125,15 +3118,15 @@ class StreamsController(CoreController):
             volume_normalization_enabled=provider.delivers_normalized_audio(session.streamdetails),
         )
 
-    def _announcement_requires_fixed_content_length(
+    def _announcement_requires_content_length(
         self, player_id: str, announce_data: AnnounceData
     ) -> bool:
         """
         Return whether an announcement stream must be served with a fixed content length.
 
         Announcement urls are registered under the id of the player, but the stream
-        may be fetched by one of its protocols; the setting is the one of the protocol
-        that performs the fetch.
+        may be fetched by one of its protocols; the protocol that performs the fetch
+        tells whether it needs one.
         """
         announce_player = None
         if announce_player_id := announce_data.get("announce_player_id"):
@@ -3142,7 +3135,7 @@ class StreamsController(CoreController):
             announce_player = player.resolve_output_protocol()
         if announce_player is None:
             return False
-        return announce_player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False)
+        return announce_player.requires_content_length
 
     def _get_flow_start_item(self, queue: PlayerQueue, queue_item_id: str) -> QueueItem | None:
         """

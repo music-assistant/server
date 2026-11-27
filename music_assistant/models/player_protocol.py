@@ -251,6 +251,17 @@ class PlayerProtocol(ABC):
         """
         return False
 
+    @property
+    def requires_content_length(self) -> bool:
+        """
+        Return if the player needs a Content-Length on a stream that has no length.
+
+        Set this only for a player that stops or loops the audio without one. A stream that
+        is not a file (see `fetches_files`) then declares a length for it: an estimate for a
+        single item, and one it never reaches for a stream that runs on.
+        """
+        return False
+
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
         Return whether the player already holds the given queue item as the one it plays next.

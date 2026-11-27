@@ -26,6 +26,7 @@ from music_assistant.controllers.players.audio_sources import (
 )
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import StreamsController
+from music_assistant.helpers.audio import calculate_content_length
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider
@@ -246,7 +247,7 @@ async def test_http_output_is_registered_to_the_source_session(
     ctrl.audio.get_audio_source_stream.return_value = "audio-input"
     ctrl.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
     player.group_members = ["member-1"]
-    player.get_config_value.return_value = False
+    player.requires_content_length = False
     response = MagicMock()
     response.prepare = AsyncMock()
     monkeypatch.setattr(web, "StreamResponse", MagicMock(return_value=response))
@@ -275,6 +276,34 @@ async def test_http_output_is_registered_to_the_source_session(
         queue_id=session.player_id,
         session_id=session.playback_session_id,
     )
+
+
+@pytest.mark.parametrize("requires_content_length", [True, False])
+async def test_a_live_source_declares_a_length_to_a_player_that_needs_one(
+    monkeypatch: pytest.MonkeyPatch, requires_content_length: bool
+) -> None:
+    """A player that needs a content length gets one a live source never reaches."""
+    session = _session()
+    ctrl, provider, player, _store = _controller(session)
+    ctrl.audio = MagicMock()
+    output_format = AudioFormat(content_type=ContentType.FLAC, sample_rate=48000, bit_depth=24)
+    ctrl.audio.select_pcm_format = AsyncMock(return_value=output_format)
+    ctrl.audio.get_output_format = AsyncMock(return_value=output_format)
+    ctrl.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
+    player.requires_content_length = requires_content_length
+    response = SimpleNamespace(prepare=AsyncMock(), content_type=None, content_length=None)
+    monkeypatch.setattr(web, "StreamResponse", MagicMock(return_value=response))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.get_ffmpeg_stream",
+        MagicMock(return_value="encoded-audio"),
+    )
+
+    await ctrl._prepare_audio_source_stream(
+        SimpleNamespace(match_info={"fmt": "flac"}), player, session, MagicMock(), provider, "tok-1"
+    )
+
+    never_reached = calculate_content_length(output_format, 12 * 3600)
+    assert response.content_length == (never_reached if requires_content_length else None)
 
 
 def test_a_direct_pcm_request_from_a_superseded_session_is_refused() -> None:
