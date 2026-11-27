@@ -1895,6 +1895,34 @@ def test_a_pause_reported_right_after_a_change_of_track_reads_as_paused() -> Non
     assert player._attr_playback_state is PlaybackState.PAUSED
 
 
+def test_a_speaker_paused_in_a_flow_stream_reads_idle_until_it_is_loaded_anew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test a speaker that plays again by itself after a pause waits, idle, for the queue's resume."""
+    player, group = _speaker_to_pause("flow@7", "flow@7", set())
+    client = cast("MagicMock", player.client)
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    player._flow_media = PlayerMedia(
+        uri="http://ma/flow/session/queue/track0/sonos_player.wav",
+        queue_item_id="flow",
+        queue_session_id="session",
+    )
+    player._flow_paused = player._flow_resume_asked = False
+    resume = MagicMock()
+    monkeypatch.setattr(player, "_resume_paused_flow", resume)
+    _report_playing_our_queue(group, "flow@7")
+    reported: list[PlaybackState] = []
+
+    for state in ("PLAYING", "PAUSED", "BUFFERING", "PLAYING"):
+        group.playback_state = SonosPlayBackState(f"PLAYBACK_STATE_{state}")
+        player.update_attributes()
+        reported.append(player._attr_playback_state)
+
+    assert reported == [PlaybackState.PLAYING, *[PlaybackState.IDLE] * 3]
+    resume.assert_called_once_with("pl0123456789ab", "session")
+
+
 def test_a_speaker_fetches_files() -> None:
     """Test a speaker asks for a track as a file, where the stream server has one."""
     player, _ = _make_player()

@@ -10,10 +10,13 @@ import json
 import logging
 import time
 from collections import deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from music_assistant_models.enums import MediaType
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
@@ -365,3 +368,120 @@ async def test_a_track_loaded_after_a_flow_item_is_a_cloud_queue_of_tracks_again
     assert player.plays_flow_item is False
     window = await player.build_cloud_queue_window(player.wire_item_id("item0"))
     assert [x.queue_item_id for x in window.items] == ["item0", "item1"]
+
+
+def _speaker_reports(player: SonosPlayer, group: MagicMock, state: str, was_playing: bool) -> bool:
+    """
+    Let the speaker report a playback state on the flow item of its current load.
+
+    :param player: The speaker.
+    :param group: Its mocked group.
+    :param state: The state the speaker reports: PLAYING, BUFFERING or PAUSED.
+    :param was_playing: Whether the speaker read as playing before this report.
+    :return: Whether the speaker waits for the queue to resume its stream.
+    """
+    group.playback_item_id = player.wire_item_id("flow")
+    group.playback_state = SonosPlayBackState(f"PLAYBACK_STATE_{state}")
+    return player._awaits_flow_resume(group, was_playing)
+
+
+@pytest.mark.parametrize("plays_again_as", ["BUFFERING", "PLAYING"])
+async def test_a_speaker_that_plays_again_after_a_pause_has_its_queue_resume(
+    monkeypatch: pytest.MonkeyPatch, plays_again_as: str
+) -> None:
+    """A pause at the speaker ends the stream: its own play makes the queue resume, once."""
+    player, group, _ = await _play_flow(monkeypatch)
+    resume = MagicMock()
+    monkeypatch.setattr(player, "_resume_paused_flow", resume)
+    mass = cast("MagicMock", player.mass)
+    mass.create_task.reset_mock()
+
+    assert _speaker_reports(player, group, "PLAYING", was_playing=False) is False
+    assert _speaker_reports(player, group, "PAUSED", was_playing=True) is True
+    mass.create_task.assert_not_called()
+    # the speaker asks for the stream again, which it can not go on in
+    assert _speaker_reports(player, group, plays_again_as, was_playing=False) is True
+    assert _speaker_reports(player, group, "PLAYING", was_playing=False) is True
+
+    resume.assert_called_once_with(QUEUE_ID, SESSION_ID)
+    mass.create_task.assert_called_once()
+    # the new load of the resume is a stream the speaker plays as any other
+    await player.play_media(_media(MediaType.TRACK))
+    assert _speaker_reports(player, group, "PLAYING", was_playing=False) is False
+
+
+async def test_a_speaker_that_never_played_its_load_is_not_resumed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A woken speaker reports a pause before it plays the load it just got."""
+    player, group, _ = await _play_flow(monkeypatch)
+    mass = cast("MagicMock", player.mass)
+    mass.create_task.reset_mock()
+
+    assert _speaker_reports(player, group, "PAUSED", was_playing=False) is False
+    assert _speaker_reports(player, group, "PLAYING", was_playing=False) is False
+
+    mass.create_task.assert_not_called()
+
+
+async def test_a_pause_in_a_track_of_a_cloud_queue_resumes_no_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A speaker pauses and plays on in a track of its cloud queue by itself."""
+    player, group = _make_speaker(monkeypatch)
+    await player.play_media(_media(MediaType.TRACK))
+    mass = cast("MagicMock", player.mass)
+    mass.create_task.reset_mock()
+    group.playback_item_id = player.wire_item_id("item0")
+
+    for state, was_playing in (("PAUSED", True), ("PLAYING", False)):
+        group.playback_state = SonosPlayBackState(f"PLAYBACK_STATE_{state}")
+        assert player._awaits_flow_resume(group, was_playing) is False
+
+    mass.create_task.assert_not_called()
+
+
+@pytest.mark.parametrize("report", ["failure", "ran_out"])
+async def test_a_stream_paused_at_the_speaker_is_no_lost_stream(
+    monkeypatch: pytest.MonkeyPatch, report: str
+) -> None:
+    """What a speaker reports on its own play after a pause does not count as a lost stream."""
+    player, group, _ = await _play_flow(monkeypatch, "lossless_compressed")
+    monkeypatch.setattr(player, "_resume_paused_flow", MagicMock())
+    _speaker_reports(player, group, "PAUSED", was_playing=True)
+    _speaker_reports(player, group, "BUFFERING", was_playing=False)
+
+    if report == "failure":
+        player.release_failed_item(cast("str", player.wire_item_id("flow")))
+    else:
+        await _read_window(player, "queueCompleted")
+
+    cast("Any", player.mass.player_queues)._restart_lost_flow_stream.assert_not_called()
+
+
+@pytest.mark.parametrize("loaded_anew", [False, True])
+async def test_the_resume_after_a_pause_leaves_a_queue_that_was_loaded_anew(
+    monkeypatch: pytest.MonkeyPatch, loaded_anew: bool
+) -> None:
+    """A restart or command that came first has the queue playing again already."""
+    player, _, queue_data = await _play_flow(monkeypatch)
+    queues = cast("Any", player.mass.player_queues)
+    queues.resume = AsyncMock()
+    locked: list[str] = []
+
+    @asynccontextmanager
+    async def _lock(player_id: str) -> AsyncIterator[None]:
+        locked.append(player_id)
+        yield
+
+    cast("MagicMock", player.mass).players.get_group_and_player_lock = _lock
+    if loaded_anew:
+        queue_data.session_id = "session-3"
+
+    await player._resume_paused_flow(QUEUE_ID, SESSION_ID)
+
+    assert locked == [QUEUE_ID]
+    if loaded_anew:
+        queues.resume.assert_not_awaited()
+    else:
+        queues.resume.assert_awaited_once_with(QUEUE_ID, fade_in=False)

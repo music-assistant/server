@@ -267,6 +267,10 @@ class SonosPlayer(PlayerProtocol):
         self._flow_queue_id: str | None = None
         # the stream of a queue in flow mode, served as the one item of the loaded cloud queue
         self._flow_media: PlayerMedia | None = None
+        # the speaker was paused in that stream, and whether the queue was asked to resume it
+        # since the speaker played again by itself
+        self._flow_paused = False
+        self._flow_resume_asked = False
         # the playback session our queue was loaded into
         self._queue_session_id: str | None = None
         # hand-overs of a group the speakers moved outside MA, one per move
@@ -886,6 +890,7 @@ class SonosPlayer(PlayerProtocol):
             self._flow_media = (
                 await self._flow_item_media(media) if route is SonosRoute.FLOW_ITEM else None
             )
+            self._flow_paused = self._flow_resume_asked = False
             loaded_item_id = (self._flow_media or media).queue_item_id
 
             def _load_starts(_sonos_session_id: str) -> None:
@@ -1608,6 +1613,9 @@ class SonosPlayer(PlayerProtocol):
             )
         ):
             self._attr_playback_state = PlaybackState.IDLE
+        if group_parent is None and self._awaits_flow_resume(active_group, was_playing):
+            # until the queue loaded the stream anew, where it was paused
+            self._attr_playback_state = PlaybackState.IDLE
 
         # parse current media
         self._attr_elapsed_time = active_group.position
@@ -2234,6 +2242,7 @@ class SonosPlayer(PlayerProtocol):
     def _forget_queue(self) -> None:
         """Forget the MA queue the speaker played, on either path."""
         self._flow_media = None
+        self._flow_paused = self._flow_resume_asked = False
         self.cloud_queue_id = None
         self.group_queue_id = None
         self._flow_queue_id = None
@@ -2321,8 +2330,50 @@ class SonosPlayer(PlayerProtocol):
         # a flow that is not finished restarts, within the limit the queue keeps for a
         # stream its player lost; a finished one ends by itself
         flow_media, queue_id = self._flow_media, self.cloud_queue_id
+        if self._flow_paused:
+            # paused at the speaker: no stream was lost, and the queue resumes it by itself
+            return
         if flow_media is not None and queue_id and flow_media.queue_session_id:
             self.mass.player_queues.restart_lost_flow_stream(queue_id, flow_media.queue_session_id)
+
+    def _awaits_flow_resume(self, group: SonosGroup, was_playing: bool) -> bool:
+        """
+        Return whether the speaker waits for the queue to resume a flow stream it was paused in.
+
+        A speaker that was paused in the stream, in its app or at its own buttons, can not go
+        on in it. Once it plays again by itself the queue resumes, which is no restart of a
+        lost stream.
+
+        :param group: The group, as this player's connection reports it.
+        :param was_playing: Whether this player read as playing before this report.
+        """
+        wire_item_id = self._playing_wire_id(group)
+        if wire_item_id is None or not self._plays_flow_item_as(wire_item_id):
+            return False
+        state = PLAYBACK_STATE_MAP[group.playback_state]
+        if state == PlaybackState.PAUSED and was_playing:
+            self._flow_paused = True
+        elif state == PlaybackState.PLAYING and self._flow_paused and not self._flow_resume_asked:
+            self._flow_resume_asked = True
+            flow_media, queue_id = self._flow_media, self.cloud_queue_id
+            if flow_media is not None and queue_id and flow_media.queue_session_id:
+                # a task keeps the context it is created in: the resume starts no group
+                with self.mass.players.without_member_power_on():
+                    self.mass.create_task(
+                        self._resume_paused_flow(queue_id, flow_media.queue_session_id),
+                        task_id=f"sonos_resume_paused_flow_{self.protocol_id}",
+                    )
+        return self._flow_paused
+
+    async def _resume_paused_flow(self, queue_id: str, session_id: str) -> None:
+        """Resume the queue where its flow stream was paused, unless it was loaded anew meanwhile."""
+        async with self.mass.players.get_group_and_player_lock(queue_id):
+            # a command or a restart that held the lock went first
+            queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+            if queue_data is None or queue_data.session_id != session_id:
+                return
+            self.logger.debug("%s plays again after a pause, resuming its queue", self.display_name)
+            await self.mass.player_queues.resume(queue_id, fade_in=False)
 
     async def _route(self, media: PlayerMedia) -> SonosRoute:
         """Return the way the speaker gets media: out of its cloud queue or over its stream url."""
