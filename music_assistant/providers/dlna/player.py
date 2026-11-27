@@ -19,7 +19,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL, PlaybackQuality
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -115,6 +115,11 @@ class DLNAPlayer(PlayerProtocol):
     def fetches_files(self) -> bool:
         """Return if the renderer is built around files."""
         return True
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
     @property
     def stops_on_pause(self) -> bool:
