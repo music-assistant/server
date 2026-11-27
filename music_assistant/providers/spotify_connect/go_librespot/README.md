@@ -50,7 +50,9 @@ and quoting pitfalls:
 The daemon is supervised: restarts on exit, a fatal event after repeated failures — on which
 the provider gives up this one daemon (stopping it and keeping the other players' daemons
 running). A self-healing WebSocket listener reconnects across daemon restarts and translates
-`/events` messages into normalized `BackendEvent`s.
+`/events` messages into normalized `BackendEvent`s. A `playback_error` is reported as an
+error, except with stage `session`: the daemon then gave up reconnecting to Spotify and logs
+in again by itself without an `inactive` event, so it is reported as a lost connection.
 
 ## Audio transport
 

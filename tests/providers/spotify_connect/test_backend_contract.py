@@ -1257,6 +1257,35 @@ def test_translate_event_volume_without_value_is_other() -> None:
     assert event.volume is None
 
 
+@pytest.mark.parametrize("stage", ["load", "playback"])
+def test_translate_event_maps_playback_error_to_error(stage: str) -> None:
+    """A failed track load or output carries the daemon's message as a backend error."""
+    message = "failed creating stream for spotify:track:t1: media is restricted"
+    event = _make_backend()._translate_event(
+        "playback_error",
+        {
+            "context_uri": "spotify:playlist:ctx",
+            "uri": "spotify:track:t1",
+            "stage": stage,
+            "kind": "restricted",
+            "unplayable": True,
+            "message": message,
+        },
+    )
+    assert event.type is BackendEventType.ERROR
+    assert event.error == message
+    assert event.track_uri == "spotify:track:t1"
+
+
+def test_translate_event_maps_lost_session_to_connection_lost() -> None:
+    """A playback error for a session the daemon gave up on reports the connection as lost."""
+    event = _make_backend()._translate_event(
+        "playback_error",
+        {"stage": "session", "kind": "network", "message": "lost the connection to Spotify"},
+    )
+    assert event.type is BackendEventType.CONNECTION_LOST
+
+
 @pytest.mark.parametrize(
     ("stream_ends", "stopped_players"),
     [(True, []), (False, ["player-1"])],
