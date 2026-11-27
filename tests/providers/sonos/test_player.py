@@ -72,6 +72,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._marked_asleep = False
     player._woken_from_sleep = False
     player.cloud_queue_id = None
+    player.group_queue_id = None
     player.cloud_queue_item_generation = 0
     player._window_item_ids = {}
     player._served_bindings = {}

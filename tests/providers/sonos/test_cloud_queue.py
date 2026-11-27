@@ -110,6 +110,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player._player = None
     player.connected = True
     player.cloud_queue_id = QUEUE_ID
+    player.group_queue_id = None
     player._loaded_session_id = "session"
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 0
