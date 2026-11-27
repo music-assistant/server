@@ -560,9 +560,8 @@ class SnapCastProvider(PlayerProvider):
                 # Make sure to close socket servers before
                 # shutting down the snapcast server.
                 #
-                # The snapserver doesn't always cleanup the control script processes
-                # properly. We do it explicitly when closing a socket server.
-                # Should be fixed on the server side, though.
+                # Snapserver versions older than 0.35 don't always cleanup the control
+                # script processes properly. We do it explicitly when closing a socket server.
                 for stream_name in list(self._snapcast_ma_streams):
                     await self.delete_ma_stream(stream_name)
                 self._snapcast_ma_streams.clear()
