@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -726,6 +727,67 @@ async def test_a_position_reported_after_a_new_load_is_taken(home: _Household) -
     await home.report_position(home.bathroom.protocol_id, f"track0@{GENERATION + 1}", 7)
 
     assert home.bathroom.elapsed_time == 7
+
+
+def _report(speaker: SonosPlayer, *, named: str, position_in: str, seconds: int) -> None:
+    """
+    Let the group a speaker leads report a position and the item it names.
+
+    :param speaker: The speaker that leads the group.
+    :param named: The id of the item its metadata names, as the speaker reports it.
+    :param position_in: The id of the item its playback status has the position of.
+    :param seconds: The position its playback status reports.
+    """
+    group = speaker.group_controller
+    group._playback_status_data = cast(
+        "Any", {**PLAYING, "itemId": position_in, "positionMillis": seconds * 1000}
+    )
+    group._playback_status_last_updated = time.time()
+    item_id, generation = named.split("@")
+    group._playback_metadata_data = cast("Any", _metadata(QUEUE_ID, item_id, int(generation)))
+    speaker.on_player_event(None)
+
+
+@pytest.mark.parametrize("handed_over", [False, True])
+async def test_a_position_in_an_item_the_speaker_does_not_name_yet_is_not_in_the_one_it_names(
+    home: _Household, handed_over: bool
+) -> None:
+    """Test the position of the next track is not read as one in the track that ends."""
+    if handed_over:
+        await _step_out(home)
+        await home.settle()
+    leader = home.bathroom if handed_over else home.kitchen
+    ending, following = f"track0@{GENERATION}", f"track1@{GENERATION}"
+    _report(leader, named=ending, position_in=ending, seconds=118)
+    reported_at = leader.elapsed_time_last_updated
+
+    # the speaker moved on: the position comes first, the item it is in after it
+    _report(leader, named=ending, position_in=following, seconds=3)
+
+    assert leader.current_media is not None
+    assert leader.current_media.queue_item_id == "track0"
+    assert leader.elapsed_time == pytest.approx(118, abs=1)
+    assert leader.elapsed_time_last_updated == reported_at
+
+    _report(leader, named=following, position_in=following, seconds=4)
+
+    assert leader.current_media.queue_item_id == "track1"
+    assert leader.elapsed_time == pytest.approx(4, abs=1)
+    assert leader.elapsed_time_last_updated != reported_at
+
+
+async def test_a_position_in_a_new_load_is_taken_before_the_speaker_names_an_item_of_it(
+    home: _Household,
+) -> None:
+    """Test a seek shows at once, also on a speaker that names the new load seconds later."""
+    leader = home.kitchen
+    replaced, loaded = f"track0@{GENERATION}", f"track0@{GENERATION + 1}"
+    _report(leader, named=replaced, position_in=replaced, seconds=20)
+    leader.cloud_queue_item_generation = GENERATION + 1
+
+    _report(leader, named=replaced, position_in=loaded, seconds=90)
+
+    assert leader.elapsed_time == pytest.approx(90, abs=1)
 
 
 async def test_a_step_out_stops_nothing_and_loads_nothing(home: _Household) -> None:

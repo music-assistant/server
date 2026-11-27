@@ -1477,7 +1477,6 @@ class SonosPlayer(PlayerProtocol):
         # map playback state
         was_playing = self._attr_playback_state == PlaybackState.PLAYING
         self._attr_playback_state = PLAYBACK_STATE_MAP[active_group.playback_state]
-        self._attr_elapsed_time = active_group.position
 
         # figure out the active source based on the container
         container_type = active_group.container_type
@@ -1550,9 +1549,12 @@ class SonosPlayer(PlayerProtocol):
         ):
             self._attr_playback_state = PlaybackState.IDLE
 
+        # at a change of track the speaker reports the position in the next item before it
+        # names that item: until it does, the position of the item it names runs on
+        if not (group_parent or self)._reports_position_ahead_of_item(active_group):
+            self._attr_elapsed_time = active_group.position
+            self._attr_elapsed_time_last_updated = time.time()
         # parse current media
-        self._attr_elapsed_time = active_group.position
-        self._attr_elapsed_time_last_updated = time.time()
         current_media = None
         if (current_item := active_group.playback_metadata.get("currentItem")) and (
             (track := current_item.get("track")) and track.get("name")
@@ -2091,6 +2093,24 @@ class SonosPlayer(PlayerProtocol):
         if not wire_item_id or not self.from_current_load(wire_item_id):
             return None
         return wire_item_id
+
+    def _reports_position_ahead_of_item(self, group: SonosGroup) -> bool:
+        """
+        Return whether a group reports a position in an item of our cloud queue it does not name yet.
+
+        :param group: The group, as this player's connection reports it.
+        """
+        if self.cloud_queue_id is None:
+            return False
+        current_item = group.playback_metadata.get("currentItem")
+        named_item_id = current_item.get("id") if current_item else None
+        # the playback status names the item its position is in
+        position_item_id = group.playback_item_id
+        if not named_item_id or not position_item_id or named_item_id == position_item_id:
+            return False
+        # an item of a replaced load is not shown as the item that plays, so the position
+        # in the new load is not read as one in it
+        return self.from_current_load(named_item_id)
 
     def _paused_in_file(self, group: SonosGroup) -> bool:
         """
