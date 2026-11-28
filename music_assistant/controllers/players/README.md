@@ -995,9 +995,9 @@ example.
   protocol itself and from what is true of the player right now (`attached_protocols`,
   `resolve_output_protocol()`), never from a final value of its own player: during that update
   `self.player.<field>` is still the previous value
-- What a protocol reports about grouping names protocol ids of its own provider; the grouping as
-  users see it is on the player (`self.player.group_members`, `self.player.synced_to`,
-  `self.player.active_group`)
+- What a protocol reports about grouping names protocol ids of its own provider, and a group
+  protocol names its members by player id; the grouping as users see it is on the player
+  (`self.player.group_members`, `self.player.synced_to`, `self.player.active_group`)
 - Data that only lives while the server runs (`extra_data`, the stop and external source markers)
   stays on `self.player`
 - The config of a protocol has no name: the name the user gave the device is
