@@ -2809,7 +2809,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Return the provider mappings a MusicBrainz entity links to, on the user's music sources.
 
-        :param relations: The URL relations of the entity, a release or a recording.
+        :param relations: The URL relations of the entity, an artist, a release or a recording.
         """
         # a link names one loaded instance of a service, while the user may only be
         # handed an item from a music source it may see
