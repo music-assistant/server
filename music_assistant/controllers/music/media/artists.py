@@ -1640,7 +1640,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         if self.mass.metadata.link_providers_via_musicbrainz:
             old_links = {
                 (mapping.provider_domain, mapping.item_id)
-                for mapping in await self._linked_provider_mappings(relink.old_artist.relations)
+                # one by one, as a provider linked with several artists is left out otherwise
+                for relation in relink.old_artist.relations or ()
+                for mapping in await self._linked_provider_mappings([relation])
             }
             own = (own_mapping.provider_domain, own_mapping.item_id)
             # the old artist's links name another artist on those providers

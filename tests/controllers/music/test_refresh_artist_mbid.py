@@ -17,9 +17,10 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
-from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.controllers.music.controller import MusicController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.musicbrainz.models import MusicBrainzRelation, MusicBrainzUrl
 from music_assistant.providers.musicbrainz.provider import ArtistRelink
 
 TIDAL = "tidal--test"
@@ -30,6 +31,10 @@ FS = "filesystem_local--test"
 FACES_MBID = "8c7a8406-f15a-408d-b0f6-23be813bdddc"
 FACES_DISCOGS = "40425"
 GEORGIA_SATELLITES_MBID = "8444928a-9292-4b69-ac50-3e9b44cfa8de"
+FACES_SPOTIFY_ID = "3v4feUQnU3VEUqFrjmtekL"
+FACES_SPOTIFY_URL = f"https://open.spotify.com/artist/{FACES_SPOTIFY_ID}"
+OTHER_FACES_SPOTIFY_URL = "https://open.spotify.com/artist/4Z8W4fKeB5YxbusRsdQVPb"
+TIDAL_URL = "https://tidal.com/artist/15125"
 
 
 def _mapping(instance_id: str, item_id: str = "15125", in_library: bool = False) -> ProviderMapping:
@@ -77,20 +82,28 @@ PROVIDERS = {
 
 @contextmanager
 def _musicbrainz(
-    moved: bool | Exception = True, old_links: list[ProviderMapping] | None = None
+    moved: bool | Exception = True, old_links: tuple[str, ...] = ()
 ) -> Iterator[MagicMock]:
     """
     Serve the test providers and a MusicBrainz that may link the Tidal artist elsewhere now.
 
     :param moved: Whether MusicBrainz now links the Tidal artist to another artist than the
         stored one, or the error MusicBrainz answers with.
-    :param old_links: The provider mappings the stored (wrong) MusicBrainz artist links to.
+    :param old_links: The streaming links the stored (wrong) MusicBrainz artist carries.
     """
     musicbrainz = MagicMock()
     musicbrainz.get_artist_relink = AsyncMock(
         side_effect=moved if isinstance(moved, Exception) else None,
         return_value=(
-            ArtistRelink(MagicMock(relations=[]), GEORGIA_SATELLITES_MBID)
+            ArtistRelink(
+                MagicMock(
+                    relations=[
+                        MusicBrainzRelation(type="streaming", url=MusicBrainzUrl(resource=url))
+                        for url in old_links
+                    ]
+                ),
+                GEORGIA_SATELLITES_MBID,
+            )
             if moved is True
             else None
         ),
@@ -98,7 +111,14 @@ def _musicbrainz(
     providers = {**PROVIDERS, "musicbrainz": musicbrainz}
     with (
         patch.object(
-            ArtistsController, "_linked_provider_mappings", AsyncMock(return_value=old_links or [])
+            MusicAssistant,
+            "get_provider_instances",
+            side_effect=lambda domain, *_args, **_kwargs: [
+                provider for provider in PROVIDERS.values() if provider.domain == domain
+            ],
+        ),
+        patch.object(
+            MusicController, "providers", PropertyMock(return_value=list(PROVIDERS.values()))
         ),
         patch(
             "music_assistant.mass.MusicAssistant.get_provider",
@@ -200,16 +220,32 @@ async def test_relinked_artist_loses_ids_and_links_of_the_old_artist(
 ) -> None:
     """The new id comes in, and the Discogs id and links of the old artist go."""
     music_mass = music_mass_with_audio_analysis
-    faces_spotify = _mapping(SPOTIFY, "faces-spotify")
+    faces_spotify = _mapping(SPOTIFY, FACES_SPOTIFY_ID)
     own_ytmusic = _mapping(YTMUSIC, "UCFtQ_ao2P8LoMcvJLX2qf3Q")
     db_artist = await _library_artist(music_mass, faces_spotify, own_ytmusic)
 
-    with _musicbrainz(old_links=[faces_spotify, _mapping(TIDAL)]):
+    with _musicbrainz(old_links=(FACES_SPOTIFY_URL, TIDAL_URL)):
         moved_id = await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
     stored = await music_mass.music.artists.get_library_item(db_artist.item_id)
     assert moved_id == int(db_artist.item_id)
     assert stored.external_ids == {(ExternalID.MB_ARTIST, GEORGIA_SATELLITES_MBID)}
+    assert {x.provider_instance for x in stored.provider_mappings} == {TIDAL, YTMUSIC}
+
+
+async def test_old_link_goes_when_the_old_artist_has_two_on_a_provider(
+    music_mass_with_audio_analysis: MusicAssistant,
+) -> None:
+    """A link of the old artist goes even when MusicBrainz lists a second one on that provider."""
+    music_mass = music_mass_with_audio_analysis
+    faces_spotify = _mapping(SPOTIFY, FACES_SPOTIFY_ID)
+    own_ytmusic = _mapping(YTMUSIC, "UCFtQ_ao2P8LoMcvJLX2qf3Q")
+    db_artist = await _library_artist(music_mass, faces_spotify, own_ytmusic)
+
+    with _musicbrainz(old_links=(FACES_SPOTIFY_URL, OTHER_FACES_SPOTIFY_URL)):
+        await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
+
+    stored = await music_mass.music.artists.get_library_item(db_artist.item_id)
     assert {x.provider_instance for x in stored.provider_mappings} == {TIDAL, YTMUSIC}
 
 
@@ -240,10 +276,10 @@ async def test_relinked_artist_merges_with_the_one_carrying_its_new_id(
 
 async def test_link_in_a_library_is_kept(music_mass: MusicAssistant) -> None:
     """A link the user has in a provider's library stays, even when the old artist lists it."""
-    spotify = _mapping(SPOTIFY, "faces-spotify", in_library=True)
+    spotify = _mapping(SPOTIFY, FACES_SPOTIFY_ID, in_library=True)
     db_artist = await _library_artist(music_mass, spotify)
 
-    with _musicbrainz(old_links=[spotify]):
+    with _musicbrainz(old_links=(FACES_SPOTIFY_URL,)):
         await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
     stored = await music_mass.music.artists.get_library_item(db_artist.item_id)
@@ -255,11 +291,11 @@ async def test_links_stay_when_linking_through_musicbrainz_is_off(
     music_mass: MusicAssistant,
 ) -> None:
     """Without linking through MusicBrainz no link came from it, so only the ids change."""
-    spotify = _mapping(SPOTIFY, "faces-spotify")
+    spotify = _mapping(SPOTIFY, FACES_SPOTIFY_ID)
     db_artist = await _library_artist(music_mass, spotify)
 
     cast("MagicMock", music_mass.metadata).link_providers_via_musicbrainz = False
-    with _musicbrainz(old_links=[spotify]):
+    with _musicbrainz(old_links=(FACES_SPOTIFY_URL,)):
         await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
     stored = await music_mass.music.artists.get_library_item(db_artist.item_id)
