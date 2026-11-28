@@ -10,7 +10,6 @@ multiple instances with each one feed must exist.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
@@ -116,8 +115,7 @@ class PodcastMusicprovider(MusicProvider):
 
     def get_browse_root_item(self) -> Podcast:
         """Open the podcast directly from its Browse entry."""
-        # Use the provider item URI even when the feed links to a website.
-        return replace(self._parse_podcast(), uri=None)
+        return self._parse_podcast()
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""

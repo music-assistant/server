@@ -233,7 +233,6 @@ def parse_podcast(
         name=parsed_feed.get("title", "NO_TITLE"),
         publisher=publisher,
         provider=instance_id,
-        uri=parsed_feed.get("link"),
         provider_mappings={
             ProviderMapping(
                 item_id=item_id,
@@ -253,6 +252,9 @@ def parse_podcast(
     mass_podcast.metadata.genres = set(genres) or {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
     mass_podcast.metadata.description = parsed_feed.get("description", "")
     mass_podcast.metadata.explicit = parsed_feed.get("explicit", False)
+    # the show's webpage (the channel <link>)
+    if link := parsed_feed.get("link"):
+        mass_podcast.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=link)}
     language = parsed_feed.get("language")
     if language is not None:
         mass_podcast.metadata.languages = UniqueList([language])

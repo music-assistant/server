@@ -10,6 +10,7 @@ import pytest
 from aiohttp.client import ClientConnectionError, ClientError, ClientResponseError
 from music_assistant_models.enums import LinkType
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.media_items import MediaItemLink
 
 from music_assistant.helpers.podcast_parsers import (
     _MAX_TRANSCRIPT_BYTES,
@@ -232,6 +233,20 @@ def test_podcast_with_categories_keeps_them() -> None:
         domain="podcastfeed",
     )
     assert mass_podcast.metadata.genres == {"News", "Tech"}
+
+
+def test_podcast_website_is_a_link_not_its_uri() -> None:
+    """The show's webpage is kept as a website link, while the uri names the podcast itself."""
+    mass_podcast = parse_podcast(
+        feed_url="https://example.com/feed.xml",
+        parsed_feed={"title": "My Show", "link": "https://example.com/show"},
+        instance_id="podcastfeed--test",
+        domain="podcastfeed",
+    )
+    assert mass_podcast.uri == "podcastfeed--test://podcast/https://example.com/feed.xml"
+    assert mass_podcast.metadata.links == {
+        MediaItemLink(type=LinkType.WEBSITE, url="https://example.com/show")
+    }
 
 
 # --- parent podcast reference ----------------------------------------------------------------
