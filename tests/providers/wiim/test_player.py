@@ -674,6 +674,13 @@ class TestSourceList:
             "aux_in": True,
             "airplay": False,
             "spotify": False,
+            "tidal": False,
+            "qobuz": False,
+            "amazon": False,
+            "deezer": False,
+            "youtube": False,
+            "soundcloud": False,
+            "external": False,
             "unknown": False,
         }
 
@@ -1448,3 +1455,59 @@ class TestTopologyRefreshDebounce:
         # the coroutine is built at the call site, so the forced read is already recorded
         mock_provider.native_groups.refresh_leader.assert_called_once_with(player, force=True)
         mock_provider.mass.create_task.call_args.args[0].close()
+
+
+class TestCommandSourceOverride:
+    """A command knows what it just started; the device state can still report the old source."""
+
+    @staticmethod
+    def _queue_with_item(provider: MagicMock) -> None:
+        """Let the player have a queue that holds an item."""
+        provider.mass.player_queues.get = MagicMock(
+            return_value=MagicMock(current_item=MagicMock())
+        )
+
+    @pytest.mark.asyncio
+    async def test_play_media_reports_the_queue_despite_a_stale_input(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Switching from HDMI back to the MA queue must not keep reporting hdmi."""
+        stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+        self._queue_with_item(mock_provider)
+        # the device has not caught up yet: it still reports the input it played
+        mock_wiim_device.play_mode = "TV"
+        mock_wiim_device.current_media = MagicMock(uri="")
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+        player = _wiim_player(
+            provider=mock_provider, protocol_id="uuid:test", device=mock_wiim_device
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        owner = _attach(player)
+        player._device_status = {"mode": "49"}
+
+        await player.play_media(PlayerMedia(uri="library://track/1", title="New Track"))
+
+        assert player._attr_active_source == owner.player_id
+        assert player._device_status == {}
+
+    @pytest.mark.asyncio
+    async def test_select_source_reports_the_picked_input(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Picking an input reports that input, not the queue the device still reports."""
+        self._queue_with_item(mock_provider)
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        mock_wiim_device.current_media = MagicMock(uri="http://192.168.1.80:8097/single/x.flac")
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+        player = _wiim_player(
+            provider=mock_provider, protocol_id="uuid:test", device=mock_wiim_device
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        _attach(player)
+        player._device_status = {"mode": "10", "vendor": "Tidal"}
+
+        await player.select_source("optical")
+
+        assert player._attr_active_source == "optical"
+        assert player._device_status == {}
