@@ -30,7 +30,7 @@ from music_assistant.constants import (
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     PlaybackQuality,
 )
-from music_assistant.controllers.streams.constants import REALTIME_BURST
+from music_assistant.controllers.streams.constants import STREAM_HEAD_START, PacingProfile
 from music_assistant.providers.squeezelite.constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
@@ -133,7 +133,8 @@ async def test_a_quiet_track_fills_the_stream_buffer_from_its_head_start() -> No
     )
 
     stream_threshold_kb = slimplayer.play_url.call_args.kwargs["stream_threshold"]
-    assert stream_threshold_kb <= REALTIME_BURST * PLAIN_TONE_FLAC_KB_PER_SECOND
+    head_start = STREAM_HEAD_START[PacingProfile.BUFFERED]
+    assert stream_threshold_kb <= head_start * PLAIN_TONE_FLAC_KB_PER_SECOND
 
 
 @pytest.mark.parametrize(

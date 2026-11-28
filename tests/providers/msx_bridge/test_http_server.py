@@ -2227,11 +2227,11 @@ async def test_msx_audio_plays_queued_library_item_without_play_media(
 @pytest.mark.parametrize(
     ("media_type", "is_realtime", "profile"),
     [
-        (MediaType.TRACK, False, PacingProfile.REALTIME),
-        (MediaType.RADIO, True, PacingProfile.REALTIME),
+        (MediaType.TRACK, False, PacingProfile.BUFFERED),
+        (MediaType.RADIO, True, PacingProfile.RADIO),
         (MediaType.TRACK, True, PacingProfile.REALTIME),
         (MediaType.AUDIO_SOURCE, True, PacingProfile.LOW_LATENCY),
-        (MediaType.FLOW_STREAM, False, PacingProfile.REALTIME),
+        (MediaType.FLOW_STREAM, False, PacingProfile.BUFFERED),
     ],
     ids=["buffered-track", "radio", "realtime-track", "live-source", "group-flow"],
 )

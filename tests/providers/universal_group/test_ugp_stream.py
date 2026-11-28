@@ -11,17 +11,19 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.controllers.streams.constants import output_pacing_args
+from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.providers.universal_group.ugp_stream import UGPStream
 
 
-async def test_ugp_stream_is_paced_like_the_flow_stream() -> None:
+@pytest.mark.parametrize("pacing", [None, *PacingProfile], ids=lambda pacing: str(pacing))
+async def test_ugp_stream_is_paced_by_the_kind_of_its_source(pacing: PacingProfile | None) -> None:
     """
     The group stream is one continuous stream fanned out to all members.
 
-    Its source is the raw PCM queue flow, which carries no pacing of its own, so this
-    ffmpeg is the single pacing point and takes the flow route's realtime pace.
+    Its source is the raw PCM queue flow or another stream of the group's media, which
+    carries no pacing of its own, so this ffmpeg is the single pacing point: at playback
+    speed after the head start of that source, and that of the flow stream by default.
     """
     recorded: dict[str, Any] = {}
     pcm_format = AudioFormat(
@@ -44,6 +46,7 @@ async def test_ugp_stream_is_paced_like_the_flow_stream() -> None:
         base_pcm_format=pcm_format,
         queue_id="q",
         session_id="s",
+        **({} if pacing is None else {"pacing": pacing}),
     )
     with patch(
         "music_assistant.providers.universal_group.ugp_stream.get_ffmpeg_stream",
@@ -52,7 +55,7 @@ async def test_ugp_stream_is_paced_like_the_flow_stream() -> None:
         chunks = [chunk async for chunk in stream.subscribe_raw()]
 
     assert chunks == [b"\x00" * 16]
-    assert recorded["extra_input_args"] == output_pacing_args()
+    assert recorded["extra_input_args"] == output_pacing_args(pacing or PacingProfile.BUFFERED)
 
 
 @pytest.mark.parametrize(

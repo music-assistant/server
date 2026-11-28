@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from music_assistant.helpers.dsp import ComplexFilter
 
 from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.controllers.streams.constants import output_pacing_args
+from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
@@ -44,13 +44,24 @@ class UGPStream:
         base_pcm_format: AudioFormat,
         queue_id: str | None,
         session_id: str | None,
+        pacing: PacingProfile = PacingProfile.BUFFERED,
     ) -> None:
-        """Initialize UGP Stream."""
+        """
+        Initialize UGP Stream.
+
+        :param audio_source: The audio the group plays.
+        :param audio_format: Format of that audio.
+        :param base_pcm_format: PCM format the stream hands to its subscribers.
+        :param queue_id: The queue the audio comes from, if any.
+        :param session_id: The playback session the audio belongs to, if any.
+        :param pacing: The kind of source the audio comes from.
+        """
         self.audio_source = audio_source
         self.input_format = audio_format
         self.base_pcm_format = base_pcm_format
         self.queue_id = queue_id
         self.session_id = session_id
+        self.pacing = pacing
         self.subscribers: list[Callable[[bytes], Awaitable[None]]] = []
         self._task: asyncio.Task[None] | None = None
         self._done: asyncio.Event = asyncio.Event()
@@ -116,7 +127,7 @@ class UGPStream:
                 # the flow source carries no pacing of its own, so this is the single point
                 # that keeps the members from running far ahead, at the flow route's pace.
                 # See the usage policy note in the streams constants.
-                extra_input_args=output_pacing_args(),
+                extra_input_args=output_pacing_args(self.pacing),
             ):
                 await asyncio.gather(
                     *[sub(chunk) for sub in self.subscribers],

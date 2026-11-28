@@ -29,6 +29,7 @@ from music_assistant_models.constants import (
 from music_assistant_models.dsp import AudioChannel, DSPConfig
 from music_assistant_models.enums import (
     ContentType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -54,6 +55,7 @@ from music_assistant.controllers.players import locks as players_locks
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
+from music_assistant.controllers.streams.constants import PacingProfile
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
@@ -348,6 +350,37 @@ class TestPowerlessLifecycle:
         mass.players.get_player_lock.assert_any_call("m2", PlayerLockPurpose.PLAYBACK)
         # power command was NOT used to capture the members
         mass.players.cmd_power.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("media_type", "pacing"),
+        [
+            (MediaType.FLOW_STREAM, PacingProfile.BUFFERED),
+            (MediaType.RADIO, PacingProfile.RADIO),
+            (MediaType.AUDIO_SOURCE, PacingProfile.LOW_LATENCY),
+        ],
+        ids=["queue", "radio", "live-source"],
+    )
+    async def test_play_media_paces_the_stream_by_the_kind_of_its_source(
+        self, media_type: MediaType, pacing: PacingProfile
+    ) -> None:
+        """The stream of the group gets the head start of what it plays."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        ugp._attr_static_group_members = ["m1"]
+        _group_members_of(mass, _make_member(mass, "m1"))
+
+        with patch.object(ugp, "update_state"):
+            await ugp.play_media(
+                MagicMock(
+                    uri="x://y",
+                    source_id="src",
+                    queue_session_id="session-1",
+                    media_type=media_type,
+                )
+            )
+
+        assert ugp.stream is not None
+        assert ugp.stream.pacing is pacing
 
     async def test_play_media_fails_when_no_member_can_play(self) -> None:
         """A play fails while every speaker is offline or switched off, also with a light to follow."""

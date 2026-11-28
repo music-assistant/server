@@ -27,6 +27,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.streams import file_stream
 from music_assistant.controllers.streams.audio import CrossfadeHandover, StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.controller import StreamsController
@@ -667,17 +668,20 @@ async def test_a_track_ends_where_its_mix_ends(rig: _Rig) -> None:
 
 
 async def test_every_part_of_a_mixed_track_is_paced(
-    rig: _Rig, passthrough_encoder: list[list[str]]
+    rig: _Rig, passthrough_encoder: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """What a pass made ahead only fills memory: every part is sent at playback pace."""
+    monkeypatch.setattr(file_stream, "time", SimpleNamespace(monotonic=lambda: 1000.0))
     await rig.fetch("a")
     # a part of the end that is kept, a second and a half past the whole second it is read from
     await rig.fetch("a", f"bytes={rig.offset(TRACK_SECONDS - WINDOW + 2.5)}-")
     await rig.fetch("b")
 
+    # the part of the end left before: what the file had sent from the moment it starts at,
+    # the head start less all it sent, and the run-in
     assert passthrough_encoder == [
         ["-readrate", "1.0", "-readrate_initial_burst", burst, "-readrate_catchup", "2"]
-        for burst in ("6", "7.5", "6")
+        for burst in ("60", f"{60 - (TRACK_SECONDS - WINDOW + 2.5) + 1.5:g}", "60")
     ]
 
 
@@ -2187,7 +2191,7 @@ async def test_the_held_tail_is_cut_at_exactly_the_fade_window(
 def test_a_file_whose_track_start_moved_is_found_by_its_track() -> None:
     """A fade into a track moves the position it starts at, which a plain file is made of."""
     files = FileStreams()
-    mixed, plain = FileStream(PCM_16, WAV_16, RATE), FileStream(PCM_16, WAV_16, RATE)
+    mixed, plain = FileStream(PCM_16, WAV_16, RATE, 60), FileStream(PCM_16, WAV_16, RATE, 60)
     mixed.mix = MixedTrack(PCM_16, 1000, 0, MagicMock(), MagicMock())
     files.add(PLAYER_ID, FileKey(SESSION_ID, QUEUE_ID, "a", 0), mixed)
     files.add(PLAYER_ID, FileKey(SESSION_ID, QUEUE_ID, "b", 0), plain)

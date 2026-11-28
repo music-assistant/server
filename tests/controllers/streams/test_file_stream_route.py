@@ -27,6 +27,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import DLNA_CONTENT_FEATURES, DLNA_CONTENT_FEATURES_FILE
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.streams import file_stream
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.streams.file_stream import (
@@ -326,8 +327,8 @@ def rig() -> _Rig:
 
 
 @pytest.fixture
-def passthrough_encoder(rig: _Rig) -> Iterator[None]:
-    """Hand the audio to the player as it comes, without an encoder in between."""
+def passthrough_encoder(rig: _Rig) -> Iterator[list[list[str]]]:
+    """Hand the audio to the player as it comes, and return the pacing of every encode."""
 
     async def _passthrough(
         audio_input: AsyncGenerator[bytes], extra_input_args: list[str], **_kwargs: Any
@@ -341,7 +342,7 @@ def passthrough_encoder(rig: _Rig) -> Iterator[None]:
         patch("music_assistant.controllers.streams.controller.get_ffmpeg_stream", _passthrough),
         patch("music_assistant.controllers.streams.file_stream.PROBE_GRACE", 0.05),
     ):
-        yield
+        yield rig.pacing
 
 
 def _burst(pacing: list[str]) -> float:
@@ -1165,18 +1166,48 @@ async def test_a_request_that_waits_after_the_start_leaves_the_file_to_a_newer_o
     assert rig.encodes == 2
 
 
-@pytest.mark.usefixtures("passthrough_encoder")
-async def test_every_encode_is_paced_with_a_head_start_out_of_the_files_budget(rig: _Rig) -> None:
-    """A file hands out thirty seconds of head start, and the dropped run-in costs none of it."""
+class _Clock:
+    """The clock of the files of a test, which moves only when the test moves it."""
+
+    def __init__(self) -> None:
+        """Initialize the clock."""
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        """Return the time."""
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    """Return the clock that the files of a test read."""
+    clock = _Clock()
+    monkeypatch.setattr(file_stream, "time", clock)
+    return clock
+
+
+async def _serve(rig: _Rig, request: web.Request) -> None:
+    """
+    Let the rig answer a request of a player.
+
+    :param rig: The rig that serves the file.
+    :param request: The request.
+    """
+    await StreamsController.serve_queue_item_stream(rig.ctrl, request)
+
+
+@pytest.mark.usefixtures("passthrough_encoder", "clock")
+async def test_every_encode_is_paced_with_its_burst_and_the_run_in_on_top(rig: _Rig) -> None:
+    """The first request gets the head start of the file, and the dropped run-in costs none of it."""
     await rig.decode()
     seek = HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2
 
     await rig.fetch(wanted=KIB_16)
-    for _ in range(6):
-        await rig.fetch(f"bytes={seek}-", wanted=KIB_16)
+    await rig.fetch(f"bytes={seek}-", wanted=KIB_16)
 
-    # an encode starts a whole second before its part: 1.5 s that the player never gets
-    assert [_burst(pacing) for pacing in rig.pacing] == [6, 7.5, 7.5, 7.5, 7.5, 1.5, 1.5]
+    # the first second went out in one write, and an encode starts a whole second before its
+    # part: 1.5 s that the player never gets
+    assert [_burst(pacing) for pacing in rig.pacing] == [60, 60 - 1 + 1.5]
 
 
 def _hold_audio(rig: _Rig, until: asyncio.Event, error: AudioError | None = None) -> None:
@@ -1202,182 +1233,27 @@ def _hold_audio(rig: _Rig, until: asyncio.Event, error: AudioError | None = None
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
-async def test_a_request_dropped_before_its_audio_costs_no_head_start(rig: _Rig) -> None:
-    """A player that hangs up before an encode hands it anything leaves the head start as it was."""
+async def test_a_request_dropped_before_its_audio_costs_nothing(rig: _Rig, clock: _Clock) -> None:
+    """A player that hangs up before an encode hands it anything leaves the next one all it had."""
     await rig.decode()
     seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
 
     for _ in range(6):
         request, download = rig.request(seek)
         download.hang_up()
-        await StreamsController.serve_queue_item_stream(rig.ctrl, request)
-    for _ in range(6):
-        await rig.fetch(seek, wanted=KIB_16)
-
-    assert [_burst(pacing) for pacing in rig.pacing[6:]] == [7.5, 7.5, 7.5, 7.5, 7.5, 1.5]
-
-
-@pytest.mark.usefixtures("passthrough_encoder")
-async def test_a_change_of_leader_costs_one_head_start(rig: _Rig) -> None:
-    """The four requests of a sync group that changes its leader take what one encode takes."""
-    await rig.decode()
-    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
-    started = asyncio.Event()
-    _hold_audio(rig, started)
-
-    # the new leader asks without a range and for its part, the old leader for a part as it
-    # leaves, and the new leader for its part again: each request ends the one before it
-    tasks = []
-    for byte_range, wanted in ((None, None), (seek, None), (seek, None), (seek, KIB_16)):
-        request, _ = rig.request(byte_range, wanted=wanted)
-        tasks.append(
-            asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
-        )
-        await asyncio.sleep(0.01)
-    started.set()
-    await asyncio.gather(*tasks)
-    for _ in range(5):
-        await rig.fetch(seek, wanted=KIB_16)
-
-    assert [_burst(pacing) for pacing in rig.pacing] == [6, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 1.5]
-
-
-@pytest.mark.usefixtures("passthrough_encoder")
-async def test_a_speaker_that_leaves_without_audio_costs_no_head_start(rig: _Rig) -> None:
-    """The two requests a speaker drops as it leaves a group give their head start back."""
-    await rig.decode()
-    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
-    started = asyncio.Event()
-    _hold_audio(rig, started)
-
-    leader_request, leader = rig.request(seek, wanted=KIB_16)
-    tasks = [
-        asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, leader_request))
-    ]
-    for _ in range(2):
-        await asyncio.sleep(0.01)
-        request, leaving = rig.request(seek, address=OTHER_ADDRESS)
-        leaving.hang_up()
-        tasks.append(
-            asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
-        )
-    await asyncio.sleep(0.01)
-    started.set()
-    await asyncio.gather(*tasks)
-    for _ in range(5):
-        await rig.fetch(seek, wanted=KIB_16)
-
-    assert len(leader.body) == KIB_16
-    assert [_burst(pacing) for pacing in rig.pacing] == [7.5] * 7 + [1.5]
-
-
-@pytest.mark.usefixtures("passthrough_encoder")
-async def test_two_speakers_that_read_a_file_at_once_share_its_head_start(rig: _Rig) -> None:
-    """Over the requests of two speakers that read beside each other a file hands out thirty seconds."""
-    await rig.decode()
-    seek = HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2
-    run_in = BYTES_PER_SECOND // 2 / BYTES_PER_SECOND
-
-    handed_out = 0.0
-    for _ in range(4):
-        started = asyncio.Event()
-        _hold_audio(rig, started)
-        downloads, tasks = [], []
-        # the second speaker drops a request and asks again, which ends only its own encode
-        for address, drops in (
-            (PLAYER_ADDRESS, False),
-            (OTHER_ADDRESS, True),
-            (OTHER_ADDRESS, False),
-        ):
-            request, download = rig.request(f"bytes={seek}-", wanted=KIB_16, address=address)
-            if drops:
-                download.hang_up()
-            downloads.append(download)
-            tasks.append(
-                asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
-            )
-            await asyncio.sleep(0.01)
-        started.set()
-        await asyncio.gather(*tasks)
-        assert [len(download.body) for download in downloads] == [KIB_16, 0, KIB_16]
-        handed_out += sum(
-            _burst(pacing) - 1 - run_in
-            for pacing, download in zip(rig.pacing[-3:], downloads, strict=True)
-            if download.body
-        )
-
-    assert handed_out == 30
-
-
-@pytest.mark.usefixtures("passthrough_encoder")
-async def test_a_file_never_hands_out_more_head_start_than_it_has(rig: _Rig) -> None:
-    """Requests that are dropped between those that are served leave thirty seconds in all."""
-    await rig.decode()
-    seek = HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2
-    run_in = BYTES_PER_SECOND // 2 / BYTES_PER_SECOND
-
-    for _ in range(10):
-        request, download = rig.request(f"bytes={seek}-")
-        download.hang_up()
-        await StreamsController.serve_queue_item_stream(rig.ctrl, request)
-        await rig.fetch(f"bytes={seek}-", wanted=KIB_16)
-
-    served = [_burst(pacing) - 1 - run_in for pacing in rig.pacing[1::2]]
-    assert sum(served) == 30
-
-
-@pytest.mark.usefixtures("passthrough_encoder")
-async def test_an_encode_that_handed_out_audio_keeps_its_head_start(rig: _Rig) -> None:
-    """Audio that went to a player that was still there counts, also when the write fails."""
-    await rig.decode()
-    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
-
-    for _ in range(5):
-        request, download = rig.request(seek, stall_at=0)
-        task = asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
-        await download.stalled.wait()
-        download.hang_up()
-        download.resume.set()
-        await task
-        assert not download.body
+        await _serve(rig, request)
+        clock.now += 0.02
     await rig.fetch(seek, wanted=KIB_16)
 
-    assert [_burst(pacing) for pacing in rig.pacing] == [7.5, 7.5, 7.5, 7.5, 7.5, 1.5]
-
-
-@pytest.mark.usefixtures("passthrough_encoder")
-async def test_an_encode_that_replaces_one_without_audio_gets_its_head_start_at_once(
-    rig: _Rig,
-) -> None:
-    """The last head start goes to the encode that replaces one still waiting for its audio."""
-    await rig.decode()
-    seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
-    await rig.fetch(wanted=KIB_16)
-    for _ in range(3):
-        await rig.fetch(seek, wanted=KIB_16)
-    started = asyncio.Event()
-    _hold_audio(rig, started)
-
-    tasks = []
-    for wanted in (None, KIB_16):
-        request, _ = rig.request(seek, wanted=wanted)
-        tasks.append(
-            asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
-        )
-        await asyncio.sleep(0.01)
-
-    assert not tasks[0].done()
-    assert [_burst(pacing) for pacing in rig.pacing[4:]] == [7.5, 7.5]
-    started.set()
-    await asyncio.gather(*tasks)
+    assert [_burst(pacing) for pacing in rig.pacing] == [61.5] * 7
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
 @pytest.mark.parametrize("ending", ["cancel", "disconnect", "error"])
-async def test_an_encode_that_ends_before_its_audio_leaves_its_head_start(
-    rig: _Rig, ending: str
+async def test_an_encode_that_ends_before_its_audio_costs_nothing(
+    rig: _Rig, clock: _Clock, ending: str
 ) -> None:
-    """Cancelled, left by its player or failed: an encode without audio keeps no head start."""
+    """Cancelled, left by its player or failed: an encode without audio sent nothing."""
     await rig.decode()
     seek = f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-"
     started = asyncio.Event()
@@ -1392,11 +1268,118 @@ async def test_an_encode_that_ends_before_its_audio_leaves_its_head_start(
         download.hang_up()
     started.set()
     await asyncio.gather(task, return_exceptions=True)
-    for _ in range(6):
-        await rig.fetch(seek, wanted=KIB_16)
+    clock.now += 0.02
+    await rig.fetch(seek, wanted=KIB_16)
 
     assert not download.body
-    assert [_burst(pacing) for pacing in rig.pacing] == [7.5, 7.5, 7.5, 7.5, 7.5, 7.5, 1.5]
+    assert [_burst(pacing) for pacing in rig.pacing] == [61.5, 61.5]
+
+
+@pytest.mark.usefixtures("passthrough_encoder", "clock")
+async def test_audio_handed_to_a_player_that_was_still_there_counts_as_sent(rig: _Rig) -> None:
+    """The bytes of a write that fails as the player hangs up may have reached it."""
+    await rig.decode()
+
+    request, download = rig.request(
+        f"bytes={HEADER_SIZE + 6 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-", stall_at=0
+    )
+    task = asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
+    await download.stalled.wait()
+    download.hang_up()
+    download.resume.set()
+    await task
+    await rig.fetch(f"bytes={HEADER_SIZE + 9 * BYTES_PER_SECOND + BYTES_PER_SECOND // 2}-")
+
+    # the half second up to the next whole second went out with the write that failed
+    assert not download.body
+    assert download.handed == BYTES_PER_SECOND // 2
+    assert [_burst(pacing) for pacing in rig.pacing] == [61.5, 61]
+
+
+async def test_a_new_leader_gets_what_the_file_has_sent_at_once_any_number_of_times(
+    long_rig: _Rig, clock: _Clock, passthrough_encoder: list[list[str]]
+) -> None:
+    """The speaker that takes a group over asks a few seconds behind where the file has got."""
+    long_rig.queue_item.streamdetails.is_realtime = True  # type: ignore[union-attr]
+    await long_rig.decode()
+    request, download = long_rig.request(wanted=_second(20))
+    await _serve(long_rig, request)
+    reached = len(download.body)
+
+    for change in range(8):
+        clock.now += 5
+        start = reached - 3 * BYTES_PER_SECOND
+        address = (OTHER_ADDRESS, PLAYER_ADDRESS)[change % 2]
+        request, download = long_rig.request(
+            f"bytes={start}-", wanted=8 * BYTES_PER_SECOND, address=address
+        )
+        await _serve(long_rig, request)
+        reached = start + len(download.body)
+
+    # the three seconds the file had sent and the run-in, and the credit the clock builds
+    # once what the first leader read is paid off
+    assert [_burst(pacing) for pacing in passthrough_encoder[1:]] == [
+        *[pytest.approx(4)] * 6,
+        pytest.approx(4.5),
+        pytest.approx(5),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("is_realtime", "read", "credit"), [(False, 70, 34), (True, 22, 12)], ids=["60", "12"]
+)
+async def test_a_request_that_goes_on_after_a_pause_gets_the_credit_the_clock_built(
+    long_rig: _Rig,
+    clock: _Clock,
+    passthrough_encoder: list[list[str]],
+    is_realtime: bool,
+    read: int,
+    credit: float,
+) -> None:
+    """A tenth of a second builds per second since the first request, at most the head start."""
+    long_rig.queue_item.streamdetails.is_realtime = is_realtime  # type: ignore[union-attr]
+    await long_rig.decode()
+    request, download = long_rig.request(wanted=_second(read))
+    await _serve(long_rig, request)
+
+    # ten seconds of listening and a pause of thirty
+    clock.now += 40
+    await long_rig.fetch(f"bytes={len(download.body)}-", wanted=KIB_16)
+
+    assert _burst(passthrough_encoder[-1]) == pytest.approx(credit + 1)
+
+
+async def test_a_seek_back_gets_what_was_sent_at_once_up_to_where_that_stretch_ends(
+    long_rig: _Rig, clock: _Clock, passthrough_encoder: list[list[str]]
+) -> None:
+    """Audio that left before goes as fast as the player takes it, the rest within the allowance."""
+    long_rig.queue_item.streamdetails.is_realtime = True  # type: ignore[union-attr]
+    await long_rig.decode()
+    request, _ = long_rig.request(wanted=_second(30))
+    await _serve(long_rig, request)
+    clock.now += 30
+    await long_rig.fetch(f"bytes={_second(70)}-", wanted=5 * BYTES_PER_SECOND)
+
+    await long_rig.fetch(f"bytes={_second(10)}-", wanted=KIB_16)
+
+    # the twenty seconds up to where the first stretch ends, the ten seconds of credit left
+    # for what follows it, and the run-in
+    assert _burst(passthrough_encoder[-1]) == pytest.approx(20 + 10 + 1)
+
+
+async def test_a_seek_forward_into_audio_never_sent_gets_only_the_credit_there_is(
+    long_rig: _Rig, clock: _Clock, passthrough_encoder: list[list[str]]
+) -> None:
+    """Right after a start the head start is spent, so a seek forward gets what the clock built."""
+    long_rig.queue_item.streamdetails.is_realtime = True  # type: ignore[union-attr]
+    await long_rig.decode()
+    request, _ = long_rig.request(wanted=_second(12))
+    await _serve(long_rig, request)
+    clock.now += 2
+
+    await long_rig.fetch(f"bytes={_second(60)}-", wanted=KIB_16)
+
+    assert _burst(passthrough_encoder[-1]) == pytest.approx(2.2 + 1)
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
@@ -1853,7 +1836,9 @@ async def test_a_part_from_the_middle_of_an_mp3(unpaced_encoder: list[list[str]]
     assert stream["seek_position_ms"] == 3000 + 5 * MP3_BLOCK_MS
     # the output that is dropped costs the player none of its head start
     dropped = (first - 5 * MP3_BLOCK_SIZE) / MP3_BYTES_PER_SECOND
-    assert [_burst(pacing) for pacing in unpaced_encoder] == [pytest.approx(6 + dropped, abs=0.001)]
+    assert [_burst(pacing) for pacing in unpaced_encoder] == [
+        pytest.approx(60 + dropped, abs=0.001)
+    ]
     rig.ctrl.mass.player_queues.track_loaded_in_buffer.assert_called_once_with(QUEUE_ID, ITEM_ID)
 
 

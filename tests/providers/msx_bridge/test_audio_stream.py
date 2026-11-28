@@ -101,7 +101,7 @@ async def test_cancelled_stream_closes_the_encoder_stream(
                 pcm,
                 encoded,
                 [],
-                PacingProfile.REALTIME,
+                PacingProfile.BUFFERED,
             )
         )
         await asyncio.wait_for(buffer_full.wait(), timeout=2)

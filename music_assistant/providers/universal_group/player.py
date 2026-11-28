@@ -37,6 +37,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
+from music_assistant.controllers.streams.constants import pacing_profile
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import TaskManager
@@ -342,6 +343,7 @@ class UniversalGroupPlayer(PlayerProtocol):
             base_pcm_format=pivot_format,
             queue_id=media.source_id,
             session_id=get_media_session_id(media),
+            pacing=pacing_profile(media.media_type),
         )
         base_url = f"{self.mass.streams.base_url}/ugp/{self.protocol_id}.{fmt_str}"
         group_player_id = self._group_player.player_id
