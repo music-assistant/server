@@ -706,17 +706,55 @@ async def test_a_hand_over_right_after_a_change_of_track_takes_the_new_item_over
     assert home.bathroom.elapsed_time == pytest.approx(25, abs=1)
 
 
-async def test_a_position_reported_for_the_next_item_is_taken(home: _Household) -> None:
-    """Test the new coordinator's reports count again from the track that follows."""
-    await _step_out(home)
+@pytest.mark.parametrize(
+    ("leaves", "final", "update", "position"),
+    [
+        ("removed in Music Assistant", 53985, 5041, 9.49),
+        ("taken out in the Sonos app", 48451, 1703, 14.14),
+    ],
+)
+async def test_the_position_in_the_track_after_a_late_hand_over_is_not_what_the_speaker_counted(
+    home: _Household, leaves: str, final: int, update: int, position: float
+) -> None:
+    """
+    Test a speaker that took over at the end of a track is not believed in the next one either.
+
+    :param leaves: How the leader left the group, shortly before the end of its track.
+    :param final: The position in the last report on that track, in milliseconds.
+    :param update: The position in the report on the track that follows, in milliseconds.
+    :param position: Where the speaker is in the track that follows by then, in seconds.
+    """
+    ending, following = f"track0@{GENERATION}", f"track1@{GENERATION}"
+    _report(home.kitchen, named=ending, position_in=ending, seconds=177)
+    if leaves == "removed in Music Assistant":
+        await _step_out(home)
+    else:
+        await home.leave()
     await home.settle()
-    group = home.bathroom.group_controller
-    group._playback_metadata_data = cast("Any", _metadata(QUEUE_ID, "track1"))
-    home.bathroom.on_player_event(None)
+    # the track that follows plays, and the playback status has where the speaker is in it
+    _report(home.bathroom, named=following, position_in=following, seconds=position)
+    reported_at = home.bathroom.elapsed_time_last_updated
 
-    await home.report_position(QUEUE_ID, f"track1@{GENERATION}", 7)
+    await _time_played(home, {"type": "final", "id": ending, "positionMillis": final})
+    # what it played since it went over to its own download of that track
+    await _time_played(home, {"type": "update", "id": following, "positionMillis": update})
 
-    assert home.bathroom.elapsed_time == 7
+    assert home.bathroom.current_media is not None
+    assert home.bathroom.current_media.queue_item_id == "track1"
+    assert home.bathroom.elapsed_time == pytest.approx(position, abs=1)
+    assert home.bathroom.elapsed_time_last_updated == reported_at
+
+
+async def test_a_speaker_that_loaded_the_queue_itself_is_believed_on_the_position(
+    home: _Household,
+) -> None:
+    """Test the reports of a speaker that counts from the start of a track set the position."""
+    following = f"track1@{GENERATION}"
+    _report(home.kitchen, named=following, position_in=following, seconds=9.49)
+
+    await _time_played(home, {"type": "update", "id": following, "positionMillis": 5041})
+
+    assert home.kitchen.elapsed_time == 5.041
 
 
 async def test_a_position_reported_after_a_new_load_is_taken(home: _Household) -> None:
@@ -742,7 +780,7 @@ async def test_a_position_reported_after_a_new_load_is_taken(home: _Household) -
     assert home.bathroom.elapsed_time == 7
 
 
-def _report(speaker: SonosPlayer, *, named: str, position_in: str, seconds: int) -> None:
+def _report(speaker: SonosPlayer, *, named: str, position_in: str, seconds: float) -> None:
     """
     Let the group a speaker leads report a position and the item it names.
 
@@ -759,6 +797,19 @@ def _report(speaker: SonosPlayer, *, named: str, position_in: str, seconds: int)
     item_id, generation = named.split("@")
     group._playback_metadata_data = cast("Any", _metadata(QUEUE_ID, item_id, int(generation)))
     speaker.on_player_event(None)
+
+
+async def _time_played(home: _Household, *items: dict[str, Any]) -> None:
+    """
+    Let the speakers that play the queue of the group send a report on what they played.
+
+    :param home: The household.
+    :param items: The items of the report, as a speaker sends them.
+    """
+    request = MagicMock()
+    request.path = f"/sonos_queue/{QUEUE_ID}/v2.3/timePlayed"
+    request.json = AsyncMock(return_value={"items": list(items)})
+    assert (await home.cloud_queue.handle_request(request)).status == 204
 
 
 @pytest.mark.parametrize("handed_over", [False, True])

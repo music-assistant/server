@@ -241,11 +241,9 @@ class SonosCloudQueue:
             # only a report on the playing item from the current load may update the
             # position: a report from before a same-track reload carries the old
             # generation and its position, which the reload just seeked away from.
-            # Neither does one that counts from where the speaker took the item over: the
-            # playback status of the speaker has its position
-            if player.reports_current_item(item["id"]) and not player.counts_from_take_over(
-                item["id"]
-            ):
+            # Neither does one of a speaker that took the session over, which counts what it
+            # played itself: the playback status of the speaker has its position
+            if player.reports_current_item(item["id"]) and not player.reports_own_play_time:
                 player.update_elapsed_time(item["positionMillis"] / 1000)
             break
         return web.Response(status=204)

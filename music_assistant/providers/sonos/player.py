@@ -1039,16 +1039,15 @@ class SonosPlayer(PlayerProtocol):
             and self.served_item_id(wire_item_id) == self.current_media.queue_item_id
         )
 
-    def counts_from_take_over(self, wire_item_id: str) -> bool:
+    @property
+    def reports_own_play_time(self) -> bool:
         """
-        Return whether the speaker reports its position in an item from where it took it over.
+        Return whether the speaker reports the time it played itself as its position in an item.
 
-        A speaker that takes a playing group over counts the position it reports for the
-        item that plays from that moment, not from the start of the item.
-
-        :param wire_item_id: The id as the speaker reports it.
+        A speaker that took a playing group over does so until the queue is loaded on it
+        anew: where it is in an item is in its playback status.
         """
-        return wire_item_id == self._taken_over_item_id
+        return self._taken_over_item_id is not None
 
     def is_served_as_file(self, queue_item_id: str | None) -> bool:
         """
