@@ -771,6 +771,9 @@ async def test_browse_root_includes_non_music_providers() -> None:
     plugin_prov = _make_prov("p_a", ProviderType.PLUGIN, {ProviderFeature.BROWSE})
     plugin_prov.domain = "plugin_a"
     plugin_prov.name = "Plugin A"
+    for provider in (music_prov, plugin_prov):
+        provider.browse_group_translation_key = None
+        provider.get_browse_root_item = partial(Provider.get_browse_root_item, provider)
 
     # browse queries get_providers_supporting_feature for BROWSE; the audio source
     # providers come from the players controller

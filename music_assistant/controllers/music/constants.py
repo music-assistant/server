@@ -87,6 +87,7 @@ RECOMMENDATIONS_BROWSE_SCHEME: Final[str] = "discover"
 
 # browse scheme of the folder that holds the live sources
 LIVE_SOURCES_BROWSE_SCHEME: Final[str] = "live_sources"
+PROVIDER_GROUP_BROWSE_PREFIX: Final[str] = "browse_group--"
 
 # max items a library recommendation row returns when browsed in full,
 # instead of the handful its Discover row shows

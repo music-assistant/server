@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.config_entries import ProviderAccess, ProviderConfig
 from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
+    ProviderSharing,
     ProviderType,
     SortDirection,
     SortField,
@@ -20,6 +22,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     Playlist,
+    Podcast,
     ProviderMapping,
     RecommendationFolder,
     UniqueList,
@@ -28,6 +31,9 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.music.constants import BROWSE_CACHE_EXPIRATION
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.provider import Provider
+from music_assistant.providers.podcastfeed import SUPPORTED_FEATURES, PodcastMusicprovider
+from tests.common import as_user, set_music_source_access
 
 from .helpers import create_track
 
@@ -93,6 +99,12 @@ class _OwnBrowseProvider(MusicProvider):
     async def browse(self, path: str) -> list[BrowseFolder]:
         """Return the provider's own listing of the folder."""
         return [_folder("Own")]
+
+
+class _GroupedProvider(_OwnBrowseProvider):
+    """A provider that groups its instance folders."""
+
+    browse_group_translation_key = "library"
 
 
 def _real_provider[ProviderT: MusicProvider](
@@ -389,7 +401,17 @@ async def test_browse_rejects_an_unsupported_sort_before_browsing(mass: MusicAss
 async def test_browse_root_is_searched_sorted_and_paged(mass: MusicAssistant) -> None:
     """The providers listed at the root are searched, sorted and paged like any folder."""
     providers = [
-        SimpleNamespace(domain=domain, instance_id=f"{domain}_1", name=name)
+        Provider(
+            mass,
+            MagicMock(domain=domain),
+            ProviderConfig(
+                type=ProviderType.MUSIC,
+                domain=domain,
+                instance_id=f"{domain}_1",
+                name=name,
+                values={},
+            ),
+        )
         for domain, name in (("zvuk", "Zvuk"), ("apple", "Apple Music"), ("deezer", "Deezer"))
     ]
 
@@ -409,3 +431,108 @@ async def test_browse_root_is_searched_sorted_and_paged(mass: MusicAssistant) ->
         assert await _root(sort_field=SortField.NAME) == ["Apple Music", "Deezer", "Zvuk"]
         assert await _root(search="deez") == ["Deezer"]
         assert await _root(limit=1, offset=1) == ["Apple Music"]
+
+
+async def test_browse_groups_rss_feeds(mass: MusicAssistant) -> None:
+    """RSS feeds share one folder and open as podcasts with their title and cover."""
+    config = ProviderConfig(
+        type=ProviderType.MUSIC,
+        domain="podcastfeed",
+        instance_id="podcastfeed--voice",
+        name="Podcast RSS Feed",
+        values={},
+    )
+    manifest = MagicMock(domain=config.domain, type=config.type)
+    provider = PodcastMusicprovider(mass, manifest, config, SUPPORTED_FEATURES)
+    provider.feed_url = "https://example.com/feed.xml"
+    provider.podcast_id = "voice"
+    provider.parsed_podcast = {
+        "title": "The Voice Cast",
+        "cover_url": "https://example.com/voice.png",
+        "link": "https://example.com/voice",
+        "episodes": [
+            {
+                "guid": "first-episode",
+                "title": "First episode",
+                "enclosures": [{"url": "https://example.com/episode.mp3"}],
+            }
+        ],
+    }
+    second = PodcastMusicprovider(
+        mass, manifest, replace(config, instance_id="podcastfeed--other"), SUPPORTED_FEATURES
+    )
+    second.feed_url = "https://example.com/other.xml"
+    second.podcast_id = "other"
+    second.parsed_podcast = {"title": "Other Show"}
+    other = _real_provider(mass, _LibraryProvider)
+    other.config.name = "Zebra"
+    providers = {prov.instance_id: prov for prov in (provider, second, other)}
+    for prov in providers.values():
+        prov.available = True
+    await mass.translations.setup(await mass.config.get_core_config(mass.translations.domain))
+
+    with (
+        patch.dict(mass._providers, providers),
+        patch.object(mass, "players", MagicMock(), create=True) as players,
+        patch(
+            "music_assistant.providers.podcastfeed.refresh_cached_podcast",
+            return_value=provider.parsed_podcast,
+        ),
+    ):
+        players.get_audio_source_providers.return_value = []
+        group, folder = await mass.music.browse(sort_field=SortField.NAME)
+        assert isinstance(group, BrowseFolder)
+        assert group.name == "RSS Podcasts"
+        assert group.translation_key == "rss_podcasts"
+        assert isinstance(folder, BrowseFolder)
+        assert folder.path == "qobuz_1://"
+        listing = await mass.music.browse(group.path)
+        assert _names(listing) == ["..", "The Voice Cast", "Other Show"]
+        podcast = listing[1]
+        assert isinstance(podcast, Podcast)
+        assert podcast.image is not None
+        assert podcast.image.path == "https://example.com/voice.png"
+        assert podcast.uri == "podcastfeed--voice://podcast/voice"
+        opened = await mass.music.get_item(
+            podcast.media_type, podcast.item_id, podcast.provider, allow_update_metadata=False
+        )
+        assert opened.name == podcast.name
+        episodes = await mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        assert [episode.item_id for episode in episodes] == ["first-episode"]
+
+        old_listing = await mass.music.browse(f"{podcast.provider}://")
+        assert _names(old_listing) == ["..", podcast.name]
+
+        private = ProviderAccess(owner="another_user", sharing=ProviderSharing.PRIVATE)
+        set_music_source_access(mass, dict.fromkeys(providers))
+        set_music_source_access(mass, {second.instance_id: private})
+        with as_user([]):
+            assert _names(await mass.music.browse()) == ["RSS Podcasts", "Zebra"]
+            assert _names(await mass.music.browse(group.path)) == ["..", "The Voice Cast"]
+            set_music_source_access(mass, {provider.instance_id: private})
+            assert _names(await mass.music.browse()) == ["Zebra"]
+            assert _names(await mass.music.browse(group.path)) == [".."]
+
+
+async def test_browse_group_can_contain_provider_folders(mass: MusicAssistant) -> None:
+    """An opted-in source can still use its own Browse folder."""
+    provider = _real_provider(mass, _GroupedProvider)
+    provider.config.name = "Qobuz account"
+    provider.manifest.name = "Qobuz"
+    provider.available = True
+    with (
+        patch.dict(mass._providers, {provider.instance_id: provider}),
+        patch.object(mass, "players", MagicMock(), create=True) as players,
+    ):
+        players.get_audio_source_providers.return_value = []
+        (group,) = await mass.music.browse()
+        assert isinstance(group, BrowseFolder)
+        back, folder = await mass.music.browse(group.path)
+        assert isinstance(back, BrowseFolder)
+        assert back.path == "root"
+        assert isinstance(folder, BrowseFolder)
+        assert folder.name == "Qobuz account"
+        back, item = await mass.music.browse(folder.path)
+        assert isinstance(back, BrowseFolder)
+        assert back.path == group.path
+        assert item.name == "Own"

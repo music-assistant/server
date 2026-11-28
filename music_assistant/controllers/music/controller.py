@@ -95,6 +95,7 @@ from music_assistant.controllers.music.constants import (
     LIVE_SOURCES_BROWSE_SCHEME,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     NON_LIBRARY_MEDIA_TYPES,
+    PROVIDER_GROUP_BROWSE_PREFIX,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     RECOMMENDATIONS_BROWSE_SCHEME,
     SEARCH_CACHE_EXPIRATION_COMBINED,
@@ -1082,28 +1083,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 sort_direction=sort_direction,
                 random_seed=random_seed,
             )
-            if sort_field == SortField.NAME:
+            if sort_field == SortField.NAME and back_items:
                 # the folders come before the other items, as in a file browser
                 listed.sort(key=lambda item: not isinstance(item, BrowseFolder))
             listing = [*back_items, *listed]
             return listing[offset : offset + limit] if limit else listing[offset:]
 
         if not path or path == "root":
-            # root level; folder per provider that declares BROWSE
-            root_items: list[MediaItemType | BrowseFolder] = []
-            providers_with_browse = self.mass.get_providers_supporting_feature(
-                ProviderFeature.BROWSE
-            )
-            for prov in self._apply_user_provider_filter(providers_with_browse):
-                root_items.append(
-                    BrowseFolder(
-                        item_id="root",
-                        provider=prov.domain,
-                        path=f"{prov.instance_id}://",
-                        uri=f"{prov.instance_id}://",
-                        name=prov.name,
-                    )
-                )
+            root_items = self._browse_provider_roots()
             if await self._get_live_audio_sources(player_id):
                 root_items.append(
                     BrowseFolder(
@@ -1125,12 +1112,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise InsufficientPermissions(f"{browse_prov.name} is not a music source of this user")
         is_recommendations = provider_instance == RECOMMENDATIONS_BROWSE_SCHEME
         is_live_sources = provider_instance == LIVE_SOURCES_BROWSE_SCHEME
+        is_provider_group = not sub_path and provider_instance.startswith(
+            PROVIDER_GROUP_BROWSE_PREFIX
+        )
         # handle regular provider listing, always add back folder first
-        if not (browse_prov or is_recommendations or is_live_sources) or not sub_path:
+        has_listing = (
+            browse_prov is not None or is_recommendations or is_live_sources or is_provider_group
+        )
+        if not has_listing or not sub_path:
+            back_path = "root"
+            if browse_prov and browse_prov.browse_group_translation_key is not None:
+                back_path = f"{PROVIDER_GROUP_BROWSE_PREFIX}{browse_prov.domain}://"
             prepend_items.append(
-                BrowseFolder(item_id="root", provider="library", path="root", name="..")
+                BrowseFolder(item_id="root", provider="library", path=back_path, name="..")
             )
-            if not (browse_prov or is_recommendations or is_live_sources):
+            if not has_listing:
                 return _listed(prepend_items, [])
         else:
             if is_recommendations:
@@ -1150,6 +1146,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     path=back_path,
                     name="..",
                 )
+            )
+        if is_provider_group:
+            instances = self.mass.get_provider_instances(
+                provider_instance.removeprefix(PROVIDER_GROUP_BROWSE_PREFIX)
+            )
+            return _listed(
+                prepend_items,
+                [
+                    prov.get_browse_root_item()
+                    for prov in self._apply_user_provider_filter(instances)
+                    if prov.browse_group_translation_key is not None
+                    and ProviderFeature.BROWSE in prov.supported_features
+                ],
             )
         if is_recommendations:
             return _listed(
@@ -3223,6 +3232,32 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return None
         page.extend(items)
         return page
+
+    def _browse_provider_roots(self) -> list[MediaItemType | BrowseFolder]:
+        """List visible provider entries and one folder per opted-in domain."""
+        providers = self.mass.get_providers_supporting_feature(ProviderFeature.BROWSE)
+        items: list[MediaItemType | BrowseFolder] = []
+        grouped_domains: set[str] = set()
+        for prov in self._apply_user_provider_filter(providers):
+            if (translation_key := prov.browse_group_translation_key) is None:
+                items.append(prov.get_browse_root_item())
+            elif prov.domain not in grouped_domains:
+                grouped_domains.add(prov.domain)
+                group_path = f"{PROVIDER_GROUP_BROWSE_PREFIX}{prov.domain}://"
+                name = self.mass.translations.get_translation(
+                    f"media.folder.{translation_key}.name", owner=prov.domain
+                )
+                items.append(
+                    BrowseFolder(
+                        item_id="root",
+                        provider=prov.domain,
+                        path=group_path,
+                        uri=group_path,
+                        name=name or prov.manifest.name,
+                        translation_key=translation_key,
+                    )
+                )
+        return items
 
     async def _get_live_audio_sources(self, player_id: str | None) -> list[AudioSource]:
         """
