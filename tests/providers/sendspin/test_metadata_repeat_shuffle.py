@@ -31,7 +31,7 @@ async def test_repeat_and_shuffle_reach_clients_through_the_controller_only() ->
     )
     player._player_playing = True
     player.mass.player_queues.get.return_value = SimpleNamespace(
-        repeat_mode=RepeatMode.ALL, shuffle_enabled=True
+        repeat_mode=RepeatMode.ALL, shuffle_enabled=True, extra_attributes={}
     )
     player.mass.player_queues.get_item.return_value = None
     player._send_album_artwork = AsyncMock()
@@ -39,6 +39,8 @@ async def test_repeat_and_shuffle_reach_clients_through_the_controller_only() ->
     player._send_beat_schedule = AsyncMock()
     # no flow timeline yet: the queue position is all there is
     player._timeline_anchored = lambda metadata, *_args, **_kwargs: (metadata, None)
+    player._announcement_held_position_ms = SendspinPlayer._announcement_held_position_ms
+    player._held_or_anchored = SendspinPlayer._held_or_anchored.__get__(player, SendspinPlayer)
     player._compute_track_progress_ms.return_value = 1000
     player._color_role = None
     player._build_current_media_metadata = partial(

@@ -89,6 +89,8 @@ async def test_push_pairs_the_position_with_the_playing_state() -> None:
         "_compute_track_progress_ms",
     ):
         setattr(player, name, getattr(SendspinPlayer, name).__get__(player, SendspinPlayer))
+    player._announcement_held_position_ms = SendspinPlayer._announcement_held_position_ms
+    player._held_or_anchored = SendspinPlayer._held_or_anchored.__get__(player, SendspinPlayer)
     player._queue_repeat_shuffle.return_value = (MagicMock(), False)
     player._send_beat_schedule = AsyncMock()
     # no flow timeline yet: the queue position is all there is

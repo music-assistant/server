@@ -98,6 +98,8 @@ async def _run_commit_loop(
     monkeypatch: pytest.MonkeyPatch,
     commit_timestamps: list[int],
     now_timestamps: list[int] | None = None,
+    *,
+    announcement_held: bool = False,
 ) -> _CommitLoopTrace:
     """
     Drive one real _run_playback pass over the given commit schedule.
@@ -105,6 +107,7 @@ async def _run_commit_loop(
     :param commit_timestamps: Render timestamp commit_audio() returns for each chunk.
     :param now_timestamps: Clock reading after each commit. Defaults to a fixed send-ahead
         behind the commit timestamps.
+    :param announcement_held: Whether an announcement holds the queue of the player.
     """
     player = MagicMock()
     player.player_id = "leader"
@@ -112,6 +115,7 @@ async def _run_commit_loop(
     player.mass.config.get_protocol_value.return_value = "stereo"
     player.mass.streams.get_stream.return_value = _fake_audio_source(len(commit_timestamps))
     player.api.group.stop = AsyncMock()
+    player.announcement_held.return_value = announcement_held
 
     session = SendspinPlaybackSession(player)
     monkeypatch.setattr(
@@ -147,6 +151,24 @@ async def _run_commit_loop(
     media = PlayerMedia(uri="library://track/1")
     await session._run_playback(media)
     return trace
+
+
+async def test_the_end_of_a_stream_rewinds_the_reported_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stream that ends on its own leaves the reported position at the start."""
+    trace = await _run_commit_loop(monkeypatch, [10_000_000])
+
+    trace.player.api.group.stop.assert_awaited_once_with(keep_progress=False)
+
+
+async def test_the_end_of_a_clip_keeps_the_position_of_the_held_track(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clip of an announcement ends where the held track stands still."""
+    trace = await _run_commit_loop(monkeypatch, [10_000_000], announcement_held=True)
+
+    trace.player.api.group.stop.assert_awaited_once_with(keep_progress=True)
 
 
 async def test_anchor_absorbs_a_mid_stream_rebase(monkeypatch: pytest.MonkeyPatch) -> None:

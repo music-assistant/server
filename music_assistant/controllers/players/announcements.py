@@ -30,6 +30,7 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    ATTR_ANNOUNCEMENT_HELD_QUEUE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_IDLE_SINCE,
     CONF_ANNOUNCE_TTS_ENGINE,
@@ -338,10 +339,15 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # use fallback/default implementation
             await self._play_announcement(player, announcement, volume_level)
         finally:
-            # Cleared after restore finishes.
-            # Resume during announce still needs the parked position while this is set.
+            # Cleared after restore finishes: a resume during the announcement still needs the
+            # position the queue was stopped at while this is set.
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
-            self.mass.player_queues.release_after_announcement(player.player_id)
+            held_queue_id = player.extra_data.pop(ATTR_ANNOUNCEMENT_HELD_QUEUE, None)
+            if held_queue_id is not None:
+                self._release_held_queue(player, held_queue_id)
+            if held_queue_id != player.player_id:
+                # the queue of the player followed its player again too, held or not
+                self.mass.player_queues.release_after_announcement(player.player_id)
             # the idle power off counts from here, also after a native announcement that
             # leaves the playback state as it was
             player.extra_data.pop(ATTR_IDLE_SINCE, None)
@@ -774,8 +780,15 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # Stop the queue (not just the device) so resume_pos is saved.
             # _handle_stop skips the user permission check on this internal path.
             if active_queue := self.get_active_queue(player):
+                if prev_state == PlaybackState.PLAYING:
+                    # set before the stop, so the player never publishes the stop of the device
+                    player.extra_data[ATTR_ANNOUNCEMENT_HELD_QUEUE] = active_queue.queue_id
                 await self.mass.player_queues._handle_stop(active_queue.queue_id)
-                self.mass.player_queues.hold_for_announcement(player.player_id)
+                if self.mass.player_queues.hold_for_announcement(active_queue.queue_id):
+                    player.extra_data[ATTR_ANNOUNCEMENT_HELD_QUEUE] = active_queue.queue_id
+                    player.update_state(force_update=True)
+                elif player.extra_data.pop(ATTR_ANNOUNCEMENT_HELD_QUEUE, None) is not None:
+                    player.update_state(force_update=True)
             else:
                 await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
@@ -1021,6 +1034,23 @@ class AnnouncementsMixin(_PlayerControllerBase):
         if mute_control == PLAYER_CONTROL_NONE:
             return
         await self._handle_cmd_volume_mute(player, mute_control, muted)
+
+    def _release_held_queue(self, player: Player, queue_id: str) -> None:
+        """
+        Publish the player again and release the queue an announcement held.
+
+        :param player: The player the announcement was played on.
+        :param queue_id: The queue the announcement held.
+        """
+        try:
+            try:
+                player.update_state(force_update=True)
+            finally:
+                self.mass.player_queues.release_after_announcement(queue_id)
+        except Exception:
+            # deliberately broad: a failing publish or release must not replace the error of
+            # the announcement itself or skip the cleanup that follows
+            self.logger.exception("Failed to release queue %s after announcement", queue_id)
 
     def _members_announce_in_step(self, group_player: Player, volume_level: int | None) -> bool:
         """

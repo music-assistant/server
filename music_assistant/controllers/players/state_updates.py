@@ -23,6 +23,7 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant.constants import (
     ATTR_ACTIVE_SOURCE,
     ATTR_AVAILABLE,
+    ATTR_DEVICE_PLAYBACK_STATE,
     ATTR_ENABLED,
     ATTR_GROUP_MEMBERS,
     ATTR_MUTE_CONTROL,
@@ -345,7 +346,8 @@ class StateUpdatesMixin(_PlayerControllerBase):
             attribute_name is not None
             and attribute_value is not _SENTINEL
             and (player := self.get_player(player_id)) is not None
-            and getattr(player.state, attribute_name, _SENTINEL) == attribute_value
+            and getattr(player.state, attribute_name, getattr(player, attribute_name, _SENTINEL))
+            == attribute_value
         )
 
         unsub = self.subscribe_player_state_update(_on_state_update)
@@ -501,11 +503,11 @@ class StateUpdatesMixin(_PlayerControllerBase):
         timeout: float,
         minimal_time: float = 0,
     ) -> None:
-        """Wait for a player to reach a playback state, with optional minimum wait time."""
+        """Wait for the device of a player to reach a playback state, with optional minimum time."""
         start_timestamp = time.time()
         async with self.wait_for_player_update(
             player.player_id,
-            attribute_name="playback_state",
+            attribute_name=ATTR_DEVICE_PLAYBACK_STATE,
             attribute_value=wanted_state,
             timeout=timeout,
         ):
