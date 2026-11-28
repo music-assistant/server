@@ -77,8 +77,8 @@ class MixedTrack:
     them from memory, and the audio between them from the track's buffer.
 
     One pass runs at a time. A reader beside the one that drives it reads the track's own
-    audio from the buffer by itself, and when it needs the end first, a pass that waits for
-    no reader makes it.
+    audio from the buffer by itself, as far as a pass has passed it. When it needs more
+    first, a pass that waits for no reader reads the track on and makes the end.
     """
 
     def __init__(
@@ -117,6 +117,9 @@ class MixedTrack:
         self._normalization: VolumeNormalizationMode | None = None
         # the offset in the stream where the kept end starts, once the track is read out
         self._end_offset: int | None = None
+        # the offset up to where a pass has passed the track's own audio: the stream is that
+        # audio up to there, whichever pass makes its end
+        self._passed = 0
         self._end = bytearray()
         # the size of the stream, once its end is made
         self.size: int | None = None
@@ -162,7 +165,8 @@ class MixedTrack:
         :param size: The bytes the running pass has yielded up to this point.
         """
         assert self._pass is not None
-        self._end_offset = self._pass.origin + size
+        # what a pass has passed as the track's own audio stays that: the end starts after it
+        self._end_offset = max(self._pass.origin + size, self._passed)
         # its reader goes on with what is kept
         self._pass.audio.put_nowait(None)
         self._wake()
@@ -253,13 +257,14 @@ class MixedTrack:
         Return the offset up to where the track's own audio is read without a pass.
 
         That is where the kept end starts. Before the end is made it is where a pass starts
-        at the latest: the end is made from the audio that follows.
+        at the latest, or as far as a pass has passed the track's own audio: the end is made
+        from the audio that follows.
         """
         if self._end_offset is not None:
             return self._end_offset
         longest = self.max_size
         assert longest is not None
-        return self._track_position(longest)[0]
+        return max(self._track_position(longest)[0], self._passed)
 
     def _has_reader(self) -> bool:
         """Return whether a reader of the stream is still there."""
@@ -279,8 +284,11 @@ class MixedTrack:
         """
         assert self._lead_in_size is not None
         seconds = (offset - self._lead_in_size) // self._second
-        # a mix is made from the whole tail of the track, wherever its reader starts
-        seconds = min(seconds, (self._tail_ms - self._track_ms) // 1000)
+        # a mix is made from the whole tail of the track, wherever its reader starts, or from
+        # what follows the track's own audio that a pass has passed
+        tail = (self._tail_ms - self._track_ms) // 1000
+        passed = (self._passed - self._lead_in_size) // self._second
+        seconds = min(seconds, max(tail, passed))
         seconds = max(seconds - RUN_IN_SECONDS, 0)
         return self._lead_in_size + seconds * self._second, self._track_ms + seconds * 1000
 
@@ -305,16 +313,43 @@ class MixedTrack:
             )
         ) as audio:
             async for chunk in audio:
-                # the end can get made while the track is read, which moves where this ends
-                data = chunk[skip : skip + max(self._track_end - offset, 0)]
+                data = chunk[skip:]
                 skip = max(skip - len(chunk), 0)
-                if data:
-                    offset += len(data)
-                    yield data
-                if offset >= self._track_end:
+                while data:
+                    if not await self._track_reaches(offset, connected):
+                        return
+                    # the end can get made while the track is read, which moves where this ends
+                    part = data[: self._track_end - offset]
+                    data = data[len(part) :]
+                    offset += len(part)
+                    yield part
+                if not await self._track_reaches(offset, connected):
                     return
         if not self._closed and connected():
             raise AudioError("The audio of the track ended before its mix")
+
+    async def _track_reaches(self, offset: int, connected: Callable[[], bool]) -> bool:
+        """
+        Return whether the stream is the track's own audio at an offset, once that is known.
+
+        Behind a pass that no reader drives it waits for that pass to read the track on.
+
+        :param offset: Offset in the stream.
+        :param connected: Reports whether whoever reads is still there.
+        """
+        while offset >= self._track_end:
+            run = self._pass
+            if (
+                self._end_offset is not None
+                or run is None
+                or not run.unpaced
+                or run.over
+                or self._closed
+                or not connected()
+            ):
+                return False
+            await self._more()
+        return True
 
     def _start(
         self,
@@ -360,23 +395,25 @@ class MixedTrack:
                 # and ended between the two
                 await asyncio.wait({self._opened})
             self._opened = run.task
+            position = run.origin
             async with aclosing(stream):
                 async for chunk in stream:
+                    start, position = position, position + len(chunk)
                     if self._end_offset is not None:
-                        self._end += chunk
+                        self._end += chunk[max(self._end_offset - start, 0) :]
                     elif self._lead_in_size is None:
                         self._lead_in += chunk
-                    elif run.unpaced:
-                        # the readers that wait for the end read the track by themselves
-                        continue
                     elif run.connected is None:
                         # the track's own audio is only read for a reader
                         return
                     else:
-                        # at the pace of its reader: the track is read on once this is taken
-                        run.audio.put_nowait(chunk)
-                        await run.audio.join()
-                        continue
+                        # the readers beside it read the track by themselves, up to here
+                        self._passed = max(self._passed, position)
+                        if not run.unpaced:
+                            # at the pace of its reader: the track is read on once this is taken
+                            run.audio.put_nowait(chunk)
+                            await run.audio.join()
+                            continue
                     self._wake()
             if self._end_offset is not None:
                 self.size = self._end_offset + len(self._end)
@@ -390,9 +427,10 @@ class MixedTrack:
 
     async def _end_for_all(self, offset: int) -> None:
         """
-        Wait for the end, for a reader that needs it before the one that drives the pass.
+        Wait for more of the stream, for a reader ahead of what the pass that runs has passed.
 
-        A pass that waits for no reader makes it, so no reader waits for another to read on.
+        A pass that waits for no reader takes the place of one that another reader drives: it
+        reads the track on and makes the end, so no reader waits for another to read on.
 
         :param offset: Offset in the stream the reader is at.
         """
