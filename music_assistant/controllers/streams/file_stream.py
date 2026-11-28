@@ -102,9 +102,10 @@ def declared_frames(queue_item: QueueItem, sample_rate: int) -> int:
     """
     Return the length a file declares for a queue item, in frames.
 
-    Exact once the whole item has been decoded, else the item's duration plus one second:
-    durations are whole seconds, and a file that is declared too long only ends early
-    while one that is declared too short cuts music.
+    Exact once the whole item has been decoded. Else the longest of the item's duration,
+    the duration in its stream details and the length its source reports, plus one second:
+    all are whole seconds, and a file that is declared too long only ends early while one
+    that is declared too short cuts music.
 
     :param queue_item: The queue item, with its stream details resolved.
     :param sample_rate: Sample rate of the file.
@@ -113,9 +114,13 @@ def declared_frames(queue_item: QueueItem, sample_rate: int) -> int:
     assert streamdetails is not None
     assert queue_item.duration is not None
     buffer = streamdetails.buffer
-    seconds: float = queue_item.duration + 1
+    seconds: float
     if buffer is not None and buffer.eof and not buffer.has_error:
         seconds = buffer.first_buffered_chunk + buffer.duration_available
+    else:
+        # the item can list a shorter duration than the audio that plays has
+        source_duration = buffer.source_duration if buffer is not None else None
+        seconds = max(queue_item.duration, streamdetails.duration or 0, source_duration or 0) + 1
     return max(round((seconds - int(streamdetails.seek_position)) * sample_rate), 0)
 
 

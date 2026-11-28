@@ -1722,6 +1722,50 @@ async def test_a_mixed_file_declares_the_longest_its_stream_can_be(
     assert rig.passes == []
 
 
+@pytest.mark.usefixtures("passthrough_encoder")
+@pytest.mark.parametrize(
+    ("crossfade_mode", "stretch"),
+    [(CrossfadeMode.STANDARD_CROSSFADE, 0), (CrossfadeMode.SMART_CROSSFADE, SMART_FADE_STRETCH)],
+)
+async def test_a_mixed_track_that_is_longer_than_its_item_lists_plays_to_its_end(
+    crossfade_mode: CrossfadeMode, stretch: int
+) -> None:
+    """A track with a fade is declared by the length its source reports, like one without."""
+    await check_ffmpeg_version()
+    listed = JOIN_SECONDS - 7
+
+    def _rig() -> _Rig:
+        rig = _Rig(
+            _pair(PCM_16, JOIN_SECONDS),
+            output_format=WAV_16,
+            pcm_format=PCM_16,
+            crossfade_mode=crossfade_mode,
+        )
+        streamdetails = rig.items["a"].streamdetails
+        assert streamdetails is not None
+        # the item of the track lists a shorter duration than its audio has
+        rig.items["a"].duration = streamdetails.duration = listed
+        return rig
+
+    # a file that is made once its track was decoded to its end has the whole stream
+    decoded = _rig()
+    await decoded.decode()
+    _, whole = await decoded.fetch("a")
+
+    rig = _rig()
+    streamdetails = rig.items["a"].streamdetails
+    assert streamdetails is not None
+    streamdetails.buffer.source_duration = JOIN_SECONDS
+    # the file is made before any of the track is decoded
+    head, _ = await rig.fetch("a", method="HEAD")
+    await rig.decode()
+    _, body = await rig.fetch("a")
+
+    assert head.content_length == rig.offset(JOIN_SECONDS + 1 + stretch)
+    assert len(body) > rig.offset(listed + 1 + stretch)
+    assert body[HEADER_SIZE:] == whole[HEADER_SIZE:]
+
+
 async def test_a_pass_from_a_position_takes_no_fade_and_stores_no_duration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

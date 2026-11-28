@@ -807,6 +807,94 @@ async def test_get_media_stream_keeps_duration_when_a_seeked_source_serves_the_w
     assert streamdetails.duration == declared_duration
 
 
+async def _source_duration_at_first_audio(
+    audio: StreamsAudio, streamdetails: StreamDetails, seek_position: int = 0
+) -> int | None:
+    """
+    Return what the buffer a media stream fills knows of its source once the first audio is in.
+
+    :param audio: The audio controller that opens the stream.
+    :param streamdetails: Details of the stream to open.
+    :param seek_position: The position the stream starts at.
+    """
+    audio_buffer = AudioBuffer(_make_pcm_format())
+    stream = audio.get_media_stream(
+        streamdetails, _make_pcm_format(), seek_position=seek_position, slot_holder=audio_buffer
+    )
+    await anext(stream)
+    source_duration = audio_buffer.source_duration
+    await stream.aclose()
+    return source_duration
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reported", "estimated", "expected"),
+    [(387, False, 387), (387, True, None), (None, False, None)],
+    ids=["reported", "estimated", "not-reported"],
+)
+async def test_get_media_stream_tells_its_buffer_the_length_the_source_reports(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    reported: int | None,
+    estimated: bool,
+    expected: int | None,
+) -> None:
+    """A buffer knows the length of its source from the first audio, unless ffmpeg guessed it."""
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", reported)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", estimated)
+    # the item lists a shorter duration than its source has
+    streamdetails = _seekable_streamdetails()
+    streamdetails.duration = 266
+
+    assert (
+        await _source_duration_at_first_audio(_make_audio_controller(), streamdetails) == expected
+    )
+    assert streamdetails.duration == 266
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_tells_its_buffer_the_whole_length_after_ffmpeg_seeked(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A source that ffmpeg seeks in still reports the length of the whole item."""
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 387)
+    streamdetails = _seekable_streamdetails()
+
+    source_duration = await _source_duration_at_first_audio(
+        _make_audio_controller(), streamdetails, seek_position=60
+    )
+
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    assert "-ss" in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
+    assert source_duration == 387
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_a_length_from_its_buffer_when_the_seek_is_delegated(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A source that took the seek itself may report only the audio it has left."""
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 150)
+    streamdetails = StreamDetails(
+        provider="test_provider",
+        item_id="track-1",
+        audio_format=AudioFormat(content_type=ContentType.OGG),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.CUSTOM,
+        duration=240,
+        can_seek=True,
+        allow_seek=True,
+    )
+    audio = _make_audio_controller()
+
+    assert await _source_duration_at_first_audio(audio, streamdetails, seek_position=90) is None
+    # the same source from its start reports the whole item
+    assert await _source_duration_at_first_audio(audio, streamdetails) == 150
+
+
 @pytest.mark.asyncio
 async def test_get_media_stream_keeps_caller_extra_input_args_intact(
     patch_ffmpeg: type[_FakeFFMpeg],

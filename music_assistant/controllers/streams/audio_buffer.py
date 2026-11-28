@@ -207,6 +207,9 @@ class AudioBuffer:
         self.may_release: Callable[[AudioBuffer], bool] | None = None
         # the queue this buffer was made for, if any
         self.queue_id: str | None = None
+        # seconds of audio the source reports for the whole item, once it has been opened
+        # and when it reports a length that can be trusted
+        self.source_duration: int | None = None
 
     # -- Properties --
 
