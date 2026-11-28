@@ -339,5 +339,6 @@ class SonosCloudQueue:
             error.get("status", "an unknown error"),
             error.get("type", "unknown"),
         )
+        player.note_failure(error.get("status"), wire_id)
         if wire_id:
             player.release_failed_item(wire_id)

@@ -156,6 +156,11 @@ class SonosQueueWindow:
 # the whole batch until it gives up on the item.
 REPORTED_ERROR_HISTORY = 16
 
+# The reasons a speaker gives for running out of audio, and on how many items of one playback
+# session it does that before a warning names it.
+RAN_DRY_REASONS = ("ERROR_BUFFERING", "ERROR_LSE")
+RAN_DRY_WARNING_AT = 3
+
 # seconds for a woken speaker's radio to come up, and for a queue load to start it playing
 WAKE_TIMEOUT = 15
 WAKE_PLAY_KICK_TIMEOUT = 2
@@ -259,6 +264,8 @@ class SonosPlayer(PlayerProtocol):
         self._served_bindings: dict[str, tuple[int, str]] = {}
         # failures already logged, so the speaker's resends are not logged again
         self.reported_playback_errors: deque[str] = deque(maxlen=REPORTED_ERROR_HISTORY)
+        # the playback session and the items in it the speaker ran out of audio on
+        self._ran_dry: tuple[str | None, set[str]] = (None, set())
         self._announcement_media: PlayerMedia | None = None
         # the queue a session eviction released, and when (time.monotonic)
         self._evicted_cloud_queue: tuple[str, float] | None = None
@@ -1081,6 +1088,25 @@ class SonosPlayer(PlayerProtocol):
             or queue_item_id
         )
         self._served_bindings[held_id] = (queue_index, queue_item_id)
+
+    def note_failure(self, reason: object, wire_item_id: str) -> None:
+        """
+        Warn once per playback session about a speaker that keeps running out of audio.
+
+        :param reason: The reason the speaker gave for a failure.
+        :param wire_item_id: The failed item's id as the speaker reports it.
+        """
+        if reason not in RAN_DRY_REASONS:
+            return
+        if self._ran_dry[0] != self._loaded_session_id:
+            self._ran_dry = (self._loaded_session_id, set())
+        self._ran_dry[1].add(wire_item_id)
+        if len(self._ran_dry[1]) == RAN_DRY_WARNING_AT:
+            self.logger.warning(
+                "%s keeps running out of audio: a lower playback quality needs less of its "
+                "network connection",
+                self.display_name,
+            )
 
     def release_failed_item(self, wire_item_id: str) -> None:
         """
@@ -1905,6 +1931,7 @@ class SonosPlayer(PlayerProtocol):
             error["errorCode"],
             error.get("reason", "no reason given"),
         )
+        self.note_failure(error.get("reason"), error.get("itemId", ""))
         if item_id := error.get("itemId"):
             self.release_failed_item(item_id)
 

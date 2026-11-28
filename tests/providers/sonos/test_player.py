@@ -78,6 +78,8 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player.cloud_queue_item_generation = 0
     player._window_item_ids = {}
     player._served_bindings = {}
+    player._loaded_session_id = None
+    player._ran_dry = (None, set())
     player._evicted_cloud_queue = None
     player._flow_queue_id = None
     player._flow_media = None
@@ -1044,6 +1046,21 @@ def test_a_failure_of_an_earlier_load_of_a_track_leaves_its_fresh_source_alone(
 
     cast("MagicMock", player.mass).create_task.assert_not_called()
     assert "Ignoring the failure of abc@3" in caplog.text
+
+
+def test_a_speaker_that_keeps_running_out_of_audio_is_named_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The third item in a playback session the speaker ran dry on gets one warning."""
+    player = _make_named_player("Kantoor")
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.player"):
+        for item_id in ("a@3", "a@3", "b@3", "c@3", "d@3"):
+            player._on_playback_error(_playback_error(reason="ERROR_BUFFERING", itemId=item_id))
+        player._loaded_session_id = "session-2"
+        player.note_failure("ERROR_LSE", "a@4")
+
+    assert caplog.text.count("Kantoor keeps running out of audio") == 1
 
 
 def test_a_track_refused_by_our_stream_server_has_no_source_to_release() -> None:
