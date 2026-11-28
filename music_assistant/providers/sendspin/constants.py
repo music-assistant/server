@@ -24,6 +24,10 @@ CONF_SENDSPIN_BRIDGE_STATIC_DELAYS = "sendspin_bridge_static_delays"
 CONF_SENDSPIN_CAST_OPT_IN = "sendspin_cast_opt_in"
 CONF_VIRTUAL_PLAYER_OWNER = "virtual_player_owner"
 DEFAULT_SENDSPIN_STATIC_DELAY = 0
+# The protocol carries a static delay as an unsigned millisecond offset, so it can only
+# advance a player, never hold it back.
+MIN_SENDSPIN_STATIC_DELAY = 0
+MAX_SENDSPIN_STATIC_DELAY = 5000
 
 CONF_ALLOW_LEGACY_CLIENTS = "allow_legacy_clients"
 

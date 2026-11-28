@@ -1020,6 +1020,7 @@ async def test_the_waits_of_bridges_go_with_the_sendspin_provider() -> None:
     sendspin._server_start_failed = False
     sendspin.unregister_cbs = []
     sendspin.sources = SendspinSources(sendspin)
+    sendspin.calibration = AsyncMock()
 
     await SendspinProvider.unload(sendspin)
 

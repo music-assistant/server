@@ -37,6 +37,7 @@ async def test_the_server_runs_on_the_timeline_clock(tmp_path: pathlib.Path) -> 
     """The Sendspin server timestamps on the clock every audio timeline of the server shares."""
     provider = MagicMock()
     provider.mass.storage_path = str(tmp_path)
+    provider.calibration = AsyncMock()
 
     with (
         patch.object(provider_module, "get_or_create_server_identity", MagicMock()),
