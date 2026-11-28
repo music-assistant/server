@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import time
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
@@ -28,7 +29,12 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import ActionUnavailable
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    FLOW_MODE_SAMPLE_RATE_48000,
+)
 from music_assistant.helpers.util import lock
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
@@ -334,6 +340,16 @@ class AlexaPlayer(PlayerProtocol):
     def requires_flow_mode(self) -> bool:
         """Return if the player requires flow mode."""
         return True
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return the player specific config entries."""
+        # An Echo only reports playing or paused, never that it played a stream to its end.
+        # When "smart" mode ends the flow stream before a track with a higher sample rate,
+        # the queue would wait for that end forever: keep one fixed rate by default instead.
+        sample_rate = deepcopy(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
+        sample_rate.default_value = FLOW_MODE_SAMPLE_RATE_48000
+        sample_rate.depends_on = None
+        return [*await super().get_config_entries(), sample_rate]
 
     @property
     def api(self) -> AlexaAPI:
