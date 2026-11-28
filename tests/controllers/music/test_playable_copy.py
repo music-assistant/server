@@ -126,12 +126,17 @@ def _sources(providers: list[SimpleNamespace] = PROVIDERS) -> Iterator[None]:
 
 
 @contextmanager
-def _album_matches(matches: dict[str, Any]) -> Iterator[AsyncMock]:
+def _album_matches(
+    matches: dict[str, Any], versions: dict[str, int] | None = None
+) -> Iterator[AsyncMock]:
     """
     Match the album on each service as given, and serve the copies found.
 
     :param matches: The album id each service domain matches, or the error its search raises.
+    :param versions: The other versions of the album, by id on Qobuz, each with its track
+        count; the album itself lists ten tracks.
     """
+    track_counts = {"al1": 10, **(versions or {})}
 
     async def _match(
         _album: Album, provider: SimpleNamespace, *_args: Any
@@ -144,6 +149,18 @@ def _album_matches(matches: dict[str, Any]) -> Iterator[AsyncMock]:
     match = AsyncMock(side_effect=_match)
     with (
         patch.object(AlbumsController, "_match_provider", match),
+        patch.object(
+            AlbumsController,
+            "versions",
+            AsyncMock(return_value=[_album(QOBUZ, item_id) for item_id in versions or {}]),
+        ),
+        patch.object(
+            AlbumsController,
+            "tracks",
+            AsyncMock(
+                side_effect=lambda item_id, *_args, **_kwargs: [_track()] * track_counts[item_id]
+            ),
+        ),
         patch.object(
             AlbumsController,
             "get_provider_item",
@@ -238,6 +255,25 @@ async def test_a_copy_that_can_not_be_played_either_is_passed_over(
 
     assert copy is not None
     assert copy.provider == QOBUZ
+
+
+async def test_a_version_with_as_many_tracks_is_taken_when_no_copy_matches(
+    music_mass: MusicAssistant,
+) -> None:
+    """Without a strict match, the first other version with as many tracks is handed out."""
+    with _sources(), _album_matches({}, versions={"deluxe": 14, "remaster": 10}):
+        copy = await music_mass.music.albums.playable_copy(_album())
+
+    assert copy is not None
+    assert (copy.provider, copy.item_id) == (QOBUZ, "remaster")
+
+
+async def test_no_version_with_as_many_tracks_leaves_the_album_without_a_copy(
+    music_mass: MusicAssistant,
+) -> None:
+    """A version with another track count is a different edition and is not taken."""
+    with _sources(), _album_matches({}, versions={"deluxe": 14}):
+        assert await music_mass.music.albums.playable_copy(_album()) is None
 
 
 async def test_an_album_without_artists_is_not_searched_for(music_mass: MusicAssistant) -> None:

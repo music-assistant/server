@@ -840,8 +840,8 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         Return the same album on another streaming service, for an album that can not be played.
 
-        The album is matched as strictly as when it is linked in the library, and nothing is
-        added to the library.
+        The album is matched as strictly as when it is linked in the library, or else taken
+        from its other versions when one lists as many tracks. Nothing is added to the library.
 
         :param album: The album as its own service lists it.
         :param allowed: The music sources that may serve it, None for all the user may see.
@@ -850,11 +850,13 @@ class AlbumsController(MediaControllerBase[Album]):
             return None
         # resolve the album's tracklist at most once for all the services searched
         base_tracks_memo = _BaseTracksMemo()
-        return await self._find_playable_copy(
-            album,
-            allowed,
-            lambda provider: self._match_provider(album, provider, True, base_tracks_memo),
-        )
+
+        async def _match(provider: MusicProvider) -> list[ProviderMapping]:
+            if mappings := await self._match_provider(album, provider, True, base_tracks_memo):
+                return mappings
+            return await self._version_with_as_many_tracks(album, provider)
+
+        return await self._find_playable_copy(album, allowed, _match)
 
     async def match_providers(self, db_album: Album) -> None:
         """
@@ -1488,6 +1490,36 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider.name,
             )
         return matches
+
+    async def _version_with_as_many_tracks(
+        self, album: Album, provider: MusicProvider
+    ) -> list[ProviderMapping]:
+        """Return the mappings of the first version on the provider listing as many tracks as the album."""
+        # a service may label every track with a version or credit the artist without "The",
+        # which the strict match rejects; the versions listing only compares the album name
+        # loosely and needs one shared artist
+        versions = [
+            version
+            for version in await self.versions(album.item_id, album.provider, limit=None)
+            if version.provider == provider.instance_id and version.available
+        ]
+        if not versions:
+            return []
+        track_count = len(await self.tracks(album.item_id, album.provider, limit=None))
+        for version in versions:
+            if len(await self.tracks(version.item_id, version.provider, limit=None)) == track_count:
+                self.logger.debug(
+                    "Taking version %s of album %s from %s, which lists as many tracks",
+                    version.name,
+                    album.name,
+                    provider.name,
+                )
+                return [
+                    mapping
+                    for mapping in version.provider_mappings
+                    if mapping.provider_instance == provider.instance_id
+                ]
+        return []
 
     async def _match_provider_by_barcode(
         self,
