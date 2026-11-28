@@ -5,10 +5,12 @@ from __future__ import annotations
 from music_assistant_models.enums import ImageType, MediaType
 
 from music_assistant.providers.iheartradio.parsers import (
+    parse_album,
     parse_live_station,
     parse_now_playing,
     parse_podcast,
     parse_podcast_episode,
+    parse_track,
     pick_stream_url,
 )
 
@@ -91,3 +93,18 @@ def test_pick_stream_url() -> None:
     streams = {"shoutcast_stream": "http://x.aac", "secure_shoutcast_stream": "https://x.aac"}
     assert pick_stream_url(streams) == "https://x.aac"
     assert pick_stream_url({}) is None
+
+
+def test_only_an_explicit_label_is_kept() -> None:
+    """A false label from iHeartRadio is left unknown, as it sends false for anything unlabelled."""
+    album = {"albumId": 69539880, "title": "Brothers in Arms", "artistId": 98550}
+    track = {"id": 69539882, "title": "Money for Nothing", "artistId": 98550, "duration": 506}
+    labels = {}
+    for explicit in (False, True):
+        parsed_album = parse_album({**album, "explicitLyrics": explicit}, INSTANCE_ID, DOMAIN)
+        parsed_track = parse_track({**track, "explicitLyrics": explicit}, INSTANCE_ID, DOMAIN)
+        assert parsed_album is not None
+        assert parsed_track is not None
+        labels[explicit] = (parsed_album.metadata.explicit, parsed_track.metadata.explicit)
+
+    assert labels == {False: (None, None), True: (True, True)}

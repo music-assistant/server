@@ -2029,6 +2029,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             available_providers = cast("set[str]", available_providers)
 
         # fetch the first (available) provider item
+        fetched = False
         for prov_mapping in sorted(
             media_item.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
@@ -2043,6 +2044,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
                 provider = media_item.provider
                 item_id = media_item.item_id
+                fetched = True
                 break
         else:
             # try to find a substitute using search
@@ -2072,6 +2074,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             else:
                 # raise if we didn't find a substitute
                 raise MediaNotFoundError(f"Could not find a substitute for {media_item.name}")
+        if (
+            fetched
+            and library_id is None
+            and not media_item.available
+            and isinstance(media_item, Track | Album)
+        ):
+            # a service may list an item it can not play, such as a catalogue track on a free
+            # account; the copy another streaming service has is handed out instead
+            playable_copy = (
+                await self.tracks.playable_copy(media_item)
+                if isinstance(media_item, Track)
+                else await self.albums.playable_copy(media_item)
+            )
+            if playable_copy is None:
+                raise MediaNotFoundError(
+                    f"No other music service has {media_item.name}",
+                    translation_key="no_playable_copy",
+                )
+            return playable_copy
         # fetch full (provider) item
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)

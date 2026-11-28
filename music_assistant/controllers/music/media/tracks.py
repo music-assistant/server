@@ -1224,6 +1224,26 @@ class TracksController(MediaControllerBase[Track]):
             rate_limited_providers=tuple(rate_limited_providers),
         )
 
+    async def playable_copy(self, track: Track) -> Track | None:
+        """
+        Return the same track on another streaming service, for a track that can not be played.
+
+        The track is matched as strictly as when it is linked in the library, and nothing is
+        added to the library.
+
+        :param track: The track as its own service lists it.
+        """
+        # the albums the track is on are only looked up once a service is actually searched
+        ref_albums: list[Album] | None = None
+
+        async def _match(provider: MusicProvider) -> list[ProviderMapping]:
+            nonlocal ref_albums
+            if ref_albums is None:
+                ref_albums = await self.albums(track.item_id, track.provider, limit=None)
+            return await self.match_provider(track, provider, True, ref_albums)
+
+        return await self._find_playable_copy(track, None, _match)
+
     async def match_provider(
         self,
         base_track: Track,

@@ -834,6 +834,28 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         return await self._match_provider(db_album, provider, strict, _BaseTracksMemo())
 
+    async def playable_copy(
+        self, album: Album, allowed: Sequence[str] | None = None
+    ) -> Album | None:
+        """
+        Return the same album on another streaming service, for an album that can not be played.
+
+        The album is matched as strictly as when it is linked in the library, and nothing is
+        added to the library.
+
+        :param album: The album as its own service lists it.
+        :param allowed: The music sources that may serve it, None for all the user may see.
+        """
+        if not album.artists:
+            return None
+        # resolve the album's tracklist at most once for all the services searched
+        base_tracks_memo = _BaseTracksMemo()
+        return await self._find_playable_copy(
+            album,
+            allowed,
+            lambda provider: self._match_provider(album, provider, True, base_tracks_memo),
+        )
+
     async def match_providers(self, db_album: Album) -> None:
         """
         Try to find match on all (streaming) providers for the provided (database) album.

@@ -916,7 +916,7 @@ class MediaResolver:
         albums = await self.mass.music.artists.albums(library_artist.item_id, "library", limit=None)
         return await self._album_tracks_in_turn(albums)
 
-    async def _resolve_media_items(  # noqa: PLR0915
+    async def _resolve_media_items(  # noqa: PLR0913, PLR0915
         self,
         media_item: MediaItemType | ItemMapping | BrowseFolder,
         start_item: str | None = None,
@@ -928,6 +928,7 @@ class MediaResolver:
         artist_tracks: list[Track] | None = None,
         played_copy: tuple[str, str] | None = None,
         start_position: float | None = None,
+        find_album_copy: bool = True,
     ) -> list[ResolvedItem]:
         """
         Resolve/unwrap media items to enqueue, each with the origin it was played from.
@@ -956,6 +957,8 @@ class MediaResolver:
             names.
         :param start_position: Position in seconds to start an audiobook or episode at, or the
             episode a podcast resolves to, instead of its resume position.
+        :param find_album_copy: Play an album none of whose tracks can be played from another
+            streaming service, see _resolve_album.
         """
         # resolve Itemmapping to full media item
         if isinstance(media_item, ItemMapping):
@@ -996,6 +999,7 @@ class MediaResolver:
                 sort_field,
                 sort_direction,
                 keep_preceding_items,
+                find_copy=find_album_copy,
             )
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
@@ -1094,7 +1098,10 @@ class MediaResolver:
             try:
                 # recursively resolve every child, so a folder of podcast episodes or
                 # radio stations plays just like a folder of tracks
-                resolved = await self._resolve_media_items(item, userid=userid, queue_id=queue_id)
+                # an album in the folder is not searched for elsewhere, one search per album
+                resolved = await self._resolve_media_items(
+                    item, userid=userid, queue_id=queue_id, find_album_copy=False
+                )
             except MediaNotFoundError:
                 # best-effort: skip child items/subfolders that are empty or unreachable
                 # so a single bad entry does not abort playback of the whole folder
@@ -1127,6 +1134,7 @@ class MediaResolver:
         sort_field: SortField | None,
         sort_direction: SortDirection | None,
         keep_preceding_items: bool,
+        find_copy: bool = True,
     ) -> list[ResolvedItem]:
         """
         Resolve an album to its tracks, each pinned to its copy on the one source it plays from.
@@ -1146,6 +1154,8 @@ class MediaResolver:
         :param sort_direction: Sort direction, the field's default when omitted.
         :param keep_preceding_items: Move the tracks before start_item behind the rest instead
             of dropping them, so the full album is returned with start_item first.
+        :param find_copy: Play the same album from another streaming service when an album
+            that is not in the library has no track that can be played.
         """
         self.logger.info(
             "Fetching tracks to play for album %s",
@@ -1159,6 +1169,28 @@ class MediaResolver:
             sort_direction=sort_direction,
         )
         tracks = [track for track in listing.tracks if track.available]
+        if find_copy and listing.tracks and not tracks and album.provider != "library":
+            # a service may list an album it can not play, such as a catalogue album on a free
+            # account; only the album played on its own is searched, never a folder's albums
+            user = await self.mass.webserver.auth.get_user(userid) if userid else None
+            allowed = playback_sources_for(self.mass, user).allowed
+            if album_copy := await self.mass.music.albums.playable_copy(album, allowed):
+                self.logger.info(
+                    "No track of album %s can be played, playing it from %s",
+                    album.name,
+                    album_copy.provider,
+                )
+                # the start track is the other service's entry, which the copy does not list
+                return await self._resolve_album(
+                    album_copy,
+                    None,
+                    userid,
+                    queue_id,
+                    sort_field,
+                    sort_direction,
+                    keep_preceding_items,
+                    find_copy=False,
+                )
         source, served = await self._album_source(listing, tracks, userid, queue_id)
         if source is not None:
             self.logger.debug("Playing album %s from %s", album.name, source)

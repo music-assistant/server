@@ -475,6 +475,13 @@ applies to the albums queued after it; only `best_quality_per_track` also reache
 already queued, as it ignores their pins at playback. The upgrade threshold is applied at
 playback, so it reaches them as well.
 
+An album outside the library that lists tracks but can play none of them, such as a catalogue
+album on a free account, plays the copy another streaming service has, matched as strictly as when
+the album is linked in the library (`AlbumsController.playable_copy`). The queue then records the
+copy as the album played. Only an album played on its own is searched for, never the albums of an
+artist, genre or folder, and what a service was found to have is cached so playing it again does
+not search.
+
 Data flow: media item → `ResolvedItem`s with their origin → `QueueItem.origin` → the pinned copy
 first when the stream is selected.
 

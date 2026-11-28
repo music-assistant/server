@@ -1326,6 +1326,7 @@
     "media_not_found": "The requested media item could not be found.",
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",
+    "no_playable_copy": "None of your other music services has this.",
     "invalid_data": "The data provided is invalid or could not be processed.",
     "invalid_config_value": "The value for {0} is not valid.",
     "config_value_required": "{0} is required.",

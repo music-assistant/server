@@ -173,8 +173,9 @@ def parse_track(
             name=str(track.get("albumName") or album_id),
             media_type=MediaType.ALBUM,
         )
-    if (explicit := track.get("explicitLyrics")) is not None:
-        mass_track.metadata.explicit = bool(explicit)
+    # iHeartRadio sends false for any track it has no label for, so only true is kept
+    if track.get("explicitLyrics"):
+        mass_track.metadata.explicit = True
     # a batch item calls the artwork imagePath, the catalog imageUrl
     if image := track.get("imagePath") or track.get("imageUrl"):
         mass_track.metadata.images = UniqueList([remote_image(str(image), instance_id)])
@@ -237,8 +238,9 @@ def parse_album(album: Mapping[str, Any], instance_id: str, domain: str) -> Albu
         mass_album.artists = UniqueList([artist])
     if (release_date := _as_epoch_seconds(album.get("releaseDate"))) is not None:
         mass_album.year = from_utc_timestamp(release_date).year
-    if (explicit := album.get("explicitLyrics")) is not None:
-        mass_album.metadata.explicit = bool(explicit)
+    # iHeartRadio sends false for any album it has no label for, so only true is kept
+    if album.get("explicitLyrics"):
+        mass_album.metadata.explicit = True
     if image := album.get("image"):
         mass_album.metadata.images = UniqueList([remote_image(str(image), instance_id)])
     return mass_album

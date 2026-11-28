@@ -77,10 +77,12 @@ from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
     CACHE_CATEGORY_EXTERNAL_IDS,
     CACHE_CATEGORY_LISTED_EXTERNAL_ITEMS,
+    CACHE_CATEGORY_PLAYABLE_COPIES,
     CACHE_CATEGORY_SEARCH_RESULTS,
     COLLECTION_COVER_COUNT,
     EXTERNAL_ID_CACHE_EXPIRATION,
     LISTED_EXTERNAL_ITEM_CACHE_EXPIRATION,
+    PLAYABLE_COPY_CACHE_EXPIRATION,
     RANDOM_SORT_FIELDS,
     RESUME_POSITION_TOLERANCE_SECONDS,
 )
@@ -131,7 +133,7 @@ from music_assistant.helpers.provider_access import (
 )
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
 from music_assistant.models.media_capabilities import MediaCatalogMixin
-from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
@@ -4637,3 +4639,72 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "target_uri": create_uri(MediaType.ARTIST, "library", str(target_id)),
                 },
             )
+
+    @final
+    async def _find_playable_copy(
+        self,
+        item: ItemCls,
+        allowed: Sequence[str] | None,
+        match: Callable[[MusicProvider], Awaitable[list[ProviderMapping]]],
+    ) -> ItemCls | None:
+        """Return the copy the first other streaming service matched to the item has."""
+        own_domains = {mapping.provider_domain for mapping in item.provider_mappings}
+        for provider in self.mass.music.providers:
+            if (
+                provider.domain in own_domains
+                or (allowed is not None and provider.instance_id not in allowed)
+                or not provider.is_streaming_provider
+                or ProviderFeature.SEARCH not in provider.supported_features
+                or self.media_type not in provider.supported_media_types
+            ):
+                continue
+            # a streaming catalogue id is the same for every account of a service, and what
+            # was found (or that nothing was) is kept so the next request does not search again
+            cache_key = f"{item.uri}.{provider.domain}"
+            found = await self.mass.cache.get(
+                cache_key, provider=self.mass.music.domain, category=CACHE_CATEGORY_PLAYABLE_COPIES
+            )
+            if found is None:
+                try:
+                    mappings = await match(provider)
+                except PROVIDER_FETCH_ERRORS as err:
+                    self.logger.log(
+                        provider_fetch_log_level(err),
+                        "Could not search %s for %s: %s",
+                        provider.name,
+                        item.name,
+                        err,
+                    )
+                    continue
+                found = {"item_id": mappings[0].item_id if mappings else None}
+                await self.mass.cache.set(
+                    cache_key,
+                    found,
+                    expiration=PLAYABLE_COPY_CACHE_EXPIRATION,
+                    provider=self.mass.music.domain,
+                    category=CACHE_CATEGORY_PLAYABLE_COPIES,
+                )
+            if found["item_id"] is None:
+                continue
+            try:
+                copy = await self.get_provider_item(found["item_id"], provider.instance_id)
+            except MediaNotFoundError:
+                # the service no longer has the copy, so it is searched again next time
+                await self.mass.cache.delete(
+                    cache_key,
+                    provider=self.mass.music.domain,
+                    category=CACHE_CATEGORY_PLAYABLE_COPIES,
+                )
+                continue
+            except PROVIDER_FETCH_ERRORS as err:
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Could not fetch the copy of %s on %s: %s",
+                    item.name,
+                    provider.name,
+                    err,
+                )
+                continue
+            if copy.available:
+                return copy
+        return None
