@@ -2730,8 +2730,8 @@ async def test_api_client_drops_a_settled_url_a_refresh_finds_ambiguous() -> Non
     assert settled_key not in settled
 
 
-async def test_get_artist_left_by_link_returns_the_artist_the_link_left() -> None:
-    """A link MusicBrainz now relates to another artist hands back the stored artist."""
+async def test_get_artist_relink_returns_the_old_artist_and_the_new_id() -> None:
+    """A link MusicBrainz now relates to another artist gives the stored artist and the new id."""
     provider, _ = _routed_provider(
         {
             SPOTIFY_ARTIST_URL: _url_lookup("artist", "georgia-mbid"),
@@ -2740,22 +2740,23 @@ async def test_get_artist_left_by_link_returns_the_artist_the_link_left() -> Non
     )
     mapping = _mapping("spotify", "4Z8W4fKeB5YxbusRsdQVPb")
 
-    old_artist = await provider.get_artist_left_by_link(mapping, "faces-mbid")
+    relink = await provider.get_artist_relink(mapping, "faces-mbid")
 
-    assert old_artist is not None
-    assert old_artist.id == "faces-mbid"
+    assert relink is not None
+    assert relink.old_artist.id == "faces-mbid"
+    assert relink.mbid == "georgia-mbid"
 
 
 @pytest.mark.parametrize("linked", [("faces-mbid",), (), ("faces-mbid", "georgia-mbid")])
-async def test_get_artist_left_by_link_keeps_a_link_not_moved(linked: tuple[str, ...]) -> None:
+async def test_get_artist_relink_keeps_a_link_not_moved(linked: tuple[str, ...]) -> None:
     """A link still on the stored artist, on no artist or on several moved nowhere."""
     provider, _ = _routed_provider({SPOTIFY_ARTIST_URL: _url_lookup("artist", *linked)})
     mapping = _mapping("spotify", "4Z8W4fKeB5YxbusRsdQVPb")
 
-    assert await provider.get_artist_left_by_link(mapping, "faces-mbid") is None
+    assert await provider.get_artist_relink(mapping, "faces-mbid") is None
 
 
-async def test_get_artist_left_by_link_follows_a_merge() -> None:
+async def test_get_artist_relink_follows_a_merge() -> None:
     """A stored artist MusicBrainz merged into the linked one is the same artist."""
     provider, _ = _routed_provider(
         {
@@ -2765,12 +2766,12 @@ async def test_get_artist_left_by_link_follows_a_merge() -> None:
     )
     mapping = _mapping("spotify", "4Z8W4fKeB5YxbusRsdQVPb")
 
-    assert await provider.get_artist_left_by_link(mapping, "old-mbid") is None
+    assert await provider.get_artist_relink(mapping, "old-mbid") is None
 
 
-async def test_get_artist_left_by_link_skips_a_service_musicbrainz_cannot_link() -> None:
+async def test_get_artist_relink_skips_a_service_musicbrainz_cannot_link() -> None:
     """A service without links MusicBrainz can hold is not looked up."""
     provider, get_data = _routed_provider({})
 
-    assert await provider.get_artist_left_by_link(_mapping("soundcloud", "123"), "x") is None
+    assert await provider.get_artist_relink(_mapping("soundcloud", "123"), "x") is None
     get_data.assert_not_called()

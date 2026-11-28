@@ -97,6 +97,13 @@ if TYPE_CHECKING:
 CONF_RECOMMENDATION_DAYS = "recommendation_days"
 
 
+class ArtistRelink(NamedTuple):
+    """An artist link MusicBrainz moved from the stored artist to another one."""
+
+    old_artist: MusicBrainzArtist
+    mbid: str
+
+
 class IdentifiedArtist(NamedTuple):
     """An artist identified on MusicBrainz and whether only its name identified it."""
 
@@ -710,17 +717,16 @@ class MusicbrainzProvider(MetadataProvider):
         # a URL linked to several entities identifies none of them
         return mbids[0] if len(mbids) == 1 else None
 
-    async def get_artist_left_by_link(
-        self, mapping: ProviderMapping, mbid: str
-    ) -> MusicBrainzArtist | None:
+    async def get_artist_relink(self, mapping: ProviderMapping, mbid: str) -> ArtistRelink | None:
         """
-        Get the stored MusicBrainz artist of a mapping that MusicBrainz now links elsewhere.
+        Get the move of a mapping's link to another MusicBrainz artist than the stored one.
 
         :param mapping: A provider mapping of the artist.
         :param mbid: The MusicBrainz artist id stored for the artist.
-        :return: The MusicBrainz artist of the stored id, or None when MusicBrainz still links
-            the mapping to it (also after merging it into another artist), links it to no single
-            artist, or cannot hold a link of the provider.
+        :return: The stored MusicBrainz artist and the id of the one the link belongs to now,
+            or None when MusicBrainz still links the mapping to the stored artist (also after
+            merging it into another artist), links it to no single artist, or cannot hold a
+            link of the provider.
         """
         url = canonical_mapping_url(mapping, MediaType.ARTIST)
         if not url and mapping.url and is_public_catalog_url(mapping.url):
@@ -733,7 +739,9 @@ class MusicbrainzProvider(MetadataProvider):
             return None
         stored_artist = await self.get_artist_details(mbid)
         # a merged artist answers its old id as the artist it was merged into
-        return None if stored_artist.id == linked_mbid else stored_artist
+        if stored_artist.id == linked_mbid:
+            return None
+        return ArtistRelink(stored_artist, linked_mbid)
 
     async def get_mbids_by_url(self, resource_url: str, media_type: MediaType) -> list[str]:
         """

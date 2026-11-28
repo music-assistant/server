@@ -1,4 +1,4 @@
-"""Tests that refreshing an artist identifies it again once MusicBrainz links it elsewhere."""
+"""Tests that refreshing an artist follows its link once MusicBrainz moves it elsewhere."""
 
 from __future__ import annotations
 
@@ -7,14 +7,20 @@ from contextlib import contextmanager
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
-from music_assistant_models.media_items import Artist, ProviderMapping, SearchResults
+from music_assistant_models.media_items import (
+    Artist,
+    ProviderMapping,
+    SearchResults,
+)
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.musicbrainz.provider import ArtistRelink
 
 TIDAL = "tidal--test"
 YTMUSIC = "ytmusic--test"
@@ -81,9 +87,13 @@ def _musicbrainz(
     :param old_links: The provider mappings the stored (wrong) MusicBrainz artist links to.
     """
     musicbrainz = MagicMock()
-    musicbrainz.get_artist_left_by_link = AsyncMock(
+    musicbrainz.get_artist_relink = AsyncMock(
         side_effect=moved if isinstance(moved, Exception) else None,
-        return_value=MagicMock(relations=[]) if moved is True else None,
+        return_value=(
+            ArtistRelink(MagicMock(relations=[]), GEORGIA_SATELLITES_MBID)
+            if moved is True
+            else None
+        ),
     )
     providers = {**PROVIDERS, "musicbrainz": musicbrainz}
     with (
@@ -96,6 +106,12 @@ def _musicbrainz(
         ),
     ):
         yield musicbrainz
+
+
+@pytest.fixture(autouse=True)
+def _link_through_musicbrainz(music_mass: MusicAssistant) -> None:
+    """Turn linking providers through MusicBrainz on."""
+    cast("MagicMock", music_mass.metadata).link_providers_via_musicbrainz = True
 
 
 async def _library_artist(mass: MusicAssistant, *mappings: ProviderMapping) -> Artist:
@@ -112,15 +128,13 @@ async def _stored_ids(mass: MusicAssistant, item_id: str) -> set[tuple[ExternalI
     return set((await mass.music.artists.get_library_item(item_id)).external_ids)
 
 
-async def test_refresh_identifies_a_streaming_artist_again(music_mass: MusicAssistant) -> None:
-    """A refresh hands the metadata update an artist MusicBrainz no longer confirms, without ids."""
+async def test_refresh_moves_a_streaming_artist_to_its_new_id(music_mass: MusicAssistant) -> None:
+    """A refresh hands the metadata update the artist the link now belongs to on MusicBrainz."""
     db_artist = await _library_artist(music_mass)
     seen_mbids: list[str | None] = []
 
     async def _update_metadata(item: Artist, **_kwargs: Any) -> Artist:
         seen_mbids.append(item.mbid)
-        item.mbid = GEORGIA_SATELLITES_MBID
-        await music_mass.music.artists.update_item_in_library(item.item_id, item)
         return item
 
     music_mass.metadata.update_metadata = AsyncMock(side_effect=_update_metadata)  # type: ignore[method-assign]
@@ -130,22 +144,24 @@ async def test_refresh_identifies_a_streaming_artist_again(music_mass: MusicAssi
         patch.object(
             music_mass.music.artists, "get_provider_item", AsyncMock(return_value=_artist())
         ),
-        patch.object(music_mass.music.artists, "match_providers", AsyncMock()),
+        patch.object(music_mass.music.artists, "match_providers", AsyncMock()) as match,
         patch("music_assistant.controllers.music.controller.invalidate_listings", AsyncMock()),
     ):
         await music_mass.music.refresh_item(db_artist)
 
-    assert seen_mbids == [None]
+    # the other providers are matched from the new artist, not the old one
+    assert match.await_args_list[0].args[0].mbid == GEORGIA_SATELLITES_MBID
+    assert seen_mbids == [GEORGIA_SATELLITES_MBID]
     assert await _stored_ids(music_mass, db_artist.item_id) == {
         (ExternalID.MB_ARTIST, GEORGIA_SATELLITES_MBID)
     }
 
 
 async def test_refresh_through_a_substitute_keeps_the_ids(music_mass: MusicAssistant) -> None:
-    """A substitute found by name, when no own source answers, never resets the artist."""
+    """A substitute found by name, when no own source answers, never moves the artist."""
     db_artist = await _library_artist(music_mass)
     substitute = _artist(YTMUSIC)
-    forget = AsyncMock(return_value=False)
+    relink = AsyncMock(return_value=None)
 
     music_mass.metadata.update_metadata = AsyncMock()  # type: ignore[method-assign]
     with (
@@ -158,12 +174,12 @@ async def test_refresh_through_a_substitute_keeps_the_ids(music_mass: MusicAssis
             music_mass.music.artists, "get_provider_item", AsyncMock(return_value=substitute)
         ),
         patch.object(music_mass.music.artists, "match_providers", AsyncMock()),
-        patch.object(music_mass.music.artists, "forget_disputed_musicbrainz_id", forget),
+        patch.object(music_mass.music.artists, "follow_musicbrainz_relink", relink),
         patch("music_assistant.controllers.music.controller.invalidate_listings", AsyncMock()),
     ):
         await music_mass.music.refresh_item(db_artist)
 
-    forget.assert_not_called()
+    relink.assert_not_called()
 
 
 async def test_artist_musicbrainz_still_links_keeps_its_ids(music_mass: MusicAssistant) -> None:
@@ -172,34 +188,54 @@ async def test_artist_musicbrainz_still_links_keeps_its_ids(music_mass: MusicAss
     stored = await _stored_ids(music_mass, db_artist.item_id)
 
     with _musicbrainz(moved=False) as musicbrainz:
-        changed = await music_mass.music.artists.forget_disputed_musicbrainz_id(
-            db_artist, _artist()
-        )
+        moved_id = await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
-    assert not changed
+    assert moved_id is None
     assert await _stored_ids(music_mass, db_artist.item_id) == stored
-    musicbrainz.get_artist_left_by_link.assert_awaited_once_with(_mapping(TIDAL), FACES_MBID)
+    musicbrainz.get_artist_relink.assert_awaited_once_with(_mapping(TIDAL), FACES_MBID)
 
 
 async def test_relinked_artist_loses_ids_and_links_of_the_old_artist(
     music_mass_with_audio_analysis: MusicAssistant,
 ) -> None:
-    """The ids go, and so do the links MusicBrainz gave from the old artist."""
+    """The new id comes in, and the Discogs id and links of the old artist go."""
     music_mass = music_mass_with_audio_analysis
     faces_spotify = _mapping(SPOTIFY, "faces-spotify")
     own_ytmusic = _mapping(YTMUSIC, "UCFtQ_ao2P8LoMcvJLX2qf3Q")
     db_artist = await _library_artist(music_mass, faces_spotify, own_ytmusic)
 
-    cast("MagicMock", music_mass.metadata).link_providers_via_musicbrainz = True
     with _musicbrainz(old_links=[faces_spotify, _mapping(TIDAL)]):
-        changed = await music_mass.music.artists.forget_disputed_musicbrainz_id(
-            db_artist, _artist()
-        )
+        moved_id = await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
     stored = await music_mass.music.artists.get_library_item(db_artist.item_id)
-    assert changed
-    assert stored.external_ids == set()
+    assert moved_id == int(db_artist.item_id)
+    assert stored.external_ids == {(ExternalID.MB_ARTIST, GEORGIA_SATELLITES_MBID)}
     assert {x.provider_instance for x in stored.provider_mappings} == {TIDAL, YTMUSIC}
+
+
+async def test_relinked_artist_merges_with_the_one_carrying_its_new_id(
+    music_mass_with_audio_analysis: MusicAssistant,
+) -> None:
+    """A library artist already carrying the new id becomes one artist with the moved one."""
+    music_mass = music_mass_with_audio_analysis
+    local = Artist(
+        item_id="georgia",
+        provider=FS,
+        name="Georgia Satellites",
+        provider_mappings={_mapping(FS, "georgia")},
+        external_ids={(ExternalID.MB_ARTIST, GEORGIA_SATELLITES_MBID)},
+    )
+    existing = await music_mass.music.artists.add_item_to_library(local)
+    db_artist = await _library_artist(music_mass)
+
+    with _musicbrainz():
+        moved_id = await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
+
+    assert moved_id == int(existing.item_id)
+    assert moved_id != int(db_artist.item_id)
+    merged = await music_mass.music.artists.get_library_item(moved_id)
+    assert merged.mbid == GEORGIA_SATELLITES_MBID
+    assert {x.provider_instance for x in merged.provider_mappings} == {FS, TIDAL}
 
 
 async def test_link_in_a_library_is_kept(music_mass: MusicAssistant) -> None:
@@ -208,26 +244,26 @@ async def test_link_in_a_library_is_kept(music_mass: MusicAssistant) -> None:
     db_artist = await _library_artist(music_mass, spotify)
 
     with _musicbrainz(old_links=[spotify]):
-        await music_mass.music.artists.forget_disputed_musicbrainz_id(db_artist, _artist())
+        await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
     stored = await music_mass.music.artists.get_library_item(db_artist.item_id)
-    assert stored.mbid is None
+    assert stored.mbid == GEORGIA_SATELLITES_MBID
     assert {x.provider_instance for x in stored.provider_mappings} == {TIDAL, SPOTIFY}
 
 
 async def test_links_stay_when_linking_through_musicbrainz_is_off(
     music_mass: MusicAssistant,
 ) -> None:
-    """Without linking through MusicBrainz no link came from it, so only the ids go."""
+    """Without linking through MusicBrainz no link came from it, so only the ids change."""
     spotify = _mapping(SPOTIFY, "faces-spotify")
     db_artist = await _library_artist(music_mass, spotify)
 
     cast("MagicMock", music_mass.metadata).link_providers_via_musicbrainz = False
     with _musicbrainz(old_links=[spotify]):
-        await music_mass.music.artists.forget_disputed_musicbrainz_id(db_artist, _artist())
+        await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
     stored = await music_mass.music.artists.get_library_item(db_artist.item_id)
-    assert stored.mbid is None
+    assert stored.mbid == GEORGIA_SATELLITES_MBID
     assert {x.provider_instance for x in stored.provider_mappings} == {TIDAL, SPOTIFY}
 
 
@@ -237,11 +273,9 @@ async def test_musicbrainz_unreachable_keeps_everything(music_mass: MusicAssista
     stored = await _stored_ids(music_mass, db_artist.item_id)
 
     with _musicbrainz(ResourceTemporarilyUnavailable("down")):
-        changed = await music_mass.music.artists.forget_disputed_musicbrainz_id(
-            db_artist, _artist()
-        )
+        moved_id = await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
-    assert not changed
+    assert moved_id is None
     assert await _stored_ids(music_mass, db_artist.item_id) == stored
 
 
@@ -251,10 +285,10 @@ async def test_artist_of_a_local_source_keeps_its_ids(music_mass: MusicAssistant
     stored = await _stored_ids(music_mass, db_artist.item_id)
 
     with _musicbrainz() as musicbrainz:
-        await music_mass.music.artists.forget_disputed_musicbrainz_id(db_artist, _artist())
+        await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
     assert await _stored_ids(music_mass, db_artist.item_id) == stored
-    musicbrainz.get_artist_left_by_link.assert_not_called()
+    musicbrainz.get_artist_relink.assert_not_called()
 
 
 async def test_artist_of_an_unknown_source_keeps_its_ids(music_mass: MusicAssistant) -> None:
@@ -263,10 +297,10 @@ async def test_artist_of_an_unknown_source_keeps_its_ids(music_mass: MusicAssist
     stored = await _stored_ids(music_mass, db_artist.item_id)
 
     with _musicbrainz() as musicbrainz:
-        await music_mass.music.artists.forget_disputed_musicbrainz_id(db_artist, _artist())
+        await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
     assert await _stored_ids(music_mass, db_artist.item_id) == stored
-    musicbrainz.get_artist_left_by_link.assert_not_called()
+    musicbrainz.get_artist_relink.assert_not_called()
 
 
 async def test_musicbrainz_id_the_provider_carries_is_kept(music_mass: MusicAssistant) -> None:
@@ -276,20 +310,9 @@ async def test_musicbrainz_id_the_provider_carries_is_kept(music_mass: MusicAssi
     provider_artist = _artist(external_ids={(ExternalID.MB_ARTIST, FACES_MBID)})
 
     with _musicbrainz():
-        await music_mass.music.artists.forget_disputed_musicbrainz_id(db_artist, provider_artist)
+        await music_mass.music.artists.follow_musicbrainz_relink(db_artist, provider_artist)
 
     assert await _stored_ids(music_mass, db_artist.item_id) == stored
-
-
-async def test_discogs_id_the_provider_carries_is_kept(music_mass: MusicAssistant) -> None:
-    """A Discogs id the provider delivers itself stays when the MusicBrainz id goes."""
-    db_artist = await _library_artist(music_mass)
-    provider_artist = _artist(external_ids={(ExternalID.DISCOGS, FACES_DISCOGS)})
-
-    with _musicbrainz():
-        await music_mass.music.artists.forget_disputed_musicbrainz_id(db_artist, provider_artist)
-
-    assert await _stored_ids(music_mass, db_artist.item_id) == {(ExternalID.DISCOGS, FACES_DISCOGS)}
 
 
 async def test_various_artists_keeps_its_id(music_mass: MusicAssistant) -> None:
@@ -298,8 +321,8 @@ async def test_various_artists_keeps_its_id(music_mass: MusicAssistant) -> None:
     db_artist = await music_mass.music.artists.add_item_to_library(artist)
 
     with _musicbrainz() as musicbrainz:
-        await music_mass.music.artists.forget_disputed_musicbrainz_id(db_artist, _artist())
+        await music_mass.music.artists.follow_musicbrainz_relink(db_artist, _artist())
 
     stored = await music_mass.music.artists.get_library_item(db_artist.item_id)
     assert stored.mbid == VARIOUS_ARTISTS_MBID
-    musicbrainz.get_artist_left_by_link.assert_not_called()
+    musicbrainz.get_artist_relink.assert_not_called()
