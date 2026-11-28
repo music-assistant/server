@@ -11,10 +11,13 @@ from uuid import UUID
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.event import MassEvent
+    from music_assistant_models.player_queue import PlayerQueue
 
 import pychromecast
 from music_assistant_models.enums import (
     ChannelLayout,
+    EventType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -58,6 +61,7 @@ from .constants import (
     CONF_USE_MASS_APP,
     DASHBOARD_KEEPALIVE_SUFFIXES,
     MASS_APP_ID,
+    SECTION_START_TOLERANCE,
     SENDSPIN_CAST_APP_ID,
 )
 from .helpers import (
@@ -95,6 +99,7 @@ class ChromecastPlayer(PlayerProtocol):
     _playing_own_session: bool = False
     # Cast reports the running app accurately, and only a foreign app is listed as source
     _attr_trusts_reported_source = True
+    _unsub_queue_time: Callable[[], None] | None = None
     # the client of the device, connected at every attach
     cc: Chromecast
 
@@ -345,6 +350,9 @@ class ChromecastPlayer(PlayerProtocol):
         """
         # started without an await, so a detach never finds the client half set up
         self._start_client()
+        self._unsub_queue_time = self.mass.subscribe(
+            self._on_queue_time_updated, EventType.QUEUE_TIME_UPDATED
+        )
         # not awaited: claiming the Sendspin client of the receiver app attaches that
         # client, which waits for this attach to finish
         provider = cast("ChromecastProvider", self.provider)
@@ -358,6 +366,9 @@ class ChromecastPlayer(PlayerProtocol):
             self._bridge_task = None
             bridge_task.cancel()
         await super().on_detach()
+        if self._unsub_queue_time is not None:
+            self._unsub_queue_time()
+            self._unsub_queue_time = None
         self.cancel_pending_app_quit()
         self.mass.cancel_timer(self._app_track_change_task_id)
         self._app_track_change_ends = None
@@ -488,8 +499,14 @@ class ChromecastPlayer(PlayerProtocol):
             return
         if (player := self.player) is None or not (current_media := player.current_media):
             return
+        if (
+            not self._attr_current_media
+            # another server may be casting to this device
+            or not self._attr_current_media.uri.startswith(self.mass.streams.base_url)
+        ):
+            return
         if not (
-            (self._attr_current_media and "/flow/" in self._attr_current_media.uri)
+            "/flow/" in self._attr_current_media.uri
             or current_media.media_type
             in (
                 MediaType.RADIO,
@@ -498,6 +515,19 @@ class ChromecastPlayer(PlayerProtocol):
         ):
             # only update metadata for streams without known duration
             return
+        section: dict[str, float] = {}
+        queue = self.mass.players.get_active_queue(player)
+        if queue and "/flow/" in self._attr_current_media.uri:
+            queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
+            if (
+                queue_data is None
+                or f"/flow/{queue_data.session_id}/" not in self._attr_current_media.uri
+                or queue.current_item is None
+                or queue.current_item.queue_item_id != current_media.queue_item_id
+            ):
+                # the receiver or the player is about to follow the queue to another position
+                return
+            section = self._flow_track_section(current_media, queue)
 
         async def update_flow_metadata() -> None:
             """Update the metadata of a cast player running the flow (or radio) stream."""
@@ -507,7 +537,9 @@ class ChromecastPlayer(PlayerProtocol):
             artist = current_media.artist or ""
             album = current_media.album or ""
             image_url = current_media.image_url or MASS_LOGO_ONLINE
-            flow_meta_checksum = f"{current_media.uri}-{album}-{artist}-{title}-{image_url}"
+            flow_meta_checksum = (
+                f"{current_media.uri}-{album}-{artist}-{title}-{image_url}-{section}"
+            )
             if self.flow_meta_checksum != flow_meta_checksum:
                 # only update if something changed
                 self.flow_meta_checksum = flow_meta_checksum
@@ -522,6 +554,7 @@ class ChromecastPlayer(PlayerProtocol):
                             "artist": artist,
                             "title": title,
                             "images": [{"url": image_url}],
+                            **section,
                         }
                     },
                 }
@@ -532,6 +565,12 @@ class ChromecastPlayer(PlayerProtocol):
         self.mass.create_task(
             update_flow_metadata(), task_name=f"cast_flow_metadata_{self.protocol_id}"
         )
+
+    def _on_queue_time_updated(self, event: MassEvent) -> None:
+        """Follow a track that starts over within the flow stream, which is no new media."""
+        queue = self.mass.players.get_active_queue(self.player) if self.player else None
+        if queue and queue.queue_id == event.object_id and queue.flow_mode:
+            self.on_player_media_updated()
 
     async def _launch_app(self) -> None:
         """Launch the configured Media Receiver App on a Chromecast."""
@@ -1083,6 +1122,41 @@ class ChromecastPlayer(PlayerProtocol):
         self.cc.socket_client.logger.logger = _STOPPED_CLIENT_LOGGER
         disconnect_cast(self.cc, 0)
 
+    def _flow_track_section(self, media: PlayerMedia, queue: PlayerQueue) -> dict[str, float]:
+        """
+        Return the metadata that places the current track within the playing flow stream.
+
+        Empty when the track has no progress to show.
+
+        :param media: The media of the track.
+        :param queue: The queue that plays the track.
+        """
+        if (
+            not media.duration
+            or media.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
+            or not self._plays_at_normal_speed(media)
+        ):
+            return {}
+        status = self.cc.media_controller.status
+        start = (status.adjusted_current_time or 0) - queue.corrected_elapsed_time
+        shown = status.media_metadata or {}
+        shown_start = shown.get("sectionStartTimeInMedia")
+        if (
+            shown_start is not None
+            and shown.get("sectionDuration") == media.duration
+            and abs(shown_start - start) < SECTION_START_TOLERANCE
+        ):
+            # both clocks are estimates, so a small difference is no new position
+            start = shown_start
+        return _track_section(start, media.duration)
+
+    def _plays_at_normal_speed(self, media: PlayerMedia) -> bool:
+        """Return whether the position in the stream of the media runs along with its own."""
+        if media.source_id is None:
+            return True
+        item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        return item is None or float(item.extra_attributes.get("playback_speed") or 1.0) == 1.0
+
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
         is_flow = "/flow/" in stream_url
@@ -1101,6 +1175,12 @@ class ChromecastPlayer(PlayerProtocol):
             "title": media.title or "",
             "images": [{"url": media.image_url}] if media.image_url else None,
         }
+        # only the Music Assistant app moves the section on to the next track of a flow stream
+        follows_tracks = not is_flow or bool(self.config.get_value(CONF_USE_MASS_APP, True))
+        if has_end and media.duration and follows_tracks and self._plays_at_normal_speed(media):
+            # after a seek the stream starts partway into the track
+            skipped = media.duration - (media.stream_duration or media.duration)
+            metadata |= _track_section(-skipped, media.duration)
         file_ext = stream_url.split("?", maxsplit=1)[0].rsplit(".", maxsplit=1)[-1].lower()
         return {
             "contentId": stream_url,
@@ -1152,3 +1232,14 @@ class ChromecastPlayer(PlayerProtocol):
         # other apps cast through the Default Media Receiver too, so only our own stream
         # (or nothing loaded yet, right after we launched it) makes the session ours
         return not status.content_id or status.content_id.startswith(self.mass.streams.base_url)
+
+
+def _track_section(start: float, duration: float) -> dict[str, float]:
+    """
+    Return the Cast metadata a receiver draws the progress of one track from.
+
+    :param start: Where the track starts in the stream (in seconds), negative when the stream
+        starts partway into the track.
+    :param duration: The length of the track in seconds.
+    """
+    return {"sectionStartTimeInMedia": round(start, 2), "sectionDuration": duration}
