@@ -722,7 +722,10 @@ class MusicbrainzProvider(MetadataProvider):
             the mapping to it (also after merging it into another artist), links it to no single
             artist, or cannot hold a link of the provider.
         """
-        if not (url := canonical_mapping_url(mapping, MediaType.ARTIST)):
+        url = canonical_mapping_url(mapping, MediaType.ARTIST)
+        if not url and mapping.url and is_public_catalog_url(mapping.url):
+            url = mapping.url
+        if not url:
             return None
         if not (linked_mbid := await self.get_mbid_by_url(url, MediaType.ARTIST)) or (
             linked_mbid == mbid
