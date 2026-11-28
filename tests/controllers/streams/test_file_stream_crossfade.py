@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -770,6 +770,11 @@ PASS_ONLY = LEAD_IN + JOIN_SECONDS - 2 * WINDOW - 2
 END = LEAD_IN + JOIN_SECONDS - 2 * WINDOW
 # the position in that track a pass starts at for a speaker that read up to there by itself
 PASS_FROM_MS = (JOIN_SECONDS - WINDOW - 3) * 1000
+# a speaker that stands still at 6 seconds has the second after it in hand, and its pass
+# the second after that: the pass has passed the track up to its end, and a pass that takes
+# its place starts that much later
+PASSED = END
+PASSED_FROM_MS = PASS_FROM_MS + 2000
 
 
 def _trio(pcm_format: AudioFormat = PCM_16, seconds: float = JOIN_SECONDS) -> dict[str, bytes]:
@@ -846,6 +851,20 @@ async def _until(holds: Callable[[], bool]) -> None:
     async with asyncio.timeout(WAIT):
         while not holds():
             await asyncio.sleep(0.005)
+
+
+async def _pass_has_more(rig: _Rig, item_id: str) -> None:
+    """
+    Wait until the pass that a speaker drives has its next audio ready for it.
+
+    :param rig: The rig whose track it is.
+    :param item_id: The queue item id of the track.
+    """
+    mix = rig.file(item_id).mix
+    assert mix is not None
+    running = mix._pass
+    assert running is not None
+    await _until(lambda: running.audio.qsize() == 1)
 
 
 def _hold_next_track(rig: _Rig, until: asyncio.Event) -> None:
@@ -1121,38 +1140,46 @@ async def test_two_speakers_wait_for_an_end_that_is_being_made(middle: tuple[_Ri
     assert rig.mixes.await_count == 2
 
 
+# where the first speaker stands still, where the second one then waits for the end, and
+# the position the pass that makes it starts at: the second speaker reads the track by
+# itself up to where a pass starts at the latest, or as far as the pass of the first one
+# has passed it
 @bounded
-@pytest.mark.parametrize("stands_at", [1, 6])
+@pytest.mark.parametrize(
+    ("stands_at", "waits_at", "pass_from_ms"),
+    [(1, PASS_ONLY, PASS_FROM_MS), (6, PASSED, PASSED_FROM_MS)],
+)
 async def test_the_speaker_that_drove_the_pass_reads_on_beside_one_that_needs_the_end(
-    middle: tuple[_Rig, bytes], stands_at: int
+    middle: tuple[_Rig, bytes], stands_at: int, waits_at: float, pass_from_ms: int
 ) -> None:
     """A pass made for a speaker that got to the end first serves the one whose pass it replaced."""
     rig, whole = middle
     ready = asyncio.Event()
-    _hold_track(rig, PASS_FROM_MS, ready)
+    _hold_track(rig, pass_from_ms, ready)
     start = rig.offset(min(stands_at, 4.5))
     first_request, first = rig.request("b", stall_at=rig.offset(stands_at))
     first_task = _serve(rig, first_request)
     await _stands_still(first)
+    await _pass_has_more(rig, "b")
     second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
     second_task = _serve(rig, second_request)
-    await _until(lambda: len(second.body) == rig.offset(PASS_ONLY) - start)
+    await _until(lambda: len(second.body) == rig.offset(waits_at) - start)
     # the pass that waits for no speaker took the place of the one the first speaker drove
     await _until(lambda: len(rig.passes) == 3)
 
     # the first speaker reads on while the end is still to be made
     first.resume.set()
-    await _until(lambda: len(first.body) >= rig.offset(PASS_ONLY))
+    await _until(lambda: len(first.body) >= rig.offset(waits_at))
     assert not first_task.done()
     assert not second_task.done()
-    assert len(first.body) < rig.offset(END)
+    assert len(first.body) <= rig.offset(END)
     ready.set()
     await _ended(first_task, second_task)
 
     first.transport.abort.assert_not_called()
     assert bytes(first.body) == whole
     assert bytes(second.body) == whole[start:]
-    assert rig.passes[2:] == [PASS_FROM_MS]
+    assert rig.passes[2:] == [pass_from_ms]
     assert rig.mixes.await_count == 2
 
 
@@ -1232,15 +1259,16 @@ async def test_a_speaker_makes_the_end_when_the_pass_that_no_speaker_drives_fail
     """A speaker whose pass was replaced runs a new one when the pass in its place ends early."""
     rig, whole = middle
     ready = asyncio.Event()
-    _hold_track(rig, PASS_FROM_MS, ready, AudioError("the track could not be read"))
+    _hold_track(rig, PASSED_FROM_MS, ready, AudioError("the track could not be read"))
     start = rig.offset(4.5)
     # the first speaker stands in the seconds before the end, with the pass it drives
     first_request, first = rig.request("b", stall_at=rig.offset(6))
     first_task = _serve(rig, first_request)
     await _stands_still(first)
+    await _pass_has_more(rig, "b")
     second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
     second_task = _serve(rig, second_request)
-    await _until(lambda: len(second.body) == rig.offset(PASS_ONLY) - start)
+    await _until(lambda: len(second.body) == rig.offset(PASSED) - start)
     await _until(lambda: len(rig.passes) == 3)
     mix = rig.file("b").mix
     assert mix is not None
@@ -1258,7 +1286,7 @@ async def test_a_speaker_makes_the_end_when_the_pass_that_no_speaker_drives_fail
 
     assert bytes(first.body) == whole
     # after the pass in the place of its own, a pass it drives again
-    assert rig.passes[2] == PASS_FROM_MS
+    assert rig.passes[2] == PASSED_FROM_MS
     assert len(rig.passes) == 4
 
 
@@ -1486,6 +1514,294 @@ async def test_a_pass_that_no_speaker_drives_makes_no_mix_for_speakers_that_have
     # a speaker that comes back gets the rest, with the end that is made for it
     _, rest = await asyncio.wait_for(rig.fetch("b", f"bytes={start}-"), WAIT)
     assert rest == whole[start:]
+
+
+# the second of three longer tracks, whose source still delivers it. In seconds of its
+# stream: where its tail starts, and how far the source has delivered it when the
+# speakers ask for it
+LIVE_SECONDS = 24
+TAIL = LEAD_IN + LIVE_SECONDS - 2 * WINDOW
+DELIVERED = TAIL + 2
+
+
+async def _deliver(rig: _Rig, item_id: str, up_to: float | None = None) -> None:
+    """
+    Let the source of a track deliver more of it to the buffer of the track.
+
+    :param rig: The rig whose track it is.
+    :param item_id: The queue item id of the track.
+    :param up_to: The second of the track the source has delivered then, None for the
+        whole track, after which the source ends.
+    """
+    second = rig.buffer_format.pcm_sample_size
+    pcm = rig.tracks[item_id]
+    streamdetails = rig.items[item_id].streamdetails
+    assert streamdetails is not None
+    buffer = streamdetails.buffer
+    delivered = round(buffer.first_buffered_chunk + buffer.duration_available) * second
+    stop = len(pcm) if up_to is None else round(up_to * second)
+    for start in range(delivered, stop, second):
+        await buffer._put(pcm[start : min(start + second, stop)])
+    if up_to is None:
+        await buffer._set_eof()
+
+
+@pytest.fixture
+async def live(request: pytest.FixtureRequest) -> _Rig:
+    """
+    Return a rig for the second of three tracks, whose source delivers it up to `DELIVERED`.
+
+    The player of the rig has fetched the first track, so the fade into the second waits.
+    """
+    request.getfixturevalue("passthrough_encoder")
+    await check_ffmpeg_version()
+    rig = _Rig(_trio(seconds=LIVE_SECONDS), output_format=WAV_16, pcm_format=PCM_16)
+    await _deliver(rig, "a")
+    await _deliver(rig, "c")
+    await _deliver(rig, "b", DELIVERED - LEAD_IN + WINDOW)
+    await asyncio.wait_for(rig.fetch("a"), WAIT)
+    return rig
+
+
+def _own_audio(rig: _Rig, item_id: str, mix: MixedTrack, part: range) -> bytes:
+    """
+    Return the track's own audio at offsets in its stream.
+
+    :param rig: The rig whose track it is.
+    :param item_id: The queue item id of the track.
+    :param mix: The stream of the track, with its lead-in known.
+    :param part: The offsets in the stream, past the lead-in.
+    """
+    assert mix._lead_in_size is not None
+    origin = mix._track_ms * rig.pcm_format.pcm_sample_size // 1000 - mix._lead_in_size
+    return rig.tracks[item_id][origin + part.start : origin + part.stop]
+
+
+def _stream_of(rig: _Rig, item_id: str, mix: MixedTrack) -> bytes:
+    """
+    Return the one stream of a mixed track: its lead-in, its own audio and its kept end.
+
+    :param rig: The rig whose track it is.
+    :param item_id: The queue item id of the track.
+    :param mix: The stream of the track, with its end made.
+    """
+    assert mix._lead_in_size is not None
+    assert mix._end_offset is not None
+    own = _own_audio(rig, item_id, mix, range(mix._lead_in_size, mix._end_offset))
+    return bytes(mix._lead_in) + own + bytes(mix._end)
+
+
+async def _has(download: _Download, size: int) -> None:
+    """
+    Wait until a speaker has got a number of bytes, which it has to within a few seconds.
+
+    :param download: The request of the speaker.
+    :param size: The bytes it has to have got, and no more.
+    """
+    with suppress(TimeoutError):
+        await _until(lambda: len(download.body) >= size)
+    assert len(download.body) == size
+
+
+def _source_ended(rig: _Rig, item_id: str) -> bool:
+    """
+    Return whether the source of a track has delivered all of it.
+
+    :param rig: The rig whose track it is.
+    :param item_id: The queue item id of the track.
+    """
+    streamdetails = rig.items[item_id].streamdetails
+    assert streamdetails is not None
+    return bool(streamdetails.buffer.eof)
+
+
+@bounded
+async def test_a_speaker_that_joins_another_in_the_tail_of_a_track_that_still_comes_in(
+    live: _Rig,
+) -> None:
+    """
+    A speaker behind another one in the tail of a track gets what that one got, right away.
+
+    The source of the track still delivers it, so its end is not known yet. The pass of the
+    speaker ahead goes on, and makes the end once the source has delivered the track.
+    """
+    rig = live
+    first_request, first = rig.request("b")
+    first_task = _serve(rig, first_request)
+    await _until(lambda: len(first.body) == rig.offset(DELIVERED))
+    mix = rig.file("b").mix
+    assert mix is not None
+    running = mix._pass
+    assert running is not None
+
+    start = rig.offset(TAIL + 0.3)
+    second_request, second = rig.request(
+        "b", f"bytes={start}-", stall_at=PCM_16.pcm_sample_size // 2, address=OTHER_ADDRESS
+    )
+    second_task = _serve(rig, second_request)
+    with suppress(TimeoutError):
+        await _stands_still(second)
+
+    # its part up to the second it holds, before the source has delivered the track
+    assert len(second.body) == rig.offset(TAIL + 1) - start
+    assert bytes(second.body) == _own_audio(
+        rig, "b", mix, range(start - HEADER_SIZE, rig.offset(TAIL + 1) - HEADER_SIZE)
+    )
+    assert not _source_ended(rig, "b")
+    assert mix._end_offset is None
+    # the pass of the first speaker goes on
+    assert mix._pass is running
+    assert not running.unpaced
+    assert not running.over
+    assert rig.passes == [None, None]
+
+    await _deliver(rig, "b")
+    second.resume.set()
+    await _ended(first_task, second_task)
+    stream = _stream_of(rig, "b", mix)
+    assert bytes(first.body[HEADER_SIZE:]) == stream
+    assert bytes(second.body) == stream[start - HEADER_SIZE :]
+
+
+@bounded
+async def test_a_speaker_that_passes_another_in_a_track_that_still_comes_in_reads_on(
+    live: _Rig,
+) -> None:
+    """
+    A speaker that gets ahead of another one in the tail reads on as the source delivers.
+
+    It does not wait for the source to deliver the whole track, nor for the other speaker.
+    """
+    rig = live
+    # the first speaker stands in the tail, with the second after it in hand, and its pass
+    # has read the track up to where the source has delivered it
+    first_request, first = rig.request("b", stall_at=rig.offset(TAIL - 0.2))
+    first_task = _serve(rig, first_request)
+    await _stands_still(first)
+    await _pass_has_more(rig, "b")
+    opened = len(rig.opened)
+    start = rig.offset(TAIL - 0.7)
+    second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    mix = rig.file("b").mix
+    assert mix is not None
+
+    await _has(second, rig.offset(DELIVERED) - start)
+    for more in (1, 2):
+        await _deliver(rig, "b", DELIVERED - LEAD_IN + WINDOW + more)
+        await _has(second, rig.offset(DELIVERED + more) - start)
+
+    assert not _source_ended(rig, "b")
+    assert mix._end_offset is None
+    assert bytes(second.body) == _own_audio(
+        rig, "b", mix, range(start - HEADER_SIZE, rig.offset(DELIVERED + 2) - HEADER_SIZE)
+    )
+    # the track is opened for the pass in the place of the first speaker's, and for the
+    # second speaker once up to the first one and once behind that pass, however it reads on
+    assert len(rig.opened) == opened + 3
+    await _deliver(rig, "b")
+    first.resume.set()
+    await _ended(first_task, second_task)
+    stream = _stream_of(rig, "b", mix)
+    assert bytes(first.body[HEADER_SIZE:]) == stream
+    assert bytes(second.body) == stream[start - HEADER_SIZE :]
+
+
+@bounded
+async def test_the_end_of_a_track_starts_after_what_a_speaker_got_of_the_track_itself(
+    live: _Rig,
+) -> None:
+    """
+    The end that is made once a track came in starts after the audio a speaker has of it.
+
+    The source delivers the rest of the track while the first speaker stands still in its
+    tail, so the pass of that speaker does not see the source end. A second speaker that
+    gets ahead of it has a pass take its place, which finds the source ended at once.
+    """
+    rig = live
+    first_request, first = rig.request("b", stall_at=rig.offset(TAIL - 0.2))
+    first_task = _serve(rig, first_request)
+    await _stands_still(first)
+    # its pass has the second up to where the source has delivered the track ready for it
+    await _pass_has_more(rig, "b")
+    await _deliver(rig, "b")
+    mix = rig.file("b").mix
+    assert mix is not None
+
+    start = rig.offset(TAIL - 0.7)
+    second_request, second = rig.request("b", f"bytes={start}-", address=OTHER_ADDRESS)
+    second_task = _serve(rig, second_request)
+    await _until(lambda: mix.size is not None)
+    first.resume.set()
+    await _ended(first_task, second_task)
+
+    stream = _stream_of(rig, "b", mix)
+    assert bytes(first.body[HEADER_SIZE:]) == stream
+    assert bytes(second.body) == stream[start - HEADER_SIZE :]
+    # the end starts after what the first speaker had, and the stream ends where the mix
+    # ends, as in a playthrough: up to a frame that a mix of a shorter tail trims as well
+    assert mix._end_offset == rig.offset(DELIVERED) - HEADER_SIZE
+    # the pass in the place of the first speaker's starts a second before what that one had
+    assert rig.passes[2:] == [round(DELIVERED - LEAD_IN + WINDOW - 1) * 1000]
+    assert len(first.body) == pytest.approx(
+        rig.offset(LEAD_IN + LIVE_SECONDS - WINDOW - TRIMMED), abs=4
+    )
+    assert rig.mixes.await_count == 2
+
+
+@bounded
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_speaker_beside_another_in_a_track_seeked_into_its_tail() -> None:
+    """A track that a player seeks into starts in its tail, where a second speaker joins it."""
+    await check_ffmpeg_version()
+    rig = _Rig(
+        _pair(PCM_16, LIVE_SECONDS),
+        output_format=WAV_16,
+        pcm_format=PCM_16,
+        crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
+    )
+    await _deliver(rig, "b")
+    await _deliver(rig, "a", LIVE_SECONDS - 8)
+    streamdetails = rig.items["a"].streamdetails
+    assert streamdetails is not None
+    streamdetails.seek_position = 4
+    first_request, first = rig.request("a")
+    first_task = _serve(rig, first_request)
+    await _until(lambda: len(first.body) == rig.offset(LIVE_SECONDS - 8 - 4))
+    file = rig.ctrl._file_streams.get(PLAYER_ID, FileKey(SESSION_ID, QUEUE_ID, "a", 4))
+    assert file is not None
+    mix = file.mix
+    assert mix is not None
+    # the smart fade can take the whole stream
+    assert mix._tail_ms < mix._track_ms
+    running = mix._pass
+    assert running is not None
+
+    # past the start of the file that is kept in memory
+    start = rig.offset(7.5)
+    second_request, second = rig.request(
+        "a", f"bytes={start}-", stall_at=PCM_16.pcm_sample_size, address=OTHER_ADDRESS
+    )
+    second_task = _serve(rig, second_request)
+    with suppress(TimeoutError):
+        await _stands_still(second)
+
+    assert len(second.body) == rig.offset(9) - start
+    assert bytes(second.body) == _own_audio(
+        rig, "a", mix, range(start - HEADER_SIZE, rig.offset(9) - HEADER_SIZE)
+    )
+    assert not _source_ended(rig, "a")
+    assert mix._end_offset is None
+    assert mix._pass is running
+    assert not running.unpaced
+    assert rig.passes == [None]
+
+    await _deliver(rig, "a")
+    second.resume.set()
+    await _ended(first_task, second_task)
+    stream = _stream_of(rig, "a", mix)
+    assert bytes(first.body[HEADER_SIZE:]) == stream
+    assert bytes(second.body) == stream[start - HEADER_SIZE :]
 
 
 @bounded
