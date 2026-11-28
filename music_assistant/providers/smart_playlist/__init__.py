@@ -397,7 +397,7 @@ class SmartPlaylistProvider(PluginProvider):
 
     async def _playlist_sample(self, resolved_id: str, rules: SmartPlaylistRules) -> list[Track]:
         """Return a playlist sample for the current user."""
-        if not rules.is_dynamic:
+        if not rules.is_dynamic or rules.preserve_source_order:
             return await self._evaluate_rules(rules)
         user = get_current_user()
         visible = visible_music_sources(self.mass, user) if user else None
@@ -659,7 +659,9 @@ class SmartPlaylistProvider(PluginProvider):
         )
         if library_item:
             await self._update_playlist_description(
-                library_item.item_id, self._description_for(prov_id, parsed_rules)
+                library_item.item_id,
+                self._description_for(prov_id, parsed_rules),
+                is_dynamic=parsed_rules.is_dynamic and not parsed_rules.preserve_source_order,
             )
             if rules_changed:
                 # by uri, so the refresh loads the item with the new description: the
@@ -718,7 +720,8 @@ class SmartPlaylistProvider(PluginProvider):
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         self._validate_rules(parsed_rules)
         original_limit = parsed_rules.limit
-        parsed_rules.limit = max(1, min(limit, 2000))
+        preview_limit = max(1, min(limit, 2000))
+        parsed_rules.limit = preview_limit
         tracks = await self._evaluate_rules(parsed_rules)
         parsed_rules.limit = original_limit
         return [
@@ -729,7 +732,7 @@ class SmartPlaylistProvider(PluginProvider):
                 "artists": [a.name for a in t.artists],
                 "album": t.album.name if t.album else None,
             }
-            for t in tracks
+            for t in tracks[:preview_limit]
         ]
 
     # --- Internal helpers ---
@@ -786,7 +789,7 @@ class SmartPlaylistProvider(PluginProvider):
                 )
             },
         )
-        playlist.is_dynamic = rules.is_dynamic
+        playlist.is_dynamic = rules.is_dynamic and not rules.preserve_source_order
         playlist.metadata = MediaItemMetadata(
             description=self._description_for(playlist_id, rules),
             images=await self._images_for(playlist_id, library_item),
@@ -822,7 +825,9 @@ class SmartPlaylistProvider(PluginProvider):
         for uri in dict.fromkeys(rules.source_uris):
             media_type, provider, item_id = await parse_uri(uri)
             if media_type == MediaType.PLAYLIST:
-                await self._source_library_playlist(item_id, provider)
+                await self._source_library_playlist(
+                    item_id, provider, preserve_source_order=rules.preserve_source_order
+                )
 
     async def _evaluate_rules(
         self,
@@ -833,6 +838,8 @@ class SmartPlaylistProvider(PluginProvider):
         seed_uris = rules.all_seed_uris()
         if rules.source_uris:
             tracks = await self._evaluate_sources(rules, user_provider_filter)
+            if rules.preserve_source_order:
+                return self._deduplicate_tracks(tracks)
             random.shuffle(tracks)
             return self._deduplicate_tracks(tracks)[: rules.limit]
         if seed_uris:
@@ -910,9 +917,16 @@ class SmartPlaylistProvider(PluginProvider):
         """Return matching tracks from the selected sources."""
         tracks: list[Track] = []
         resolved_sources = 0
-        for uri in dict.fromkeys(rules.source_uris):
+        source_uris = list(dict.fromkeys(rules.source_uris))
+        if rules.preserve_source_order:
+            random.shuffle(source_uris)
+        for uri in source_uris:
             try:
-                tracks.extend(await self._tracks_for_source(uri))
+                tracks.extend(
+                    await self._tracks_for_source(
+                        uri, preserve_source_order=rules.preserve_source_order
+                    )
+                )
             except (InsufficientPermissions, MediaNotFoundError, ProviderUnavailableError) as err:
                 self.logger.warning("Cannot use smart playlist source %s: %s", uri, err)
                 continue
@@ -926,7 +940,9 @@ class SmartPlaylistProvider(PluginProvider):
         tracks = await with_user_favorites(self.mass, get_current_user(), tracks)
         return await self._filter_source_tracks(tracks, rules, user_provider_filter)
 
-    async def _tracks_for_source(self, uri: str) -> list[Track]:
+    async def _tracks_for_source(
+        self, uri: str, preserve_source_order: bool = False
+    ) -> list[Track]:
         """Return the tracks from one selected source."""
         media_type, provider, item_id = await parse_uri(uri)
         if media_type not in (MediaType.TRACK, MediaType.ALBUM, MediaType.PLAYLIST):
@@ -942,7 +958,9 @@ class SmartPlaylistProvider(PluginProvider):
             user = get_current_user()
             return [await self._cached_source_track(uri, user.user_id if user else None)]
         if media_type == MediaType.PLAYLIST:
-            item = await self._source_library_playlist(item_id, provider)
+            item = await self._source_library_playlist(
+                item_id, provider, preserve_source_order=preserve_source_order
+            )
             items = await self.mass.music.playlists.tracks(
                 item.item_id, "library", allow_dynamic_tracks=item.is_dynamic, limit=0
             )
@@ -952,7 +970,9 @@ class SmartPlaylistProvider(PluginProvider):
             return await self.mass.music.albums.tracks(item_id, provider, limit=0)
         raise InvalidDataError(f"Invalid smart playlist source: {uri}")
 
-    async def _source_library_playlist(self, item_id: str, provider: str) -> Playlist:
+    async def _source_library_playlist(
+        self, item_id: str, provider: str, preserve_source_order: bool = False
+    ) -> Playlist:
         """Return a selected playlist that is saved in the library and visible to the user."""
         if provider != "library":
             self.mass.music.resolve_visible_provider(provider)
@@ -970,6 +990,10 @@ class SmartPlaylistProvider(PluginProvider):
         if not any(mapping.in_library for mapping in item.provider_mappings):
             raise UnsupportedFeaturedException(
                 "Only playlists saved in the library can be used as smart playlist sources"
+            )
+        if preserve_source_order and item.is_dynamic:
+            raise InvalidDataError(
+                "Dynamic playlists cannot be used as sources when preserving source track order"
             )
         return item
 
@@ -1749,20 +1773,31 @@ class SmartPlaylistProvider(PluginProvider):
         return pool
 
     async def _update_playlist_description(
-        self, library_item_id: int | str, description: str
+        self,
+        library_item_id: int | str,
+        description: str,
+        is_dynamic: bool | None = None,
     ) -> None:
-        """Update the library playlist description with the given text."""
+        """Update the library playlist description and optional dynamic state."""
         try:
             playlist = await self.mass.music.playlists.get_library_item(library_item_id)
-            if playlist.metadata and playlist.metadata.description == description:
+            if (
+                playlist.metadata
+                and playlist.metadata.description == description
+                and (is_dynamic is None or playlist.is_dynamic == is_dynamic)
+            ):
                 # Already up to date; skip the redundant write and update event.
                 return
             updated = Playlist.from_dict(playlist.to_dict())
             updated.metadata.description = description
+            if is_dynamic is not None:
+                updated.is_dynamic = is_dynamic
             await self.mass.music.playlists.update_item_in_library(
                 library_item_id, updated, overwrite=True
             )
         except (MusicAssistantError, OperationalError, IntegrityError) as exc:
+            if is_dynamic is not None:
+                raise
             self.logger.debug("Could not update description for %s: %s", library_item_id, exc)
 
     def _visible_folders(self, folder_paths: list[str]) -> list[str]:

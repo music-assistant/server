@@ -141,6 +141,7 @@ class SmartPlaylistRules:
     exclude_favorites: bool = False
     source_uris: list[str] = field(default_factory=list)
     source_names: dict[str, str] = field(default_factory=dict)
+    preserve_source_order: bool = False
 
     def all_seed_uris(self) -> list[str]:
         """Return every seed URI across the four seed lists, deduplicated, original order."""
@@ -173,6 +174,7 @@ class SmartPlaylistRules:
             "seed_names": self.seed_names,
             "source_uris": self.source_uris,
             "source_names": self.source_names,
+            "preserve_source_order": self.preserve_source_order,
             "min_popularity": self.min_popularity,
             "logic": self.logic,
             "limit": self.limit,
@@ -204,6 +206,9 @@ class SmartPlaylistRules:
         exclude_favorites = data.get("exclude_favorites", False)
         if not isinstance(exclude_favorites, bool):
             raise InvalidDataError("exclude_favorites must be a boolean")
+        preserve_source_order = data.get("preserve_source_order", False)
+        if not isinstance(preserve_source_order, bool):
+            raise InvalidDataError("preserve_source_order must be a boolean")
         return cls(
             genre_ids=_coerce_id_list(data.get("genre_ids"), "genre_ids"),
             artist_ids=_coerce_id_list(data.get("artist_ids"), "artist_ids"),
@@ -220,6 +225,7 @@ class SmartPlaylistRules:
             seed_names=_coerce_str_keyed_dict(data.get("seed_names"), "seed_names"),
             source_uris=_coerce_str_list(data.get("source_uris"), "source_uris"),
             source_names=_coerce_str_keyed_dict(data.get("source_names"), "source_names"),
+            preserve_source_order=preserve_source_order,
             min_popularity=_coerce_optional_int(data.get("min_popularity"), "min_popularity"),
             logic=data.get("logic", LOGIC_AND),
             limit=_coerce_int(data.get("limit", DEFAULT_TRACK_LIMIT), "limit"),
@@ -291,6 +297,8 @@ class SmartPlaylistRules:
             parts.append(f"Similar to: {', '.join(labels)}")
         if self.source_uris:
             parts.append(f"Selected sources: {len(self.source_uris)}")
+            if self.preserve_source_order:
+                parts.append("Preserve source track order")
         if self.excluded_artist_ids:
             names = [
                 self.excluded_artist_names.get(aid, str(aid)) for aid in self.excluded_artist_ids
@@ -358,6 +366,10 @@ def validate_rules(rules: SmartPlaylistRules) -> None:  # noqa: PLR0915
     """Raise InvalidDataError if any rule field is out of allowed range."""
     if not isinstance(rules.exclude_favorites, bool):
         raise InvalidDataError("exclude_favorites must be a boolean")
+    if not isinstance(rules.preserve_source_order, bool):
+        raise InvalidDataError("preserve_source_order must be a boolean")
+    if rules.preserve_source_order and not rules.source_uris:
+        raise InvalidDataError("Preserving source order requires selected sources")
     if rules.favorites_only and rules.exclude_favorites:
         raise InvalidDataError("favorites_only and exclude_favorites cannot both be enabled")
     if rules.logic not in (LOGIC_AND, LOGIC_OR):

@@ -99,6 +99,23 @@ class TestSmartPlaylistRules:
                 )
             )
 
+    def test_preserve_source_order_round_trip(self) -> None:
+        """Existing rules keep their mode and an ordered source rule survives storage."""
+        assert SmartPlaylistRules.from_dict({}).preserve_source_order is False
+        rules = SmartPlaylistRules(source_uris=["library://playlist/7"], preserve_source_order=True)
+        validate_rules(rules)
+        assert SmartPlaylistRules.from_dict(rules.to_dict()) == rules
+        with pytest.raises(InvalidDataError, match="requires selected sources"):
+            validate_rules(SmartPlaylistRules(preserve_source_order=True))
+
+    @pytest.mark.parametrize("value", [None, "false", "true", 0, 1])
+    def test_preserve_source_order_requires_boolean(self, value: Any) -> None:
+        """Invalid order values cannot silently enable a different playback mode."""
+        with pytest.raises(InvalidDataError, match="preserve_source_order"):
+            SmartPlaylistRules.from_dict({"preserve_source_order": value})
+        with pytest.raises(InvalidDataError, match="preserve_source_order"):
+            validate_rules(SmartPlaylistRules(preserve_source_order=value))
+
     def test_exclude_favorites_round_trip(self) -> None:
         """The additive exclusion round-trips and defaults off for older rules."""
         original = SmartPlaylistRules(exclude_favorites=True)
@@ -762,6 +779,125 @@ def _library_track(item_id: str) -> Track:
         uri=f"library://track/{item_id}",
         provider_mappings={mapping},
     )
+
+
+@pytest.mark.asyncio
+async def test_ordered_sources_keep_all_tracks_and_filter_without_shuffling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shuffle sources, not tracks, while retaining all matches and first occurrences."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    tracks = [_library_track(str(i)) for i in range(2105)]
+    album = Album(item_id="a", provider="service", name="Album", provider_mappings=set())
+    source_playlist = Playlist(
+        item_id="1",
+        provider="library",
+        name="Saved",
+        provider_mappings={
+            ProviderMapping(
+                item_id="p", provider_instance="service", provider_domain="service", in_library=True
+            )
+        },
+    )
+    source_items = {"library://track/0": tracks[0], "service://album/a": album}
+    mass.music.get_item_by_uri = AsyncMock(side_effect=lambda uri: source_items[uri])
+    mass.music.albums.tracks = AsyncMock(return_value=tracks[1:1100])
+    mass.music.playlists.get_visible_library_item_by_prov_id = AsyncMock(
+        return_value=source_playlist
+    )
+    mass.music.playlists.visible_to_caller.return_value = True
+    mass.music.playlists.tracks = AsyncMock(return_value=[tracks[1], *tracks[1100:]])
+    mass.music.genres.tracks_in_genres = AsyncMock(return_value=set())
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: None)
+    shuffle_sources = MagicMock(side_effect=lambda sources: sources.reverse())
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.random.shuffle", shuffle_sources)
+    rules = SmartPlaylistRules(
+        source_uris=["library://track/0", "service://album/a", "library://playlist/1"],
+        preserve_source_order=True,
+        limit=1,
+        excluded_track_uris=["library://track/5"],
+    )
+    result = await plugin._playlist_sample("ordered", rules)
+    expected = [tracks[1], *tracks[1100:], *tracks[2:1100], tracks[0]]
+    assert [track.item_id for track in result] == [
+        track.item_id for track in expected if track.item_id != "5"
+    ]
+    assert len(result) == 2104
+    shuffle_sources.assert_called_once()
+    mass.music.albums.tracks.assert_awaited_once_with("a", "service", limit=0)
+    mass.music.playlists.tracks.assert_awaited_once_with(
+        "1", "library", allow_dynamic_tracks=False, limit=0
+    )
+    preview = await plugin.preview_tracks(rules.to_dict(), limit=2)
+    assert [track["item_id"] for track in preview] == ["1", "1100"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["validation", "evaluation"])
+async def test_ordered_sources_reject_dynamic_playlists(stage: str) -> None:
+    """A saved source becoming dynamic is rejected before its tracks are fetched."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    playlist = Playlist(
+        item_id="1",
+        provider="library",
+        name="Dynamic",
+        is_dynamic=True,
+        provider_mappings={
+            ProviderMapping(
+                item_id="p", provider_instance="service", provider_domain="service", in_library=True
+            )
+        },
+    )
+    mass.music.playlists.get_visible_library_item_by_prov_id = AsyncMock(return_value=playlist)
+    mass.music.playlists.visible_to_caller.return_value = True
+    mass.music.playlists.tracks = AsyncMock()
+    rules = SmartPlaylistRules(source_uris=["library://playlist/1"], preserve_source_order=True)
+    action = plugin._validate_source_playlists if stage == "validation" else plugin._evaluate_rules
+    with pytest.raises(InvalidDataError, match="Dynamic playlists"):
+        await action(rules)
+    mass.music.playlists.tracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ordered_playlist_updates_library_dynamic_state() -> None:
+    """The stored playlist must leave dynamic queue mode, even when its description is unchanged."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    playlist = Playlist(
+        item_id="1", provider="library", name="Saved", provider_mappings=set(), is_dynamic=True
+    )
+    playlist.metadata.description = "Same"
+    mass.music.playlists.get_library_item = AsyncMock(return_value=playlist)
+    mass.music.playlists.update_item_in_library = AsyncMock()
+    await plugin._update_playlist_description("1", "Same", is_dynamic=False)
+    stored = mass.music.playlists.update_item_in_library.call_args.args[1]
+    assert stored.is_dynamic is False
+    assert playlist.is_dynamic is True
+    plugin._names_store = {}
+    plugin._descriptions_store = {}
+    cast("Any", plugin)._images_for = AsyncMock(return_value=UniqueList())
+    ordered = await plugin._build_playlist(
+        "ordered", SmartPlaylistRules(source_uris=["library://track/1"], preserve_source_order=True)
+    )
+    assert ordered.is_dynamic is False
+    ordinary = await plugin._build_playlist(
+        "ordinary", SmartPlaylistRules(source_uris=["library://track/1"])
+    )
+    assert ordinary.is_dynamic is True
 
 
 @pytest.mark.asyncio
