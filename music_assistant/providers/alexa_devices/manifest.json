@@ -1,0 +1,11 @@
+{
+  "stage": "experimental",
+  "type": "player",
+  "domain": "alexa_devices",
+  "name": "Alexa Devices",
+  "description": "Stream to Amazon Alexa (Echo) devices, using aioamazondevices.",
+  "codeowners": ["@chemelli74"],
+  "credits": ["[aioamazondevices](https://github.com/chemelli74/aioamazondevices)"],
+  "requirements": ["aioamazondevices==16.3.2"],
+  "documentation": "https://www.music-assistant.io/player-support/alexa-devices/"
+}
