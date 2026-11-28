@@ -1,0 +1,190 @@
+{
+  "data": [
+    {
+      "id": "6-27s5hU6azhJY",
+      "type": "personal-recommendation",
+      "href": "/v1/me/recommendations/6-27s5hU6azhJY",
+      "attributes": {
+        "isGroupRecommendation": false,
+        "kind": "music-recommendations",
+        "nextUpdateDate": "2026-11-28T18:00:00Z",
+        "resourceTypes": ["playlists"],
+        "title": {"stringForDisplay": "Made for You"}
+      },
+      "relationships": {
+        "contents": {
+          "href": "/v1/me/recommendations/6-27s5hU6azhJY/contents",
+          "data": [
+            {
+              "id": "pl.pm-20e9f373919da5b4eea1ad4c3afd1f8e",
+              "type": "playlists",
+              "href": "/v1/catalog/gb/playlists/pl.pm-20e9f373919da5b4eea1ad4c3afd1f8e",
+              "attributes": {
+                "artwork": {
+                  "width": 1080,
+                  "height": 1080,
+                  "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/favorites-mix/source/{w}x{h}cc.jpg",
+                  "bgColor": "f4f4f4"
+                },
+                "curatorName": "Apple Music",
+                "description": {
+                  "standard": "The songs you love, and more like them. Updated every Wednesday.",
+                  "short": "The songs you love."
+                },
+                "isChart": false,
+                "lastModifiedDate": "2026-11-25T08:00:00Z",
+                "name": "Favorites Mix",
+                "playParams": {"id": "pl.pm-20e9f373919da5b4eea1ad4c3afd1f8e", "kind": "playlist", "versionHash": "f9a3c1"},
+                "playlistType": "personal-mix",
+                "url": "https://music.apple.com/gb/playlist/favorites-mix/pl.pm-20e9f373919da5b4eea1ad4c3afd1f8e"
+              }
+            },
+            {
+              "id": "pl.pm-5d3c0e1f6a1b2c3d4e5f60718293a4b5",
+              "type": "playlists",
+              "href": "/v1/catalog/gb/playlists/pl.pm-5d3c0e1f6a1b2c3d4e5f60718293a4b5"
+            },
+            {
+              "id": "ra.q-GAI6IDUyZDNlNWQzMzk5YmQ1OTE",
+              "type": "stations",
+              "href": "/v1/catalog/gb/stations/ra.q-GAI6IDUyZDNlNWQzMzk5YmQ1OTE",
+              "attributes": {
+                "artwork": {
+                  "width": 1080,
+                  "height": 1080,
+                  "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/personal-station/source/{w}x{h}cc.jpg"
+                },
+                "isLive": false,
+                "mediaKind": "audio",
+                "name": "Personal Station",
+                "playParams": {"id": "ra.q-GAI6IDUyZDNlNWQzMzk5YmQ1OTE", "kind": "radioStation", "format": "stream", "stationHash": "CgUIBRoBAQ"},
+                "url": "https://music.apple.com/gb/station/personal-station/ra.q-GAI6IDUyZDNlNWQzMzk5YmQ1OTE"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "6-27s5hU6azhJZ",
+      "type": "personal-recommendation",
+      "href": "/v1/me/recommendations/6-27s5hU6azhJZ",
+      "attributes": {
+        "isGroupRecommendation": false,
+        "kind": "music-recommendations",
+        "nextUpdateDate": "2026-11-28T18:00:00Z",
+        "reason": {"stringForDisplay": "Because you listened to Radiohead"},
+        "resourceTypes": ["albums", "playlists"],
+        "title": {"stringForDisplay": "Recommended for You"}
+      },
+      "relationships": {
+        "contents": {
+          "href": "/v1/me/recommendations/6-27s5hU6azhJZ/contents",
+          "data": [
+            {
+              "id": "1097861387",
+              "type": "albums",
+              "href": "/v1/catalog/gb/albums/1097861387",
+              "attributes": {
+                "artistName": "Radiohead",
+                "artwork": {
+                  "width": 3000,
+                  "height": 3000,
+                  "url": "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/a-moon-shaped-pool/source/{w}x{h}bb.jpg"
+                },
+                "contentRating": "explicit",
+                "copyright": "℗ 2016 XL Recordings Ltd",
+                "genreNames": ["Alternative", "Music"],
+                "isCompilation": false,
+                "isComplete": true,
+                "isSingle": false,
+                "name": "A Moon Shaped Pool",
+                "playParams": {"id": "1097861387", "kind": "album"},
+                "recordLabel": "XL Recordings",
+                "releaseDate": "2016-05-08",
+                "trackCount": 11,
+                "upc": "634904078164",
+                "url": "https://music.apple.com/gb/album/a-moon-shaped-pool/1097861387"
+              }
+            },
+            {
+              "id": "1440806723",
+              "type": "albums",
+              "href": "/v1/catalog/gb/albums/1440806723"
+            },
+            {
+              "id": "pl.4b364b8b182f4115acbf6deb83bd5222",
+              "type": "playlists",
+              "href": "/v1/catalog/gb/playlists/pl.4b364b8b182f4115acbf6deb83bd5222",
+              "attributes": {
+                "artwork": {
+                  "width": 4320,
+                  "height": 1080,
+                  "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/alt-ctrl/source/{w}x{h}SC.jpg"
+                },
+                "curatorName": "Apple Music Alternative",
+                "description": {"standard": "The leading edge of alternative."},
+                "isChart": false,
+                "lastModifiedDate": "2026-11-27T04:00:00Z",
+                "name": "ALT CTRL",
+                "playParams": {"id": "pl.4b364b8b182f4115acbf6deb83bd5222", "kind": "playlist"},
+                "playlistType": "editorial",
+                "url": "https://music.apple.com/gb/playlist/alt-ctrl/pl.4b364b8b182f4115acbf6deb83bd5222"
+              }
+            },
+            {
+              "id": "pl.pm-20e9f373919da5b4eea1ad4c3afd1f8e",
+              "type": "playlists",
+              "href": "/v1/catalog/gb/playlists/pl.pm-20e9f373919da5b4eea1ad4c3afd1f8e",
+              "attributes": {
+                "curatorName": "Apple Music",
+                "name": "Favorites Mix",
+                "playParams": {"id": "pl.pm-20e9f373919da5b4eea1ad4c3afd1f8e", "kind": "playlist"},
+                "playlistType": "personal-mix"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "6-27s5hU6azhK0",
+      "type": "personal-recommendation",
+      "href": "/v1/me/recommendations/6-27s5hU6azhK0",
+      "attributes": {
+        "isGroupRecommendation": false,
+        "kind": "music-recommendations",
+        "nextUpdateDate": "2026-11-28T18:00:00Z",
+        "resourceTypes": ["stations"],
+        "title": {"stringForDisplay": "Stations for You"}
+      },
+      "relationships": {
+        "contents": {
+          "href": "/v1/me/recommendations/6-27s5hU6azhK0/contents",
+          "data": [
+            {
+              "id": "ra.978194965",
+              "type": "stations",
+              "href": "/v1/catalog/gb/stations/ra.978194965",
+              "attributes": {
+                "isLive": true,
+                "name": "Apple Music 1",
+                "playParams": {"id": "ra.978194965", "kind": "radioStation", "format": "stream"}
+              }
+            },
+            {
+              "id": "ra.657515",
+              "type": "stations",
+              "href": "/v1/catalog/gb/stations/ra.657515",
+              "attributes": {
+                "isLive": false,
+                "name": "Radiohead & Similar Artists",
+                "playParams": {"id": "ra.657515", "kind": "radioStation", "format": "tracks"}
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientResponseError
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     ItemMapping,
+    Playlist,
     Radio,
     RecommendationFolder,
     Track,
@@ -18,13 +20,15 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.cache import use_cache
 
 from .constants import PARSED_ITEM_CACHE_CHECKSUM
-from .parsers import parse_artist, parse_station, parse_track
+from .parsers import parse_album, parse_artist, parse_playlist, parse_station, parse_track
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
 
 # stations looked up per request when resolving the unnamed stations of the recommendations
 _STATION_BATCH_SIZE = 25
+# content types of the personal recommendations that are kept
+_RECOMMENDED_TYPES = ("stations", "albums", "playlists")
 
 
 def _slugify_title(title: str) -> str:
@@ -110,7 +114,7 @@ class AppleMusicRecommendationManager:
         response = await self.api.get_data(
             "me/recommendations?include[personal-recommendation]=contents"
         )
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         entries: list[tuple[str, dict[str, Any]]] = []
         # Reset maps so stale entries from previous fetches are not kept.
         self._station_id_to_name.clear()
@@ -124,37 +128,34 @@ class AppleMusicRecommendationManager:
                 continue
             contents = recommendation.get("relationships", {}).get("contents", {})
             for item in contents.get("data", []):
-                if item.get("type") != "stations":
+                item_type = item.get("type")
+                item_id = item.get("id")
+                if item_type not in _RECOMMENDED_TYPES or not item_id:
                     continue
-                station_id = item.get("id")
-                if not station_id or station_id in seen:
+                if (item_type, item_id) in seen:
                     continue
-                if item.get("attributes", {}).get("isLive", False):
+                if item_type == "stations" and item.get("attributes", {}).get("isLive", False):
                     # the live stations have their own listing in browse
                     continue
-                seen.add(station_id)
+                seen.add((item_type, item_id))
                 entries.append((title, item))
-        unnamed = [item["id"] for _, item in entries if not item.get("attributes", {}).get("name")]
+        unnamed = [
+            item["id"]
+            for _, item in entries
+            if item["type"] == "stations" and not item.get("attributes", {}).get("name")
+        ]
         fetched = await self._get_stations(unnamed)
         folders: dict[str, RecommendationFolder] = {}
         for title, item in entries:
-            station_id = item["id"]
-            if item.get("attributes", {}).get("name"):
-                radio = parse_station(self.provider, item)
-            elif (fetched_radio := fetched.get(station_id)) is not None:
-                radio = fetched_radio
-            else:
+            if (media_item := self._parse_recommended_item(item, fetched)) is None:
                 continue
-            if radio.name and radio.name != station_id:
-                self._station_id_to_name[station_id] = radio.name
-                self._station_name_to_id[radio.name] = station_id
             if title not in folders:
                 folders[title] = RecommendationFolder(
                     item_id=_slugify_title(title),
                     provider=self.provider.instance_id,
                     name=title,
                 )
-            folders[title].items.append(radio)
+            folders[title].items.append(media_item)
         return list(folders.values())
 
     async def resolve_station_id(self, stale_id: str) -> str | None:
@@ -177,14 +178,43 @@ class AppleMusicRecommendationManager:
 
     async def browse_stations(self) -> list[ItemMapping | Radio]:
         """Return recommended radio stations from personal recommendations."""
-        return cast(
-            "list[ItemMapping | Radio]",
-            [
-                item
-                for folder in await self.provider.get_recommendation_payload()
-                for item in folder.items
-            ],
-        )
+        return [
+            item
+            for folder in await self.provider.get_recommendation_payload()
+            for item in folder.items
+            if isinstance(item, Radio)
+        ]
+
+    def _parse_recommended_item(
+        self, item: dict[str, Any], fetched: dict[str, Radio]
+    ) -> Radio | Album | Playlist | None:
+        """
+        Parse one content item of the personal recommendations, or None to leave it out.
+
+        :param item: The raw station, album or playlist object.
+        :param fetched: The looked-up stations for the stations that came without a name.
+        """
+        item_id = item["id"]
+        if item["type"] == "stations":
+            if item.get("attributes", {}).get("name"):
+                radio = parse_station(self.provider, item)
+            elif (fetched_radio := fetched.get(item_id)) is not None:
+                radio = fetched_radio
+            else:
+                return None
+            if radio.name and radio.name != item_id:
+                self._station_id_to_name[item_id] = radio.name
+                self._station_name_to_id[radio.name] = item_id
+            return radio
+        try:
+            if item["type"] == "albums":
+                album = parse_album(self.provider, item)
+                # an album without attributes only parses to a mapping without a name
+                return album if isinstance(album, Album) else None
+            return parse_playlist(self.provider, item)
+        except (KeyError, TypeError, ValueError) as err:
+            self.logger.debug("Skipping recommended %s %s: %s", item["type"], item_id, err)
+            return None
 
     async def _get_stations(self, station_ids: list[str]) -> dict[str, Radio]:
         """
@@ -230,6 +260,6 @@ class AppleMusicRecommendationManager:
             return
         for folder in folders:
             for item in folder.items:
-                if item.name and item.name != item.item_id:
+                if isinstance(item, Radio) and item.name and item.name != item.item_id:
                     self._station_id_to_name[item.item_id] = item.name
                     self._station_name_to_id[item.name] = item.item_id
