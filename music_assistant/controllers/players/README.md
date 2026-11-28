@@ -911,8 +911,8 @@ name. Taking the player out of its group (ungroup, power off, select source, pla
 
 ## What a Provider Has to Do
 
-The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Provider"), and
-`providers/_demo_player_provider` is the annotated example. In short:
+This is the contract for a player provider; `providers/_demo_player_provider` is the annotated
+example.
 
 1. Implement one `PlayerProtocol` per device and report its role (`_attr_role`) and its type
    (`PlayerType.PLAYER`, unless it is a group, a set of speakers or another kind of client the
@@ -933,15 +933,26 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
    self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
    self._attr_device_info.add_identifier(IdentifierType.UUID, uuid)
    ```
+   Every zone of a multi-zone chassis reports its zone as `ZONE` next to the identifiers of the
+   chassis: `MAIN_ZONE` for the zone where the protocols of the chassis that report no zone
+   (AirPlay, DLNA) play, its own id for every other zone.
 3. `await mass.players.register(protocol)` when the device is found, `unregister(protocol_id)`
    when it is gone, `remove_protocol(protocol_id)` when the provider forgets it. The controller
    attaches a registered protocol once it knows its player, which can be after `register` returns:
    `on_attach` tells when.
-4. Claim per-device resources in `on_attach` and release them in `on_detach`; forget what the
-   provider keeps about a device in `on_remove`, or in `on_protocol_removed` for a device it may
-   hold no object for.
-5. `discover_players()` offers every known device that has no attached protocol, and is safe to
-   repeat: every discovery request of the controller (see [Lifecycle](#lifecycle)) runs it.
+4. Claim per-device resources in `on_attach` and release them in `on_detach`. `self.player` is
+   already `None` when `on_detach` runs, so a protocol releases what it holds itself. The same
+   object can be attached again later, when the controller moves it to another player or changes
+   its role: whatever `on_detach` ends, `on_attach` starts again. Forget what the provider keeps
+   about a device in `on_remove`, or in `on_protocol_removed` for a device it may hold no object
+   for. `on_remove` also reaches a protocol that is not attached, as long as its provider holds
+   the object: the controller keeps those only weakly, so a provider with a configured device list
+   keeps the object of every device on it.
+5. `discover_players()` offers the known devices without an attached protocol that the discovery
+   of the server can not find again, such as a device list in the config, and is safe to repeat.
+   Every discovery request of the controller (see [Lifecycle](#lifecycle)) replays the cached mDNS
+   records of the provider's `mdns_discovery` types, reruns the SSDP search of its
+   `upnp_discovery` targets and then runs it.
 6. Ask `mass.players.wants_protocol(protocol_id)` before setting up a connection for a device.
    Pass the protocol object too when a client can connect either as a device or as a player of its
    own: whether the stored config applies depends on that.
@@ -953,6 +964,23 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
    that is incomplete. It names only protocol ids of the provider itself, and the provider
    registers no protocol for a speaker while its set names it. A protocol of another provider that
    still finds such a speaker gets a new player, which the user removes.
+8. Leave the power of other players to the controller (see [Power](#power)). Whether another
+   player takes part in what a protocol does (a member of its group, the target of a handover) is
+   the `available` that player published. A player that is off or starting up at a power control
+   that cuts its power is available while its device can not play (`offline_by_power_control`): a
+   command powers it on and waits for its start-up time before it reaches the protocol, and a
+   protocol never switches such a player on itself. Playback that a protocol restarts by itself,
+   which is no command of a user, runs inside `with mass.players.without_member_power_on():`. The
+   members that play along right now come from `mass.players.iter_group_members()`.
+9. A protocol that keeps a connection to its device overrides `on_power_cut` and
+   `on_power_restored`; one that connects for every stream needs neither. In `on_power_cut`:
+   close the connection, call off a reconnect that waits or runs, read unavailable and publish
+   that. `on_power_restored` starts from that same state, as it is also called when `on_power_cut`
+   was not (a play within the first seconds of a cut) and can be called twice: close what is left
+   of an earlier connection, connect anew and return once the device is reached or can not be.
+   The controller ends the call after `POWER_RESTORE_TIMEOUT`, so leave a retry behind for a
+   device that is not up yet. Either call can overlap a detach: after an `await`, check that the
+   protocol is still attached before going on. The Sonos and Chromecast protocols do this.
 
 **Important Notes:**
 - **Always validate MAC addresses** using `is_valid_mac_address()` before adding them
@@ -967,6 +995,13 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
   protocol itself and from what is true of the player right now (`attached_protocols`,
   `resolve_output_protocol()`), never from a final value of its own player: during that update
   `self.player.<field>` is still the previous value
+- What a protocol reports about grouping names protocol ids of its own provider, and a group
+  protocol names its members by player id; the grouping as users see it is on the player
+  (`self.player.group_members`, `self.player.synced_to`, `self.player.active_group`)
+- Data that only lives while the server runs (`extra_data`, the stop and external source markers)
+  stays on `self.player`
+- The config of a protocol has no name: the name the user gave the device is
+  `self.player.config.name`
 
 ## Scenarios
 
