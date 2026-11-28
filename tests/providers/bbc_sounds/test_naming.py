@@ -1,5 +1,6 @@
 """Tests for the display names of BBC Sounds programmes and stations."""
 
+import copy
 from datetime import UTC, datetime
 
 import pytest
@@ -83,6 +84,21 @@ SEASONAL = PodcastEpisode(
         short="A billion-pound scandal fuelled by ambition, secrecy and the mysterious Mr Sunshine."
     ),
     release={"date": "2026-11-17T06:00:00Z"},
+)
+# An episode of a podcast with seasons, where the season is just the name of the season
+SEASON_IN_TITLE = PodcastEpisode(
+    id="p03",
+    titles=Titles(
+        primary="Curious Cases",
+        secondary="Series 25",
+        tertiary="Making Waves: Hannah and Dara investigate rare occurrences that create geometric patterns on water",
+        entity_title="Making Waves: Hannah and Dara investigate rare occurrences that create geometric patterns on water",
+    ),
+    release={"date": "2026-10-10T06:00:00Z"},
+)
+MAKING_WAVES = (
+    "Making Waves: Hannah and Dara investigate rare occurrences that create geometric "
+    "patterns on water"
 )
 # An episode whose title starts with its brand
 BULLETIN = PodcastEpisode(
@@ -178,7 +194,7 @@ class TestDisplayNames:
             pytest.param(
                 ON_AIR,
                 TitleParts.LISTING,
-                "Today • Business news: News and current affairs · 12 Oct 2026",
+                "Today • Business news: News and current affairs • 12 Oct 2026",
                 id="search-collections-player:LISTING",
             ),
             pytest.param(ON_AIR, TitleParts.SCHEDULE, CATCH_UP, id="catch-up:SCHEDULE"),
@@ -187,25 +203,31 @@ class TestDisplayNames:
                 SEASONAL,
                 TitleParts.PODCAST,
                 "Chasing Mr Sunshine • 1. Mr Sunshine and Sean from Accounts: A billion-pound "
-                "scandal fuelled by ambition, secrecy and the mysterious Mr Sunshine · 17 Nov 2026",
+                "scandal fuelled by ambition, secrecy and the mysterious Mr Sunshine • 17 Nov 2026",
                 id="episodes-with-seasons:PODCAST",
             ),
             pytest.param(
                 ON_AIR,
                 TitleParts.PODCAST,
-                "Business news: News and current affairs · 12 Oct 2026",
+                "Business news: News and current affairs • 12 Oct 2026",
                 id="episodes-without-seasons:PODCAST",
+            ),
+            pytest.param(
+                SEASONAL,
+                TitleParts.EPISODE_DETAILS,
+                "Chasing Mr Sunshine • 1. Mr Sunshine and Sean from Accounts",
+                id="episode-page:EPISODE_DETAILS",
             ),
             pytest.param(
                 EXCLAIMED,
                 TitleParts.PODCAST,
-                "Up Against The Clock! Shygirl takes over the residency · 14 Nov 2026",
+                "Up Against The Clock! Shygirl takes over the residency • 14 Nov 2026",
                 id="title-ending-in-punctuation:PODCAST",
             ),
             pytest.param(
                 BULLETIN,
                 TitleParts.LISTING,
-                "BBC News 20:00: The latest news from the BBC · 19 Nov 2026",
+                "BBC News 20:00: The latest news from the BBC • 19 Nov 2026",
                 id="episode-names-its-brand:LISTING",
             ),
             pytest.param(
@@ -221,7 +243,7 @@ class TestDisplayNames:
                 LOCAL_CLIP,
                 TitleParts.LISTING,
                 "BBC Radio Oxford • Gas leak shuts Didcot line: Severe disruption is expected"
-                " · 23 Sep 2026",
+                " • 23 Sep 2026",
                 id="clip-names-its-station:LISTING",
             ),
             pytest.param(
@@ -295,3 +317,17 @@ class TestDisplayNames:
     def test_live_station_folder(self) -> None:
         """A station in the live folder: its description is the programme on air."""
         assert station_programme_title(ON_AIR_STATION) == "06:30 - 07:00 • Today"
+
+    @pytest.mark.parametrize(
+        ("episode_number", "expected"),
+        [
+            pytest.param(8, MAKING_WAVES, id="numbered"),
+            pytest.param(None, f"Series 25 • {MAKING_WAVES}", id="unnumbered"),
+        ],
+    )
+    def test_numbered_season_drops_season(self, episode_number: int | None, expected: str) -> None:
+        """A season that is just 'Season X' is removed when it has an episode number."""
+        episode = copy.copy(SEASON_IN_TITLE)
+        episode.episode_number = episode_number
+
+        assert programme_title(episode, TitleParts.EPISODE_DETAILS) == expected

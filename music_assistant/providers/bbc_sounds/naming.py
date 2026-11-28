@@ -6,10 +6,12 @@ auntie-sounds objects to Music Assistant objects, as well as multiple ways to co
 them, and also display then, requires a consistent interface for naming things.
 """
 
+import re
 import unicodedata
 from contextlib import suppress
 from datetime import date, datetime
 from enum import Flag, auto
+from typing import Final
 
 from auntie_sounds import SCHEDULE_TIMEZONE
 from auntie_sounds.models import (
@@ -32,13 +34,25 @@ TITLE_END_PUNCTUATION = ("!", "?", ".", ":")
 # title in a BBC app would share
 GENERIC_NETWORKS = frozenset({"bbc_webonly"})
 STATION_PREFIX = "BBC"
+# Between the parts of a title, and before its date
+SEPARATOR = " • "
+
+# A season name that is just its number, e.g. "Series 25"
+NUMBERED_SEASON: Final = re.compile(r"(?:series|season)\s+(\d+)", re.IGNORECASE)
+
+
+def season_number(name: str | None) -> int | None:
+    """Return the season number, e.g. 25 for "Series 25", or None."""
+    if name and (match := NUMBERED_SEASON.fullmatch(name.strip())):
+        return int(match[1])
+    return None
 
 
 class TitleParts(Flag):
     """
     The parts of a programme's title, combined into the form each place shows.
 
-    A title reads ``{marker} {start} {brand} • {series} • {episode}: {synopsis} · {date}``,
+    A title reads ``{marker} {start} {brand} • {series} • {episode}: {synopsis} • {date}``,
     with each part left out unless its flag is set and the programme has it. The date
     goes last, as the BBC Sounds app shows it, so it doesn't break up the sentence.
     """
@@ -62,6 +76,8 @@ class TitleParts(Flag):
     SCHEDULE = START | BRAND | EPISODE
     # A podcast's episode list, where the podcast gives the brand
     PODCAST = SERIES | EPISODE | DATE | SYNOPSIS
+    # An episode's own page, which shows its podcast, date and synopsis apart
+    EPISODE_DETAILS = SERIES | EPISODE
     # A curated playlist, e.g. the latest news, which mixes episodes with clips that only
     # have a headline. Its items are all recent, so a date and synopsis add little.
     PLAYLIST = BRAND | EPISODE
@@ -106,16 +122,22 @@ def programme_title(item: PlayableItem, parts: TitleParts = TitleParts.LISTING) 
         and not episode[len(brand) : len(brand) + 1].isalnum()
     ):
         brand = None
+
+    series = titles.secondary if has_season else None
+    # "Series 25" repeats the season badge, which only shows on numbered episodes
+    if item.episode_number is not None and season_number(series) is not None:
+        series = None
+
     names = [
         name
         for flag, name in (
             (TitleParts.BRAND, brand),
-            (TitleParts.SERIES, titles.secondary if has_season else None),
+            (TitleParts.SERIES, series),
             (TitleParts.EPISODE, episode),
         )
         if flag in parts and name
     ]
-    title = " • ".join(names) or UNKNOWN_TITLE
+    title = SEPARATOR.join(names) or UNKNOWN_TITLE
 
     if TitleParts.START in parts and item.start:
         title = f"{_to_time(item.start)} {title}"
@@ -131,7 +153,7 @@ def programme_title(item: PlayableItem, parts: TitleParts = TitleParts.LISTING) 
         # A full stop straight before the date's dot reads oddly, but an ellipsis stays
         if title.endswith(".") and not title.endswith(".."):
             title = title.removesuffix(".")
-        title += f" · {_to_date(when)}"
+        title += f"{SEPARATOR}{_to_date(when)}"
     return title
 
 
@@ -209,7 +231,7 @@ def station_programme_title(station: LiveStation | Station) -> str | None:
     titles = station.titles
     if not titles.primary:
         return None
-    return " • ".join(filter(None, (titles.secondary, titles.primary)))
+    return SEPARATOR.join(filter(None, (titles.secondary, titles.primary)))
 
 
 def programme_source(item: PlayableItem) -> str | None:
