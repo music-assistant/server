@@ -83,6 +83,16 @@ Do **not** use Google-style (`Args:`) or bullet-style (`- param:`) docstrings.
 ### File structure
 Private methods should be at the bottom of the file, public at the top.
 
+### Naming
+
+Give functions, methods, variables and classes names that say what they do or hold, so a reader does not have to guess.
+
+### README files
+
+The longer explanation of how a controller or a provider works lives in a `README.md` in its folder: its layout, data model, lifecycle and the reasons behind the design, as they are now. It is not a list of methods and not a history of changes.
+
+A change that makes such a README wrong or incomplete updates it in the same PR. A new controller, or a provider whose design needs explaining, comes with one.
+
 ## Data changes need migrations
 
 Config entries and database rows are live user data. A renamed key, a changed type, a value that
