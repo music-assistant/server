@@ -246,9 +246,11 @@ NORMALIZED = VolumeNormalizationMode.DYNAMIC
         # DSD is probed as 8 bits and decoded to more than a player takes
         (TRACK, ContentType.DSF, 8, PLAIN, False, 24),
         (TRACK, ContentType.WAVPACK, 8, PLAIN, False, 24),
-        # volume normalization or DSP works on a track: all the bits of the player
-        (TRACK, ContentType.FLAC, 16, NORMALIZED, False, 24),
-        (TRACK, ContentType.FLAC, 16, PLAIN, True, 24),
+        # volume normalization or DSP works on a track: no more bits than its source has
+        (TRACK, ContentType.FLAC, 16, NORMALIZED, False, 16),
+        (TRACK, ContentType.FLAC, 16, PLAIN, True, 16),
+        (TRACK, ContentType.MP3, 16, NORMALIZED, False, 16),
+        (TRACK, ContentType.FLAC, 24, NORMALIZED, False, 24),
         # a radio station has the bits of its source, whatever works on it
         (RADIO, ContentType.MP3, 16, NORMALIZED, False, 16),
         (RADIO, ContentType.AAC, 16, PLAIN, True, 16),

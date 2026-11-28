@@ -1526,14 +1526,12 @@ async def test_output_format_defaults_non_track_media_to_16_bit() -> None:
     assert fmt.bit_depth == 16
 
 
-@pytest.mark.parametrize(
-    "media_type", [MediaType.TRACK, MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM]
-)
+@pytest.mark.parametrize("media_type", [MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM])
 @pytest.mark.asyncio
 async def test_output_format_ignores_source_depth_for_full_range_media(
     media_type: MediaType,
 ) -> None:
-    """Tracks and flow streams keep the full player depth whatever the source says."""
+    """Live sources and flow streams keep the full player depth whatever the source says."""
     audio, player = _hires_capable_audio()
 
     fmt = await audio.get_output_format("flac", player, 96000, 32, media_type, source_bit_depth=16)
@@ -1557,6 +1555,104 @@ async def test_single_stream_handler_uses_declared_source_bit_depth(
         await controller.serve_queue_item_stream(request)
 
     assert controller.audio.get_output_format.call_args.kwargs["source_bit_depth"] == 16
+
+
+@pytest.mark.parametrize(
+    ("audio_format", "decoded_audio_format", "content_bit_depth", "player_bit_depth", "expected"),
+    [
+        pytest.param(_format(ContentType.FLAC, 44100, 16), None, 32, 24, 16, id="16-bit-processed"),
+        # a lossy source its provider hands over as 32 bit PCM, and processing on top
+        pytest.param(
+            _format(ContentType.OGG, 44100, 16),
+            _format(ContentType.PCM_S32LE, 44100, 32),
+            32,
+            24,
+            16,
+            id="lossy-processed",
+        ),
+        pytest.param(_format(ContentType.FLAC, 96000, 24), None, 32, 24, 24, id="24-bit-processed"),
+        pytest.param(_format(ContentType.FLAC, 96000, 24), None, 32, 16, 16, id="16-bit-player"),
+        pytest.param(
+            _format(ContentType.FLAC, 44100, 16), None, 16, 24, 16, id="16-bit-unprocessed"
+        ),
+        # DSD is probed as 8 bit and decodes to more
+        pytest.param(_format(ContentType.DSF, 88200, 8), None, 32, 24, 24, id="dsd"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_single_stream_sends_no_more_bits_than_the_source_has(
+    monkeypatch: pytest.MonkeyPatch,
+    audio_format: AudioFormat,
+    decoded_audio_format: AudioFormat | None,
+    content_bit_depth: int,
+    player_bit_depth: int,
+    expected: int,
+) -> None:
+    """A player gets the bits of the source, also when processing works on it in float."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    streamdetails = controller.mass.player_queues.get_item.return_value.streamdetails
+    streamdetails.audio_format = audio_format
+    streamdetails.decoded_audio_format = decoded_audio_format
+    controller.audio.select_pcm_format.return_value = _format(
+        ContentType.from_bit_depth(content_bit_depth), 48000, content_bit_depth
+    )
+    audio, protocol = _hires_capable_audio()
+    protocol._attr_supported_sample_rates = [(48000, player_bit_depth)]
+    picked: list[AudioFormat] = []
+
+    async def _get_output_format(**kwargs: Any) -> AudioFormat:
+        picked.append(await audio.get_output_format(**{**kwargs, "player": protocol}))
+        return picked[-1]
+
+    controller.audio.get_output_format = _get_output_format
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert picked[0].bit_depth == expected
+
+
+class _FlowStreamRequested(Exception):
+    """Signal that a flow stream handler asked for the audio of its flow."""
+
+
+@pytest.mark.parametrize(
+    ("start_bit_depth", "output_bit_depth", "restart_bit_depth"),
+    [
+        # a flow that starts at a 16 bit item restarts for an item with more bits
+        (16, 16, 16),
+        # and comes back with 24 bit when it starts at that item
+        (24, 24, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_processed_flow_stream_restarts_for_more_bits_than_it_has(
+    monkeypatch: pytest.MonkeyPatch,
+    start_bit_depth: int,
+    output_bit_depth: int,
+    restart_bit_depth: int | None,
+) -> None:
+    """A processed flow carries the bits of its first item and restarts for more."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    streamdetails = controller.mass.player_queues.get_item.return_value.streamdetails
+    streamdetails.audio_format = _format(ContentType.FLAC, 48000, start_bit_depth)
+    audio, protocol = _hires_capable_audio()
+    protocol._attr_supported_sample_rates = [(48000, 24)]
+    picked: list[AudioFormat] = []
+
+    async def _get_output_format(**kwargs: Any) -> AudioFormat:
+        picked.append(await audio.get_output_format(**{**kwargs, "player": protocol}))
+        return picked[-1]
+
+    controller.audio.get_output_format = _get_output_format
+    controller.audio.get_player_output_plan.side_effect = None
+    controller.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
+    controller.audio.get_queue_flow_stream = MagicMock(side_effect=_FlowStreamRequested)
+    with pytest.raises(_FlowStreamRequested):
+        await controller.serve_queue_flow_stream(request)
+
+    assert picked[0].bit_depth == output_bit_depth
+    kwargs = controller.audio.get_queue_flow_stream.call_args.kwargs
+    assert kwargs.get("restart_bit_depth") == restart_bit_depth
 
 
 @pytest.mark.asyncio

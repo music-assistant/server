@@ -608,6 +608,46 @@ def test_needs_restart_fixed_rate_modes_never_break_on_rate() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("mode", "track_bit_depth", "restart_bit_depth", "restarts"),
+    [
+        # a 16 bit flow restarts for an item with more bits, as for one with a higher rate
+        (FLOW_MODE_SAMPLE_RATE_SMART, 24, 16, True),
+        (FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, 24, 16, True),
+        # an item with fewer bits plays on in a flow with more
+        (FLOW_MODE_SAMPLE_RATE_SMART, 16, 24, False),
+        (FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, 16, 24, False),
+        (FLOW_MODE_SAMPLE_RATE_48000, 24, 16, False),
+        (FLOW_MODE_SAMPLE_RATE_HIGHEST, 24, 16, False),
+        # a consumer that takes no more bits than the flow has
+        (FLOW_MODE_SAMPLE_RATE_SMART, 24, None, False),
+    ],
+)
+def test_needs_restart_for_an_item_with_more_bits(
+    mode: str, track_bit_depth: int, restart_bit_depth: int | None, restarts: bool
+) -> None:
+    """The modes that restart for a higher sample rate also restart for more bits."""
+    audio = _make_streams_audio()
+    track = _make_queue_track(rate=48000)
+    track.streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.FLAC, sample_rate=48000, bit_depth=track_bit_depth
+    )
+    track.streamdetails.decoded_audio_format = None
+    pcm = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32)
+
+    assert (
+        audio._flow_stream_needs_restart(
+            track,
+            pcm,
+            supported_sample_rates=[44100, 48000, 96000],
+            flow_mode_sample_rate_conf=mode,
+            is_first_track=False,
+            restart_bit_depth=restart_bit_depth,
+        )
+        is restarts
+    )
+
+
 def test_needs_restart_returns_false_when_streamdetails_missing() -> None:
     """Without streamdetails the sample rate can't be evaluated; do not break the flow."""
     audio = _make_streams_audio()

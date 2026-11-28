@@ -82,6 +82,7 @@ from music_assistant.controllers.streams.announcements import (
 )
 from music_assistant.controllers.streams.audio import (
     StreamsAudio,
+    bit_depth_of_source,
     overlay_active,
     overlay_mixed_in,
 )
@@ -1248,7 +1249,7 @@ class StreamsController(CoreController):
                 content_sample_rate=pcm_format.sample_rate,
                 content_bit_depth=pcm_format.bit_depth,
                 media_type=queue_item.media_type,
-                source_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
+                source_bit_depth=bit_depth_of_source(queue_item.streamdetails),
             )
 
             # prepare request, add some DLNA/UPNP compatible headers
@@ -1749,10 +1750,24 @@ class StreamsController(CoreController):
             content_bit_depth=flow_pcm_format.bit_depth,
             media_type=start_queue_item.media_type,
             source_bit_depth=(
-                start_queue_item.streamdetails.audio_format.bit_depth
+                bit_depth_of_source(start_queue_item.streamdetails)
                 if start_queue_item.streamdetails
                 else 16
             ),
+        )
+        # the most bits the player takes in this format, which an item with more bits than
+        # the flow has gets by a restart of the flow
+        max_output_format = await self.audio.get_output_format(
+            output_format_str=request.match_info["fmt"],
+            player=player,
+            content_sample_rate=flow_pcm_format.sample_rate,
+            content_bit_depth=32,
+            media_type=MediaType.FLOW_STREAM,
+        )
+        restart_bit_depth = (
+            output_format.bit_depth
+            if max_output_format.bit_depth > output_format.bit_depth
+            else None
         )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_protocol_value(
@@ -1823,6 +1838,7 @@ class StreamsController(CoreController):
             session_id=session_id,
             protocol_player=player,
             consumer_connected=lambda: request.transport is not None,
+            restart_bit_depth=restart_bit_depth,
         )
         if mix_overlay:
             flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)

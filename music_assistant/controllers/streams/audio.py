@@ -442,6 +442,20 @@ def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> 
     return max_bytes // frame_size * frame_size
 
 
+def bit_depth_of_source(streamdetails: StreamDetails) -> int:
+    """
+    Return the bit depth that carries all of the audio of a source.
+
+    That is the depth its audio is decoded to, or 16 bit for a lossy source, whatever
+    depth its decoder gives.
+
+    :param streamdetails: Stream details of the source.
+    """
+    if quality_tier(streamdetails.audio_format) in (QualityTier.LOSSY_HIGH, QualityTier.LOSSY_LOW):
+        return 16
+    return decoded_pcm_format(streamdetails).bit_depth
+
+
 def _delivered_media_covers_item(
     streamdetails: StreamDetails,
     delivered_seconds: float,
@@ -1750,8 +1764,9 @@ class StreamsAudio:
         :param content_sample_rate: Sample rate of the internal PCM being encoded.
         :param content_bit_depth: Bit depth of the internal PCM being encoded.
         :param media_type: Media type being streamed.
-        :param source_bit_depth: Bit depth the source itself declares, which is not the
-            same as ``content_bit_depth`` once the internal PCM is widened for processing.
+        :param source_bit_depth: Bit depth of the source (see ``bit_depth_of_source``), which
+            is not the same as ``content_bit_depth`` once the internal PCM is widened for
+            processing.
         """
         content_type: ContentType = ContentType.try_parse(output_format_str)
         player_supported_rates = player.get_supported_sample_rates()
@@ -1770,10 +1785,10 @@ class StreamsAudio:
             # no point in having a higher bit depth for lossy formats
             output_bit_depth = 16
             output_sample_rate = min(48000, output_sample_rate)
-        if media_type not in (MediaType.TRACK, MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM):
-            # content_bit_depth is the internal PCM depth (32 bit float once normalization
-            # or DSP runs), so cap on the source instead: a lossy station or TTS stays
-            # 16 bit while a hi-res radio stream keeps its own depth. Round up to a
+        if media_type not in (MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM):
+            # content_bit_depth is the internal PCM depth (32 bit float once crossfade,
+            # normalization or DSP runs), so cap on the source instead: a 16 bit or lossy
+            # source stays 16 bit while a hi-res one keeps its own depth. Round up to a
             # container width, which is what the encoders and content length headers assume.
             source_container_bit_depth = (
                 16 if source_bit_depth <= 16 else 24 if source_bit_depth <= 24 else 32
@@ -2985,6 +3000,7 @@ class StreamsAudio:
         protocol_player: PlayerProtocol | None = None,
         consumer_connected: Callable[[], bool] | None = None,
         flow_restart: Callable[[StreamDetails], Awaitable[bool]] | None = None,
+        restart_bit_depth: int | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -3006,6 +3022,9 @@ class StreamsAudio:
         :param flow_restart: Returns whether the stream restarts for an item, for a consumer
             that picks the rate of its flow streams itself (such as a group that serves
             several players with one stream). It takes the place of the sample rate check.
+        :param restart_bit_depth: Bit depth the consumer gets the flow in, when it takes
+            more: in the flow modes that restart for a sample rate, an item with more bits
+            restarts the flow.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -3139,6 +3158,7 @@ class StreamsAudio:
                     flow_mode_sample_rate_conf,
                     is_first_track=queue_track is start_queue_item,
                     consumer_restarts=consumer_restarts,
+                    restart_bit_depth=restart_bit_depth,
                 ):
                     break
 
@@ -6686,6 +6706,7 @@ class StreamsAudio:
         flow_mode_sample_rate_conf: str,
         is_first_track: bool,
         consumer_restarts: bool | None = None,
+        restart_bit_depth: int | None = None,
     ) -> bool:
         """
         Return True if the upcoming queue track requires exiting the flow stream.
@@ -6700,6 +6721,8 @@ class StreamsAudio:
           mirroring select_flow_pcm_format's anchoring logic) is incompatible with
           the current flow rate, so a new flow must be opened. A consumer that decides
           about restarts itself takes the place of this check.
+        - More bits (same modes): the next track has more bits than the flow carries to
+          a consumer that takes more.
 
         The first (anchor) track is always allowed to continue for the sample
         rate check; select_flow_pcm_format has already snapped the flow rate to it.
@@ -6711,6 +6734,7 @@ class StreamsAudio:
         :param is_first_track: Whether this is the first track of the flow stream.
         :param consumer_restarts: Whether the consumer of the flow restarts it for the
             upcoming track, if it decides that itself.
+        :param restart_bit_depth: Bit depth the consumer gets the flow in, when it takes more.
         """
         # live audio (radio, plugin or audio source) cannot be flowed; let the
         # queue controller fall back to single-item streaming for this item
@@ -6744,11 +6768,12 @@ class StreamsAudio:
         # everything to the chosen rate (no restart); bit_perfect restarts on any
         # mismatch; anything else falls through to smart-anchor behavior so
         # unknown/legacy config values don't silently pin the flow forever.
-        if flow_mode_sample_rate_conf in (
+        fixed_rate = flow_mode_sample_rate_conf in (
             FLOW_MODE_SAMPLE_RATE_48000,
             FLOW_MODE_SAMPLE_RATE_96000,
             FLOW_MODE_SAMPLE_RATE_HIGHEST,
-        ):
+        )
+        if fixed_rate:
             needs_restart = False
         elif flow_mode_sample_rate_conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT:
             needs_restart = effective_next_rate != pcm_format.sample_rate
@@ -6766,7 +6791,24 @@ class StreamsAudio:
                 pcm_format.sample_rate,
                 flow_mode_sample_rate_conf,
             )
-        return needs_restart
+            return True
+        if (
+            restart_bit_depth is not None
+            and not fixed_rate
+            and (next_bit_depth := bit_depth_of_source(queue_track.streamdetails))
+            > restart_bit_depth
+        ):
+            self.logger.info(
+                "Track %s (%s) has %s bits, more than the %s bits of the flow (mode: %s) "
+                "- breaking out to restart flow stream",
+                queue_track.queue_item_id,
+                queue_track.name,
+                next_bit_depth,
+                restart_bit_depth,
+                flow_mode_sample_rate_conf,
+            )
+            return True
+        return False
 
     @asynccontextmanager
     async def _connect_radio_stream(self, url: str, **kwargs: Any) -> AsyncGenerator[Any]:

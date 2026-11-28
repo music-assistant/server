@@ -101,6 +101,7 @@ from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
     PlaybackQuality,
 )
+from music_assistant.controllers.streams.audio import bit_depth_of_source
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import (
@@ -2026,7 +2027,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 sample_rate,
                 pcm_format.bit_depth,
                 media_type=item_streamdetails.media_type,
-                source_bit_depth=item_streamdetails.audio_format.bit_depth,
+                source_bit_depth=bit_depth_of_source(item_streamdetails),
             )
             self.session_bit_depth = output_format.bit_depth
         await self._apply_preferred_format()

@@ -113,13 +113,12 @@ _MEMBER_SET_UPS: dict[
 
 
 @pytest.mark.parametrize(
-    ("blends_items", "mixes_overlay", "bit_depth"),
-    [(False, False, 16), (True, False, 24), (False, True, 24)],
+    ("blends_items", "mixes_overlay"), [(False, False), (True, False), (False, True)]
 )
-async def test_session_that_mixes_audio_plays_in_all_the_bits(
-    monkeypatch: pytest.MonkeyPatch, blends_items: bool, mixes_overlay: bool, bit_depth: int
+async def test_session_that_mixes_audio_plays_in_the_bits_of_its_item(
+    monkeypatch: pytest.MonkeyPatch, blends_items: bool, mixes_overlay: bool
 ) -> None:
-    """A session that blends its items or mixes an overlay in has more bits than a 16-bit item."""
+    """A session that blends its items or mixes an overlay in has no more bits than its item."""
     flac_24 = SupportedAudioFormat(
         codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=24
     )
@@ -143,7 +142,7 @@ async def test_session_that_mixes_audio_plays_in_all_the_bits(
     session._start_mixes = session._get_start_mixes(media)
     await session._follow_session_sample_rate([PLAYER_ID])
 
-    assert player.session_bit_depth == bit_depth
+    assert player.session_bit_depth == 16
 
 
 async def test_session_follows_first_track_rate() -> None:
