@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -37,6 +37,7 @@ from music_assistant.providers.squeezelite.constants import (
     CONF_STORED_POWER,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
+    PLAYER_ARTWORK_SIZE,
     REPEATMODE_MAP,
 )
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
@@ -1089,3 +1090,182 @@ async def test_the_stream_of_the_bridge_reports_its_own_format() -> None:
     await _report_update(player)
 
     cast("AsyncMock", player.client.update_metadata).assert_not_called()
+
+
+# ---------------------------------------------------------------- live stream metadata
+
+LIVE_MEDIA = PlayerMedia(
+    uri="library://radio/1",
+    title="Highway Star",
+    artist="Deep Purple",
+    image_url="https://cdn.example/cover.jpg",
+    source_id="queue_1",
+    queue_item_id="item_1",
+)
+# the artwork of a queue item is proxied on the webserver, which a device may not reach at all
+OWN_ARTWORK = "http://webserver:8095/imageproxy/abc?size=512&fmt=jpeg"
+# what the device is handed instead: the stream server it already fetches its audio from
+DEVICE_ARTWORK_URL = "http://streams:8097/imageproxy/abc?size=512&fmt=jpeg"
+# a cover the server has to fetch itself, scaled for the screen of the player
+PLAYER_ARTWORK_URL = "http://streams:8097/imageproxy/def?size=160&fmt=jpeg"
+
+
+def _client_of(player: SqueezelitePlayer) -> MagicMock:
+    """Return the mocked slimproto client of a player, whose media is always there."""
+    return cast("MagicMock", player.client)
+
+
+def _sent_metadata(player: SqueezelitePlayer) -> dict[str, Any]:
+    """Return the metadata the player last handed to its client."""
+    update_metadata = cast("AsyncMock", player.client.update_metadata)
+    assert update_metadata.await_args is not None
+    return cast("dict[str, Any]", update_metadata.await_args.args[0])
+
+
+def _player_playing_a_radio(
+    live: PlayerMedia | None = LIVE_MEDIA, held_item: str = "item_1"
+) -> tuple[SqueezelitePlayer, MagicMock]:
+    """
+    Return a player that plays a radio station, alongside its mocked mass instance.
+
+    :param live: What the player has loaded as its media, None for a player without media.
+    :param held_item: The queue item the player holds the media of.
+    """
+    player, mass = _player_with_mocked_mass()
+    use_real_create_task(mass)
+    player._player = MagicMock(current_media=live)
+    player.client = MagicMock()
+    _client_of(player).current_media.metadata = {"title": "Station", "queue_item_id": held_item}
+    player.client.update_metadata = AsyncMock()
+    mass.webserver.base_url = "http://webserver:8095"
+    mass.streams.base_url = "http://streams:8097"
+    mass.metadata.get_image_url.return_value = PLAYER_ARTWORK_URL
+    # the callback also reports the repeat and shuffle of the queue, which these tests do not
+    # exercise: they hand it a queue that reports neither
+    mass.player_queues.get_active_queue.return_value = MagicMock(
+        repeat_mode=RepeatMode.OFF, shuffle_enabled=False
+    )
+    return player, mass
+
+
+async def test_a_live_stream_hands_its_title_and_cover_to_the_player() -> None:
+    """A radio changes title under one media item: the player is told what it carries now."""
+    player, mass = _player_playing_a_radio()
+
+    player.on_player_media_updated()
+    await asyncio.sleep(0)
+
+    metadata = _sent_metadata(player)
+    assert (metadata["title"], metadata["artist"]) == ("Highway Star", "Deep Purple")
+    # a cover the device cannot fetch itself (https) is served by this server, on the stream
+    # server, scaled for the screen of the player
+    assert metadata["image_url"] == PLAYER_ARTWORK_URL
+    assert mass.metadata.get_image_url.call_args.args[0].path == "https://cdn.example/cover.jpg"
+    assert mass.metadata.get_image_url.call_args.kwargs["size"] == PLAYER_ARTWORK_SIZE
+    # the media of the client is left alone: the library replaces its contents
+    assert _client_of(player).current_media.metadata["title"] == "Station"
+
+
+async def test_the_cover_of_a_queue_item_moves_to_the_stream_server() -> None:
+    """The artwork of a queue item is on our webserver, which the device may not reach at all."""
+    player, mass = _player_playing_a_radio(
+        PlayerMedia(
+            uri="library://radio/1",
+            title="Station",
+            source_id="queue_1",
+            queue_item_id="item_1",
+            image_url=OWN_ARTWORK,
+        )
+    )
+
+    player.on_player_media_updated()
+    await asyncio.sleep(0)
+
+    assert _sent_metadata(player)["image_url"] == DEVICE_ARTWORK_URL
+    # ours is reused, not proxied a second time
+    mass.metadata.get_image_url.assert_not_called()
+
+
+async def test_a_cover_the_device_can_fetch_is_left_alone() -> None:
+    """Plain http is what the device speaks itself: that cover needs no hop through the proxy."""
+    player, mass = _player_playing_a_radio(
+        PlayerMedia(
+            uri="library://radio/1",
+            title="Station",
+            source_id="queue_1",
+            queue_item_id="item_1",
+            image_url="http://cdn.example/cover.jpg",
+        )
+    )
+
+    player.on_player_media_updated()
+    await asyncio.sleep(0)
+
+    assert _sent_metadata(player)["image_url"] == "http://cdn.example/cover.jpg"
+    mass.metadata.get_image_url.assert_not_called()
+
+
+async def test_a_station_without_an_artist_clears_the_one_of_before() -> None:
+    """A station that sends no ICY titles must not keep the artist of the previous station."""
+    player, _mass = _player_playing_a_radio(
+        PlayerMedia(
+            uri="library://radio/1",
+            title="Radiostation",
+            source_id="queue_1",
+            queue_item_id="item_1",
+        )
+    )
+
+    player.on_player_media_updated()
+    await asyncio.sleep(0)
+
+    metadata = _sent_metadata(player)
+    assert metadata["artist"] == ""
+    # without a cover the one that is there stays: a device does not repaint what it loses
+    assert "image_url" not in metadata
+
+
+async def test_a_title_that_did_not_change_is_not_sent_again() -> None:
+    """The callback also fires for our own change: only a stream that moved may repaint again."""
+    player, _mass = _player_playing_a_radio()
+    _client_of(player).current_media.metadata = {
+        "title": LIVE_MEDIA.title,
+        "artist": LIVE_MEDIA.artist,
+        "image_url": PLAYER_ARTWORK_URL,
+        "queue_item_id": "item_1",
+    }
+    update_metadata = cast("AsyncMock", player.client.update_metadata)
+
+    player.on_player_media_updated()
+    await asyncio.sleep(0)
+
+    update_metadata.assert_not_awaited()
+    cast("MagicMock", player.player).current_media = PlayerMedia(
+        uri="library://radio/1",
+        title="Space Truckin'",
+        artist="Deep Purple",
+        image_url="https://cdn.example/cover.jpg",
+        source_id="queue_1",
+        queue_item_id="item_1",
+    )
+    player.on_player_media_updated()
+    await asyncio.sleep(0)
+
+    assert _sent_metadata(player)["title"] == "Space Truckin'"
+
+
+async def test_the_item_that_plays_next_gets_no_live_title() -> None:
+    """A player that buffered the next item holds media that carries something else entirely."""
+    player, _mass = _player_playing_a_radio(held_item="item_2")
+    update_metadata = cast("AsyncMock", player.client.update_metadata)
+
+    player.on_player_media_updated()
+    await asyncio.sleep(0)
+
+    update_metadata.assert_not_awaited()
+    # once that item is the one that plays, its own live title goes to the player again
+    _client_of(player).current_media.metadata["queue_item_id"] = "item_1"
+    player.on_player_media_updated()
+    await asyncio.sleep(0)
+
+    assert _sent_metadata(player)["title"] == LIVE_MEDIA.title
