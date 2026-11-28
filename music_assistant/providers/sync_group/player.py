@@ -28,6 +28,7 @@ from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     APPLICATION_NAME,
+    ATTR_GROUP_MEMBERS,
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
     CONF_POWER_CONTROL,
@@ -835,6 +836,8 @@ class SyncGroupPlayer(PlayerProtocol):
         self, member_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Handle callback when a group member of the group player is updated."""
+        if member_player is self.sync_leader and ATTR_GROUP_MEMBERS in changed_values:
+            self._take_joined_members(*changed_values[ATTR_GROUP_MEMBERS])
         self._update_attributes()
         super().on_group_member_updated(member_player, changed_values)
         if not self.is_dynamic and self.sync_leader is not None:
@@ -865,12 +868,13 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         Handle callback when the leader of the session of this group player left it by itself.
 
-        A dynamic group loses the player of that leader, a group with fixed members keeps
-        it as a member.
+        A dynamic group loses the player of that leader, and takes the player that holds
+        the session as a member when it was none yet. A group with fixed members keeps the
+        leader as a member, and only follows one of its members.
 
         :param leader: The protocol that led the session.
-        :param holder: The protocol of the member that holds the session now.
-        :return: Whether the group follows that member.
+        :param holder: The protocol of the player that holds the session now.
+        :return: Whether the group follows that player.
         """
         old_leader, new_leader = self.sync_leader, holder.player
         if (
@@ -878,9 +882,13 @@ class SyncGroupPlayer(PlayerProtocol):
             or new_leader is None
             or new_leader is old_leader
             or self._active_session_protocol() is not leader
-            or new_leader.player_id not in self._attr_group_members
         ):
             return False
+        if new_leader.player_id not in self._attr_group_members:
+            # it joined the leader outside Music Assistant, which this group did not see yet
+            if not self.is_dynamic or not self._is_member_allowed(new_leader.player_id):
+                return False
+            self._attr_group_members.append(new_leader.player_id)
         self.logger.info(
             "Dynamic leader switch: %s left group %s by itself, remaining members keep "
             "playing, led by %s",
@@ -2032,6 +2040,33 @@ class SyncGroupPlayer(PlayerProtocol):
                 if target and not target.rejoins_group(self._group_player.player_id):
                     protocol_ids.append(target.protocol_id)
         return protocol_ids
+
+    def _take_joined_members(self, previous: list[str] | None, current: list[str] | None) -> None:
+        """
+        Make the players that joined the sync leader outside this group members of it.
+
+        Only a group whose members can change takes them.
+
+        :param previous: Ids of the players the sync leader held before.
+        :param current: Ids of the players it holds now.
+        """
+        if not self.is_dynamic:
+            return
+        # a member this group added itself is listed before its leader holds it, and one it
+        # removed is still held for a moment: only a player the leader gains counts
+        for player_id in current or []:
+            if (
+                player_id not in (previous or [])
+                and player_id not in self._attr_group_members
+                and self._is_member_allowed(player_id)
+            ):
+                self.logger.debug(
+                    "%s joined the leader of group %s outside Music Assistant, "
+                    "taking it as a member",
+                    player_id,
+                    self.display_name,
+                )
+                self._attr_group_members.append(player_id)
 
     def _session_holder(self, picked: Player, domain: str | None) -> Player:
         """

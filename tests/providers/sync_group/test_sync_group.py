@@ -1737,15 +1737,18 @@ class TestLeaderLeftByItself:
 
     @staticmethod
     def _playing_group(
-        *, dynamic: bool = True
+        *, dynamic: bool = True, allowed_members: list[str] | None = None
     ) -> tuple[MagicMock, SyncGroupPlayer, dict[str, Player]]:
         """
         Return a playing group of three whose leader left: its last member holds the session.
 
         :param dynamic: Whether the members of the group can change.
+        :param allowed_members: The configured allow-list of members.
         """
         mass = _make_mock_mass()
-        sgp = _make_sync_group(mass, dynamic=dynamic, members=["a", "b", "c"])
+        sgp = _make_sync_group(
+            mass, dynamic=dynamic, members=["a", "b", "c"], allowed_members=allowed_members
+        )
         members = {
             name: _make_member(mass, name, "sonos", playback_state=PlaybackState.PLAYING)
             for name in ("a", "b", "c")
@@ -1848,18 +1851,45 @@ class TestLeaderLeftByItself:
         assert not sgp.counts_in("a")
         mass.call_later.assert_not_called()
 
+    async def test_a_dynamic_group_takes_the_player_that_holds_the_session_as_a_member(
+        self,
+    ) -> None:
+        """A player that joined the leader outside Music Assistant leads the group it took over."""
+        mass, sgp, members = self._playing_group()
+        stranger = _make_member(mass, "stranger", "sonos", playback_state=PlaybackState.PLAYING)
+        left, holder = _protocol(members["a"], "sonos"), _protocol(stranger, "sonos")
+        holder.set_members = AsyncMock()  # type: ignore[method-assign]
+
+        assert await sgp.on_session_moved(left, holder)
+
+        assert sgp.sync_leader is stranger
+        assert sgp._attr_group_members == ["stranger", "b", "c"]
+        assert sgp.counts_in("stranger")
+        _member_changes(holder).assert_awaited_once_with(player_ids_to_add=["sonos_b", "sonos_c"])
+        mass.players._activate_output_protocol.assert_awaited_once_with(stranger, "sonos_stranger")
+
     @pytest.mark.parametrize(
-        "case", ["no member", "not the leader of the session", "the leader itself", "not formed"]
+        "case",
+        [
+            "no member of a group with fixed members",
+            "a player the group does not allow",
+            "not the leader of the session",
+            "the leader itself",
+            "not formed",
+        ],
     )
     async def test_a_session_the_group_can_not_follow_is_left_as_it_is(self, case: str) -> None:
         """
-        The group only follows a member of its own that took over from its leader.
+        The group only follows a player it can have as a member that took over from its leader.
 
         :param case: What does not fit.
         """
-        mass, sgp, members = self._playing_group()
+        mass, sgp, members = self._playing_group(
+            dynamic=case != "no member of a group with fixed members",
+            allowed_members=["a", "b", "c"] if case == "a player the group does not allow" else [],
+        )
         left, holder = _protocol(members["a"], "sonos"), _protocol(members["c"], "sonos")
-        if case == "no member":
+        if case in ("no member of a group with fixed members", "a player the group does not allow"):
             holder = _protocol(_make_member(mass, "stranger", "sonos"), "sonos")
         elif case == "not the leader of the session":
             left = _protocol(members["b"], "sonos")
@@ -2782,6 +2812,109 @@ class TestSetMembersWithABusyLeader:
         assert sgp._attr_group_members == ["leader", "member"]
         assert sgp.sync_leader is leader
         mass.players._handle_set_members.assert_not_awaited()
+        mass.players._handle_cmd_stop.assert_not_awaited()
+
+
+class TestPlayerJoinedTheLeaderOutsideMusicAssistant:
+    """A player that joins the leader of a group outside Music Assistant, as in the Sonos app."""
+
+    @staticmethod
+    def _playing_group(
+        *, dynamic: bool = True, allowed_members: list[str] | None = None
+    ) -> tuple[MagicMock, SyncGroupPlayer, Player, Player]:
+        """
+        Return a playing group of one, its leader and a player that is no member of it.
+
+        :param dynamic: Whether the members of the group can change.
+        :param allowed_members: The configured allow-list of members.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(
+            mass, dynamic=dynamic, members=["leader"], allowed_members=allowed_members
+        )
+        leader = _make_member(mass, "leader", playback_state=PlaybackState.PLAYING)
+        joined = _make_member(mass, "joined", playback_state=PlaybackState.PLAYING)
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        sgp._attr_static_group_members = [] if dynamic else ["leader"]
+        sgp._update_attributes()
+        return mass, sgp, leader, joined
+
+    @staticmethod
+    def _join(
+        sgp: SyncGroupPlayer, leader: Player, *held: str, before: tuple[str, ...] = ()
+    ) -> None:
+        """
+        Let the leader report the players it holds.
+
+        :param held: Ids of the players it holds now, besides itself.
+        :param before: Ids of the players it held before, besides itself.
+        """
+        previous = ["leader", *before] if before else []
+        current = ["leader", *held] if held else []
+        leader.state.group_members = UniqueList(current)
+        sgp.on_group_member_updated(leader, {"group_members": (previous, current)})
+
+    @pytest.mark.parametrize("dynamic", [True, False])
+    def test_only_a_group_whose_members_can_change_takes_the_player(self, dynamic: bool) -> None:
+        """
+        A dynamic group works with the player as a member, a group with fixed members does not.
+
+        :param dynamic: Whether the members of the group can change.
+        """
+        _mass, sgp, leader, _joined = self._playing_group(dynamic=dynamic)
+
+        self._join(sgp, leader, "joined")
+
+        assert sgp._attr_group_members == (["leader", "joined"] if dynamic else ["leader"])
+        assert sgp.counts_in("joined") is dynamic
+        # the list the user sees names it either way: the leader holds it
+        assert sgp.group_members == ["leader", "joined"]
+
+    def test_a_player_the_group_does_not_allow_is_not_taken(self) -> None:
+        """The allow-list of the group counts for a player that joined by itself as well."""
+        _mass, sgp, leader, _joined = self._playing_group(allowed_members=["leader"])
+
+        self._join(sgp, leader, "joined")
+
+        assert sgp._attr_group_members == ["leader"]
+
+    @pytest.mark.parametrize(
+        "report", ["no change of members", "it was held before", "a report of another member"]
+    )
+    def test_a_player_the_leader_does_not_gain_is_not_taken(self, report: str) -> None:
+        """
+        A member the group removed itself is still held by its leader for a moment.
+
+        :param report: What is reported while the leader holds a player that is no member.
+        """
+        _mass, sgp, leader, joined = self._playing_group()
+        leader.state.group_members = UniqueList(["leader", "joined"])
+        if report == "no change of members":
+            sgp.on_group_member_updated(leader, {"playback_state": (None, PlaybackState.PLAYING)})
+        elif report == "it was held before":
+            self._join(sgp, leader, "joined", before=("joined", "another"))
+        else:
+            sgp.on_group_member_updated(joined, {"group_members": ([], ["leader", "joined"])})
+
+        assert sgp._attr_group_members == ["leader"]
+
+    async def test_the_leader_removed_in_music_assistant_hands_over_to_the_player(self) -> None:
+        """The group plays on led by the player that joined, as it does for any member."""
+        mass, sgp, leader, joined = self._playing_group()
+        session = _protocol(leader, "sonos")
+        session.hands_over = True
+        session._attr_group_members = ["sonos_leader", "sonos_joined"]
+        for protocol in (session, _protocol(joined, "sonos")):
+            protocol.set_members = AsyncMock()  # type: ignore[method-assign]
+        self._join(sgp, leader, "joined")
+
+        with patch.object(sgp, "update_state"):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+        assert sgp.sync_leader is joined
+        assert sgp._attr_group_members == ["joined"]
+        _member_changes(session).assert_awaited_once_with(player_ids_to_remove=["sonos_leader"])
         mass.players._handle_cmd_stop.assert_not_awaited()
 
 

@@ -968,6 +968,9 @@ class SonosPlayer(PlayerProtocol):
         if self._flow_queue_id or self._flow_media is not None:
             # the speaker plays one stream and holds no cloud queue to read a next item from
             return
+        if self._stepping_out:
+            # the cloud queue went to the speaker that leads the group now
+            return
         if media.source_id:
             self.cloud_queue_id = media.source_id
             self._loaded_session_id = media.queue_session_id
@@ -1942,8 +1945,8 @@ class SonosPlayer(PlayerProtocol):
             )
             return
         generation = self.cloud_queue_item_generation
-        if self._sync_group_plays_on(new_coordinator):
-            # the member asks for its part of the track within a fraction of a second,
+        if self._sync_group_plays_on():
+            # the speaker asks for its part of the track within a fraction of a second,
             # which is answered from what is kept for the queue
             members = self._other_group_members()
             item_id = self._playing_wire_id(self.group_controller)
@@ -2065,6 +2068,15 @@ class SonosPlayer(PlayerProtocol):
             ),
         )
         unsubscribe_queue = self.mass.subscribe(_check, EventType.QUEUE_UPDATED, queue_id)
+        # the speaker is asked for its role as well: its own groups event can be seconds late
+        leads = new_coordinator.client.player
+        asked = asyncio.ensure_future(
+            self._poll_groups(
+                (new_coordinator,),
+                lambda: leads.is_coordinator,
+                time.monotonic() + MOVED_GROUP_TIMEOUT,
+            )
+        )
         try:
             _check()
             async with asyncio.timeout(MOVED_GROUP_TIMEOUT):
@@ -2077,6 +2089,7 @@ class SonosPlayer(PlayerProtocol):
             )
             return False
         finally:
+            asked.cancel()
             unsubscribe_speaker()
             unsubscribe_queue()
         return True
@@ -2741,31 +2754,23 @@ class SonosPlayer(PlayerProtocol):
             and member.connected
         ]
 
-    def _sync_group_plays_on(self, new_coordinator: SonosPlayer) -> bool:
-        """
-        Return whether the sync group this speaker led plays on, led by one of its members.
-
-        :param new_coordinator: The speaker that coordinates the former group of this speaker.
-        """
+    def _sync_group_plays_on(self) -> bool:
+        """Return whether the sync group this speaker led can play on, led by another speaker."""
         queue_id, group = self.group_queue_id, self.client.player.group
-        if queue_id is None or group is None or (player := new_coordinator.player) is None:
+        if queue_id is None or group is None:
             return False
-        # the member asks for the rest of the track it plays, which only a track that is
+        # the speaker asks for the rest of the track it plays, which only a track that is
         # served as a file answers; it takes a paused group over paused and asks for nothing
         playing = PLAYBACK_STATE_MAP.get(group.playback_state) == PlaybackState.PLAYING
-        if not playing or not self._plays_file(group):
-            return False
-        group_player = self.mass.players.get_player(queue_id)
-        sync_group = group_player.own_protocol if group_player is not None else None
-        return sync_group is not None and sync_group.counts_in(player.player_id)
+        return playing and self._plays_file(group)
 
     async def _follow_moved_group(
         self, new_coordinator: SonosPlayer, queue_id: str, members: list[SonosPlayer]
     ) -> None:
         """
-        Let the sync group this speaker led play on, led by the member the speakers moved it to.
+        Let the sync group this speaker led play on, led by the speaker its group moved to.
 
-        :param new_coordinator: The member, which holds what is kept for the queue of the group.
+        :param new_coordinator: That speaker, which holds what is kept for the queue of the group.
         :param queue_id: The queue of the sync group.
         :param members: The speakers that were in the group with this one.
         """
@@ -2786,11 +2791,11 @@ class SonosPlayer(PlayerProtocol):
 
     async def _sync_group_follows(self, queue_id: str, new_coordinator: SonosPlayer) -> bool:
         """
-        Tell the sync group of a queue which member holds its session, now this speaker left it.
+        Tell the sync group of a queue which speaker holds its session, now this speaker left it.
 
         :param queue_id: The queue of the sync group.
-        :param new_coordinator: The member that holds the session.
-        :return: Whether the group follows that member.
+        :param new_coordinator: The speaker that holds the session.
+        :return: Whether the group follows that speaker.
         """
         group_player = self.mass.players.get_player(queue_id)
         if group_player is None or (sync_group := group_player.own_protocol) is None:
