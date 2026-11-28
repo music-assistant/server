@@ -351,7 +351,7 @@ async def test_a_slow_lookup_of_a_request_without_an_option_runs_out_at_the_dead
     ctrl.mass.players._power_on_switched_off_player = AsyncMock()
     _lookup(ctrl)
 
-    with pytest.raises(PlayerCommandFailed) as exc_info:
+    with virtual_loop_clock(), pytest.raises(PlayerCommandFailed) as exc_info:
         async with asyncio.timeout(DEADLINE * 10):
             await ctrl.play_media("q1", "test://track/slow")
 
