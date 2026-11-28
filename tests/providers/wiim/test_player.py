@@ -848,6 +848,22 @@ class TestErrorHandling:
         player.update_state.assert_called()
 
 
+class _FakeClock:
+    """A monotonic clock that only moves when told to; wall time stays real."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def time(self) -> float:
+        return time.time()
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class TestStalePositionOnNewStream:
     """A new stream handed to the device must not inherit the previous position."""
 
@@ -855,6 +871,13 @@ class TestStalePositionOnNewStream:
         player = _wiim_player(provider=provider, protocol_id="uuid:test", device=device)
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
         return player
+
+    @pytest.fixture
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
+        """Give the player module a monotonic clock the test moves forward."""
+        fake = _FakeClock()
+        monkeypatch.setattr(wiim_player, "time", fake)
+        return fake
 
     @pytest.mark.asyncio
     async def test_play_media_resets_elapsed_time(
@@ -974,7 +997,7 @@ class TestStalePositionOnNewStream:
 
     @pytest.mark.asyncio
     async def test_sync_position_accepts_matching_uri_and_clears_guard(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
     ) -> None:
         """Once the device reports MA's own uri, its position is trusted and the guard lifts."""
         stream_uri = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
@@ -987,6 +1010,7 @@ class TestStalePositionOnNewStream:
         mock_wiim_device.current_media = device_media
 
         await player.play_media(PlayerMedia(uri="library://track/1", title="New Track"))
+        clock.advance(12)
         player._attr_elapsed_time_last_updated = 1000.0
 
         await player._sync_position()
@@ -1004,7 +1028,7 @@ class TestStalePositionOnNewStream:
 
     @pytest.mark.asyncio
     async def test_sync_position_ignores_new_stream_reported_at_its_end(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
     ) -> None:
         """Right after a seek the device reports our new stream at its full length."""
         stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
@@ -1034,10 +1058,166 @@ class TestStalePositionOnNewStream:
 
         assert player._attr_elapsed_time == 0
 
+        clock.advance(3)
         device_media.position = 3
         await player._sync_position()
 
         assert player._attr_elapsed_time == 3
+
+    async def _seek_stream(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> tuple[WiimPlayer, MagicMock]:
+        """Hand over the 200 s stream of a seek to 1000 s in a 1200 s item, still loading."""
+        stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        player = self._make_player(mock_provider, mock_wiim_device)
+        await player.play_media(
+            PlayerMedia(
+                uri="library://audiobook/1",
+                title="Book",
+                duration=1200,
+                stream_duration=200,
+                queue_item_id="book",
+            )
+        )
+        device_media = MagicMock()
+        device_media.uri = stream_url
+        device_media.title = "Book"
+        device_media.duration = 200
+        mock_wiim_device.current_media = device_media
+        mock_wiim_device.playing_status = PlayingStatus.LOADING
+        return player, device_media
+
+    @pytest.mark.asyncio
+    async def test_sync_position_ignores_new_stream_reported_at_the_previous_position(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
+    ) -> None:
+        """While loading our new stream the device can report it at the previous stream's position."""
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+
+        clock.advance(0.8)
+        device_media.position = 7
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+
+        clock.advance(3.2)
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+        device_media.position = 3
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 3
+
+    @pytest.mark.asyncio
+    async def test_stopped_stream_still_loading_keeps_its_start_position(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
+    ) -> None:
+        """A stream stopped while loading is not reported at the previous stream's position."""
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+        await player.stop()
+
+        clock.advance(0.5)
+        mock_wiim_device.playing_status = PlayingStatus.LOADING
+        device_media.position = 12
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+
+    @pytest.mark.asyncio
+    async def test_device_seek_lets_the_position_run_ahead(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A seek on the device itself moves the stream further than the time it played."""
+        mock_wiim_device.async_seek = AsyncMock()
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+
+        await player.seek(150)
+        device_media.position = 150
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 150
+
+    @pytest.mark.asyncio
+    async def test_playing_stream_may_run_ahead_of_the_handover_time(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
+    ) -> None:
+        """Once the device plays our stream, a seek from its app is not taken as stale."""
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+
+        clock.advance(4)
+        device_media.position = 3
+        await player._sync_position()
+
+        clock.advance(1)
+        device_media.position = 150
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 150
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [PlayingStatus.LOADING, PlayingStatus.PLAYING])
+    async def test_read_at_its_start_keeps_the_time_check(
+        self,
+        mock_provider: MagicMock,
+        mock_wiim_device: MagicMock,
+        clock: _FakeClock,
+        status: PlayingStatus,
+    ) -> None:
+        """A read at 0 s does not show the device plays our stream, so a stale read stays ignored."""
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+        mock_wiim_device.playing_status = status
+
+        clock.advance(0.4)
+        device_media.position = 0
+        await player._sync_position()
+
+        clock.advance(0.4)
+        device_media.position = 7
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+
+    @pytest.mark.asyncio
+    async def test_app_seek_before_the_first_read_is_taken_once_the_time_check_ends(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
+    ) -> None:
+        """An app seek seen before any plausible read does not freeze the position for good."""
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+
+        clock.advance(1)
+        device_media.position = 150
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+
+        clock.advance(wiim_player.POSITION_CHECK_TIMEOUT)
+        device_media.position = 160
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 160
+
+    @pytest.mark.asyncio
+    async def test_short_stream_reported_at_its_end_keeps_the_time_check(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
+    ) -> None:
+        """A report at the end of a short stream does not end the check for a stale position."""
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+        # a seek to 1199 s in the 1200 s item leaves a 1 s stream
+        device_media.duration = 1
+
+        clock.advance(0.4)
+        device_media.position = 1
+        await player._sync_position()
+
+        clock.advance(0.4)
+        device_media.position = 7
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
 
     @pytest.mark.asyncio
     async def test_sync_position_accepts_device_when_ma_not_driving_playback(

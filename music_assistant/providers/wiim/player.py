@@ -55,6 +55,11 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
     PlayingStatus.LOADING: PlaybackState.PLAYING,
 }
 
+# seconds a position read may run ahead of the time since MA handed the device its stream
+POSITION_SLACK = 2
+# seconds after the handover the time check ends, so an early app seek can't keep it armed
+POSITION_CHECK_TIMEOUT = 10
+
 # seconds to wait after a first follower join for the firmware to restart the leader's stream
 JOIN_RESTART_TIMEOUT = 2
 # seconds between attempts to set up the SDK device of a speaker that is not reachable
@@ -143,6 +148,8 @@ class WiimPlayer(PlayerProtocol):
         self._last_logged_sdk_uri: str | None = None
         self._last_logged_sdk_status: PlayingStatus | None = None
         self._ma_stream_uri: str | None = None
+        # the stream URL MA last handed the device and the monotonic time it did so
+        self._ma_stream_sent: tuple[str, float] | None = None
         self._join_restart_watch: _JoinRestartWatch | None = None
         self._pending_join_resume: _JoinRestartWatch | None = None
         self._native_groups: NativeGroupCoordinator = provider.native_groups
@@ -329,11 +336,13 @@ class WiimPlayer(PlayerProtocol):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._ma_stream_uri = stream_url
+        self._ma_stream_sent = (stream_url, time.monotonic())
         try:
             await self.device.async_play(uri=stream_url, metadata=didl_metadata)
         except WiimException as err:
             # The device never took our stream, so the guard must not outlive the attempt.
             self._ma_stream_uri = None
+            self._ma_stream_sent = None
             self._handle_command_error("play_media", err)
             return
         self._update_ma_state_from_sdk_cache()
@@ -394,6 +403,8 @@ class WiimPlayer(PlayerProtocol):
 
     async def seek(self, position: int) -> None:
         """Seek to position in seconds."""
+        # a seek on the device runs ahead of the time since the handover
+        self._ma_stream_sent = None
         try:
             await self.device.async_seek(position)
         except WiimException as err:
@@ -778,6 +789,22 @@ class WiimPlayer(PlayerProtocol):
             self.logger.debug("Failed to sync position for %s: %s", self._attr_name, err)
             return
         media = self.device.current_media
+        if (
+            media is not None
+            and media.position is not None
+            and self._ma_stream_sent is not None
+            and media.uri == self._ma_stream_sent[0]
+        ):
+            # While loading our stream the device can report it at the position it last played,
+            # further than the stream can have played since we handed it over.
+            since_sent = time.monotonic() - self._ma_stream_sent[1]
+            if since_sent < POSITION_CHECK_TIMEOUT and media.position > since_sent + POSITION_SLACK:
+                self._update_ma_state_from_sdk_cache()
+                return
+            # A read that fits shows the device plays our stream, so later app seeks may run ahead.
+            # One at 0 s or at the stream's end doesn't show that yet.
+            if media.position and media.position != media.duration:
+                self._ma_stream_sent = None
         # Right after taking our stream the device briefly reports it as being at its end.
         if (
             media is not None
