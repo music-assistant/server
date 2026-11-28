@@ -84,7 +84,7 @@ async def test_versions_provider_without_album_versions_feature() -> None:
     ):
         versions = await ctrl.versions("album_1", "spotify_1")
 
-    search_mock.assert_awaited_once_with("Test Artist - Test Album", "spotify_1")
+    search_mock.assert_awaited_once_with("Test Artist - Test Album", "spotify_1", 25)
     spotify_provider.get_album_versions.assert_not_called()
     assert len(versions) == 1
     assert versions[0].item_id == "album_2"
@@ -136,7 +136,7 @@ async def test_versions_provider_with_album_versions_feature_unmapped_album() ->
     ):
         versions = await ctrl.versions("spot_1", "spotify_1")
 
-    search_mock.assert_awaited_once_with("Test Artist - Test Album", "ytmusic_1")
+    search_mock.assert_awaited_once_with("Test Artist - Test Album", "ytmusic_1", 25)
     ytm_provider.get_album_versions.assert_not_called()
     assert versions == []
 

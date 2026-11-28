@@ -834,6 +834,30 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         return await self._match_provider(db_album, provider, strict, _BaseTracksMemo())
 
+    async def playable_copy(
+        self, album: Album, allowed: Sequence[str] | None = None
+    ) -> Album | None:
+        """
+        Return the same album on another streaming service, for an album that can not be played.
+
+        The album is matched as strictly as when it is linked in the library, or else taken
+        from its other versions when one lists as many tracks. Nothing is added to the library.
+
+        :param album: The album as its own service lists it.
+        :param allowed: The music sources that may serve it, None for all the user may see.
+        """
+        if not album.artists:
+            return None
+        # resolve the album's tracklist at most once for all the services searched
+        base_tracks_memo = _BaseTracksMemo()
+
+        async def _match(provider: MusicProvider) -> list[ProviderMapping]:
+            if mappings := await self._match_provider(album, provider, True, base_tracks_memo):
+                return mappings
+            return await self._version_with_as_many_tracks(album, provider)
+
+        return await self._find_playable_copy(album, allowed, _match)
+
     async def match_providers(self, db_album: Album) -> None:
         """
         Try to find match on all (streaming) providers for the provided (database) album.
@@ -1128,9 +1152,6 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> UniqueList[Album]:
         """Return all versions of an album we can find on all providers."""
         album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        streaming_search_query = (
-            f"{album.artists[0].name} - {album.name}" if album.artists else album.name
-        )
         result: UniqueList[Album] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.music.get_visible_provider(provider_id)
@@ -1138,30 +1159,41 @@ class AlbumsController(MediaControllerBase[Album]):
                 continue
             if MediaType.ALBUM not in provider.supported_media_types:
                 continue
-            # TODO: filter by artists in db for non-streaming providers
-            search_query = streaming_search_query if provider.is_streaming_provider else album.name
-            result.extend(
-                prov_item
-                for prov_item in await self.search(search_query, provider.instance_id)
-                if loose_compare_strings(album.name, prov_item.name)
-                and compare_artists(prov_item.artists, album.artists, any_match=True)
-                # make sure that the 'base' version is NOT included
-                and not album.provider_mappings.intersection(prov_item.provider_mappings)
-            )
-            if ProviderFeature.ALBUM_VERSIONS in provider.supported_features:
-                # Call the specialized function in addition to searching to
-                # handle cases where the provider hasn't merged the album
-                # variants
-                if mapped_id := next(
-                    (
-                        p.item_id
-                        for p in album.provider_mappings
-                        if p.provider_instance == provider.instance_id
-                    ),
-                    None,
-                ):
-                    result.extend(await provider.get_album_versions(mapped_id))
+            result.extend(await self._versions_on_provider(album, provider))
         return result
+
+    async def _versions_on_provider(
+        self, album: Album, provider: MusicProvider, limit: int = 25
+    ) -> UniqueList[Album]:
+        """Return the versions of an album one provider has, from a search of the given size."""
+        # TODO: filter by artists in db for non-streaming providers
+        search_query = (
+            f"{album.artists[0].name} - {album.name}"
+            if album.artists and provider.is_streaming_provider
+            else album.name
+        )
+        versions: UniqueList[Album] = UniqueList(
+            prov_item
+            for prov_item in await self.search(search_query, provider.instance_id, limit)
+            if loose_compare_strings(album.name, prov_item.name)
+            and compare_artists(prov_item.artists, album.artists, any_match=True)
+            # make sure that the 'base' version is NOT included
+            and not album.provider_mappings.intersection(prov_item.provider_mappings)
+        )
+        if ProviderFeature.ALBUM_VERSIONS in provider.supported_features:
+            # Call the specialized function in addition to searching to
+            # handle cases where the provider hasn't merged the album
+            # variants
+            if mapped_id := next(
+                (
+                    p.item_id
+                    for p in album.provider_mappings
+                    if p.provider_instance == provider.instance_id
+                ),
+                None,
+            ):
+                versions.extend(await provider.get_album_versions(mapped_id))
+        return versions
 
     async def _backfill_album_on_tracks(
         self,
@@ -1466,6 +1498,37 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider.name,
             )
         return matches
+
+    async def _version_with_as_many_tracks(
+        self, album: Album, provider: MusicProvider
+    ) -> list[ProviderMapping]:
+        """Return the mappings of the first version on the provider listing as many tracks as the album."""
+        # a service may label every track with a version or credit the artist without "The",
+        # which the strict match rejects; the versions listing only compares the album name
+        # loosely and needs one shared artist. Searching as the strict match did usually
+        # serves the search from the service's cache instead of asking it again
+        versions = [
+            version
+            for version in await self._versions_on_provider(album, provider, MATCH_SEARCH_LIMIT)
+            if version.available
+        ]
+        if not versions:
+            return []
+        track_count = len(await self.tracks(album.item_id, album.provider, limit=None))
+        for version in versions:
+            if len(await self.tracks(version.item_id, version.provider, limit=None)) == track_count:
+                self.logger.debug(
+                    "Taking version %s of album %s from %s, which lists as many tracks",
+                    version.name,
+                    album.name,
+                    provider.name,
+                )
+                return [
+                    mapping
+                    for mapping in version.provider_mappings
+                    if mapping.provider_instance == provider.instance_id
+                ]
+        return []
 
     async def _match_provider_by_barcode(
         self,

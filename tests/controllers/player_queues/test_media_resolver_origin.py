@@ -973,3 +973,117 @@ async def test_an_album_a_folder_lists_plays_as_part_of_the_folder() -> None:
         (MediaType.FOLDER, "albums")
     ]
     assert [_pin(x) for x in resolved] == [(TIDAL, "t1")]
+
+
+def _unplayable_album_resolver(copy: Album | None) -> MediaResolver:
+    """
+    Build a resolver for an album its own service lists but can not play.
+
+    :param copy: The album another streaming service has, None when none has it.
+    """
+    listings = {
+        "al1": mapped_album_listing(
+            [
+                _track("t1", TIDAL, _copy(TIDAL, "t1", available=False)),
+                _track("t2", TIDAL, _copy(TIDAL, "t2", available=False)),
+            ]
+        ),
+        "q-al": mapped_album_listing([_track("q1", QOBUZ), _track("q2", QOBUZ)]),
+    }
+    resolver = _album_resolver(listings["al1"])
+    resolver.mass.music.albums.playback_listing = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda item_id, *_args, **_kwargs: listings[item_id]
+    )
+    resolver.mass.music.albums.playable_copy = AsyncMock(return_value=copy)  # type: ignore[method-assign]
+    return resolver
+
+
+def _qobuz_album() -> Album:
+    """Build the copy Qobuz has of the album."""
+    return Album(
+        item_id="q-al",
+        provider=QOBUZ,
+        name="Kind of Blue",
+        provider_mappings={_mapping(QOBUZ, "q-al")},
+    )
+
+
+@pytest.mark.usefixtures("loaded_sources")
+async def test_an_album_no_track_of_can_be_played_plays_from_another_service() -> None:
+    """The copy another streaming service has plays, recorded as played from that copy."""
+    resolver = _unplayable_album_resolver(_qobuz_album())
+
+    with _sources(allowed=[QOBUZ, TIDAL]):
+        resolved = await resolver._resolve_media_items(_album(TIDAL))
+
+    assert [_pin(x) for x in resolved] == [(QOBUZ, "q1"), (QOBUZ, "q2")]
+    assert {_container(x).item_id for x in resolved} == {"q-al"}
+    cast("AsyncMock", resolver.mass.music.albums.playable_copy).assert_awaited_once_with(
+        _album(TIDAL), [QOBUZ, TIDAL]
+    )
+
+
+@pytest.mark.usefixtures("loaded_sources")
+async def test_an_album_no_other_service_has_still_has_nothing_to_play() -> None:
+    """Without a copy elsewhere the album resolves to nothing, as before."""
+    resolver = _unplayable_album_resolver(None)
+
+    with _sources():
+        resolved = await resolver._resolve_media_items(_album(TIDAL))
+
+    assert resolved == []
+
+
+@pytest.mark.usefixtures("loaded_sources")
+async def test_a_copy_that_can_not_be_played_either_is_not_searched_again() -> None:
+    """The copy's own album is never searched for, so two services can not hand it back and forth."""
+    resolver = _unplayable_album_resolver(_album(TIDAL))
+
+    with _sources():
+        resolved = await resolver._resolve_media_items(_album(TIDAL))
+
+    assert resolved == []
+    cast("AsyncMock", resolver.mass.music.albums.playable_copy).assert_awaited_once()
+
+
+@pytest.mark.usefixtures("loaded_sources")
+@pytest.mark.parametrize(
+    ("album", "tracks"),
+    [
+        pytest.param(
+            _album(TIDAL),
+            [_track("t1", TIDAL), _track("t2", TIDAL, _copy(TIDAL, "t2", available=False))],
+            id="partly playable",
+        ),
+        pytest.param(
+            _album(),
+            [_track("1", "library", _copy(TIDAL, "t1", available=False))],
+            id="in the library",
+        ),
+        pytest.param(_album(TIDAL), [], id="no tracks listed"),
+    ],
+)
+async def test_no_other_service_is_searched_for_other_albums(
+    album: Album, tracks: list[Track]
+) -> None:
+    """Only an album outside the library that lists tracks but can play none of them is searched for."""
+    resolver = _album_resolver(mapped_album_listing(tracks))
+    playable_copy = AsyncMock(return_value=_qobuz_album())
+    resolver.mass.music.albums.playable_copy = playable_copy  # type: ignore[method-assign]
+
+    with _sources():
+        await resolver._resolve_media_items(album)
+
+    playable_copy.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("loaded_sources")
+async def test_an_album_in_a_played_folder_is_not_searched_for() -> None:
+    """A folder of albums does not start a search for each album it holds."""
+    resolver = _unplayable_album_resolver(_qobuz_album())
+
+    with _sources():
+        resolved = await resolver._resolve_media_items(_album(TIDAL), find_album_copy=False)
+
+    assert resolved == []
+    cast("AsyncMock", resolver.mass.music.albums.playable_copy).assert_not_awaited()

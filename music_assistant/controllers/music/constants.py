@@ -45,6 +45,10 @@ EXTERNAL_ID_CACHE_EXPIRATION: Final[int] = 7 * 24 * 3600
 CACHE_CATEGORY_LISTED_EXTERNAL_ITEMS: Final[int] = 13
 # how long that form is kept for a client that names the item by its uri alone
 LISTED_EXTERNAL_ITEM_CACHE_EXPIRATION: Final[int] = 30 * 24 * 3600
+# the copy a streaming service has of an item its own service can not play, or that it has none
+CACHE_CATEGORY_PLAYABLE_COPIES: Final[int] = 14
+# how long that answer is kept before the service is searched again
+PLAYABLE_COPY_CACHE_EXPIRATION: Final[int] = 7 * 24 * 3600
 # how long an assembled listing is served without asking the providers again
 LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 # a browse folder can show what is live right now, so it is kept just long enough to page

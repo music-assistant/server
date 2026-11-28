@@ -79,7 +79,11 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.helpers.provider_access import visible_items
 from music_assistant.helpers.throttle_retry import is_rate_limit_error
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import (
+    PROVIDER_FETCH_ERRORS,
+    MusicProvider,
+    provider_fetch_log_level,
+)
 from music_assistant.providers.musicbrainz.provider import recording_matches_track
 
 from .base import (
@@ -1223,6 +1227,30 @@ class TracksController(MediaControllerBase[Track]):
             used_library_item=library_track is not None,
             rate_limited_providers=tuple(rate_limited_providers),
         )
+
+    async def playable_copy(self, track: Track) -> Track | None:
+        """
+        Return the same track on another streaming service, for a track that can not be played.
+
+        The track is found by its place on the same album on another service, or else matched
+        as strictly as when it is linked in the library. Nothing is added to the library.
+
+        :param track: The track as its own service lists it.
+        """
+        # a service may leave a version such as "Live" out of the title, so the track's place on
+        # the album's copy is tried first
+        if copy := await self._track_on_album_copy(track):
+            return copy
+        # the albums the track is on are only looked up once a service is actually searched
+        ref_albums: list[Album] | None = None
+
+        async def _match(provider: MusicProvider) -> list[ProviderMapping]:
+            nonlocal ref_albums
+            if ref_albums is None:
+                ref_albums = await self.albums(track.item_id, track.provider, limit=None)
+            return await self.match_provider(track, provider, True, ref_albums)
+
+        return await self._find_playable_copy(track, None, _match)
 
     async def match_provider(
         self,
@@ -2487,3 +2515,39 @@ class TracksController(MediaControllerBase[Track]):
         raise ProviderUnavailableError(
             f"Failed to fetch similar tracks for {ref_item.name}"
         ) from err
+
+    async def _track_on_album_copy(self, track: Track) -> Track | None:
+        """Return the track at the same place on the copy another service has of its album."""
+        if track.album is None or not track.track_number:
+            return None
+        albums = self.mass.music.albums
+        try:
+            album = await albums.get_provider_item(track.album.item_id, track.album.provider)
+            album_copy = await albums.playable_copy(album)
+            if album_copy is None:
+                return None
+            own_tracks = await albums.tracks(album.item_id, album.provider, limit=None)
+            copy_tracks = await albums.tracks(album_copy.item_id, album_copy.provider, limit=None)
+        except PROVIDER_FETCH_ERRORS as err:
+            self.logger.log(
+                provider_fetch_log_level(err),
+                "Could not look up the album of %s on another service: %s",
+                track.name,
+                err,
+            )
+            return None
+        # the album match confirmed the same release, so with as many tracks on both a place
+        # names the same track, whatever title each service gives it
+        if len(own_tracks) != len(copy_tracks):
+            return None
+        return next(
+            (
+                copy
+                for copy in copy_tracks
+                if copy.available
+                and copy.track_number == track.track_number
+                and (copy.disc_number or 1) == (track.disc_number or 1)
+                and track_durations_agree(track, copy)
+            ),
+            None,
+        )

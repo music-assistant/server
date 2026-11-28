@@ -342,6 +342,7 @@
   "common.errors.media_not_available_for_user": "This is not available on any of your music sources.",
   "common.errors.media_not_found": "The requested media item could not be found.",
   "common.errors.mount_failed": "Unable to connect to the remote location: {0}",
+  "common.errors.no_playable_copy": "None of your other music services has this.",
   "common.errors.no_playable_items": "There is nothing to play here.",
   "common.errors.password_required": "This device requires a password. Run the setup for this player to enter it.",
   "common.errors.player_command_failed": "The command to the player failed.",
