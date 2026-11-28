@@ -8,7 +8,6 @@ class Constants:
 
     # This is the image id that is shown when there's no track image
     BLANK_IMAGE_NAME: str = "p0bqcdzf"
-    DEFAULT_IMAGE_SIZE = 1280
     TRACK_DURATION_THRESHOLD: int = 300  # 5 minutes
     NOW_PLAYING_REFRESH_TIME: int = 3
     LISTEN_BACK_REFRESH_TIME: int = 3

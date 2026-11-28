@@ -9,7 +9,9 @@ This adaptor maps those objects to the most sensible type for MA.
 """
 
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime as dt
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from auntie_sounds.models import (
@@ -50,6 +52,7 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, VERBOSE_LOG_LEVEL
+from music_assistant.helpers import datetime
 from music_assistant.providers.bbc_sounds.constants import Constants, ValidMenuIDs
 from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
 from music_assistant.providers.bbc_sounds.naming import (
@@ -67,6 +70,15 @@ if TYPE_CHECKING:
 
 def _audio_format(stream: str) -> AudioFormat:
     return AudioFormat(content_type=ContentType.try_parse(stream))
+
+
+def _release_date(item: PodcastEpisode | RadioShow | RadioClip) -> dt | None:
+    """Return the release date of an item, or when it became available if it has none."""
+    for details, key in ((item.release, "date"), (item.availability, "from")):
+        if details and (value := details.get(key)):
+            with suppress(TypeError, ValueError):
+                return datetime.from_iso_string(value)
+    return None
 
 
 class ConversionError(MusicAssistantError):
@@ -265,10 +277,6 @@ class StationConverter(BaseConverter):
             item_id=station.item_id,
             provider=station.provider,
             audio_format=_audio_format(source_obj.stream),
-            data={
-                "provider": self.context.provider.instance_id,
-                "station": station.item_id,
-            },
         )
 
     async def convert(self, source_obj: Any) -> Radio:
@@ -347,7 +355,6 @@ class PodcastConverter(BaseConverter):
             stream_details = StreamDetails(
                 stream_metadata=StreamMetadata(
                     title=episode.name,
-                    uri=source_obj.stream,
                 ),
                 media_type=MediaType.PODCAST_EPISODE,
                 stream_type=StreamType.HLS,
@@ -358,8 +365,6 @@ class PodcastConverter(BaseConverter):
                 allow_seek=True,
                 can_seek=True,
                 duration=(episode.duration or None),
-                seek_position=(int(episode.position) if episode.position else 0),
-                seconds_streamed=(int(episode.position) if episode.position else 0),
             )
         elif episode and isinstance(episode, Track) and source_obj.stream:
             if source_obj.network and source_obj.network.id == "bbc_webonly":
@@ -402,10 +407,7 @@ class PodcastConverter(BaseConverter):
     async def _convert_podcast(self, podcast: Podcast | RadioSeries) -> MAPodcast:
         name = self._get_attr(podcast, "titles.primary") or self._get_attr(podcast, "title")
         description = self._get_synopsis(podcast)
-        image_url = self._get_attr(podcast, "image_url") or self._get_attr(
-            podcast, "sub_items.image_url"
-        )
-
+        image_url = podcast.image_url
         metadata = ImageProvider.create_metadata_with_image(
             image_url, self.context.provider.instance_id, description
         )
@@ -452,7 +454,6 @@ class PodcastConverter(BaseConverter):
             ),
             podcast=podcast,
             provider_mappings={self._create_provider_mapping(episode.pid)},
-            uri=episode.stream,
         )
         ma_episode.metadata.release_date = release_date(episode)
         return ma_episode
@@ -804,26 +805,16 @@ class Adaptor:
             title_parts=title_parts,
         )
 
-    async def new_streamable_object(
-        self,
-        source_obj: SoundsTypes | None,
-        force_type: type[Track | Radio | MAPodcastEpisode] | None = None,
-        path_parts: list[str] | None = None,
-    ) -> StreamDetails | None:
+    async def new_streamable_object(self, source_obj: SoundsTypes | None) -> StreamDetails | None:
         """
-        Convert an auntie-sounds object to appropriate Music Assistant object.
+        Get the stream details of an auntie-sounds object.
 
-        Args:
-            source_obj: The source object from Sounds API via auntie-sounds
-            force_type: Force conversion to specific type if the expected target type is known
-            path_parts: Path parts for browse items to construct the object's path
-
-        Returns:
-            Converted Music Assistant media item or None if no converter found
+        :param source_obj: The source object from the Sounds API via auntie-sounds.
+        :returns: stream details or None if no converter found
         """
         if source_obj is None:
             return None
-        context = self._create_context(path_parts, force_type)
+        context = self._create_context()
 
         converters: list[BaseConverter] = [
             StationConverter(context),

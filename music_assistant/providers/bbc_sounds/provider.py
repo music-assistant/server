@@ -1,6 +1,5 @@
 """BBC Sounds provider implementation."""
 
-import logging
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,9 +44,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers import datetime
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
-from music_assistant.providers.bbc_sounds.adaptor import Adaptor, ConversionError
+from music_assistant.providers.bbc_sounds.adaptor import Adaptor, ConversionError, _release_date
 from music_assistant.providers.bbc_sounds.browse import BrowseManager, broadcast_time_cache_key
 from music_assistant.providers.bbc_sounds.constants import Constants
 from music_assistant.providers.bbc_sounds.live_rewind import (
@@ -66,8 +66,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SEARCH,
 }
-
-LIBRARY_LOGGER = logging.getLogger("auntie_sounds")
 
 
 class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
@@ -153,7 +151,12 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
         self.logger.debug("Getting podcast for %s", prov_podcast_id)
-        podcast = await self.client.content.get_podcast(pid=prov_podcast_id)
+        try:
+            podcast = await self.client.content.get_podcast(pid=prov_podcast_id)
+        except exceptions.NotFoundError as e:
+            raise MediaNotFoundError(e) from e
+        except exceptions.SoundsException as e:
+            raise MusicAssistantError(e) from e
         ma_podcast = await self.adaptor.new_object(source_obj=podcast, force_type=Podcast)
 
         if isinstance(ma_podcast, Podcast):
@@ -169,8 +172,9 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         podcast_episodes = await self.client.content.get_podcast_episodes(
             prov_podcast_id, max_items=MAX_PODCAST_EPISODES
         )
+        positions = rank_episodes_by_date([_release_date(episode) for episode in podcast_episodes])
         if podcast_episodes:
-            for episode in podcast_episodes:
+            for episode, position in zip(podcast_episodes, positions, strict=True):
                 try:
                     this_episode = await self.adaptor.new_object(
                         source_obj=episode,
@@ -178,6 +182,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                         title_parts=TitleParts.PODCAST,
                     )
                     if this_episode and isinstance(this_episode, PodcastEpisode):
+                        this_episode.position = position
                         yield this_episode
                 except ConversionError:
                     self.logger.error("Couldn't convert podcast episode %s", episode)
@@ -187,16 +192,20 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         self.logger.debug("Getting radio for %s", prov_radio_id)
-        station = await self.client.stations.get_station(prov_radio_id, include_stream=True)
+        try:
+            station = await self.client.stations.get_station(prov_radio_id, include_stream=True)
+        except exceptions.NotFoundError as e:
+            raise MediaNotFoundError(e) from e
+        except exceptions.SoundsException as e:
+            raise MusicAssistantError(e) from e
+
         if station:
             ma_radio = await self.adaptor.new_object(station, force_type=Radio)
             if ma_radio and isinstance(ma_radio, Radio):
                 return ma_radio
-        else:
-            raise MediaNotFoundError(f"No station found: {prov_radio_id}")
 
-        self.logger.error("Failed to retrieve station with details: %s %s", station, ma_radio)
-        raise MediaNotFoundError("No valid radio stream found")
+        self.logger.error("Failed to retrieve station with details: %s", station)
+        raise MediaNotFoundError(f"No valid radio stream found for {prov_radio_id}")
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -232,24 +241,20 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
     ) -> SearchResults:
-        """Perform search for BBC Sounds stations."""
+        """Perform search for BBC Sounds content."""
         results = SearchResults()
         search_result = await self.client.content.search(search_query)
         self.logger.debug(search_result)
+
         if media_types is None or MediaType.RADIO in media_types:
             radios = [await self.adaptor.new_object(radio) for radio in search_result.stations]
             results.radio = [radio for radio in radios if isinstance(radio, Radio)]
-        if (
-            media_types is None
-            or MediaType.TRACK in media_types
-            or MediaType.PODCAST_EPISODE in media_types
-        ):
-            episodes = [await self.adaptor.new_object(track) for track in search_result.episodes]
-            results.tracks = [track for track in episodes if type(track) is Track]
 
         if media_types is None or MediaType.PODCAST in media_types:
             podcasts = [await self.adaptor.new_object(show) for show in search_result.shows]
-            results.podcasts = [podcast for podcast in podcasts if isinstance(podcast, Podcast)]
+            results.podcasts = [
+                podcast for podcast in podcasts if isinstance(podcast, (Podcast, RadioShow))
+            ]
 
         return results
 
@@ -398,7 +403,13 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     async def _get_on_demand_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get the details of an on-demand podcast episode or radio show by id."""
         self.logger.debug("Getting podcast episode for %s", prov_episode_id)
-        episode = await self.client.content.get_by_pid(prov_episode_id)
+        try:
+            episode = await self.client.content.get_by_pid(prov_episode_id)
+        except exceptions.NotFoundError as e:
+            raise MediaNotFoundError(e) from e
+        except exceptions.SoundsException as e:
+            raise MusicAssistantError(e) from e
+
         # This can return a mixture of episode/clip types
         if not isinstance(episode, EpisodeTypes):
             raise UnplayableMediaError(

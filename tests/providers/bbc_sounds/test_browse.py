@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from auntie_sounds.models import Podcast, PodcastEpisode, Synopses, Titles
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 
@@ -163,7 +163,7 @@ class TestBrowse:
         self, provider: BBCSoundsProvider, invalid_paths: str
     ) -> None:
         """Test invalid dispatch paths raise an exception."""
-        with pytest.raises(KeyError, match="Invalid subpath"):
+        with pytest.raises(MediaNotFoundError, match="Invalid subpath"):
             await provider.browse_manager.browse(invalid_paths)
 
     async def test_playlist_path_is_handled_as_a_playlist(
