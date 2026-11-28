@@ -121,6 +121,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player._announcement_media = None
     player._woken_from_sleep = False
     player._flow_queue_id = None
+    player._flow_media = None
     player._queue_session_id = None
     player._evicted_cloud_queue = None
     return player, queues
@@ -514,7 +515,7 @@ async def test_a_window_asked_ahead_of_a_load_addresses_the_loaded_session(repla
     """
     player = _make_player_on_real_queues(3, RepeatMode.OFF)
     cast("AsyncMock", player.mass.streams.resolve_stream_url).side_effect = (
-        lambda _player_id, media, queue_index: f"{media.queue_session_id}/{queue_index}"
+        lambda _player_id, media, queue_index=None: f"{media.queue_session_id}/{queue_index}"
     )
     player.cloud_queue_item_generation = 3
     queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
@@ -533,7 +534,7 @@ async def test_a_load_addresses_the_session_it_loads() -> None:
     """Test a window holds the items of the new session from the load on, not while it is set up."""
     player = _make_player_on_real_queues(3, RepeatMode.OFF)
     cast("AsyncMock", player.mass.streams.resolve_stream_url).side_effect = (
-        lambda _player_id, media, queue_index: f"{media.queue_session_id}/{queue_index}"
+        lambda _player_id, media, queue_index=None: f"{media.queue_session_id}/{queue_index}"
     )
     player.mass.player_queues._queue_data[QUEUE_ID].session_id = "next-session"
     client = MagicMock()
@@ -1000,7 +1001,7 @@ async def test_a_successful_load_releases_the_replaced_sessions_streams() -> Non
 
 
 async def test_a_forced_flow_load_also_releases_the_replaced_sessions_streams() -> None:
-    """A flow-mode queue (overlay) streams via play_stream_url; the sweep still runs."""
+    """A compressed flow-mode queue streams via play_stream_url; the sweep still runs."""
     player, _ = _make_player([_make_queue_item("track0")])
     client = MagicMock()
     client.player.is_passive = False
@@ -1013,7 +1014,7 @@ async def test_a_forced_flow_load_also_releases_the_replaced_sessions_streams() 
         patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: True))
         await player.play_media(
             PlayerMedia(
-                uri="http://ma/flow/abc.flac",
+                uri="http://ma/flow/abc.mp3",
                 media_type=MediaType.TRACK,
                 source_id=QUEUE_ID,
                 queue_item_id="track0",
@@ -1041,7 +1042,7 @@ async def test_a_failed_forced_flow_load_keeps_the_old_sessions_streams_alive() 
         with pytest.raises(FailedCommand):
             await player.play_media(
                 PlayerMedia(
-                    uri="http://ma/flow/abc.flac",
+                    uri="http://ma/flow/abc.mp3",
                     media_type=MediaType.TRACK,
                     source_id=QUEUE_ID,
                     queue_item_id="track0",
@@ -1257,18 +1258,27 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
     provider.logger = logging.getLogger("test.sonos.cloud_queue")
     provider._pending_refresh_tasks = set()
     playing, other = MagicMock(spec=SonosPlayer), MagicMock(spec=SonosPlayer)
+    flowing = MagicMock(spec=SonosPlayer)
     playing.protocol_id = "playing"
     playing.cloud_queue_id = QUEUE_ID
+    playing.plays_flow_item = False
     other.protocol_id = "other"
     other.cloud_queue_id = "another_queue"
+    # its one item is the flow stream of the queue, which no edit of the queue changes
+    flowing.protocol_id = "flowing"
+    flowing.cloud_queue_id = QUEUE_ID
+    flowing.plays_flow_item = True
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(type(provider), "protocols", property(lambda _self: [playing, other]))
+        patch.setattr(
+            type(provider), "protocols", property(lambda _self: [playing, other, flowing])
+        )
         provider._handle_queue_items_updated(MagicMock(object_id=QUEUE_ID))
 
     # the version must be invalidated before the (debounced) command goes out, or a window
     # served in between carries a version the speaker reads as current
     playing.bump_cloud_queue_version.assert_called_once_with()
     other.bump_cloud_queue_version.assert_not_called()
+    flowing.bump_cloud_queue_version.assert_not_called()
     assert provider.mass.call_later.call_count == 1
     assert provider.mass.call_later.call_args.args[1] == playing.refresh_cloud_queue
     # the id must be per speaker, or one speaker's refresh cancels another's

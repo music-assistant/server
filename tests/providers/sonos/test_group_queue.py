@@ -53,7 +53,7 @@ def _make_speaker() -> tuple[SonosPlayer, dict[str, MagicMock]]:
     mass = cast("MagicMock", speaker.mass)
     mass.players.get_player = MagicMock(side_effect=players.get)
     mass.streams.base_url = BASE_URL
-    mass.streams.resolve_stream_url.side_effect = lambda player_id, _media, queue_index: (
+    mass.streams.resolve_stream_url.side_effect = lambda player_id, _media, queue_index=None: (
         f"{player_id}/{queue_index}"
     )
     client = MagicMock()

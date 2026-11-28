@@ -137,6 +137,7 @@ class _Household:
         player.cloud_queue_id = None
         player.group_queue_id = None
         player._flow_queue_id = None
+        player._flow_media = None
         player.cloud_queue_item_generation = 1
         player._window_item_ids = {}
         player._served_bindings = {}

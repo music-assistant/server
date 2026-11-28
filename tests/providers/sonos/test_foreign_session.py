@@ -238,7 +238,9 @@ async def _play(player: SonosPlayer, media: PlayerMedia, on_load: Callable[[], N
 
     group.play_cloud_queue = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
     group.play_stream_url = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
-    stream_url = "http://192.168.1.20:8097/flow/queue-session/RINCON/abc/RINCON.flac"
+    # the stream controller hands out one compressed stream in flow mode, a track otherwise
+    route = "flow/queue-session/RINCON/abc/RINCON.mp3" if player.flow_mode else "single/abc.wav"
+    stream_url = f"http://192.168.1.20:8097/{route}"
     cast("MagicMock", player.mass).streams.resolve_stream_url = AsyncMock(return_value=stream_url)
     await player.play_media(media)
 

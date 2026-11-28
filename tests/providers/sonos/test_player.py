@@ -80,6 +80,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._served_bindings = {}
     player._evicted_cloud_queue = None
     player._flow_queue_id = None
+    player._flow_media = None
     player._queue_session_id = None
     player._hand_over_tasks = set()
     player._airplay_rejoin_members = set()
@@ -970,6 +971,7 @@ async def test_a_jump_is_not_undone_by_the_report_on_the_replaced_load() -> None
     group = client.player.group
     group.play_cloud_queue = AsyncMock()
     group.active_session_id = "session"
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://ma/single/track2.wav")
     player._announcement_media = None
     player.cloud_queue_id = "queue1"
     queues = _real_queues("queue1", ["track0", "track1", "track2"])
@@ -1891,6 +1893,34 @@ def test_a_pause_reported_right_after_a_change_of_track_reads_as_paused() -> Non
     player.update_attributes()
 
     assert player._attr_playback_state is PlaybackState.PAUSED
+
+
+def test_a_speaker_paused_in_a_flow_stream_reads_idle_until_it_is_loaded_anew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test a speaker that plays again by itself after a pause waits, idle, for the queue's resume."""
+    player, group = _speaker_to_pause("flow@7", "flow@7", set())
+    client = cast("MagicMock", player.client)
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    player._flow_media = PlayerMedia(
+        uri="http://ma/flow/session/queue/track0/sonos_player.wav",
+        queue_item_id="flow",
+        queue_session_id="session",
+    )
+    player._flow_paused = player._flow_resume_asked = False
+    resume = MagicMock()
+    monkeypatch.setattr(player, "_resume_paused_flow", resume)
+    _report_playing_our_queue(group, "flow@7")
+    reported: list[PlaybackState] = []
+
+    for state in ("PLAYING", "PAUSED", "BUFFERING", "PLAYING"):
+        group.playback_state = SonosPlayBackState(f"PLAYBACK_STATE_{state}")
+        player.update_attributes()
+        reported.append(player._attr_playback_state)
+
+    assert reported == [PlaybackState.PLAYING, *[PlaybackState.IDLE] * 3]
+    resume.assert_called_once_with("pl0123456789ab", "session")
 
 
 def test_a_speaker_fetches_files() -> None:

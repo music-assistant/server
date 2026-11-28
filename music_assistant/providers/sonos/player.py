@@ -15,6 +15,7 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
@@ -58,6 +59,7 @@ from music_assistant_models.player import PlayerMedia, PlayerOptionValueType
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
+    MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
     PlaybackQuality,
     create_sample_rates_config_entry,
@@ -128,6 +130,17 @@ SUPPORTED_FEATURES = {
 }
 
 
+class SonosRoute(Enum):
+    """The way a Sonos speaker gets the media it plays."""
+
+    # an item of the cloud queue, which the speaker reads its upcoming items from
+    CLOUD_QUEUE = "cloud_queue"
+    # the one stream of a queue in flow mode, as the only item of the cloud queue
+    FLOW_ITEM = "flow_item"
+    # one stream over the speaker's stream url, without a cloud queue
+    STREAM_URL = "stream_url"
+
+
 @dataclass
 class SonosQueueWindow:
     """A window of queue items as served to a Sonos speaker."""
@@ -173,6 +186,8 @@ FINISHED_CLIP_STATES = (
 # playback states in which a session holds its speaker
 RENDERING_STATES = (PlaybackState.PLAYING, PlaybackState.PAUSED)
 SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
+# the id of the one cloud queue item a queue in flow mode plays as: no item of the queue
+FLOW_ITEM_ID = "flow"
 REPEAT_ROUND_SUFFIX = re.compile(r"~r(\d+)")
 
 
@@ -247,9 +262,15 @@ class SonosPlayer(PlayerProtocol):
         self._announcement_media: PlayerMedia | None = None
         # the queue a session eviction released, and when (time.monotonic)
         self._evicted_cloud_queue: tuple[str, float] | None = None
-        # the MA queue the speaker plays as one stream (flow mode, or a compressed item
-        # without an end): no cloud queue is loaded
+        # the MA queue the speaker plays as one compressed stream over its stream url (flow
+        # mode, or an item without an end): no cloud queue is loaded
         self._flow_queue_id: str | None = None
+        # the stream of a queue in flow mode, served as the one item of the loaded cloud queue
+        self._flow_media: PlayerMedia | None = None
+        # the speaker was paused in that stream, and whether the queue was asked to resume it
+        # since the speaker played again by itself
+        self._flow_paused = False
+        self._flow_resume_asked = False
         # the playback session our queue was loaded into
         self._queue_session_id: str | None = None
         # hand-overs of a group the speakers moved outside MA, one per move
@@ -856,12 +877,7 @@ class SonosPlayer(PlayerProtocol):
                 raise
             return
 
-        if (
-            not self.flow_mode
-            and media.source_id
-            and media.queue_item_id
-            and not await self._plays_as_compressed_stream(media)
-        ):
+        if media.source_id and (route := await self._route(media)) is not SonosRoute.STREAM_URL:
             # Regular Queue item playback
             # create a sonos cloud queue and load it, into the session already playing if any
             previous_queue_id = self._playing_queue_id()
@@ -871,6 +887,11 @@ class SonosPlayer(PlayerProtocol):
             self.group_queue_id = None
             if self._leads_group_queue(media.source_id):
                 self._claim_group_queue(media.source_id)
+            self._flow_media = (
+                await self._flow_item_media(media) if route is SonosRoute.FLOW_ITEM else None
+            )
+            self._flow_paused = self._flow_resume_asked = False
+            loaded_item_id = (self._flow_media or media).queue_item_id
 
             def _load_starts(_sonos_session_id: str) -> None:
                 self._loaded_session_id = media.queue_session_id
@@ -881,7 +902,7 @@ class SonosPlayer(PlayerProtocol):
             try:
                 await self.group_controller.play_cloud_queue(
                     cloud_queue_url,
-                    item_id=self.wire_item_id(media.queue_item_id),
+                    item_id=self.wire_item_id(loaded_item_id),
                     on_session=_load_starts,
                 )
             except (Exception, asyncio.CancelledError) as err:
@@ -944,7 +965,7 @@ class SonosPlayer(PlayerProtocol):
 
          :param media: Details of the item that needs to be enqueued on the player.
         """
-        if self._flow_queue_id:
+        if self._flow_queue_id or self._flow_media is not None:
             # the speaker plays one stream and holds no cloud queue to read a next item from
             return
         if media.source_id:
@@ -1063,6 +1084,8 @@ class SonosPlayer(PlayerProtocol):
         """
         Hand the source of a queue item the speaker failed to play over to the next track.
 
+        A queue in flow mode has no next track on the speaker: its stream restarts instead.
+
         :param wire_item_id: The failed item's id as the speaker reports it.
         """
         if not (queue_id := self.cloud_queue_id):
@@ -1075,6 +1098,10 @@ class SonosPlayer(PlayerProtocol):
                 "Ignoring the failure of %s: the item has been reloaded since", wire_item_id
             )
             return
+        if self._plays_flow_item_as(wire_item_id):
+            # a speaker that fails on the stream stops, as on its own play after a pause
+            self._restart_flow_stream()
+            return
         # the speaker moves on to the next track by itself, while the failed track's
         # source may still be filling its buffer and holding the stream slot that
         # next track needs on a music service that allows a single stream
@@ -1084,6 +1111,37 @@ class SonosPlayer(PlayerProtocol):
             ),
             task_name=f"sonos_release_failed_item_{self.protocol_id}",
         )
+
+    @property
+    def plays_flow_item(self) -> bool:
+        """Return whether the loaded cloud queue is the one stream of a queue in flow mode."""
+        return self._flow_media is not None
+
+    def on_cloud_queue_read(self, reason: str | None, wire_item_id: str | None) -> None:
+        """
+        Act on why the speaker reads its cloud queue, while it plays a queue in flow mode.
+
+        :param reason: The reason the speaker gives for the request.
+        :param wire_item_id: The item it asks about, as the speaker reports it.
+        """
+        if (
+            not wire_item_id
+            or not self.from_current_load(wire_item_id)
+            or not self._plays_flow_item_as(wire_item_id)
+            or not (queue_id := self.cloud_queue_id)
+        ):
+            return
+        if reason == "queueCompleted":
+            # the stream ended, was cut or stalled, and the speaker does not ask for it
+            # again: it pauses once it played what it holds
+            self._restart_flow_stream()
+        elif reason in ("skipNext", "skipPrev"):
+            # the speaker finds no other item to skip to: the queue takes the step
+            queues = self.mass.player_queues
+            step = queues.next if reason == "skipNext" else queues.previous
+            self.mass.create_task(
+                step(queue_id), task_id=f"sonos_flow_item_skip_{self.protocol_id}"
+            )
 
     def bump_cloud_queue_version(self) -> None:
         """
@@ -1138,9 +1196,8 @@ class SonosPlayer(PlayerProtocol):
         :param generation: The load generation to serve the ids under; the current one when
             omitted.
         """
-        if self._announcement_media is not None:
-            # an announcement is a queue of exactly one item
-            media = self._announcement_media
+        if (media := self._announcement_media or self._flow_media) is not None:
+            # an announcement is a queue of exactly one item, and so is a queue in flow mode
             return SonosQueueWindow(
                 items=[media],
                 wire_ids=[self.wire_item_id(media.queue_item_id, generation) or media.uri],
@@ -1195,6 +1252,7 @@ class SonosPlayer(PlayerProtocol):
         upcoming_positions: dict[int, str] = {}
         last_index: int | str = center_index
         last_position = center_index
+        ends_before_flow = False
         for _ in range(min(UPCOMING_ITEMS, max_upcoming)):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
@@ -1205,7 +1263,12 @@ class SonosPlayer(PlayerProtocol):
             if next_index <= last_position:
                 # repeat starts the queue (or the track) over
                 repeat_round += 1
-            items.append(await self._player_media_for_speaker(next_item, next_index))
+            next_media = await self._player_media_for_speaker(next_item, next_index)
+            if ends_before_flow := self._is_flow_url(next_media.uri):
+                # a flow stream is a load of its own, which the queue starts: it follows a
+                # radio station or live source, which do not end by themselves
+                break
+            items.append(next_media)
             wire_ids.append(
                 self._wire_id_at(
                     next_item.queue_item_id, next_index, generation, asked, repeat_round
@@ -1239,7 +1302,8 @@ class SonosPlayer(PlayerProtocol):
             self.protocol_id,
             [x.title for x in window.items],
         )
-        return window
+        # the cloud queue ends where a flow stream follows
+        return replace(window, includes_end=True) if ends_before_flow else window
 
     def has_received_next_item(self, queue_item: QueueItem) -> bool:
         """
@@ -1548,6 +1612,9 @@ class SonosPlayer(PlayerProtocol):
                 and not (group_parent or self)._paused_in_file(active_group)
             )
         ):
+            self._attr_playback_state = PlaybackState.IDLE
+        if group_parent is None and self._awaits_flow_resume(active_group, was_playing):
+            # until the queue loaded the stream anew, where it was paused
             self._attr_playback_state = PlaybackState.IDLE
 
         # parse current media
@@ -2174,6 +2241,8 @@ class SonosPlayer(PlayerProtocol):
 
     def _forget_queue(self) -> None:
         """Forget the MA queue the speaker played, on either path."""
+        self._flow_media = None
+        self._flow_paused = self._flow_resume_asked = False
         self.cloud_queue_id = None
         self.group_queue_id = None
         self._flow_queue_id = None
@@ -2252,22 +2321,101 @@ class SonosPlayer(PlayerProtocol):
         self._evicted_cloud_queue = (queue_id, time.monotonic())
         self.update_state()
 
-    async def _plays_as_compressed_stream(self, media: PlayerMedia) -> bool:
-        """Return whether a queue item is a stream without an end in a compressed codec."""
-        if media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+    def _plays_flow_item_as(self, wire_item_id: str) -> bool:
+        """Return whether an id the speaker reports is the flow stream of the loaded cloud queue."""
+        return self._flow_media is not None and self.bare_item_id(wire_item_id) == FLOW_ITEM_ID
+
+    def _restart_flow_stream(self) -> None:
+        """Restart the flow stream of the loaded cloud queue where it plays now."""
+        # a flow that is not finished restarts, within the limit the queue keeps for a
+        # stream its player lost; a finished one ends by itself
+        flow_media, queue_id = self._flow_media, self.cloud_queue_id
+        if self._flow_paused:
+            # paused at the speaker: no stream was lost, and the queue resumes it by itself
+            return
+        if flow_media is not None and queue_id and flow_media.queue_session_id:
+            self.mass.player_queues.restart_lost_flow_stream(queue_id, flow_media.queue_session_id)
+
+    def _awaits_flow_resume(self, group: SonosGroup, was_playing: bool) -> bool:
+        """
+        Return whether the speaker waits for the queue to resume a flow stream it was paused in.
+
+        A speaker that was paused in the stream, in its app or at its own buttons, can not go
+        on in it. Once it plays again by itself the queue resumes, which is no restart of a
+        lost stream.
+
+        :param group: The group, as this player's connection reports it.
+        :param was_playing: Whether this player read as playing before this report.
+        """
+        wire_item_id = self._playing_wire_id(group)
+        if wire_item_id is None or not self._plays_flow_item_as(wire_item_id):
             return False
-        # the codec the stream really gets: a live source can be sent uncompressed by a
-        # setting of its own
+        state = PLAYBACK_STATE_MAP[group.playback_state]
+        if state == PlaybackState.PAUSED and was_playing:
+            self._flow_paused = True
+        elif state == PlaybackState.PLAYING and self._flow_paused and not self._flow_resume_asked:
+            self._flow_resume_asked = True
+            flow_media, queue_id = self._flow_media, self.cloud_queue_id
+            if flow_media is not None and queue_id and flow_media.queue_session_id:
+                # a task keeps the context it is created in: the resume starts no group
+                with self.mass.players.without_member_power_on():
+                    self.mass.create_task(
+                        self._resume_paused_flow(queue_id, flow_media.queue_session_id),
+                        task_id=f"sonos_resume_paused_flow_{self.protocol_id}",
+                    )
+        return self._flow_paused
+
+    async def _resume_paused_flow(self, queue_id: str, session_id: str) -> None:
+        """Resume the queue where its flow stream was paused, unless it was loaded anew meanwhile."""
+        async with self.mass.players.get_group_and_player_lock(queue_id):
+            # a command or a restart that held the lock went first
+            queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+            if queue_data is None or queue_data.session_id != session_id:
+                return
+            self.logger.debug("%s plays again after a pause, resuming its queue", self.display_name)
+            await self.mass.player_queues.resume(queue_id, fade_in=False)
+
+    async def _route(self, media: PlayerMedia) -> SonosRoute:
+        """Return the way the speaker gets media: out of its cloud queue or over its stream url."""
+        if not (media.source_id and media.queue_item_id):
+            return SonosRoute.STREAM_URL
         stream_url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
+        is_flow = self._is_flow_url(stream_url)
+        if not is_flow and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+            return SonosRoute.CLOUD_QUEUE
+        # a stream without an end goes by the codec it really gets: a live source can be
+        # sent uncompressed by a setting of its own
         codec = ContentType.try_parse(urlparse(stream_url).path.rsplit(".", 1)[-1])
-        return not codec.is_lossless()
+        if not codec.is_lossless():
+            return SonosRoute.STREAM_URL
+        return SonosRoute.FLOW_ITEM if is_flow else SonosRoute.CLOUD_QUEUE
+
+    @staticmethod
+    def _is_flow_url(stream_url: str) -> bool:
+        """Return whether a stream url is the one stream of a queue in flow mode."""
+        return urlparse(stream_url).path.startswith("/flow/")
+
+    async def _flow_item_media(self, media: PlayerMedia) -> PlayerMedia:
+        """Return the one cloud queue item a queue in flow mode plays as, from its first item."""
+        return replace(
+            media,
+            uri=await self.mass.streams.resolve_stream_url(self._queue_url_id(), media),
+            queue_item_id=FLOW_ITEM_ID,
+            # the stream runs on past its first item, so it shows no track and has no end
+            title="Music Assistant",
+            artist=None,
+            album=None,
+            image_url=MASS_LOGO_ONLINE,
+            duration=None,
+            stream_duration=None,
+        )
 
     async def _play_stream(self, media: PlayerMedia) -> None:
         """
         Play media as one stream over the speaker's stream url.
 
-        That is a queue in flow mode, a compressed queue item without an end, or media that
-        is no MA queue item.
+        That is a compressed stream without an end (a queue in flow mode, a radio station or
+        a live source), or media that is no MA queue item.
         """
         # this path loads no cloud queue, so the speaker must not be signalled about one
         previous_queue_id = self._playing_queue_id()
@@ -2670,6 +2818,7 @@ class SonosPlayer(PlayerProtocol):
         new_coordinator._announcement_media = None
         new_coordinator._evicted_cloud_queue = None
         new_coordinator._flow_queue_id = None
+        new_coordinator._flow_media = None
         # it plays a copy of the playback session, which its own connection does not hold
         new_coordinator._queue_session_id = None
         # it reports what this speaker did until its own connection has read the group
