@@ -226,10 +226,6 @@ class MilkdropRelay:
                     }
                 ).decode()
             )
-        elif data.get("type") == "client/error":
-            # Cast displays and kiosks have no reachable console, so a renderer
-            # that cannot start would otherwise fail in silence.
-            self.logger.warning("Viewer reported a problem: %s", data.get("message", "unknown"))
 
     def _resolve_target(self, query: str | None) -> Player | None:
         """

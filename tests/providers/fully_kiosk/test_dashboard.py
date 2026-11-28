@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import unquote
 
 import pytest
 from fullykiosk.exceptions import FullyKioskError
@@ -313,7 +314,7 @@ async def test_on_show_wakes_and_loads_url_in_order() -> None:
     await dashboards._on_show(PLAYER_ID, DashboardType.PARTY, None)
 
     dashboards.mass.dashboard.resolve_dashboard_url.assert_awaited_once_with(
-        DashboardType.PARTY, None, prefer_local=True
+        DashboardType.PARTY, None, dashboard_id=PLAYER_ID, prefer_local=True
     )
     assert [call[0] for call in order.mock_calls] == [
         "screen_on",
@@ -321,7 +322,38 @@ async def test_on_show_wakes_and_loads_url_in_order() -> None:
         "to_foreground",
         "load_url",
     ]
-    client.loadUrl.assert_awaited_once_with(target)
+    client.loadUrl.assert_awaited_once()
+
+
+async def test_on_show_escapes_url_for_the_extra_decode() -> None:
+    """Fully decodes the url once more before loading it, so it must arrive escaped once more."""
+    dashboards = _make_dashboards()
+    player = _make_player()
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
+    target = (
+        "http://192.168.1.10:8095/?dashboard=ABC123"
+        "&path=%2Fnow-playing%3Fplayer%3Dp1%26dashboard_id%3Dd1%26viewer_key%3Dk1"
+    )
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=target)  # type: ignore[method-assign]
+
+    await dashboards._on_show(PLAYER_ID, DashboardType.NOW_PLAYING, "p1")
+
+    sent = _client_of(player).loadUrl.await_args.args[0]
+    assert unquote(sent) == target
+
+
+async def test_on_show_url_carries_the_endpoints_dashboard_id() -> None:
+    """The url identifies this endpoint's session, so its viewer resolves the caster's prefs."""
+    dashboards = _make_dashboards()
+    player = _make_player()
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value="http://host/")  # type: ignore[method-assign]
+
+    await dashboards._on_show(PLAYER_ID, DashboardType.NOW_PLAYING, "target_player")
+
+    dashboards.mass.dashboard.resolve_dashboard_url.assert_awaited_once_with(
+        DashboardType.NOW_PLAYING, "target_player", dashboard_id=PLAYER_ID, prefer_local=True
+    )
 
 
 async def test_on_show_missing_player_raises_unavailable() -> None:
