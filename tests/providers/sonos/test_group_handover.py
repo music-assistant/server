@@ -1,13 +1,15 @@
 """Tests for a Sonos speaker that leaves the sync group it leads while the group plays on."""
 
 import asyncio
+import copy
 import json
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 from aiosonos.client import SonosLocalApiClient
@@ -19,11 +21,13 @@ from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.constants import ATTR_GROUP_MEMBERS
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos import player as player_module
 from music_assistant.providers.sonos.cloud_queue import SonosCloudQueue
 from music_assistant.providers.sonos.player import SonosPlayer
 from music_assistant.providers.sonos.provider import SonosPlayerProvider
+from music_assistant.providers.sync_group.player import SyncGroupPlayer
 from tests.providers.sonos.test_cloud_queue import (
     QUEUE_ID,
     _FakeQueues,
@@ -34,6 +38,7 @@ from tests.providers.sonos.test_cloud_queue import (
     _set_playback_quality,
 )
 from tests.providers.sonos.test_player import _connected_player
+from tests.providers.sync_group.test_sync_group import _make_mock_mass, _make_sync_group
 
 HOUSEHOLD = "Sonos_household"
 # Kitchen leads; Bathroom joined it first and Study last, which Sonos lists the other way round
@@ -45,6 +50,7 @@ BATHROOM_GROUP = f"{BATHROOM}:401"
 KITCHEN_ALONE = f"{KITCHEN}:402"
 STUDY_GROUP = f"{STUDY}:403"
 BATHROOM_ALONE = f"{BATHROOM}:404"
+STUDY_ALONE = f"{STUDY}:405"
 # the queue of the player of Kitchen itself, which is what a group made by hand plays
 KITCHEN_QUEUE = f"pl_{KITCHEN}"
 GENERATION = 7
@@ -181,13 +187,9 @@ class _Household:
         )
         self.mass = MagicMock()
         self.mass.create_task.side_effect = self._create_task
-        # the sync group whose queue plays, which every speaker is a member of
+        # the sync group whose queue plays, which follows any speaker its session moves to
         self.sync_group = MagicMock()
         self.sync_group.on_session_moved = AsyncMock(return_value=True)
-        self.sync_group_members = {f"pl_{player_id}" for player_id in (KITCHEN, STUDY, BATHROOM)}
-        self.sync_group.counts_in.side_effect = lambda player_id: (
-            player_id in self.sync_group_members
-        )
         group_player = MagicMock(player_id=QUEUE_ID, own_protocol=self.sync_group)
         self.mass.players.get_player.side_effect = {QUEUE_ID: group_player}.get
         self.mass.players.get_player_lock.side_effect = self._lock
@@ -197,6 +199,8 @@ class _Household:
         self.tasks: list[asyncio.Task[None]] = []
         # what every speaker answers getGroups with, and answered before the last move
         self.grouping = self.grouping_before = SYNCED
+        # what a leader that leaves makes of the household, by leader
+        self.moves = dict(MOVES)
         # how often a speaker still answers with the grouping before the last move
         self.asked_too_early: dict[str, int] = {}
         # the speakers that answer nothing
@@ -294,14 +298,15 @@ class _Household:
 
         :param leader: The speaker that leads the group.
         """
-        await self._change_group(leader, MOVES[leader][0], [], [leader])
+        await self._change_group(leader, self.moves[leader][0], [], [leader])
         # it tells of the move well before it reports its new grouping
         await asyncio.sleep(0)
 
     async def settle(self) -> None:
         """Deliver the groups event each speaker sends by itself, and let everything finish."""
         for speaker in self.speakers.values():
-            speaker.client._handle_groups_event(cast("Any", self.grouping))
+            # each speaker sends an event of its own: a client keeps what it is handed
+            speaker.client._handle_groups_event(cast("Any", copy.deepcopy(self.grouping)))
         for _ in range(50):
             await asyncio.sleep(0)
         await asyncio.gather(*self.tasks)
@@ -331,8 +336,8 @@ class _Household:
             await asyncio.Event().wait()
         if self.asked_too_early.get(player_id, 0) > 0:
             self.asked_too_early[player_id] -= 1
-            return self.grouping_before
-        return self.grouping
+            return copy.deepcopy(self.grouping_before)
+        return copy.deepcopy(self.grouping)
 
     async def _change_group(
         self, player_id: str, group_id: str, *_args: object, **kwargs: Any
@@ -341,7 +346,7 @@ class _Household:
         leader = self.speakers[player_id]
         if kwargs.get("player_ids_to_remove", [*_args, None, None][1]) != [player_id]:
             return {"_objectType": "groupInfo"}
-        old_group_id, grouping, new_coordinator = MOVES[player_id]
+        old_group_id, grouping, new_coordinator = self.moves[player_id]
         assert group_id == old_group_id
         self.grouping_before, self.grouping = self.grouping, grouping
         # the others play on, led by one of them, and the leader that left plays nothing
@@ -989,7 +994,6 @@ async def test_the_member_that_took_the_group_over_is_followed_in_its_turn(
     [
         "gets its tracks as flac",
         "paused",
-        "moved to a speaker that is no member",
         "the sync group does not follow",
     ],
 )
@@ -1004,8 +1008,6 @@ async def test_a_move_made_outside_music_assistant_still_stops_the_group(
         home.kitchen.group_controller._playback_status_data = cast(
             "Any", {**PLAYING, "playbackState": "PLAYBACK_STATE_PAUSED"}
         )
-    elif state == "moved to a speaker that is no member":
-        home.sync_group_members.discard(f"pl_{BATHROOM}")
     elif state == "the sync group does not follow":
         home.sync_group.on_session_moved.return_value = False
 
@@ -1019,6 +1021,186 @@ async def test_a_move_made_outside_music_assistant_still_stops_the_group(
     if state != "the sync group does not follow":
         home.sync_group.on_session_moved.assert_not_awaited()
         assert len(home.tasks) == 1
+
+
+@pytest.mark.parametrize("state", ["paused", "the sync group does not follow"])
+async def test_a_move_that_is_not_followed_after_a_hand_over_stops_the_speaker_it_went_to(
+    home: _Household, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    """Test the speaker is stopped without a groups event of its own, and no speaker keeps the queue."""
+    monkeypatch.setattr(player_module, "GROUPS_POLL_INTERVAL", 0.01, raising=False)
+    monkeypatch.setattr(player_module, "MOVED_GROUP_TIMEOUT", 1)
+    await home.leave()
+    # the queue names its next track while the group changes hands
+    await home.kitchen.enqueue_next_media(
+        PlayerMedia(
+            uri="library://track/1",
+            media_type=MediaType.TRACK,
+            source_id=QUEUE_ID,
+            queue_item_id="track1",
+            queue_session_id="session",
+        )
+    )
+    await home.settle()
+    assert home.serving(QUEUE_ID) is home.bathroom
+    if state == "paused":
+        home.bathroom.group_controller._playback_status_data = cast(
+            "Any", {**PLAYING, "playbackState": "PLAYBACK_STATE_PAUSED"}
+        )
+    else:
+        home.sync_group.on_session_moved.return_value = False
+
+    await home.leave(BATHROOM)
+    # the speaker that took over sends no groups event of its own
+    await asyncio.gather(*home.tasks)
+
+    assert home.commands(STUDY) == STOP
+    for speaker in home.speakers.values():
+        assert speaker.cloud_queue_id is None
+        assert speaker.group_queue_id is None
+    assert home.serving(QUEUE_ID) is None
+
+
+def _real_sync_group(home: _Household, *members: str, dynamic: bool = True) -> SyncGroupPlayer:
+    """
+    Put a real sync group behind the queue of a household, led by Kitchen.
+
+    The group is told of what its members report, as the players controller tells it.
+
+    :param home: The household.
+    :param members: The speakers that are members of the group, its leader first.
+    :param dynamic: Whether the members of the group can change.
+    """
+    mass = _make_mock_mass()
+    member_ids = [f"pl_{player_id}" for player_id in members]
+    group = _make_sync_group(mass, dynamic=dynamic, members=member_ids)
+    group.update_state = MagicMock()  # type: ignore[method-assign, misc]
+    group._schedule_idle_grace_timer = MagicMock()  # type: ignore[method-assign]
+    held: dict[str, list[str]] = {}
+
+    def _held_by(speaker: SonosPlayer) -> list[str]:
+        return [f"pl_{player_id}" for player_id in speaker.group_members]
+
+    def _tell_group(speaker: SonosPlayer, report: Callable[[], None]) -> None:
+        report()
+        player_id = f"pl_{speaker.protocol_id}"
+        previous, current = held[player_id], _held_by(speaker)
+        held[player_id] = current
+        if player_id in group.group_members:
+            changed = {ATTR_GROUP_MEMBERS: (previous, current)} if previous != current else {}
+            group.on_group_member_updated(cast("Player", speaker.player), changed)
+
+    for speaker in home.speakers.values():
+        player = cast("MagicMock", speaker.player)
+        mass.players._players[player.player_id] = player
+        player.device_protocol = speaker
+        player.attached_protocols = {speaker.protocol_id: speaker}
+        player.resolve_output_protocol.return_value = speaker
+        cast("MagicMock", speaker.provider).domain = "sonos"
+        type(player).group_members = PropertyMock(side_effect=partial(_held_by, speaker))
+        type(player).playback_state = PropertyMock(
+            side_effect=lambda speaker=speaker: speaker.playback_state
+        )
+        held[player.player_id] = _held_by(speaker)
+        speaker.update_state = MagicMock(  # type: ignore[method-assign, misc]
+            side_effect=partial(_tell_group, speaker, speaker.update_state)
+        )
+    group.sync_leader = cast("Player", home.kitchen.player)
+    group._attr_group_members = member_ids
+    group._attr_static_group_members = [] if dynamic else list(member_ids)
+    group._update_attributes()
+    home.mass.players.get_player.side_effect = {QUEUE_ID: group.player}.get
+    return group
+
+
+async def _regroup(home: _Household, *groups: tuple[str, str, list[str]]) -> None:
+    """
+    Let the speakers report a grouping that was made in the Sonos app.
+
+    :param home: The household.
+    :param groups: The groups of the household: the group id, its coordinator and its players.
+    """
+    home.grouping_before, home.grouping = home.grouping, _groups(*groups)
+    await home.settle()
+
+
+async def test_a_dynamic_group_keeps_up_with_speakers_regrouped_in_the_sonos_app(
+    home: _Household,
+) -> None:
+    """Test the group follows its leader out, lists it once it is back and follows the other way."""
+    group = _real_sync_group(home, KITCHEN, BATHROOM)
+    study = (STUDY_ALONE, STUDY, [STUDY])
+    await _regroup(home, (KITCHEN_GROUP, KITCHEN, [KITCHEN, BATHROOM]), study)
+    group_ids = (f"{KITCHEN}:{i}" for i in range(500, 600))
+
+    for leader, member in ((KITCHEN, BATHROOM), (BATHROOM, KITCHEN), (KITCHEN, BATHROOM)):
+        # the leader is taken out in the Sonos app
+        moved, alone = next(group_ids), next(group_ids)
+        home.moves[leader] = (
+            home.speakers[leader].group_controller.id,
+            _groups((moved, member, [member]), (alone, leader, [leader]), study),
+            member,
+        )
+        await home.leave(leader)
+        await home.settle()
+
+        assert group.sync_leader is home.speakers[member].player
+        assert group._attr_group_members == [f"pl_{member}"]
+        assert home.serving(QUEUE_ID) is home.speakers[member]
+        assert home.speakers[member].playback_state == PlaybackState.PLAYING
+        assert home.speakers[leader].playback_state == PlaybackState.IDLE
+        assert home.speakers[leader].cloud_queue_id is None
+
+        # and added to the group that plays again, in the Sonos app as well
+        await _regroup(home, (moved, member, [member, leader]), study)
+
+        assert group._attr_group_members == [f"pl_{member}", f"pl_{leader}"]
+        assert group.counts_in(f"pl_{leader}")
+    assert all(home.commands(player_id) == [] for player_id in home.speakers)
+
+
+@pytest.mark.parametrize("dynamic", [True, False])
+async def test_a_speaker_that_joins_in_the_sonos_app_is_a_member_of_a_dynamic_group_only(
+    home: _Household, dynamic: bool
+) -> None:
+    """Test a group with fixed members does not take a speaker that is none of them."""
+    group = _real_sync_group(home, KITCHEN, STUDY, dynamic=dynamic)
+    await _regroup(
+        home, (KITCHEN_GROUP, KITCHEN, [KITCHEN, STUDY]), (BATHROOM_ALONE, BATHROOM, [BATHROOM])
+    )
+
+    await _regroup(home, (KITCHEN_GROUP, KITCHEN, [KITCHEN, STUDY, BATHROOM]))
+
+    assert group.counts_in(f"pl_{BATHROOM}") is dynamic
+    assert group._attr_group_members == [
+        f"pl_{player_id}" for player_id in (KITCHEN, STUDY, *([BATHROOM] if dynamic else []))
+    ]
+    assert all(home.commands(player_id) == [] for player_id in home.speakers)
+
+
+@pytest.mark.parametrize("dynamic", [True, False])
+async def test_a_move_to_a_speaker_the_group_does_not_list_yet(
+    home: _Household, dynamic: bool
+) -> None:
+    """Test a dynamic group follows the speaker and lists it; fixed members stop the music."""
+    # Bathroom joined Kitchen in the Sonos app, which the group was not told of
+    group = _real_sync_group(home, KITCHEN, STUDY, dynamic=dynamic)
+
+    await home.leave()
+    await home.settle()
+
+    if dynamic:
+        assert group.sync_leader is home.bathroom.player
+        assert group._attr_group_members == [f"pl_{BATHROOM}", f"pl_{STUDY}"]
+        assert home.serving(QUEUE_ID) is home.bathroom
+        assert home.bathroom.playback_state == PlaybackState.PLAYING
+        assert all(home.commands(player_id) == [] for player_id in home.speakers)
+        return
+    assert group.sync_leader is home.kitchen.player
+    assert group._attr_group_members == [f"pl_{KITCHEN}", f"pl_{STUDY}"]
+    assert home.commands(BATHROOM) == STOP
+    assert home.serving(QUEUE_ID) is None
+    assert all(speaker.cloud_queue_id is None for speaker in home.speakers.values())
 
 
 async def test_the_new_coordinator_hands_the_group_over_in_its_turn(home: _Household) -> None:

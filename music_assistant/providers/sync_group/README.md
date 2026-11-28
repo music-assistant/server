@@ -281,6 +281,13 @@ When `SET_MEMBERS` is called on a dynamic group:
 4. Incompatible members are **not** registered (avoids stranding orphan entries in the group)
 5. Compatible members are appended to the internal member list and forwarded to `cmd_set_members` on the leader, which handles protocol selection (and possibly switching the leader to a different output protocol so the new member can be grouped via that protocol)
 
+### A Player That Joins Outside Music Assistant
+
+A player can join the sync leader outside Music Assistant: a Sonos speaker that is added to the playing group in the Sonos app. The group lists it at once, as its `group_members` are those of its leader.
+
+1. A dynamic group takes the player as a member once its leader reports to hold it, unless the allow-list leaves it out. From then on it is a member as any other: a change of leader can hand the session over to it, and the group includes it the next time it forms
+2. A static group does not take a player that is none of its configured members. It plays along for as long as the leader holds it
+
 ### Removing Members
 
 1. Remove from the internal member list (static members cannot be removed)
@@ -305,11 +312,11 @@ A leader whose receiver another sender took over is ungrouped instead, as if the
 
 ### A Leader That Leaves by Itself
 
-A leader can leave the live session outside Music Assistant while the session plays on, held by one of its members: a Sonos speaker that is taken out of its group in the Sonos app. Its provider reports this through `on_session_moved` and names the member that holds the session. Sonos does so while the group plays a track that is served to the leader as a file, and only for a member of the group; a group in any other state is stopped.
+A leader can leave the live session outside Music Assistant while the session plays on, held by a player that followed it: a Sonos speaker that is taken out of its group in the Sonos app. Its provider reports this through `on_session_moved` and names the player that holds the session. Sonos does so while the group plays a track that is served to the leader as a file; a group in any other state is stopped, and so is a group that does not follow that player.
 
-1. The group follows that member: it becomes the sync leader and takes over the members that remain. The leader that left is not asked to step out, and it reports for itself again only once the group follows the member
-2. A dynamic group drops the leader that left
-3. A static group keeps it as a member and plays on without it. It is added again as any configured member the leader is not holding, after the debounce
+1. The group follows that player: it becomes the sync leader and takes over the members that remain. The leader that left is not asked to step out, and it reports for itself again only once the group follows the player
+2. A dynamic group drops the leader that left. It follows any player it allows as a member, and takes one that joined its leader outside Music Assistant as a member
+3. A static group only follows one of its configured members. It keeps the leader that left as a member and plays on without it. It is added again as any configured member the leader is not holding, after the debounce
 
 ### Removing Last Member
 

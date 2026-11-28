@@ -148,6 +148,8 @@ class _Household:
         player._taken_over_item_id = None
         player.client = MagicMock()
         player.client.subscribe.side_effect = subscribe
+        # what a speaker that is asked for its groups answers is not read here
+        player.client.api.groups.get_groups = AsyncMock()
         group = player.client.player.group
         # the group it coordinates plays the moved copy of our queue, not a session of its own
         group.active_service = MusicService.MUSIC_ASSISTANT
@@ -257,6 +259,27 @@ async def test_the_hand_over_waits_for_the_new_coordinator_to_report_the_role() 
     home.report_coordinator(True)
     home.deliver()
     await hand_over
+
+    home.transfer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_new_coordinator_that_does_not_report_the_role_by_itself_is_asked() -> None:
+    """The groups event of the new coordinator can be seconds late, so its groups are asked for."""
+    home = _Household()
+    home.report_coordinator(False)
+
+    async def _answer(*_args: object, **_kwargs: object) -> MagicMock:
+        # its connection learns of the role from the answer
+        home.report_coordinator(True)
+        home.deliver()
+        return MagicMock()
+
+    cast("MagicMock", home.bathroom.client).api.groups.get_groups.side_effect = _answer
+
+    with patch.object(player_module, "MOVED_GROUP_TIMEOUT", 1):
+        home.office._on_group_coordinator_changed(_moved())
+        await home.scheduled.pop()
 
     home.transfer.assert_awaited_once()
 
