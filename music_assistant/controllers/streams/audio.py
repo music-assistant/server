@@ -442,6 +442,20 @@ def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> 
     return max_bytes // frame_size * frame_size
 
 
+def bit_depth_of_source(streamdetails: StreamDetails) -> int:
+    """
+    Return the bit depth that carries all of the audio of a source.
+
+    That is the depth its audio is decoded to, or 16 bit for a lossy source, whatever
+    depth its decoder gives.
+
+    :param streamdetails: Stream details of the source.
+    """
+    if quality_tier(streamdetails.audio_format) in (QualityTier.LOSSY_HIGH, QualityTier.LOSSY_LOW):
+        return 16
+    return decoded_pcm_format(streamdetails).bit_depth
+
+
 def _delivered_media_covers_item(
     streamdetails: StreamDetails,
     delivered_seconds: float,
@@ -1750,8 +1764,9 @@ class StreamsAudio:
         :param content_sample_rate: Sample rate of the internal PCM being encoded.
         :param content_bit_depth: Bit depth of the internal PCM being encoded.
         :param media_type: Media type being streamed.
-        :param source_bit_depth: Bit depth the source itself declares, which is not the
-            same as ``content_bit_depth`` once the internal PCM is widened for processing.
+        :param source_bit_depth: Bit depth of the source (see ``bit_depth_of_source``), which
+            is not the same as ``content_bit_depth`` once the internal PCM is widened for
+            processing.
         """
         content_type: ContentType = ContentType.try_parse(output_format_str)
         player_supported_rates = player.get_supported_sample_rates()
@@ -1770,10 +1785,10 @@ class StreamsAudio:
             # no point in having a higher bit depth for lossy formats
             output_bit_depth = 16
             output_sample_rate = min(48000, output_sample_rate)
-        if media_type not in (MediaType.TRACK, MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM):
-            # content_bit_depth is the internal PCM depth (32 bit float once normalization
-            # or DSP runs), so cap on the source instead: a lossy station or TTS stays
-            # 16 bit while a hi-res radio stream keeps its own depth. Round up to a
+        if media_type not in (MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM):
+            # content_bit_depth is the internal PCM depth (32 bit float once crossfade,
+            # normalization or DSP runs), so cap on the source instead: a 16 bit or lossy
+            # source stays 16 bit while a hi-res one keeps its own depth. Round up to a
             # container width, which is what the encoders and content length headers assume.
             source_container_bit_depth = (
                 16 if source_bit_depth <= 16 else 24 if source_bit_depth <= 24 else 32
