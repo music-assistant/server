@@ -640,6 +640,34 @@ def test_a_track_that_is_shorter_than_its_item_lists_declares_the_duration_of_it
     assert declared_frames(queue_item, 44100) == 267 * 44100
 
 
+@pytest.mark.parametrize(
+    ("stream_duration", "seconds"),
+    [(387, 388), (262, 267), (None, 267)],
+    ids=["longer", "shorter", "not-given"],
+)
+@pytest.mark.parametrize(
+    "buffer", [None, _buffer(40.0, eof=False)], ids=["no-buffer", "still-decoding"]
+)
+def test_a_track_declares_the_duration_of_its_stream_details_when_that_is_longer(
+    buffer: MagicMock | None, stream_duration: int | None, seconds: int
+) -> None:
+    """A provider gives the duration of the audio that plays, also when its source reports none."""
+    queue_item = _queue_item(duration=266, buffer=buffer)
+    assert queue_item.streamdetails is not None
+    queue_item.streamdetails.duration = stream_duration
+
+    assert declared_frames(queue_item, 44100) == seconds * 44100
+
+
+def test_a_track_from_a_position_declares_what_its_stream_details_have_left_of_it() -> None:
+    """The duration in the stream details is that of the whole item, wherever the file starts."""
+    queue_item = _queue_item(duration=266, seek_position=300)
+    assert queue_item.streamdetails is not None
+    queue_item.streamdetails.duration = 387
+
+    assert declared_frames(queue_item, 44100) == 88 * 44100
+
+
 def test_a_decoded_track_declares_its_exact_length_whatever_its_source_reports() -> None:
     """The audio that was decoded tells more than the length its source reports."""
     queue_item = _queue_item(duration=266, buffer=_buffer(387.67, source_duration=387))
