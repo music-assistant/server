@@ -303,6 +303,14 @@ A leader whose stream died is not removed from the group: its provider reports t
 
 A leader whose receiver another sender took over is ungrouped instead, as if the user took it out: a dynamic group plays on without it, a static group ends.
 
+### A Leader That Leaves by Itself
+
+A leader can leave the live session outside Music Assistant while the session plays on, held by one of its members: a Sonos speaker that is taken out of its group in the Sonos app. Its provider reports this through `on_session_moved` and names the member that holds the session. Sonos does so while the group plays a track that is served to the leader as a file, and only for a member of the group; a group in any other state is stopped.
+
+1. The group follows that member: it becomes the sync leader and takes over the members that remain. The leader that left is not asked to step out, and it reports for itself again only once the group follows the member
+2. A dynamic group drops the leader that left
+3. A static group keeps it as a member and plays on without it. It is added again as any configured member the leader is not holding, after the debounce
+
 ### Removing Last Member
 
 If the last member is removed, the group is dissolved (leader stopped, sync_leader cleared).
