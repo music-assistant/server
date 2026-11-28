@@ -21,7 +21,11 @@ from music_assistant_models.auth import AuthProviderType, User, UserRole
 from music_assistant_models.errors import AuthenticationFailed, RateLimited
 from music_assistant_models.translations import resolve_translation
 
-from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_AUTH_ALLOW_SELF_REGISTRATION,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+)
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.pkce import pkce_challenge
 from music_assistant.helpers.util import is_public_url, join_task
@@ -45,6 +49,14 @@ UNKNOWN_USER_ID: Final = "unknown-user"
 # Seconds the URLs Home Assistant reports for itself are reused, and after a failed lookup
 HA_NETWORK_URLS_TTL: Final = 300
 HA_NETWORK_URLS_RETRY: Final = 30
+HA_LINK_REFUSED_MESSAGE: Final = (
+    "This Home Assistant account can not be linked to the Music Assistant account with the "
+    "same username. Please ask an administrator."
+)
+
+
+class HomeAssistantLinkRefused(AuthenticationFailed):
+    """Raised when a Home Assistant account may not sign in as the user matching its name."""
 
 
 def normalize_username(username: str) -> str:
@@ -157,6 +169,8 @@ async def get_or_create_ha_user(
     :return: The user, which may be a disabled one, or None if none matches and
         allow_create is False.
     :raises AuthenticationFailed: If the role of a new user can not be read from Home Assistant.
+    :raises HomeAssistantLinkRefused: If the user matched by username may not be linked to the
+        Home Assistant account, or the username is reserved.
     """
     auth = mass.webserver.auth
     # Check if user already linked to HA
@@ -173,7 +187,13 @@ async def get_or_create_ha_user(
             return user
         if not linked:
             # User exists with this username - link them to HA provider
+            await _ensure_ha_username_link_allowed(mass, user, ha_user_id)
             await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+            LOGGER.info(
+                "Linked Home Assistant user %s to Music Assistant user %s by username",
+                ha_user_id,
+                user.user_id,
+            )
         # Update user with HA details if available (HA is source of truth)
         if display_name or avatar_url:
             user = await auth.update_user(
@@ -186,11 +206,18 @@ async def get_or_create_ha_user(
     if not allow_create:
         return None
 
+    username = normalize_username(username)
+    if username == HOMEASSISTANT_SYSTEM_USER:
+        LOGGER.warning(
+            "Refused to create a user for Home Assistant user %s: the username is reserved",
+            ha_user_id,
+        )
+        raise HomeAssistantLinkRefused(HA_LINK_REFUSED_MESSAGE)
+
     # Determine role based on HA admin status
     role = await get_ha_user_role(mass, ha_user_id)
 
     # Create new user
-    username = normalize_username(username)
     user = await auth.create_user(
         username=username,
         role=role,
@@ -950,3 +977,40 @@ class HomeAssistantOAuthProvider(LoginProvider):
             avatar_url,
             allow_create=self.allow_self_registration,
         )
+
+
+async def _ensure_ha_username_link_allowed(
+    mass: MusicAssistant, user: User, ha_user_id: str
+) -> None:
+    """
+    Raise when the user matched by username may not be linked to the Home Assistant account.
+
+    :param mass: MusicAssistant instance.
+    :param user: The enabled, not yet linked user whose username matches.
+    :param ha_user_id: Home Assistant user ID.
+    :raises HomeAssistantLinkRefused: If the link is refused.
+    """
+    reason: str | None = None
+    if user.role == UserRole.SERVICE or user.username == HOMEASSISTANT_SYSTEM_USER:
+        reason = "the account is a service account"
+    else:
+        links = await mass.webserver.auth.database.get_rows(
+            "user_auth_providers", {"user_id": user.user_id}
+        )
+        if any(link["provider_type"] != AuthProviderType.BUILTIN.value for link in links):
+            # this Home Assistant user is not linked to anyone, so any such link is someone else's
+            reason = "the account is already linked to another external account"
+        elif (
+            user.role == UserRole.ADMIN
+            and await get_ha_user_role(mass, ha_user_id) != UserRole.ADMIN
+        ):
+            reason = "the account is an administrator and the Home Assistant user is not"
+    if reason is None:
+        return
+    LOGGER.warning(
+        "Refused to link Home Assistant user %s to Music Assistant user %s by username: %s",
+        ha_user_id,
+        user.user_id,
+        reason,
+    )
+    raise HomeAssistantLinkRefused(HA_LINK_REFUSED_MESSAGE)
