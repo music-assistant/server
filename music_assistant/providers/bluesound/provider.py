@@ -9,6 +9,7 @@ from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import (
+    format_ip_for_url,
     get_mac_address,
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
@@ -82,8 +83,9 @@ class BluesoundPlayerProvider(PlayerProvider):
         assert protocol_id is not None  # for type checker
         if bluos_player := self.get_protocol(protocol_id):
             bluos_player = cast("BluesoundPlayer", bluos_player)
-            # Check if the IP address has changed
-            if ip_address and ip_address != bluos_player.ip_address:
+            # A second interface can announce only IPv6, keep the known IPv4 address
+            ipv6_only_update = ":" in ip_address and ":" not in bluos_player.ip_address
+            if ip_address != bluos_player.ip_address and not ipv6_only_update:
                 self.logger.debug(
                     "IP address for player %s updated to %s", bluos_player.name, ip_address
                 )
@@ -121,7 +123,7 @@ class BluesoundPlayerProvider(PlayerProvider):
         if mac_address := await get_mac_address(ip_address):
             return mac_address
         # ARP fails across routed networks
-        client = BluosPlayer(ip_address, port, self.mass.http_session)
+        client = BluosPlayer(format_ip_for_url(ip_address), port, self.mass.http_session)
         try:
             sync_status = await client.sync_status()
         except (PlayerUnreachableError, PlayerUnexpectedResponseError) as err:

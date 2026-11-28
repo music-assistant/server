@@ -19,7 +19,7 @@ from music_assistant.constants import (
     MAIN_ZONE,
     create_sample_rates_config_entry,
 )
-from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.bluesound.const import (
@@ -60,7 +60,9 @@ class BluesoundPlayer(PlayerProtocol):
         self.discovery_info = discovery_info
         self.ip_address = ip_address
         self.connected: bool = True
-        self.client = BluosPlayer(self.ip_address, self.port, self.mass.http_session)
+        self.client = BluosPlayer(
+            format_ip_for_url(self.ip_address), self.port, self.mass.http_session
+        )
         # None until the player first answers a status call
         self.sync_status: SyncStatus | None = None
         self.status: Status
