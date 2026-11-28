@@ -38,6 +38,7 @@ from music_assistant_models.player import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import PlaybackQuality
 from music_assistant.helpers.upnp import AVTransport, search_xml
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -154,9 +155,14 @@ class MusicCastPlayer(PlayerProtocol):
         self._last_playing_elapsed_time: float = 0.0
 
     @property
-    def needs_gapless_burst(self) -> bool:
-        """Return if the player must hold a whole opening chunk of a track before it plays gapless."""
+    def fetches_files(self) -> bool:
+        """Return if the player is built around files, as its DLNA renderer is."""
         return True
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.LOSSLESS_UNCOMPRESSED
 
     @property
     def stops_on_pause(self) -> bool:
@@ -876,7 +882,9 @@ class MusicCastPlayer(PlayerProtocol):
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
             # clear any pending AVT state to avoid wedging on rapid play_media
             await self.avt.stop()
-            await self.avt.set_url(media)
+            await self.avt.set_url(
+                media, served_as_file=self.mass.streams.stream_url_serves_as_file(media.uri)
+            )
             await self.avt.play()
 
             self.upnp_update_helper = UpnpUpdateHelper(
@@ -888,7 +896,11 @@ class MusicCastPlayer(PlayerProtocol):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Enqueue next command."""
         media.uri = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
-        await self.avt.set_url(media, enqueue=True)
+        await self.avt.set_url(
+            media,
+            enqueue=True,
+            served_as_file=self.mass.streams.stream_url_serves_as_file(media.uri),
+        )
 
     async def select_source(self, source: str) -> None:
         """Select source command."""

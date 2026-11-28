@@ -1,12 +1,14 @@
 """Tests for the MusicCast player state updates and polling."""
 
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientError
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import PlaybackQuality
 from music_assistant.controllers.players.power import _CONTINUES_PLAYBACK
 from music_assistant.helpers.upnp import AVTransport
 from music_assistant.providers.musiccast.constants import CONF_PLAYER_AUTO_ADVANCE
@@ -219,9 +221,43 @@ def test_a_zone_that_plays_from_music_assistant_stops_on_a_pause(
     assert player.stops_on_pause is controlled_by_mass
 
 
-def test_a_musiccast_player_gets_the_gapless_burst(network: MusicCastNetwork) -> None:
-    """A MusicCast device only plays a track gapless once it holds a whole opening chunk of it."""
-    assert network.player("A___main").needs_gapless_burst
+def test_a_musiccast_player_fetches_a_track_as_a_wav_file_by_default(
+    network: MusicCastNetwork,
+) -> None:
+    """A MusicCast device plays through its DLNA renderer, which holds a track as a file."""
+    player = network.player("A___main")
+
+    assert player.fetches_files
+    assert player.default_playback_quality is PlaybackQuality.LOSSLESS_UNCOMPRESSED
+
+
+@pytest.mark.parametrize("served_as_file", [True, False], ids=["file", "stream"])
+@pytest.mark.parametrize("enqueue", [False, True], ids=["play", "enqueue"])
+async def test_a_track_is_announced_as_the_file_it_is_served_as(
+    network: MusicCastNetwork, enqueue: bool, served_as_file: bool
+) -> None:
+    """The renderer is told it can ask for a part of a track exactly when the track is a file."""
+    player = network.player("A___main")
+    url = "http://ma:8097/single/s/q/i/A___main.wav"
+    network.mass.streams.resolve_stream_url = AsyncMock(return_value=url)
+    network.mass.streams.stream_url_serves_as_file.return_value = served_as_file
+    media = PlayerMedia(uri="library://track/1", media_type=MediaType.TRACK)
+
+    with (
+        patch.object(AVTransport, "set_url", AsyncMock()) as set_url,
+        patch.object(AVTransport, "stop", AsyncMock()),
+        patch.object(AVTransport, "play", AsyncMock()),
+    ):
+        if enqueue:
+            await player.enqueue_next_media(media)
+        else:
+            await player.play_media(media)
+
+    network.mass.streams.stream_url_serves_as_file.assert_called_once_with(url)
+    set_url.assert_awaited_once()
+    assert set_url.await_args is not None
+    assert set_url.await_args.args[0].uri == url
+    assert set_url.await_args.kwargs["served_as_file"] is served_as_file
 
 
 async def test_inputs_of_the_receiver_are_marked_as_inputs(network: MusicCastNetwork) -> None:
