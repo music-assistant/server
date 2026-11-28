@@ -275,6 +275,110 @@ async def test_a_track_is_matched_against_its_albums(music_mass: MusicAssistant)
     assert match.await_args_list[0].args[2:] == (True, ref_albums)
 
 
+def _album_track(
+    instance_id: str, item_id: str, number: int, duration: int, version: str = ""
+) -> Track:
+    """Return Bad Moon Rising at the given place on Green River, as the given service lists it."""
+    track = _track(instance_id, item_id, available=instance_id != IHEART)
+    track.name = "Bad Moon Rising"
+    track.version = version
+    track.duration = duration
+    track.track_number = number
+    track.disc_number = 1
+    track.album = ItemMapping(
+        item_id="al1", provider=instance_id, name="Green River", media_type=MediaType.ALBUM
+    )
+    return track
+
+
+# iHeartRadio lists the live bonus track without its version, Qobuz with it in the title
+IHEART_GREEN_RIVER = [_album_track(IHEART, "t5", 5, 141), _album_track(IHEART, "t12", 12, 126)]
+QOBUZ_GREEN_RIVER = [
+    _album_track(QOBUZ, "q5", 5, 141),
+    _album_track(QOBUZ, "q12", 12, 126),
+]
+QOBUZ_GREEN_RIVER[1].name = "Bad Moon Rising - Live In Berlin"
+
+
+@contextmanager
+def _album_copy_listing(
+    copy_tracks: list[Track], own_tracks: list[Track] = IHEART_GREEN_RIVER
+) -> Iterator[AsyncMock]:
+    """
+    Serve the copy Qobuz has of the track's album.
+
+    :param copy_tracks: The tracks the copy lists.
+    :param own_tracks: The tracks the album lists on its own service.
+    """
+    search = AsyncMock(return_value=[])
+    with (
+        _sources(),
+        patch.object(AlbumsController, "get_provider_item", AsyncMock(return_value=_album())),
+        patch.object(
+            AlbumsController, "playable_copy", AsyncMock(return_value=_album(QOBUZ, "q-al"))
+        ),
+        patch.object(
+            AlbumsController,
+            "tracks",
+            AsyncMock(
+                side_effect=lambda _item_id, provider, **_kwargs: (
+                    copy_tracks if provider == QOBUZ else own_tracks
+                )
+            ),
+        ),
+        patch.object(TracksController, "albums", AsyncMock(return_value=[])),
+        patch.object(TracksController, "match_provider", search),
+    ):
+        yield search
+
+
+async def test_a_track_is_found_at_its_place_on_the_albums_copy(
+    music_mass: MusicAssistant,
+) -> None:
+    """The track at the same place on the album's copy is handed out, whatever its title."""
+    with _album_copy_listing(QOBUZ_GREEN_RIVER) as search:
+        copy = await music_mass.music.tracks.playable_copy(IHEART_GREEN_RIVER[1])
+
+    assert copy is not None
+    assert (copy.provider, copy.item_id) == (QOBUZ, "q12")
+    search.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("track", "copy_tracks"),
+    [
+        pytest.param(_album_track(IHEART, "t12", 12, 200), QOBUZ_GREEN_RIVER, id="another length"),
+        pytest.param(_album_track(IHEART, "t3", 3, 126), QOBUZ_GREEN_RIVER, id="another place"),
+        pytest.param(IHEART_GREEN_RIVER[1], QOBUZ_GREEN_RIVER[1:], id="another track count"),
+    ],
+)
+async def test_a_track_the_albums_copy_does_not_confirm_is_searched_for(
+    music_mass: MusicAssistant, track: Track, copy_tracks: list[Track]
+) -> None:
+    """Without the same track count, place and length the track is searched for on its own."""
+    with _album_copy_listing(copy_tracks) as search:
+        assert await music_mass.music.tracks.playable_copy(track) is None
+
+    assert search.await_count == 2
+
+
+async def test_an_album_that_can_not_be_looked_up_falls_back_to_the_track_search(
+    music_mass: MusicAssistant,
+) -> None:
+    """When the track's own album can not be fetched, the track is still searched for."""
+    with (
+        _album_copy_listing(QOBUZ_GREEN_RIVER) as search,
+        patch.object(
+            AlbumsController,
+            "get_provider_item",
+            AsyncMock(side_effect=MediaNotFoundError("gone")),
+        ),
+    ):
+        assert await music_mass.music.tracks.playable_copy(IHEART_GREEN_RIVER[1]) is None
+
+    assert search.await_count == 2
+
+
 @contextmanager
 def _refreshed_from_iheart(
     music_mass: MusicAssistant, fetched: Track, copy: Track | None
