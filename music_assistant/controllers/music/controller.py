@@ -2020,6 +2020,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             available_providers = cast("set[str]", available_providers)
 
         # fetch the first (available) provider item
+        substitute = False
         for prov_mapping in sorted(
             media_item.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
@@ -2037,6 +2038,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 break
         else:
             # try to find a substitute using search
+            substitute = True
             searchresult = await self.search(media_item.name, [media_item.media_type], 20)
             result: Sequence[MediaItemType | ItemMapping]
             if media_item.media_type == MediaType.ARTIST:
@@ -2097,6 +2099,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                             album_track.item_id, prov_track
                         )
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
+        if (
+            isinstance(library_item, Artist)
+            and isinstance(media_item, Artist)
+            # a substitute found by name says nothing about the artist's MusicBrainz identity
+            and not substitute
+            # a stored id is never looked up again, so a fix on MusicBrainz would not reach it
+            and await self.artists.forget_disputed_musicbrainz_id(library_item, media_item)
+        ):
+            library_item = await self.artists.get_library_item(library_item.item_id)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         if isinstance(library_item, Artist):
             library_item = await self.artists.get_merged_library_item(library_item)

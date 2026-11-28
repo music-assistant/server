@@ -1601,6 +1601,67 @@ class ArtistsController(MediaControllerBase[Artist]):
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(db_id)
 
+    async def forget_disputed_musicbrainz_id(
+        self, db_artist: Artist, provider_artist: Artist
+    ) -> bool:
+        """
+        Reset the MusicBrainz identity of a library artist that MusicBrainz now links elsewhere.
+
+        When MusicBrainz links the provider artist to another MusicBrainz artist than the
+        stored one, the looked-up ids and the links that came from the old MusicBrainz artist
+        are removed, so the next metadata update identifies the artist again. Ids of an artist
+        a local source provides are kept.
+
+        :param db_artist: The library artist.
+        :param provider_artist: The artist as its provider just delivered it.
+        :return: Whether the library artist was changed.
+        """
+        mbid = db_artist.mbid
+        if not mbid or mbid == VARIOUS_ARTISTS_MBID or provider_artist.mbid:
+            return False
+        for mapping in db_artist.provider_mappings:
+            provider = self.mass.get_provider(mapping.provider_instance, return_unavailable=True)
+            # an id from a source that is not a known streaming service may come from tags
+            if not isinstance(provider, MusicProvider) or not provider.is_streaming_provider:
+                return False
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        own_mapping = next(iter(provider_artist.provider_mappings), None)
+        if not musicbrainz or not own_mapping:
+            return False
+        try:
+            async with self.mass.cache.handle_refresh(True):
+                old_artist = await musicbrainz.get_artist_left_by_link(own_mapping, mbid)
+                if old_artist is None:
+                    return False
+                old_links: set[tuple[str, str]] = set()
+                if self.mass.metadata.link_providers_via_musicbrainz:
+                    old_links = {
+                        (mapping.provider_domain, mapping.item_id)
+                        for mapping in await self._linked_provider_mappings(old_artist.relations)
+                    }
+        except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+            self.logger.debug("Could not check artist %s on MusicBrainz: %s", db_artist.name, err)
+            return False
+        carried = {id_type for id_type, _ in provider_artist.external_ids}
+        # the Discogs id is taken from the MusicBrainz artist, so it goes along with it
+        await self.remove_external_ids(
+            db_artist.item_id, {ExternalID.MB_ARTIST, ExternalID.DISCOGS} - carried
+        )
+        own = (own_mapping.provider_domain, own_mapping.item_id)
+        # links taken from the old artist would lead the next lookup straight back to it
+        for mapping in db_artist.provider_mappings:
+            key = (mapping.provider_domain, mapping.item_id)
+            if not mapping.in_library and key in old_links and key != own:
+                await self.remove_provider_mapping(
+                    db_artist.item_id, mapping.provider_instance, mapping.item_id
+                )
+        self.logger.info(
+            "MusicBrainz now links artist %s on %s to another artist, identifying it again",
+            db_artist.name,
+            own_mapping.provider_domain,
+        )
+        return True
+
     async def match_provider(
         self, db_artist: Artist, provider: MusicProvider, strict: bool = True
     ) -> list[ProviderMapping]:

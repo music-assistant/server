@@ -2088,6 +2088,27 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             ],
         )
 
+    @final
+    async def remove_external_ids(
+        self, item_id: str | int, external_id_types: Iterable[ExternalID]
+    ) -> None:
+        """
+        Remove the stored external ids of the given types from a library item.
+
+        :param item_id: The library id of the item.
+        :param external_id_types: The kinds of external id to remove.
+        """
+        db_id = int(item_id)  # ensure integer
+        for external_id_type in external_id_types:
+            await self.mass.music.database.delete(
+                DB_TABLE_EXTERNAL_ID_LOOKUP,
+                {
+                    "media_type": self.media_type.value,
+                    "external_id_type": external_id_type,
+                    "item_id": db_id,
+                },
+            )
+
     @abstractmethod
     async def match_providers(self, db_item: ItemCls) -> None:
         """
