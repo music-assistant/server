@@ -2135,7 +2135,7 @@ def _single_item_handler(
     is_realtime: bool,
     capture_ffmpeg: pytest.MonkeyPatch | None = None,
     player_provider_domain: str = "test",
-    player_needs_gapless_burst: bool = False,
+    media_type: MediaType = MediaType.TRACK,
 ) -> tuple[Any, MagicMock, dict[str, Any]]:
     """
     Return a single-item stream handler rigged to stop early.
@@ -2143,7 +2143,7 @@ def _single_item_handler(
     Without ``capture_ffmpeg`` it stops once the PCM format is picked; with it, the
     handler runs on to the encode ffmpeg call and records its keyword arguments.
     """
-    streamdetails = _make_stream_details(MediaType.TRACK, is_realtime=is_realtime)
+    streamdetails = _make_stream_details(media_type, is_realtime=is_realtime)
     queue_item = SimpleNamespace(
         queue_id="queue-1",
         queue_item_id="item-1",
@@ -2152,7 +2152,7 @@ def _single_item_handler(
         duration=180,
         streamdetails=streamdetails,
         media_item=None,
-        media_type=MediaType.TRACK,
+        media_type=media_type,
         available=True,
         extra_attributes={},
         image=None,
@@ -2174,7 +2174,6 @@ def _single_item_handler(
     mass.config.get_raw_core_config_value.return_value = 8
     protocol = MagicMock(protocol_id="player-1", display_name="Player")
     protocol.provider.domain = player_provider_domain
-    protocol.needs_gapless_burst = player_needs_gapless_burst
     protocol.supported_features = {PlayerFeature.GAPLESS_PLAYBACK}
     mass.players.get_output_protocol.return_value = protocol
 
@@ -2272,31 +2271,24 @@ async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None
 
 
 @pytest.mark.parametrize(
-    ("is_realtime", "needs_gapless_burst", "profile"),
+    ("media_type", "is_realtime", "profile"),
     [
-        (False, False, PacingProfile.REALTIME),
-        (True, False, PacingProfile.REALTIME),
-        (False, True, PacingProfile.GAPLESS_BURST),
-        (True, True, PacingProfile.REALTIME),
+        (MediaType.TRACK, False, PacingProfile.BUFFERED),
+        (MediaType.TRACK, True, PacingProfile.REALTIME),
+        (MediaType.RADIO, True, PacingProfile.RADIO),
+        (MediaType.AUDIO_SOURCE, True, PacingProfile.LOW_LATENCY),
     ],
-    ids=["buffered", "realtime", "gapless-burst-buffered", "gapless-burst-realtime"],
+    ids=["buffered", "realtime", "radio", "live-source"],
 )
-async def test_single_item_handler_paces_by_player_and_source(
+async def test_single_item_handler_paces_by_source(
     monkeypatch: pytest.MonkeyPatch,
+    media_type: MediaType,
     is_realtime: bool,
-    needs_gapless_burst: bool,
     profile: PacingProfile,
 ) -> None:
-    """
-    A single track gets the realtime pace, whatever its source.
-
-    Only a buffered track for a player that holds a whole opening chunk before it plays
-    gapless gets that chunk up front; a just-in-time source could not deliver it anyway.
-    """
+    """A single item gets the head start of the kind of its source, whatever its player."""
     controller, request, seen = _single_item_handler(
-        is_realtime=is_realtime,
-        capture_ffmpeg=monkeypatch,
-        player_needs_gapless_burst=needs_gapless_burst,
+        is_realtime=is_realtime, capture_ffmpeg=monkeypatch, media_type=media_type
     )
 
     with pytest.raises(_FfmpegArgsCaptured):

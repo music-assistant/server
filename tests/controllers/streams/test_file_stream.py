@@ -13,6 +13,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.streams import file_stream
 from music_assistant.controllers.streams.file_stream import (
     HEAD_SIZE,
     FileKey,
@@ -27,6 +28,9 @@ from music_assistant.controllers.streams.file_stream import (
 from music_assistant.helpers.ffmpeg import get_ffmpeg_args
 
 FILE_SIZE = 1000
+HEADER_SIZE = 44
+# the head start of a track of a source that does not hand its audio over just-in-time
+HEAD_START = 60
 # the addresses two players fetch a file from
 PLAYER_ADDRESS, OTHER_ADDRESS = "192.168.1.20", "192.168.1.21"
 PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16)
@@ -44,6 +48,7 @@ def _file(
     frames: int = 60 * 44100,
     output_format: AudioFormat = WAV_FORMAT,
     pcm_format: AudioFormat = PCM_FORMAT,
+    head_start: int = HEAD_START,
 ) -> FileStream:
     """
     Build a file.
@@ -51,8 +56,9 @@ def _file(
     :param frames: Length of the audio the file declares.
     :param output_format: Format of the file.
     :param pcm_format: Format the audio of the file is read in.
+    :param head_start: Seconds of audio the file may send ahead of playback.
     """
-    return FileStream(pcm_format, output_format, frames)
+    return FileStream(pcm_format, output_format, frames, head_start)
 
 
 def _queue_item(
@@ -447,7 +453,7 @@ def test_a_player_reads_beside_another_one_from_what_the_file_has_sent(
     file = _file()
     reading = MagicMock(remote=PLAYER_ADDRESS)
     file.add_reader(reading, 100)
-    file.sent_up_to(200)
+    file.mark_sent(range(100, 200))
 
     other = MagicMock(remote=OTHER_ADDRESS)
     file.add_reader(other, asked)
@@ -460,10 +466,10 @@ def test_what_a_file_has_sent_starts_again_where_a_request_takes_it_over() -> No
     """After a player seeks, the part it read before is no place to read beside it."""
     file = _file()
     file.add_reader(MagicMock(remote=PLAYER_ADDRESS), 100)
-    file.sent_up_to(200)
+    file.mark_sent(range(100, 200))
     seeking = MagicMock(remote=PLAYER_ADDRESS)
     file.add_reader(seeking, 5000)
-    file.sent_up_to(6000)
+    file.mark_sent(range(5000, 6000))
 
     file.add_reader(MagicMock(remote=OTHER_ADDRESS), 150)
 
@@ -475,10 +481,10 @@ def test_a_player_that_a_take_over_ended_takes_the_file_back_with_what_it_had_se
     third_address = "192.168.1.22"
     file = _file()
     file.add_reader(MagicMock(remote=PLAYER_ADDRESS), 100)
-    file.sent_up_to(200)
+    file.mark_sent(range(100, 200))
     took_over = MagicMock(remote=OTHER_ADDRESS)
     file.add_reader(took_over, 5000)
-    file.sent_up_to(6000)
+    file.mark_sent(range(5000, 6000))
 
     back = MagicMock(remote=PLAYER_ADDRESS)
     file.add_reader(back, 200)
@@ -495,11 +501,11 @@ def test_a_player_that_a_take_over_ended_takes_the_file_back_with_what_it_had_se
     again.transport.abort.assert_not_called()
 
 
-def test_a_file_keeps_only_what_it_had_sent_before_the_last_take_over() -> None:
-    """What was sent two take-overs ago is sent no more: a request there starts again."""
+def test_a_file_keeps_what_it_has_sent_across_every_take_over() -> None:
+    """What was sent two take-overs ago is still sent: a request there reads beside the others."""
     file = _file()
     file.add_reader(MagicMock(remote=PLAYER_ADDRESS), 100)
-    file.sent_up_to(200)
+    file.mark_sent(range(100, 200))
     file.add_reader(MagicMock(remote=OTHER_ADDRESS), 5000)
     file.add_reader(MagicMock(remote="192.168.1.22"), 9000)
 
@@ -507,7 +513,7 @@ def test_a_file_keeps_only_what_it_had_sent_before_the_last_take_over() -> None:
     file.add_reader(returned, 150)
     file.add_reader(MagicMock(remote=OTHER_ADDRESS), 190)
 
-    returned.transport.abort.assert_called_once()
+    returned.transport.abort.assert_not_called()
 
 
 def test_a_player_that_asks_again_in_what_was_sent_ends_only_its_own_encode() -> None:
@@ -515,9 +521,9 @@ def test_a_player_that_asks_again_in_what_was_sent_ends_only_its_own_encode() ->
     file = _file()
     reading, other = MagicMock(remote=PLAYER_ADDRESS), MagicMock(remote=OTHER_ADDRESS)
     file.add_reader(reading, 100)
-    file.sent_up_to(500)
+    file.mark_sent(range(100, 500))
     file.add_reader(other, 100)
-    file.sent_up_to(150)
+    file.mark_sent(range(100, 150))
 
     # for the last byte the file has sent, which the player that read behind never got to
     again = MagicMock(remote=OTHER_ADDRESS)
@@ -528,64 +534,260 @@ def test_a_player_that_asks_again_in_what_was_sent_ends_only_its_own_encode() ->
     assert file.readers == {PLAYER_ADDRESS: reading, OTHER_ADDRESS: again}
 
 
-def test_a_file_hands_out_thirty_seconds_of_head_start_six_per_encode() -> None:
-    """The first five encodes of a file that hand out audio get six seconds, the ones after none."""
-    file = _file()
+class _Clock:
+    """The clock of the files of a test, which moves only when the test moves it."""
 
-    taken = []
-    for _ in range(7):
-        taken.append(file.take_head_start(PLAYER_ADDRESS))
-        file.head_start_handed_out(PLAYER_ADDRESS)
+    def __init__(self) -> None:
+        """Initialize the clock."""
+        self.now = 1000.0
 
-    assert taken == [6, 6, 6, 6, 6, 0, 0]
-
-
-def test_an_encode_that_hands_out_no_audio_leaves_its_head_start_to_the_next() -> None:
-    """The head start of an encode that handed out nothing goes to the encode after it."""
-    file = _file()
-    for _ in range(4):
-        file.take_head_start(PLAYER_ADDRESS)
-        file.head_start_handed_out(PLAYER_ADDRESS)
-
-    assert [file.take_head_start(PLAYER_ADDRESS) for _ in range(3)] == [6, 6, 6]
-    file.head_start_handed_out(PLAYER_ADDRESS)
-    assert [file.take_head_start(PLAYER_ADDRESS) for _ in range(2)] == [0, 0]
+    def monotonic(self) -> float:
+        """Return the time."""
+        return self.now
 
 
-def test_an_encode_that_ends_without_audio_gives_its_head_start_back() -> None:
-    """A player that drops its request before it gets any audio costs the file nothing."""
-    file = _file()
-    leaving = MagicMock(remote=OTHER_ADDRESS)
-    file.add_reader(leaving, 0)
-    for _ in range(3):
-        file.take_head_start(OTHER_ADDRESS)
-    file.remove_reader(leaving)
-    file.remove_reader(leaving)
-
-    taken = []
-    for _ in range(6):
-        taken.append(file.take_head_start(PLAYER_ADDRESS))
-        file.head_start_handed_out(PLAYER_ADDRESS)
-    assert taken == [6, 6, 6, 6, 6, 0]
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    """Return the clock that the files of a test read."""
+    clock = _Clock()
+    monkeypatch.setattr(file_stream, "time", clock)
+    return clock
 
 
-def test_an_encode_keeps_its_head_start_while_another_address_takes_one() -> None:
-    """Two players that read a file at once each hold their own head start."""
-    file = _file()
-    assert file.take_head_start(PLAYER_ADDRESS) == 6
-    for _ in range(4):
-        other = MagicMock(remote=OTHER_ADDRESS)
-        file.add_reader(other, 0)
-        assert file.take_head_start(OTHER_ADDRESS) == 6
-        file.remove_reader(other)
-    # the head start of the first player went out with its audio, after the other left
-    file.head_start_handed_out(PLAYER_ADDRESS)
+def _at(seconds: float) -> int:
+    """
+    Return the offset in a WAV file of a moment in its audio.
 
-    taken = []
-    for _ in range(5):
-        taken.append(file.take_head_start(OTHER_ADDRESS))
-        file.head_start_handed_out(OTHER_ADDRESS)
-    assert taken == [6, 6, 6, 6, 0]
+    :param seconds: The moment, in seconds from the start of the audio.
+    """
+    return HEADER_SIZE + round(seconds * 44100) * 4
+
+
+class _Player:
+    """A player that takes the audio of a file as fast as the encode of its request hands it over."""
+
+    def __init__(self, file: FileStream, clock: _Clock, address: str = PLAYER_ADDRESS) -> None:
+        """
+        Initialize the player.
+
+        :param file: The file the player reads.
+        :param clock: The clock of the file.
+        :param address: The address the requests of the player come from.
+        """
+        self._file = file
+        self._clock = clock
+        self._address = address
+        self._end = (file.size - file.header_size) / file.byte_rate
+        self._request: MagicMock | None = None
+        self._start = self._burst = self._asked_at = 0.0
+        # where in the audio the player has got, in seconds
+        self.got = 0.0
+        # the stretches of the audio it was handed, in seconds
+        self.handed: list[tuple[float, float]] = []
+
+    def ask(self, seconds: float) -> float:
+        """
+        Ask for the file from a moment in its audio, and take what the encode hands over at once.
+
+        :param seconds: The moment, in seconds from the start of the audio.
+        :return: The seconds of audio the encode hands over at once.
+        """
+        self._request = MagicMock(remote=self._address)
+        self._file.add_reader(self._request, _at(seconds))
+        self._start = self.got = seconds
+        self._asked_at = self._clock.now
+        self._burst = self._file.burst(_at(seconds))
+        self.read()
+        return self._burst
+
+    def read(self) -> None:
+        """Take what the encode has handed over by now, at playback speed after its burst."""
+        if self._request is None or self._request.transport.abort.called:
+            return
+        elapsed = self._clock.now - self._asked_at
+        upto = min(self._start + self._burst + elapsed, self._end)
+        if upto > self.got:
+            self._file.mark_sent(range(_at(self.got), _at(upto)))
+            self.handed.append((self.got, upto))
+            self.got = upto
+
+    def hang_up(self) -> None:
+        """Close the request, as a player does when it pauses."""
+        if self._request is not None:
+            self._file.remove_reader(self._request)
+            self._request = None
+
+
+def _new_audio(*players: _Player) -> float:
+    """
+    Return the seconds of distinct audio that players were handed.
+
+    :param players: The players.
+    """
+    total, reached = 0.0, 0.0
+    for start, stop in sorted(stretch for player in players for stretch in player.handed):
+        total += max(stop - max(start, reached), 0)
+        reached = max(reached, stop)
+    return total
+
+
+@pytest.mark.parametrize("head_start", [12, 60])
+def test_the_first_request_gets_the_head_start_of_the_file(clock: _Clock, head_start: int) -> None:
+    """A player that asks for a file gets its head start at once."""
+    file = _file(head_start=head_start)
+
+    assert _Player(file, clock).ask(0) == head_start
+
+
+def test_a_request_dropped_before_it_got_audio_costs_nothing(clock: _Clock) -> None:
+    """
+    A Sonos speaker drops the first of two requests 20 ms apart at every start, resume and seek.
+
+    The second gets what the first would have got, as nothing was sent.
+    """
+    file = _file(frames=600 * 44100, head_start=12)
+    player = _Player(file, clock)
+    dropped = MagicMock(remote=PLAYER_ADDRESS)
+    file.add_reader(dropped, _at(0))
+    assert file.burst(_at(0)) == 12
+    file.remove_reader(dropped)
+    clock.now += 0.02
+    assert player.ask(0) == 12
+    # a seek after a minute of listening finds about six seconds, both times
+    clock.now += 60
+    player.read()
+    file.add_reader(dropped, _at(300))
+    assert file.burst(_at(300)) == pytest.approx(6.022)
+    file.remove_reader(dropped)
+    clock.now += 0.02
+    assert player.ask(300) == pytest.approx(6.044)
+
+
+def test_a_new_leader_gets_what_the_file_has_sent_at_once_any_number_of_times(
+    clock: _Clock,
+) -> None:
+    """A speaker that takes a group over asks a few seconds behind where the file has got."""
+    file = _file(frames=600 * 44100, head_start=12)
+    leader = _Player(file, clock)
+    leader.ask(0)
+
+    bursts = []
+    for change in range(10):
+        clock.now += 20
+        leader.read()
+        leader.hang_up()
+        # the speakers of the group take turns
+        leader_before, address = leader, (OTHER_ADDRESS, PLAYER_ADDRESS)[change % 2]
+        leader = _Player(file, clock, address)
+        bursts.append(leader.ask(leader_before.got - 5))
+
+    # the five seconds it had sent, and the two the clock built in twenty seconds of listening
+    assert bursts == [pytest.approx(7)] * 10
+
+
+@pytest.mark.parametrize(("head_start", "credit"), [(60, 39), (12, 12)])
+def test_a_request_that_goes_on_after_a_pause_gets_the_credit_the_clock_built(
+    clock: _Clock, head_start: int, credit: float
+) -> None:
+    """A tenth of a second builds per second since the first request, at most the head start."""
+    file = _file(frames=600 * 44100, head_start=head_start)
+    player = _Player(file, clock)
+    player.ask(0)
+    clock.now += 60
+    player.read()
+    player.hang_up()
+
+    clock.now += 30
+
+    assert player.ask(player.got) == pytest.approx(credit)
+
+
+def test_a_seek_back_gets_what_was_sent_at_once_up_to_where_that_stretch_ends(
+    clock: _Clock,
+) -> None:
+    """Audio that left before goes as fast as the player takes it, the rest within the allowance."""
+    file = _file(frames=600 * 44100, head_start=12)
+    player = _Player(file, clock)
+    player.ask(0)
+    clock.now += 30
+    player.read()
+    # a seek forward, which leaves the audio between the two stretches unsent
+    player.ask(100)
+    clock.now += 30
+    player.read()
+    assert player.handed == [(0, 12), (12, 42), (100, 103), (103, 133)]
+
+    # the rest of the first stretch, and the three seconds of credit for what follows it
+    assert player.ask(20) == pytest.approx(22 + 3)
+
+
+def test_a_seek_forward_into_audio_never_sent_gets_only_the_credit_there_is(
+    clock: _Clock,
+) -> None:
+    """Right after a start the head start is spent, and the credit grows with the listening."""
+    file = _file(frames=600 * 44100, head_start=12)
+    player = _Player(file, clock)
+    player.ask(0)
+    clock.now += 2
+    player.read()
+
+    assert player.ask(100) == pytest.approx(0.2)
+    clock.now += 60
+    player.read()
+    assert player.ask(300) == pytest.approx(6)
+
+
+@pytest.mark.parametrize("pause", [0.0, 0.02, 0.5, 3.0])
+@pytest.mark.parametrize(
+    "asks",
+    [
+        "on where it stopped",
+        "from two addresses",
+        "back and on",
+        "ahead",
+        "ahead from two addresses",
+        "into gaps",
+    ],
+)
+def test_new_audio_never_leaves_faster_than_the_allowance(
+    clock: _Clock, asks: str, pause: float
+) -> None:
+    """
+    However a client asks for the parts of a file, it gets no more audio it never had before.
+
+    That is the head start of the file plus 1.1 seconds for every second since the first
+    request, so no client pulls a file faster than at about playback speed.
+    """
+    file = _file(frames=3600 * 44100, head_start=HEAD_START)
+    players = [_Player(file, clock), _Player(file, clock, OTHER_ADDRESS)]
+    first_request = clock.now
+
+    def allowance() -> float:
+        return HEAD_START + file_stream.ALLOWANCE_RATE * (clock.now - first_request)
+
+    for turn in range(200):
+        furthest = max(player.got for player in players)
+        player, start = players[0], furthest
+        if asks == "from two addresses":
+            player = players[turn % 2]
+        elif asks == "back and on" and turn % 2:
+            # what was sent from the start goes again at once
+            start = 0
+        elif asks == "ahead":
+            start = furthest + 1
+        elif asks == "ahead from two addresses":
+            # each request takes the file over from the encode of the other address
+            player, start = players[turn % 2], furthest + 1
+        elif asks == "into gaps":
+            start = furthest + 2 if turn % 2 else max(furthest - 1.5, 0)
+        player.ask(start)
+        clock.now += pause
+        for reading in players:
+            reading.read()
+        assert _new_audio(*players) <= allowance() + 1e-6
+
+    # the client got about all it could: the bound is the allowance, not anything lower
+    assert _new_audio(*players) > allowance() - 1
 
 
 def test_audio_that_ends_early_sets_the_real_size() -> None:

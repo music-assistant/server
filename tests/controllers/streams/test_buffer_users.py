@@ -776,7 +776,6 @@ def _start_request(
     """
     player = MagicMock()
     player.stop_called = False
-    player.needs_gapless_burst = False
     player.requires_content_length = False
     rig.mass.players.get_output_protocol.return_value = player
     rig.audio.select_pcm_format = AsyncMock(return_value=PCM_FORMAT)  # type: ignore[method-assign]

@@ -118,6 +118,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.cloud_queue_item_generation = 0
     player._window_item_ids = {}
     player._served_bindings = {}
+    player._ran_dry = (None, set())
     player._announcement_media = None
     player._woken_from_sleep = False
     player._flow_queue_id = None
@@ -1340,6 +1341,7 @@ async def test_a_speaker_giving_up_on_an_item_is_reported(
 
     assert "ERROR_LSE" in caplog.text
     assert "A Strange Happening" in caplog.text
+    player.note_failure.assert_called_once_with("ERROR_LSE", "track0@3")
     player.update_elapsed_time.assert_not_called()
 
 

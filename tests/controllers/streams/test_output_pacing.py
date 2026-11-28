@@ -5,11 +5,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 import pytest
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION
-from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
+from music_assistant.controllers.streams.constants import (
+    FILE_HEAD_START,
+    PacingProfile,
+    output_pacing_args,
+    pacing_profile,
+)
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 
 if TYPE_CHECKING:
@@ -35,9 +40,46 @@ def _value(args: list[str], key: str) -> float:
     return float(args[args.index(key) + 1])
 
 
-def test_the_gapless_burst_covers_a_gapless_players_opening_chunk() -> None:
-    """A player that holds a whole opening chunk before it plays gapless must get one."""
-    assert _value(output_pacing_args(PacingProfile.GAPLESS_BURST), "-readrate_initial_burst") >= 60
+@pytest.mark.parametrize(
+    ("media_type", "is_realtime", "head_start"),
+    [
+        (MediaType.AUDIO_SOURCE, True, "1"),
+        (MediaType.RADIO, True, "5"),
+        (MediaType.TRACK, True, "10"),
+        (MediaType.TRACK, False, "10"),
+        (MediaType.FLOW_STREAM, False, "10"),
+    ],
+    ids=["live-source", "radio", "realtime-source", "other-source", "mixed-sources"],
+)
+def test_a_stream_gets_the_head_start_of_the_kind_of_its_source(
+    media_type: MediaType, is_realtime: bool, head_start: str
+) -> None:
+    """
+    A stream hands over the head start of its source at once, and then goes at playback speed.
+
+    The numbers come from measurements on real speakers and their production logs: the head
+    start is the cushion a player holds, at a session start, at a track boundary and through a
+    stall, which the catch-up refills. Another value needs its own measurements: a larger one
+    takes the crossfades of a slow source away, a smaller one takes the cushion.
+    """
+    assert output_pacing_args(pacing_profile(media_type, is_realtime)) == [
+        "-readrate",
+        "1.0",
+        "-readrate_initial_burst",
+        head_start,
+        "-readrate_catchup",
+        "2",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("is_realtime", "head_start"), [(True, 12), (False, 60)], ids=["realtime-source", "other"]
+)
+def test_a_file_gets_the_head_start_of_the_kind_of_its_source(
+    is_realtime: bool, head_start: int
+) -> None:
+    """A track served as a file holds more: only audio it never sent before counts against it."""
+    assert FILE_HEAD_START[pacing_profile(MediaType.TRACK, is_realtime)] == head_start
 
 
 def test_a_stream_with_a_burst_of_its_own_keeps_the_pace_of_its_profile() -> None:
@@ -58,31 +100,10 @@ def test_the_realtime_profile_leaves_room_for_a_source_to_bank_ahead() -> None:
     margin under what the source can deliver. The burst comes out of that same bank,
     so it stays small too.
     """
-    readrate = _value(output_pacing_args(), "-readrate")
+    args = output_pacing_args(PacingProfile.REALTIME)
     # 1.1 is the fill rate, so anything close to it banks nothing
-    assert readrate <= 1.05
-    assert _value(output_pacing_args(), "-readrate_initial_burst") <= 10
-
-
-def test_the_realtime_pacing_is_the_measured_one() -> None:
-    """
-    The pace and the burst come from measurements on real speakers and their production logs.
-
-    With the catch-up a player holds the burst ahead of playback: its cushion at a session
-    start, at a track boundary (Sonos fetches each track only once the previous download
-    completes) and after a stall, which the catch-up refills. On a flow stream any pace above
-    playback makes that lead grow with the session. Another value needs its own measurements:
-    a higher pace takes the crossfades of a slow source away, a lower one or a smaller burst
-    takes the cushion.
-    """
-    assert output_pacing_args() == [
-        "-readrate",
-        "1.0",
-        "-readrate_initial_burst",
-        "6",
-        "-readrate_catchup",
-        "2",
-    ]
+    assert _value(args, "-readrate") <= 1.05
+    assert _value(args, "-readrate_initial_burst") <= 10
 
 
 def test_a_player_regains_the_lead_a_stall_drained_in_about_the_stalls_time() -> None:
@@ -147,7 +168,7 @@ def test_a_track_of_a_slow_source_earns_the_room_for_a_fade() -> None:
     of a full default fade, traded for the cushion a player holds; tracks from about 260 s
     earn it in full. The tolerance keeps a future pace from eating more than that.
     """
-    args = output_pacing_args()
+    args = output_pacing_args(PacingProfile.REALTIME)
     stream_seconds = (TRACK_SECONDS - _value(args, "-readrate_initial_burst")) / _value(
         args, "-readrate"
     )
@@ -163,7 +184,7 @@ def test_the_opening_burst_outlasts_a_source_starting_up() -> None:
     At the first track change of any stream the burst is all a player is sure to
     hold, however short that first track is.
     """
-    burst = _value(output_pacing_args(), "-readrate_initial_burst")
+    burst = _value(output_pacing_args(PacingProfile.REALTIME), "-readrate_initial_burst")
     assert burst > SLOW_SOURCE_START_SECONDS
 
 

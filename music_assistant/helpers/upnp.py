@@ -89,9 +89,16 @@ def get_xml_soap_media_info() -> tuple[str, str]:
     return _get_xml(_get_body(command)), _get_soap_action(command)
 
 
-def get_xml_soap_set_url(player_media: PlayerMedia) -> tuple[str, str]:
-    """Get UPnP xml and soap for SetAVTransportURI."""
-    metadata = create_didl_metadata_str(player_media)
+def get_xml_soap_set_url(
+    player_media: PlayerMedia, served_as_file: bool = False
+) -> tuple[str, str]:
+    """
+    Get UPnP xml and soap for SetAVTransportURI.
+
+    :param player_media: Media to play, with the url the player fetches as its uri.
+    :param served_as_file: Whether that url answers requests for a part of the media.
+    """
+    metadata = create_didl_metadata_str(player_media, served_as_file)
     command = "SetAVTransportURI"
     arguments = (
         f"<CurrentURI>{player_media.uri}</CurrentURI>"
@@ -108,9 +115,16 @@ def get_xml_soap_remove_all_tracks() -> tuple[str, str]:
     return _get_xml(_get_body(command)), _get_soap_action(command)
 
 
-def get_xml_soap_set_next_url(player_media: PlayerMedia) -> tuple[str, str]:
-    """Get UPnP xml and soap for SetNextAVTransportURI."""
-    metadata = create_didl_metadata_str(player_media)
+def get_xml_soap_set_next_url(
+    player_media: PlayerMedia, served_as_file: bool = False
+) -> tuple[str, str]:
+    """
+    Get UPnP xml and soap for SetNextAVTransportURI.
+
+    :param player_media: Media to play next, with the url the player fetches as its uri.
+    :param served_as_file: Whether that url answers requests for a part of the media.
+    """
+    metadata = create_didl_metadata_str(player_media, served_as_file)
     command = "SetNextAVTransportURI"
     arguments = (
         f"<NextURI>{player_media.uri}</NextURI><NextURIMetaData>{metadata}</NextURIMetaData>"
@@ -246,9 +260,14 @@ def create_didl_metadata(
     )
 
 
-def create_didl_metadata_str(media: PlayerMedia) -> str:
-    """Create (xml-escaped) DIDL metadata string from url and PlayerMedia."""
-    return xmlescape(create_didl_metadata(media))
+def create_didl_metadata_str(media: PlayerMedia, served_as_file: bool = False) -> str:
+    """
+    Create (xml-escaped) DIDL metadata string from url and PlayerMedia.
+
+    :param media: The media the metadata describes, with the url the player fetches as its uri.
+    :param served_as_file: Whether that url answers requests for a part of the media.
+    """
+    return xmlescape(create_didl_metadata(media, served_as_file=served_as_file))
 
 
 def search_xml(xml: str, tag: str) -> str | None:
@@ -287,7 +306,9 @@ class AVTransport:
         """Previous."""
         await self._post(*get_xml_soap_previous(), "Previous")
 
-    async def set_url(self, player_media: PlayerMedia, enqueue: bool = False) -> None:
+    async def set_url(
+        self, player_media: PlayerMedia, enqueue: bool = False, served_as_file: bool = False
+    ) -> None:
         """
         Set the url to play, or with enqueue the url to play next.
 
@@ -295,12 +316,13 @@ class AVTransport:
 
         :param player_media: Media to play.
         :param enqueue: Set the next url instead of the current one.
+        :param served_as_file: Whether the url answers requests for a part of the media.
         """
         if enqueue:
-            xml, soap_action = get_xml_soap_set_next_url(player_media)
+            xml, soap_action = get_xml_soap_set_next_url(player_media, served_as_file)
             op_name = "SetNextAVTransportURI"
         else:
-            xml, soap_action = get_xml_soap_set_url(player_media)
+            xml, soap_action = get_xml_soap_set_url(player_media, served_as_file)
             op_name = "SetAVTransportURI"
         LOGGER.debug("AVT %s uri=%s", op_name, player_media.uri)
         await self._post(xml, soap_action, op_name)

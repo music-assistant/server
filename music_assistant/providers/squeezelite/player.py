@@ -393,7 +393,7 @@ class SqueezelitePlayer(PlayerProtocol):
         )
         output_threshold = 1 if low_latency_stream else 20
         # the stream buffer (KB) has to fill from the audio a stream hands over at once when
-        # it starts (REALTIME_BURST), also for a quiet passage in FLAC, or the player only
+        # it starts (STREAM_HEAD_START), also for a quiet passage in FLAC, or the player only
         # starts seconds later
         stream_threshold = 64
         await self.client.play_url(

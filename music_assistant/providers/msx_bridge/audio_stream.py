@@ -10,12 +10,16 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
 from aiohttp import web
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
-from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
+from music_assistant.controllers.streams.constants import (
+    PacingProfile,
+    output_pacing_args,
+    pacing_profile,
+)
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
 
@@ -134,7 +138,9 @@ class AudioPipeline:
                 pcm_format,
                 out_format,
                 output_plan.filter_params,
-                self._get_pacing_profile(media),
+                # as a stream, a track gets the same head start whether its source is
+                # just-in-time or not
+                pacing_profile(media.media_type),
             )
         )
         transport = request.transport
@@ -271,12 +277,6 @@ class AudioPipeline:
         if not self.active_stream_tasks[player_id]:
             del self.active_stream_tasks[player_id]
             del self.active_stream_transports[player_id]
-
-    def _get_pacing_profile(self, media: PlayerMedia) -> PacingProfile:
-        """Return the pacing profile for the audio delivered to the TV."""
-        if media.media_type == MediaType.AUDIO_SOURCE:
-            return PacingProfile.LOW_LATENCY
-        return PacingProfile.REALTIME
 
 
 def rewrite_stream_host(request: web.Request, url: str) -> str:

@@ -98,6 +98,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_UPGRADE_BELOW_QUALITY,
     DEFAULT_PORT,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
+    FILE_HEAD_START,
     FLOW_STREAM_MAX_LEAD_OUT_SECONDS,
     ICY_WRITE_SIZE,
     LOST_STREAM_GRACE,
@@ -107,6 +108,7 @@ from music_assistant.controllers.streams.constants import (
     PacingProfile,
     get_available_buffer_sizes,
     output_pacing_args,
+    pacing_profile,
 )
 from music_assistant.controllers.streams.file_stream import (
     FILE_CODECS,
@@ -1386,13 +1388,7 @@ class StreamsController(CoreController):
             ):
                 audio_bytes = _wav_passthrough_stream(audio_input, output_format)
             else:
-                pacing: PacingProfile
-                if queue_item.media_type == MediaType.AUDIO_SOURCE:
-                    pacing = PacingProfile.LOW_LATENCY
-                elif not queue_item.streamdetails.is_realtime and player.needs_gapless_burst:
-                    pacing = PacingProfile.GAPLESS_BURST
-                else:
-                    pacing = PacingProfile.REALTIME
+                pacing = pacing_profile(queue_item.media_type, queue_item.streamdetails.is_realtime)
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
@@ -2751,7 +2747,8 @@ class StreamsController(CoreController):
                 tail_ms = end_ms - (SMART_CROSSFADE_DURATION + 1) * 1000
                 frames += SMART_FADE_STRETCH * output_format.sample_rate
                 end_ms += SMART_FADE_STRETCH * 1000
-            file = FileStream(pcm_format, output_format, frames)
+            profile = pacing_profile(queue_item.media_type, queue_item.streamdetails.is_realtime)
+            file = FileStream(pcm_format, output_format, frames, FILE_HEAD_START[profile])
             if mix_mode is not None:
                 file.mix = MixedTrack(
                     pcm_format,
@@ -2893,8 +2890,7 @@ class StreamsController(CoreController):
                     if file.readers.get(address) is request and is_connected(request):
                         # audio handed to a connection that is still open may reach the
                         # player, also when the write fails
-                        file.head_start_handed_out(address)
-                        file.sent_up_to(offset + len(data))
+                        file.mark_sent(range(offset, offset + len(data)))
                     try:
                         await resp.write(data)
                     except ConnectionError:
@@ -2971,8 +2967,8 @@ class StreamsController(CoreController):
             session_id=session_id,
             queue_item_id=queue_item.queue_item_id,
         )
-        # the audio that is dropped comes on top of the head start, so it costs the player none
-        burst = file.take_head_start(request.remote) + run_in / file.byte_rate
+        # the audio that is dropped comes on top of the burst, so it costs the player none
+        burst = file.burst(offset) + run_in / file.byte_rate
         position = offset - run_in
         async with aclosing(
             get_ffmpeg_stream(

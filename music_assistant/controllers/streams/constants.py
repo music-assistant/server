@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Final
 
-from music_assistant_models.enums import VolumeNormalizationMode
+from music_assistant_models.enums import MediaType, VolumeNormalizationMode
 
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
@@ -105,40 +105,54 @@ ICY_PLACEHOLDER_IMAGE_URLS: Final[frozenset[str]] = frozenset(
 # about as long as listening to it would.
 # Do not remove this pacing to "fix" slow buffering. See the usage policy.
 class PacingProfile(StrEnum):
-    """Pace at which a stream's output is handed to a player."""
+    """The kind of source a stream to a player carries, which sets its head start."""
 
-    # every stream but the two below: the flow stream, universal group streams and single
-    # tracks, including sources that hand their audio over just-in-time (radio and a Spotify
-    # music provider track on its Soloist backend; Spotify Connect is an AUDIO_SOURCE and
-    # takes LOW_LATENCY). A pace at playback speed leaves what such a source banks ahead on
-    # the server for its end-of-track crossfade, and keeps a player that never stops reading
-    # (the flow stream) from running ever further ahead, which some receivers do not survive.
-    # The burst is the cushion a player holds: at a session start, at a track boundary for a
-    # player that fetches each track only once the previous download completes (Sonos), and
-    # after a stall, which the catch-up refills. It also has to hold what a player wants
-    # before it starts to play: a Sonos speaker waits for about 130 KB, which is over three
-    # seconds of MP3.
-    REALTIME = "realtime"
-    # a single track for a player that must hold a whole opening chunk before it plays
-    # gapless, see PlayerProtocol.needs_gapless_burst
-    GAPLESS_BURST = "gapless_burst"
-    # live AudioSource streams, where whatever the burst hands over sits in the
-    # player's buffer as listening delay
+    # a live AudioSource (Spotify Connect, AirPlay receiver, line-in)
     LOW_LATENCY = "low_latency"
+    # a radio station
+    RADIO = "radio"
+    # a track of a source that hands its audio over just-in-time (a Spotify music provider
+    # track on its Soloist backend), see StreamDetails.is_realtime
+    REALTIME = "realtime"
+    # any other source, and a stream that mixes sources (the flow stream)
+    BUFFERED = "buffered"
 
 
-# Seconds of audio a stream hands over at once before it settles on playback speed. A
-# track served as a file hands out the same for every part a player asks for.
-REALTIME_BURST: Final[int] = 6
-
-_PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
-    PacingProfile.REALTIME: ("1.0", str(REALTIME_BURST)),
-    PacingProfile.GAPLESS_BURST: ("1.1", "60"),
-    PacingProfile.LOW_LATENCY: ("1.0", "1"),
+# Seconds of audio a stream hands to a player at once before it settles on playback speed,
+# by the kind of its source: as a stream without a length, and as a file (a track with its
+# length, see file_stream.py), which a radio station or a live source never is.
+# The head start is the cushion a player holds: at a session start, at a track boundary for
+# a player that fetches each track only once the previous download completes (Sonos), and
+# through a stall of the server or of its network, which the catch-up refills. It also has to
+# hold what a player wants before it starts to play: a Sonos speaker waits for about 130 KB,
+# which is over three seconds of MP3.
+# - What a player holds ahead of a live source is listening delay, so that gets a second.
+# - A radio station hands its audio over as it is broadcast: a player only runs ahead by what
+#   the station sent at the start.
+# - After its head start a stream goes out at playback speed: a player that never stops
+#   reading (the flow stream) must not run ever further ahead, which some receivers do not
+#   survive, and a source that hands its audio over just-in-time keeps the rest of what it
+#   banks ahead on the server, for its end-of-track crossfade.
+# - A file holds more, as only audio it never sent before counts against it: a player gets
+#   what it had again at once when it seeks back, resumes or takes over a group (see
+#   file_stream.py). A just-in-time source pays the head start of a file out of what it
+#   banks for its crossfade, so it gets little more than a stream.
+STREAM_HEAD_START: Final[dict[PacingProfile, int]] = {
+    PacingProfile.LOW_LATENCY: 1,
+    PacingProfile.RADIO: 5,
+    PacingProfile.REALTIME: 10,
+    PacingProfile.BUFFERED: 10,
+}
+FILE_HEAD_START: Final[dict[PacingProfile, int]] = {
+    PacingProfile.REALTIME: 12,
+    PacingProfile.BUFFERED: 60,
 }
 
+# Every stream goes out at playback speed once it has handed over its head start.
+_PACE: Final[str] = "1.0"
+
 # Pace at which output that fell behind its schedule (a stall of the server or of the player's
-# reads) makes up the lag; it never runs past the burst plus the pace. ffmpeg's own
+# reads) makes up the lag; it never runs past the head start plus the pace. ffmpeg's own
 # 1.05x the pace takes over a minute to refill a few seconds, so stalls in a row run a player dry.
 _CATCHUP: Final[str] = "2"
 
@@ -155,22 +169,38 @@ REALTIME_COLD_START_BANK: Final[int] = 5
 REALTIME_COLD_START_MAX_REMAINING: Final[int] = 60
 
 
+def pacing_profile(media_type: MediaType, is_realtime: bool = False) -> PacingProfile:
+    """
+    Return the pacing profile of a stream of a source.
+
+    :param media_type: The media type of the source, FLOW_STREAM for one that mixes sources.
+    :param is_realtime: Whether the source hands its audio over just-in-time.
+    """
+    if media_type == MediaType.AUDIO_SOURCE:
+        return PacingProfile.LOW_LATENCY
+    if media_type == MediaType.RADIO:
+        return PacingProfile.RADIO
+    if is_realtime:
+        return PacingProfile.REALTIME
+    return PacingProfile.BUFFERED
+
+
 def output_pacing_args(
-    profile: PacingProfile = PacingProfile.REALTIME, burst: float | None = None
+    profile: PacingProfile = PacingProfile.BUFFERED, burst: float | None = None
 ) -> list[str]:
     """
     Return the ffmpeg pacing arguments for a stream handed to a player.
 
-    :param profile: The pace of the stream.
+    :param profile: The kind of source the stream carries.
     :param burst: Seconds of audio handed over at once when the stream starts, for a stream
-        that does not get the burst of its profile.
+        that does not get the head start of its profile.
     """
-    readrate, profile_burst = _PACING[profile]
+    seconds = STREAM_HEAD_START[profile] if burst is None else burst
     return [
         "-readrate",
-        readrate,
+        _PACE,
         "-readrate_initial_burst",
-        profile_burst if burst is None else f"{burst:g}",
+        f"{seconds:g}",
         "-readrate_catchup",
         _CATCHUP,
     ]

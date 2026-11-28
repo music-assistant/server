@@ -97,3 +97,32 @@ async def test_set_url_sends_complete_xml(
 
     assert "<CurrentURI>http://radio/stö.mp3</CurrentURI>" in received[0]
     assert received[0].endswith("</s:Envelope>")
+
+
+@pytest.mark.parametrize("enqueue", [False, True], ids=["current", "next"])
+@pytest.mark.parametrize(("served_as_file", "dlna_op"), [(True, "01"), (False, "00")])
+async def test_set_url_tells_whether_the_url_answers_for_a_part(
+    aiohttp_server: Callable[..., Awaitable[TestServer]],
+    enqueue: bool,
+    served_as_file: bool,
+    dlna_op: str,
+) -> None:
+    """The metadata says a renderer can ask for a part of a track only when it is a file."""
+    received: list[str] = []
+
+    async def handler(request: web.Request) -> web.Response:
+        received.append(await request.text())
+        return web.Response()
+
+    ctrl_url = await _serve(aiohttp_server, handler)
+    media = PlayerMedia(
+        uri="http://ma:8097/single/s/q/i/A___main.wav",
+        media_type=MediaType.TRACK,
+        duration=180,
+        queue_item_id="i",
+    )
+    async with aiohttp.ClientSession() as session:
+        avt = AVTransport(client=session, ctrl_url=ctrl_url, user_agent="test")
+        await avt.set_url(media, enqueue=enqueue, served_as_file=served_as_file)
+
+    assert f"DLNA.ORG_OP={dlna_op};" in received[0]
