@@ -589,6 +589,7 @@ async def test_more_audio_than_declared_is_cut_off() -> None:
     """A track that runs longer than its file declared ends at the declared length."""
     rig = _Rig(_tone(12), duration=10)
     await rig.decode(finished=False)
+    # its source reports no length, so the file declares the duration plus a second
     declared = HEADER_SIZE + 11 * BYTES_PER_SECOND
     # the file is made before the track is decoded to its end
     await rig.fetch(method="HEAD")
@@ -598,6 +599,51 @@ async def test_more_audio_than_declared_is_cut_off() -> None:
 
     assert resp.content_length == len(body) == declared
     assert body[HEADER_SIZE:] == rig.pcm[: 11 * BYTES_PER_SECOND]
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_track_that_is_longer_than_its_item_lists_plays_to_its_end() -> None:
+    """A file is as long as the audio its source reports, whatever duration its item lists."""
+    rig = _Rig(_tone(12.4), duration=8)
+    rig.buffer.source_duration = 12
+    await rig.decode(finished=False)
+    declared = HEADER_SIZE + 13 * BYTES_PER_SECOND
+    real = HEADER_SIZE + len(rig.pcm)
+    request, download = rig.request(stall_at=3 * BYTES_PER_SECOND)
+    task = asyncio.create_task(StreamsController.serve_queue_item_stream(rig.ctrl, request))
+    await download.stalled.wait()
+
+    # the source is read out while the player fetches the file
+    await rig.buffer._set_eof()
+    download.resume.set()
+    resp = await task
+
+    assert resp.content_length == declared
+    assert bytes(download.body[HEADER_SIZE:]) == rig.pcm
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as refusal:
+        await rig.fetch(f"bytes={real}-")
+    assert refusal.value.headers["Content-Range"] == f"bytes */{real}"
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_track_that_is_shorter_than_its_item_lists_ends_where_its_audio_ends() -> None:
+    """Of the duration of an item and the length of its source the longer one is declared."""
+    rig = _Rig(_tone(8.4), duration=12)
+    rig.buffer.source_duration = 8
+    await rig.decode(finished=False)
+    declared = HEADER_SIZE + 13 * BYTES_PER_SECOND
+    real = HEADER_SIZE + len(rig.pcm)
+
+    head, _ = await rig.fetch(method="HEAD")
+    await rig.buffer._set_eof()
+    resp, body = await rig.fetch()
+
+    assert head.content_length == resp.content_length == declared
+    assert body[HEADER_SIZE:] == rig.pcm
+    assert not resp.keep_alive
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as refusal:
+        await rig.fetch(f"bytes={real}-")
+    assert refusal.value.headers["Content-Range"] == f"bytes */{real}"
 
 
 @pytest.mark.usefixtures("passthrough_encoder")
@@ -684,6 +730,22 @@ async def test_a_file_of_an_item_that_starts_at_a_position() -> None:
     assert resp.content_length == HEADER_SIZE + len(rest)
     assert body[HEADER_SIZE:] == rest
     assert part == rest[4 * BYTES_PER_SECOND + 2 :]
+
+
+@pytest.mark.usefixtures("passthrough_encoder")
+async def test_a_file_from_a_position_of_a_track_that_is_longer_than_its_item_lists() -> None:
+    """After a seek by Music Assistant the file is what the source has left of the track."""
+    rig = _Rig(_tone(12.4), duration=8, seek_position=5)
+    rig.buffer.source_duration = 12
+    await rig.decode(finished=False)
+    rest = rig.pcm[5 * BYTES_PER_SECOND :]
+
+    head, _ = await rig.fetch(method="HEAD")
+    await rig.buffer._set_eof()
+    _, body = await rig.fetch()
+
+    assert head.content_length == HEADER_SIZE + (13 - 5) * BYTES_PER_SECOND
+    assert body[HEADER_SIZE:] == rest
 
 
 @pytest.mark.usefixtures("passthrough_encoder")

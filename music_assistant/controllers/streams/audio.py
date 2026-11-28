@@ -523,6 +523,17 @@ def _take_source_length(
     return False
 
 
+def _reported_source_length(ffmpeg_proc: FFMpeg) -> int | None:
+    """
+    Return the length ffmpeg read from the source, unless it is only ffmpeg's estimate.
+
+    :param ffmpeg_proc: The process that has read the source's header.
+    """
+    if ffmpeg_proc.duration_estimated:
+        return None
+    return ffmpeg_proc.parsed_duration or None
+
+
 def _confirmed_source_length(ffmpeg_proc: FFMpeg, delivered_seconds: float) -> int | None:
     """
     Return the length ffmpeg read from the source, where a finished stream can be judged by it.
@@ -1090,17 +1101,11 @@ class StreamsAudio:
             gets no audio: its source is not opened.
         :raises ProviderStreamLimitError: If the provider has no free slot within the timeout.
         """
-        get_stream = (
-            self._get_restarting_radio_media_stream
+        media_args = (streamdetails, pcm_format, seek_position, filter_params, chunk_seconds)
+        media_stream = (
+            self._get_restarting_radio_media_stream(*media_args)
             if streamdetails.media_type == MediaType.RADIO
-            else self._get_media_stream
-        )
-        media_stream = get_stream(
-            streamdetails,
-            pcm_format,
-            seek_position,
-            filter_params,
-            chunk_seconds,
+            else self._get_media_stream(*media_args, slot_holder)
         )
         # resolve the exact owning instance (even when flagged unavailable) so the
         # slot is charged to the account that issued the streamdetails
@@ -5437,6 +5442,7 @@ class StreamsAudio:
         seek_position: int,
         filter_params: list[str] | None,
         chunk_seconds: float,
+        audio_buffer: AudioBuffer | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Stream one provider source as raw PCM.
@@ -5446,6 +5452,8 @@ class StreamsAudio:
         :param seek_position: Requested seek offset in seconds.
         :param filter_params: Optional ffmpeg filter expressions.
         :param chunk_seconds: Size of each yielded chunk in seconds of audio.
+        :param audio_buffer: The audio buffer this stream fills, which is told the length
+            the source reports for the item.
         """
         mass = self.mass
         logger = self.logger.getChild("media_stream")
@@ -5568,6 +5576,9 @@ class StreamsAudio:
                     duration_estimated = _take_source_length(
                         streamdetails, ffmpeg_proc, approximate_seek=approximate_seek
                     )
+                    if audio_buffer is not None and (seek_position or not requested_seek_position):
+                        # a source that took the seek itself may report only what it delivers
+                        audio_buffer.source_duration = _reported_source_length(ffmpeg_proc)
                     logger.debug(
                         "First chunk received after %.2f seconds (codec detected: %s)",
                         mass.loop.time() - stream_start,

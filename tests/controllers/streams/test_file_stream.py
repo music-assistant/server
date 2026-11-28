@@ -80,16 +80,27 @@ def _queue_item(
     return queue_item
 
 
-def _buffer(seconds: float, *, eof: bool = True, has_error: bool = False) -> MagicMock:
+def _buffer(
+    seconds: float,
+    *,
+    eof: bool = True,
+    has_error: bool = False,
+    source_duration: int | None = None,
+) -> MagicMock:
     """
     Build a buffer that holds decoded audio from the start of a track.
 
     :param seconds: The audio the buffer holds.
     :param eof: Whether the source of the buffer was read out.
     :param has_error: Whether that source failed.
+    :param source_duration: The length the source of the buffer reports, if it reports one.
     """
     return MagicMock(
-        eof=eof, has_error=has_error, first_buffered_chunk=0, duration_available=seconds
+        eof=eof,
+        has_error=has_error,
+        first_buffered_chunk=0,
+        duration_available=seconds,
+        source_duration=source_duration,
     )
 
 
@@ -610,12 +621,42 @@ def test_a_track_that_is_not_decoded_yet_declares_a_second_more_than_its_duratio
     assert declared_frames(queue_item, 48000) == 61 * 48000
 
 
+@pytest.mark.parametrize("has_error", [False, True], ids=["still-decoding", "source-failed"])
+def test_a_track_that_is_longer_than_its_item_lists_declares_the_length_of_its_source(
+    has_error: bool,
+) -> None:
+    """The audio that plays can be longer than the duration of the item it belongs to."""
+    buffer = _buffer(40.0, eof=False, has_error=has_error, source_duration=387)
+    queue_item = _queue_item(duration=266, buffer=buffer)
+
+    assert declared_frames(queue_item, 44100) == 388 * 44100
+
+
+def test_a_track_that_is_shorter_than_its_item_lists_declares_the_duration_of_its_item() -> None:
+    """Of the item and its source the longer one counts, as a file may end early."""
+    buffer = _buffer(40.0, eof=False, source_duration=262)
+    queue_item = _queue_item(duration=266, buffer=buffer)
+
+    assert declared_frames(queue_item, 44100) == 267 * 44100
+
+
+def test_a_decoded_track_declares_its_exact_length_whatever_its_source_reports() -> None:
+    """The audio that was decoded tells more than the length its source reports."""
+    queue_item = _queue_item(duration=266, buffer=_buffer(387.67, source_duration=387))
+
+    assert declared_frames(queue_item, 44100) == round(387.67 * 44100)
+
+
 def test_a_track_that_starts_at_a_position_declares_what_is_left_of_it() -> None:
     """A file starts where its item starts."""
     assert declared_frames(_queue_item(duration=60, seek_position=45), 44100) == 16 * 44100
     decoded = _queue_item(duration=60, seek_position=45, buffer=_buffer(60.4))
     assert declared_frames(decoded, 44100) == round(15.4 * 44100)
     assert declared_frames(_queue_item(duration=60, seek_position=90), 44100) == 0
+    # the length a source reports is that of the whole item
+    longer = _buffer(20.0, eof=False, source_duration=387)
+    queue_item = _queue_item(duration=266, seek_position=300, buffer=longer)
+    assert declared_frames(queue_item, 44100) == 88 * 44100
 
 
 def test_a_player_keeps_three_files_at_most() -> None:
