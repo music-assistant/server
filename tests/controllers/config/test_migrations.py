@@ -21,6 +21,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_DEFAULTS,
     PROVIDER_SETUP_FLOW_KEYS,
+    _migrate_acoustid_drop_api_key,
     _migrate_airplay_apple_power_control,
     _migrate_airplay_sync_adjust_sign,
     _migrate_apple_music_sync_schedule,
@@ -1588,6 +1589,44 @@ def test_migrate_milkdrop_drop_color_tint_survives_malformed_config() -> None:
     }
     assert _migrate_milkdrop_drop_color_tint(data) is False
     assert data["providers"]["milkdrop_visualizer"]["values"] == "broken"
+
+
+async def test_migrate_acoustid_drop_api_key_removes_the_stored_value() -> None:
+    """The API key is removed from the AcoustID instance, and from no other provider."""
+    data: dict[str, Any] = {
+        "providers": {
+            "acoustid_lookup": {
+                "domain": "acoustid_lookup",
+                "values": {"api_key": "$enc$OLDKEY", "min_score": 0.9},
+                "setup_data": {"user_key": "$enc$USERKEY"},
+            },
+            "acoustid_lookup--b": {"domain": "acoustid_lookup"},
+            "spotify--s": {"domain": "spotify", "values": {"api_key": "KEEP"}},
+        }
+    }
+    providers = data["providers"]
+
+    assert await migrate(data) is True
+    assert providers["acoustid_lookup"]["values"] == {"min_score": 0.9}
+    assert providers["acoustid_lookup"]["setup_data"] == {"user_key": "$enc$USERKEY"}
+    assert providers["acoustid_lookup--b"] == {"domain": "acoustid_lookup"}
+    assert providers["spotify--s"]["values"] == {"api_key": "KEEP"}
+
+    # a second run has nothing left to remove
+    assert _migrate_acoustid_drop_api_key(data) is False
+
+
+def test_migrate_acoustid_drop_api_key_survives_malformed_config() -> None:
+    """Malformed provider configs are skipped without raising."""
+    assert _migrate_acoustid_drop_api_key({"providers": "broken"}) is False
+    data: dict[str, Any] = {
+        "providers": {
+            "acoustid_lookup": {"domain": "acoustid_lookup", "values": "broken"},
+            "broken": "broken",
+        }
+    }
+    assert _migrate_acoustid_drop_api_key(data) is False
+    assert data["providers"]["acoustid_lookup"]["values"] == "broken"
 
 
 async def test_migrate_drops_the_milkdrop_color_tint_of_a_config_from_before_the_split() -> None:
