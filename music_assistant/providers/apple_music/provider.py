@@ -67,7 +67,7 @@ if TYPE_CHECKING:
 class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Implementation of an Apple Music MusicProvider."""
 
-    recommendation_payload_version = "1"  # stations are radios
+    recommendation_payload_version = "2"  # albums and playlists next to the stations
     _music_user_token: str | None = None
     _music_app_token: str | None = None
     _storefront: str | None = None

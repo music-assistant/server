@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.media_items import Radio, UniqueList
+from music_assistant_models.media_items import (
+    Album,
+    Playlist,
+    Radio,
+    RecommendationFolder,
+    UniqueList,
+)
 
 from music_assistant.providers.apple_music.provider import AppleMusicProvider
 
@@ -15,6 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Coroutine
 
 INSTANCE_ID = "apple_music--test1"
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _station(station_id: str, name: str, is_live: bool = False) -> dict[str, Any]:
@@ -288,3 +297,75 @@ async def test_unnamed_station_answered_under_other_id_resolves_on_its_own(
     api_get_data.side_effect = [payload, batch, single]
     folders = await provider.recommendation_manager.get_personal_recommendations()
     assert [(item.item_id, item.name) for item in folders[0].items] == [("ra.u-1", "Mine")]
+
+
+def _fixture_response() -> dict[str, Any]:
+    """Load the recorded me/recommendations response with stations, albums and playlists."""
+    return cast(
+        "dict[str, Any]",
+        json.loads((FIXTURES / "personal_recommendations.json").read_text()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_recommended_albums_and_playlists_are_kept(provider: AppleMusicProvider) -> None:
+    """Albums and playlists are kept next to the stations, in the order Apple gives them."""
+    cast("AsyncMock", provider.api_client.get_data).return_value = _fixture_response()
+
+    folders = await provider.recommendation_manager.get_personal_recommendations()
+
+    assert [folder.name for folder in folders] == [
+        "Made for You",
+        "Recommended for You",
+        "Stations for You",
+    ]
+    made_for_you, recommended, stations = (folder.items for folder in folders)
+    # the playlist without attributes is left out, the row still comes through
+    assert [(type(item), item.item_id) for item in made_for_you] == [
+        (Playlist, "pl.pm-20e9f373919da5b4eea1ad4c3afd1f8e"),
+        (Radio, "ra.q-GAI6IDUyZDNlNWQzMzk5YmQ1OTE"),
+    ]
+    favorites_mix = made_for_you[0]
+    assert isinstance(favorites_mix, Playlist)
+    assert favorites_mix.name == "Favorites Mix"
+    assert favorites_mix.owner == "Apple Music"
+    assert favorites_mix.metadata.images
+    # the album without attributes is left out, and so is the repeated Favorites Mix
+    assert [(type(item), item.item_id) for item in recommended] == [
+        (Album, "1097861387"),
+        (Playlist, "pl.4b364b8b182f4115acbf6deb83bd5222"),
+    ]
+    album = recommended[0]
+    assert isinstance(album, Album)
+    assert album.name == "A Moon Shaped Pool"
+    assert [artist.name for artist in album.artists] == ["Radiohead"]
+    # the live station is left out
+    assert [item.item_id for item in stations] == ["ra.657515"]
+
+
+@pytest.mark.asyncio
+async def test_browse_stations_skips_recommended_albums_and_playlists(
+    provider: AppleMusicProvider,
+) -> None:
+    """browse_stations lists only the stations of a payload that also holds albums and playlists."""
+    cast("AsyncMock", provider.api_client.get_data).return_value = _fixture_response()
+
+    stations = await provider.recommendation_manager.browse_stations()
+
+    assert [station.item_id for station in stations] == [
+        "ra.q-GAI6IDUyZDNlNWQzMzk5YmQ1OTE",
+        "ra.657515",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mixed_payload_survives_the_cache_roundtrip(provider: AppleMusicProvider) -> None:
+    """A payload folder with albums, playlists and stations deserializes to the same types."""
+    cast("AsyncMock", provider.api_client.get_data).return_value = _fixture_response()
+    folders = await provider.recommendation_manager.get_personal_recommendations()
+
+    restored = [RecommendationFolder.from_dict(folder.to_dict()) for folder in folders]
+
+    assert [[type(item) for item in folder.items] for folder in restored] == [
+        [type(item) for item in folder.items] for folder in folders
+    ]
