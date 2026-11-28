@@ -139,6 +139,8 @@ class SmartPlaylistRules:
     last_played_before_value: int | None = None
     last_played_before_unit: str | None = None  # "hours", "days", "weeks", "months"
     exclude_favorites: bool = False
+    track_year_from: int | None = None
+    track_year_to: int | None = None
 
     def all_seed_uris(self) -> list[str]:
         """Return every seed URI across the four seed lists, deduplicated, original order."""
@@ -178,6 +180,8 @@ class SmartPlaylistRules:
             "album_names": {str(k): v for k, v in self.album_names.items()},
             "year_from": self.year_from,
             "year_to": self.year_to,
+            "track_year_from": self.track_year_from,
+            "track_year_to": self.track_year_to,
             "excluded_artist_ids": self.excluded_artist_ids,
             "excluded_album_ids": self.excluded_album_ids,
             "excluded_track_uris": self.excluded_track_uris,
@@ -223,6 +227,8 @@ class SmartPlaylistRules:
             album_names=_coerce_int_keyed_dict(data.get("album_names"), "album_names"),
             year_from=_coerce_optional_int(data.get("year_from"), "year_from"),
             year_to=_coerce_optional_int(data.get("year_to"), "year_to"),
+            track_year_from=_coerce_optional_int(data.get("track_year_from"), "track_year_from"),
+            track_year_to=_coerce_optional_int(data.get("track_year_to"), "track_year_to"),
             excluded_artist_ids=_coerce_id_list(
                 data.get("excluded_artist_ids"), "excluded_artist_ids"
             ),
@@ -306,8 +312,11 @@ class SmartPlaylistRules:
             parts.append(f"Excl. album types: {', '.join(self.excluded_album_types)}")
         if self.min_popularity is not None:
             parts.append(f"Min. popularity: {self.min_popularity}")
-        if year_range := self._format_year_range():
-            parts.append(year_range)
+        parts.extend(
+            text
+            for text in (self._format_year_range(), self._format_track_year_range())
+            if text is not None
+        )
         if duration_range := self._format_duration_range():
             parts.append(duration_range)
         if last_played_str := self._format_last_played():
@@ -338,6 +347,12 @@ class SmartPlaylistRules:
             return f"Duration: ≤{self.max_duration}s"
         return None
 
+    def _format_track_year_range(self) -> str | None:
+        """Format the track release year filter."""
+        if self.track_year_from is None and self.track_year_to is None:
+            return None
+        return f"Track release year: {self.track_year_from or ''}-{self.track_year_to or ''}"
+
     def _format_last_played(self) -> str | None:
         """Format last played filter as human-readable string."""
         if self.last_played_before_value is None or self.last_played_before_unit is None:
@@ -361,16 +376,12 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
     if rules.min_popularity is not None and not (0 <= rules.min_popularity <= 100):
         msg = f"min_popularity must be between 0 and 100, got {rules.min_popularity}"
         raise InvalidDataError(msg)
-    if (
-        rules.year_from is not None
-        and rules.year_to is not None
-        and rules.year_from > rules.year_to
+    for label, start, end in (
+        ("year", rules.year_from, rules.year_to),
+        ("track_year", rules.track_year_from, rules.track_year_to),
     ):
-        msg = (
-            f"year_from must be less than or equal to year_to, got "
-            f"{rules.year_from}>{rules.year_to}"
-        )
-        raise InvalidDataError(msg)
+        if start is not None and end is not None and start > end:
+            raise InvalidDataError(f"{label}_from must be less than or equal to {label}_to")
     for folder_path in rules.folder_paths:
         prov_instance, sep, _ = folder_path.partition("://")
         if not sep or not prov_instance.startswith("filesystem_"):
