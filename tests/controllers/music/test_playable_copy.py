@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -19,6 +19,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT
 from music_assistant.controllers.music.controller import MusicController
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.tracks import TracksController
@@ -151,8 +152,14 @@ def _album_matches(
         patch.object(AlbumsController, "_match_provider", match),
         patch.object(
             AlbumsController,
-            "versions",
-            AsyncMock(return_value=[_album(QOBUZ, item_id) for item_id in versions or {}]),
+            "_versions_on_provider",
+            AsyncMock(
+                side_effect=lambda _album_arg, provider, *_args: (
+                    [_album(QOBUZ, item_id) for item_id in versions or {}]
+                    if provider.instance_id == QOBUZ
+                    else []
+                )
+            ),
         ),
         patch.object(
             AlbumsController,
@@ -263,9 +270,15 @@ async def test_a_version_with_as_many_tracks_is_taken_when_no_copy_matches(
     """Without a strict match, the first other version with as many tracks is handed out."""
     with _sources(), _album_matches({}, versions={"deluxe": 14, "remaster": 10}):
         copy = await music_mass.music.albums.playable_copy(_album())
+        searched = cast("AsyncMock", AlbumsController._versions_on_provider).await_args_list
 
     assert copy is not None
     assert (copy.provider, copy.item_id) == (QOBUZ, "remaster")
+    # each service is asked for its own versions only, with the strict match's search size
+    assert [(call.args[1].instance_id, call.args[2]) for call in searched] == [
+        (SPOTIFY, MATCH_SEARCH_LIMIT),
+        (QOBUZ, MATCH_SEARCH_LIMIT),
+    ]
 
 
 async def test_no_version_with_as_many_tracks_leaves_the_album_without_a_copy(

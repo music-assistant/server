@@ -1152,9 +1152,6 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> UniqueList[Album]:
         """Return all versions of an album we can find on all providers."""
         album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        streaming_search_query = (
-            f"{album.artists[0].name} - {album.name}" if album.artists else album.name
-        )
         result: UniqueList[Album] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.music.get_visible_provider(provider_id)
@@ -1162,30 +1159,41 @@ class AlbumsController(MediaControllerBase[Album]):
                 continue
             if MediaType.ALBUM not in provider.supported_media_types:
                 continue
-            # TODO: filter by artists in db for non-streaming providers
-            search_query = streaming_search_query if provider.is_streaming_provider else album.name
-            result.extend(
-                prov_item
-                for prov_item in await self.search(search_query, provider.instance_id)
-                if loose_compare_strings(album.name, prov_item.name)
-                and compare_artists(prov_item.artists, album.artists, any_match=True)
-                # make sure that the 'base' version is NOT included
-                and not album.provider_mappings.intersection(prov_item.provider_mappings)
-            )
-            if ProviderFeature.ALBUM_VERSIONS in provider.supported_features:
-                # Call the specialized function in addition to searching to
-                # handle cases where the provider hasn't merged the album
-                # variants
-                if mapped_id := next(
-                    (
-                        p.item_id
-                        for p in album.provider_mappings
-                        if p.provider_instance == provider.instance_id
-                    ),
-                    None,
-                ):
-                    result.extend(await provider.get_album_versions(mapped_id))
+            result.extend(await self._versions_on_provider(album, provider))
         return result
+
+    async def _versions_on_provider(
+        self, album: Album, provider: MusicProvider, limit: int = 25
+    ) -> UniqueList[Album]:
+        """Return the versions of an album one provider has, from a search of the given size."""
+        # TODO: filter by artists in db for non-streaming providers
+        search_query = (
+            f"{album.artists[0].name} - {album.name}"
+            if album.artists and provider.is_streaming_provider
+            else album.name
+        )
+        versions: UniqueList[Album] = UniqueList(
+            prov_item
+            for prov_item in await self.search(search_query, provider.instance_id, limit)
+            if loose_compare_strings(album.name, prov_item.name)
+            and compare_artists(prov_item.artists, album.artists, any_match=True)
+            # make sure that the 'base' version is NOT included
+            and not album.provider_mappings.intersection(prov_item.provider_mappings)
+        )
+        if ProviderFeature.ALBUM_VERSIONS in provider.supported_features:
+            # Call the specialized function in addition to searching to
+            # handle cases where the provider hasn't merged the album
+            # variants
+            if mapped_id := next(
+                (
+                    p.item_id
+                    for p in album.provider_mappings
+                    if p.provider_instance == provider.instance_id
+                ),
+                None,
+            ):
+                versions.extend(await provider.get_album_versions(mapped_id))
+        return versions
 
     async def _backfill_album_on_tracks(
         self,
@@ -1497,11 +1505,12 @@ class AlbumsController(MediaControllerBase[Album]):
         """Return the mappings of the first version on the provider listing as many tracks as the album."""
         # a service may label every track with a version or credit the artist without "The",
         # which the strict match rejects; the versions listing only compares the album name
-        # loosely and needs one shared artist
+        # loosely and needs one shared artist. Searching as the strict match did usually
+        # serves the search from the service's cache instead of asking it again
         versions = [
             version
-            for version in await self.versions(album.item_id, album.provider, limit=None)
-            if version.provider == provider.instance_id and version.available
+            for version in await self._versions_on_provider(album, provider, MATCH_SEARCH_LIMIT)
+            if version.available
         ]
         if not versions:
             return []
