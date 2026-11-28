@@ -1755,6 +1755,20 @@ class StreamsController(CoreController):
                 else 16
             ),
         )
+        # the most bits the player takes in this format, which an item with more bits than
+        # the flow has gets by a restart of the flow
+        max_output_format = await self.audio.get_output_format(
+            output_format_str=request.match_info["fmt"],
+            player=player,
+            content_sample_rate=flow_pcm_format.sample_rate,
+            content_bit_depth=32,
+            media_type=MediaType.FLOW_STREAM,
+        )
+        restart_bit_depth = (
+            output_format.bit_depth
+            if max_output_format.bit_depth > output_format.bit_depth
+            else None
+        )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_protocol_value(
             player_id,
@@ -1824,6 +1838,7 @@ class StreamsController(CoreController):
             session_id=session_id,
             protocol_player=player,
             consumer_connected=lambda: request.transport is not None,
+            restart_bit_depth=restart_bit_depth,
         )
         if mix_overlay:
             flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)

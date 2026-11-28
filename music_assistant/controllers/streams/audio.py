@@ -3000,6 +3000,7 @@ class StreamsAudio:
         protocol_player: PlayerProtocol | None = None,
         consumer_connected: Callable[[], bool] | None = None,
         flow_restart: Callable[[StreamDetails], Awaitable[bool]] | None = None,
+        restart_bit_depth: int | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -3021,6 +3022,9 @@ class StreamsAudio:
         :param flow_restart: Returns whether the stream restarts for an item, for a consumer
             that picks the rate of its flow streams itself (such as a group that serves
             several players with one stream). It takes the place of the sample rate check.
+        :param restart_bit_depth: Bit depth the consumer gets the flow in, when it takes
+            more: in the flow modes that restart for a sample rate, an item with more bits
+            restarts the flow.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -3154,6 +3158,7 @@ class StreamsAudio:
                     flow_mode_sample_rate_conf,
                     is_first_track=queue_track is start_queue_item,
                     consumer_restarts=consumer_restarts,
+                    restart_bit_depth=restart_bit_depth,
                 ):
                     break
 
@@ -6701,6 +6706,7 @@ class StreamsAudio:
         flow_mode_sample_rate_conf: str,
         is_first_track: bool,
         consumer_restarts: bool | None = None,
+        restart_bit_depth: int | None = None,
     ) -> bool:
         """
         Return True if the upcoming queue track requires exiting the flow stream.
@@ -6715,6 +6721,8 @@ class StreamsAudio:
           mirroring select_flow_pcm_format's anchoring logic) is incompatible with
           the current flow rate, so a new flow must be opened. A consumer that decides
           about restarts itself takes the place of this check.
+        - More bits (same modes): the next track has more bits than the flow carries to
+          a consumer that takes more.
 
         The first (anchor) track is always allowed to continue for the sample
         rate check; select_flow_pcm_format has already snapped the flow rate to it.
@@ -6726,6 +6734,7 @@ class StreamsAudio:
         :param is_first_track: Whether this is the first track of the flow stream.
         :param consumer_restarts: Whether the consumer of the flow restarts it for the
             upcoming track, if it decides that itself.
+        :param restart_bit_depth: Bit depth the consumer gets the flow in, when it takes more.
         """
         # live audio (radio, plugin or audio source) cannot be flowed; let the
         # queue controller fall back to single-item streaming for this item
@@ -6759,11 +6768,12 @@ class StreamsAudio:
         # everything to the chosen rate (no restart); bit_perfect restarts on any
         # mismatch; anything else falls through to smart-anchor behavior so
         # unknown/legacy config values don't silently pin the flow forever.
-        if flow_mode_sample_rate_conf in (
+        fixed_rate = flow_mode_sample_rate_conf in (
             FLOW_MODE_SAMPLE_RATE_48000,
             FLOW_MODE_SAMPLE_RATE_96000,
             FLOW_MODE_SAMPLE_RATE_HIGHEST,
-        ):
+        )
+        if fixed_rate:
             needs_restart = False
         elif flow_mode_sample_rate_conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT:
             needs_restart = effective_next_rate != pcm_format.sample_rate
@@ -6781,7 +6791,24 @@ class StreamsAudio:
                 pcm_format.sample_rate,
                 flow_mode_sample_rate_conf,
             )
-        return needs_restart
+            return True
+        if (
+            restart_bit_depth is not None
+            and not fixed_rate
+            and (next_bit_depth := bit_depth_of_source(queue_track.streamdetails))
+            > restart_bit_depth
+        ):
+            self.logger.info(
+                "Track %s (%s) has %s bits, more than the %s bits of the flow (mode: %s) "
+                "- breaking out to restart flow stream",
+                queue_track.queue_item_id,
+                queue_track.name,
+                next_bit_depth,
+                restart_bit_depth,
+                flow_mode_sample_rate_conf,
+            )
+            return True
+        return False
 
     @asynccontextmanager
     async def _connect_radio_stream(self, url: str, **kwargs: Any) -> AsyncGenerator[Any]:

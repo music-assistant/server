@@ -1611,6 +1611,50 @@ async def test_single_stream_sends_no_more_bits_than_the_source_has(
     assert picked[0].bit_depth == expected
 
 
+class _FlowStreamRequested(Exception):
+    """Signal that a flow stream handler asked for the audio of its flow."""
+
+
+@pytest.mark.parametrize(
+    ("start_bit_depth", "output_bit_depth", "restart_bit_depth"),
+    [
+        # a flow that starts at a 16 bit item restarts for an item with more bits
+        (16, 16, 16),
+        # and comes back with 24 bit when it starts at that item
+        (24, 24, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_processed_flow_stream_restarts_for_more_bits_than_it_has(
+    monkeypatch: pytest.MonkeyPatch,
+    start_bit_depth: int,
+    output_bit_depth: int,
+    restart_bit_depth: int | None,
+) -> None:
+    """A processed flow carries the bits of its first item and restarts for more."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    streamdetails = controller.mass.player_queues.get_item.return_value.streamdetails
+    streamdetails.audio_format = _format(ContentType.FLAC, 48000, start_bit_depth)
+    audio, protocol = _hires_capable_audio()
+    protocol._attr_supported_sample_rates = [(48000, 24)]
+    picked: list[AudioFormat] = []
+
+    async def _get_output_format(**kwargs: Any) -> AudioFormat:
+        picked.append(await audio.get_output_format(**{**kwargs, "player": protocol}))
+        return picked[-1]
+
+    controller.audio.get_output_format = _get_output_format
+    controller.audio.get_player_output_plan.side_effect = None
+    controller.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
+    controller.audio.get_queue_flow_stream = MagicMock(side_effect=_FlowStreamRequested)
+    with pytest.raises(_FlowStreamRequested):
+        await controller.serve_queue_flow_stream(request)
+
+    assert picked[0].bit_depth == output_bit_depth
+    kwargs = controller.audio.get_queue_flow_stream.call_args.kwargs
+    assert kwargs.get("restart_bit_depth") == restart_bit_depth
+
+
 @pytest.mark.asyncio
 async def test_single_stream_handler_shares_native_group_members(
     monkeypatch: pytest.MonkeyPatch,
